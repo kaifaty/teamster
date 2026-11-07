@@ -125,21 +125,28 @@ def cmd_scout(a):
     directory = Path(a.repo).expanduser().resolve()
     if not directory.is_dir():
         procs.die(f"scout directory does not exist: {directory}")
+    executor = executors.get(getattr(a, "executor", None) or "codex")
+    try:
+        executor.prepare_scout(a.effort, cfg, directory)
+    except ValueError as exc:
+        procs.die(str(exc))
     d = config.TASKS / a.slug
     d.mkdir(parents=True)
     prompt = prompts.scout_prompt(question, cfg)
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "kind": "scout", "repo": str(directory), "worktree": str(directory), "branch": "",
-          "effort": a.effort, "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
+          "executor": executor.name, "effort": a.effort,
+          "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "created": clock.CLOCK.time(), "turns": 0}
     task_state.save(st)
     proc = supervisor.spawn(st, prompt, a.effort, kind="scout")
     for _ in range(300):
         st = task_state.load(a.slug)
-        if st["thread"] or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
+        if executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
             break
         time.sleep(0.1)
-    print(f"started scout {a.slug}: account {st['account']}, thread {st['thread'] or '?'}, pid {st.get('pid')}\n  directory {directory}")
+    print(f"started scout {a.slug}: account {executor.account(st) or '?'}, "
+          f"{executor.cursor_label} {executor.cursor(st) or '?'}, pid {st.get('pid')}\n  directory {directory}")
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
 
 
@@ -163,7 +170,11 @@ def cmd_say(a):
         procs.die("empty message")
     cfg = config.accounts_config()
     try:
-        executors.from_state(st).prepare(a.effort or st.get("effort"), cfg)
+        executor = executors.from_state(st)
+        if scouting:
+            executor.prepare_scout(a.effort or st.get("effort"), cfg, st["worktree"])
+        else:
+            executor.prepare(a.effort or st.get("effort"), cfg)
     except ValueError as exc:
         procs.die(str(exc))
     budgets.set_weekly_budget(st, getattr(a, "max_weekly", None), cfg)
@@ -303,6 +314,14 @@ def prepare_claude_work(effort, cfg):
     config.require_claude()
 
 
+def prepare_claude_scout(effort, cfg, directory):
+    inside = subprocess.run(config.GIT + ["rev-parse", "--is-inside-work-tree"], cwd=directory,
+                            text=True, capture_output=True)
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        raise ValueError("scout --executor claude requires a directory inside a git work tree")
+    prepare_claude_work(effort, cfg)
+
+
 def print_claude_work_stats(st):
     rows = telemetry_log.claude_work_rows(st)
     token_fields = ("input", "output", "cached_input")
@@ -318,7 +337,7 @@ def print_claude_work_stats(st):
               for key in ("active_seconds", "cost_usd", "weekly_spent")}
     totals["tokens"] = {key: total((row.get("tokens") or {}).get(key) for row in rows)
                         for key in token_fields}
-    print("== Claude work", flush=True)
+    print("== Claude scout" if st.get("kind") == "scout" else "== Claude work", flush=True)
     print(f"{'start (UTC)':20} {'min':>6} {'account':16} {'session':13} {'model':24} {'effort':7} "
           f"{'input':>10} {'output':>10} {'cached':>10} {'cost $':>10} {'weekly %':>8}")
     for row in rows + [totals]:
@@ -335,7 +354,8 @@ def print_claude_work_stats(st):
               flush=True)
 
 
-executors.get("claude").bind(sys.modules[__name__], prepare="prepare_claude_work", stats="print_claude_work_stats")
+executors.get("claude").bind(sys.modules[__name__], prepare="prepare_claude_work",
+                             prepare_scout="prepare_claude_scout", stats="print_claude_work_stats")
 
 
 def cmd_report(a):

@@ -1,7 +1,7 @@
 """Delegate coding to Codex in a git worktree, with autonomous subscription rotation.
 
       teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
-      teamster scout <slug> "question" | --file FILE [--repo DIR] [--effort E]  read-only research
+      teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E]  read-only research
       teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-timeout SEC] [--no-base-check]
       teamster review <slug> [--effort E] [--review-model M] [--max-weekly P] [--reviewer codex|claude] [--review-angles LIST]  fresh review (task must be idle)
       teamster wait <slug> [--timeout SEC] [--through-sleep]  wait, show rotations and the result
@@ -143,7 +143,9 @@ OPTION_REGISTRY = (
     {"names": ("--executor",),
      "argparse": {"choices": executors.names(), "default": None,
                   "help": "work provider saved for the task (default: executor setting, codex)"},
-     "synopsis": "[--executor codex|claude]", "commands": {"start": {}}},
+     "synopsis": "[--executor codex|claude]",
+     "commands": {"start": {}, "scout": {"default": "codex",
+                  "help": "scout provider (default: codex, ignores settings); claude requires a git directory"}}},
     {"names": ("--file",), "argparse": {},
      "synopsis": "--file FILE", "commands": {"say": {}}},
     {"names": ("--effort",), "argparse": {"default": None},
@@ -311,6 +313,7 @@ def main():
     s.add_argument("--file")
     s.add_argument("--repo", default=".")
     s.add_argument("--effort", default=None)
+    add_command_options(s, "scout")
     scout_parser = s
     s = sub.add_parser("say")
     s.add_argument("slug")

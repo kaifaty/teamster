@@ -61,4 +61,4 @@ namespaces. Only config.py and __main__.py may use __file__; usage text stays in
 The executors and reviewers registries share the register, get and names API.
 """
 
-__version__ = "1.53.2"
+__version__ = "1.54.0"
