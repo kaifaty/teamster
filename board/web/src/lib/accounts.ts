@@ -83,6 +83,16 @@ const CODEX_STATUS: Record<string, string> = {
   duplicate: "дубликат",
 };
 
+/** When an exhausted Codex account comes back: the latest reset of the windows it used up, or null. */
+function spentUntil(entry: Obj): number | null {
+  const resets = [entry.primary, entry.secondary]
+    .filter(isObj)
+    .filter((window) => (num(window.used_percent) ?? 0) >= 100)
+    .map((window) => toSeconds(window.resets_at))
+    .filter((at): at is number => at !== null);
+  return resets.length ? Math.max(...resets) : null;
+}
+
 function codexRow(entry: Obj, index: number): AccountRow | null {
   if (typeof entry.name !== "string") return null;
   const weekly = codexWeekly(entry);
@@ -95,7 +105,7 @@ function codexRow(entry: Obj, index: number): AccountRow | null {
     weeklyResetsAt: weekly ? toSeconds(weekly.resets_at) : null,
     status: status === null ? "нет данных" : status === "available" ? null : (CODEX_STATUS[status] ?? status),
     bad: status !== null && status !== "available",
-    limitedUntil: null,
+    limitedUntil: status === "exhausted" ? spentUntil(entry) : null,
     duty: null,
   };
 }

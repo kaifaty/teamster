@@ -27,7 +27,10 @@ export interface Depot {
   bad: boolean;
   status: string | null;
   duty: boolean;
-  /** Unix seconds when the account's limit resets: its own limit first, else the weekly one; null when unknown. */
+  /**
+   * Unix seconds when the depot refuels: a limited or exhausted account at the end of its limit, a low one at
+   * the weekly reset; null when unknown or when the account needs a login or a token rather than a reset.
+   */
   refuelAt: number | null;
 }
 
@@ -143,7 +146,7 @@ export function depots(data: unknown, now: number): Depot[] {
       bad: row.bad,
       status: row.status,
       duty: row.duty !== null,
-      refuelAt: row.limitedUntil ?? row.weeklyResetsAt,
+      refuelAt: row.bad ? row.limitedUntil : row.weeklyResetsAt,
     });
   }
   return result;

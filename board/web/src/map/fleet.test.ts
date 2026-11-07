@@ -55,11 +55,19 @@ describe("depots", () => {
     expect(list.map(depotEmpty)).toEqual([false, true, true, false, true]);
   });
 
-  it("refuels at the end of the account's own limit, else at the weekly reset", () => {
+  it("refuels at the end of the limit that ran out, a low depot at the weekly reset, a broken one never", () => {
     const list = depots(ACCOUNTS, NOW);
     expect(list.find((depot) => depot.key === "claude:pool-2")!.refuelAt).toBe(NOW + 1500);
     expect(list.find((depot) => depot.key === "codex:personal")!.refuelAt).toBeNull();
     expect(depots({ claude: [{ name: "p", seven_day: { used_percent: 99, resets_at: NOW + 60 } }] }, NOW)[0]!.refuelAt).toBe(NOW + 60);
+    const exhausted = {
+      name: "x", status: "exhausted",
+      primary: { used_percent: 100, window_minutes: 300, resets_at: NOW + 3600 },
+      secondary: { used_percent: 50, window_minutes: 10080, resets_at: NOW + 5 * 86400 },
+    };
+    expect(depots({ codex: [exhausted] }, NOW)[0]!.refuelAt).toBe(NOW + 3600);
+    const tokenless = { name: "p", token_unavailable: true, seven_day: { used_percent: 10, resets_at: NOW + 7200 } };
+    expect(depots({ claude: [tokenless] }, NOW)[0]!.refuelAt).toBeNull();
   });
 
   it("tells when a depot refuels in hours, or in minutes under an hour", () => {
