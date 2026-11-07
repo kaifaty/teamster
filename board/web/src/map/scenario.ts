@@ -213,6 +213,7 @@ export function scenarioSource(): BoardSource {
   let tasks: TaskSummary[] = [];
   return {
     label: "сценарий",
+    fetchArt: async () => ({}),
     connect(onMessage, onState) {
       start = Date.now() / 1000;
       step = 0;

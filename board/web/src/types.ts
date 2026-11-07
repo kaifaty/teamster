@@ -42,6 +42,16 @@ export interface TaskSummary {
 
 export type TaskFile = "brief" | "last" | "review" | "check";
 
+/** A repository's own map pictures, as URLs; a missing one falls back to the shared art. */
+export interface RepoArt {
+  sky?: string;
+  planet?: string;
+  emblem?: string;
+}
+
+/** By repository; repositories without art are absent. */
+export type ArtIndex = Record<string, RepoArt>;
+
 export interface TaskDetail extends TaskSummary {
   timeline: { at: number; text: string }[]; // task events (≤ 200), or session creation and last activity
   files: TaskFile[]; // which files exist

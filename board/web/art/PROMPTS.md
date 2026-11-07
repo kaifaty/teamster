@@ -60,3 +60,24 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 9. backdrop-cluster: A deep indigo field crowded with fine stars in dense curving streams, with almost no gas.
 
 10. backdrop-marsh: Murky olive and copper clouds, heavy and slow, with sickly pale green glows in the distance.
+
+## The art of one project
+
+A repository may have its own sky, home planet and emblem. They live in `board-art/<repo>/` in the data home (`~/.teamster/board-art/<repo>/` by default), never in this repository: a project's name and theme can be private. Nothing here is generated automatically, and a project without art keeps the shared pictures.
+
+1. Read the project's README and write its theme in one short sentence: what the project is like, as an image. The prompts carry only that theme, never code, file names, or text taken from the project.
+2. Fill the three prompts below, each after its style line: the sky after the STYLE of the skies above, the planet and the emblem after the first STYLE of this file.
+3. Run a teamster scout in a new empty directory with `image_gen` and the prompts, asking only for the file paths. No reference images. Look at every image yourself and generate again until it reads as this project. Name the files `sky.png`, `planet.png` and `emblem.png`.
+4. Prepare them, from `board/web`:
+
+   ```sh
+   python3 art/prepare.py SOURCE_DIR --project ~/.teamster/board-art/<repo>
+   ```
+
+   `<repo>` is the repository's folder name as the board shows it. Any of the three files may be left out. The map picks up new art when its tab is opened again.
+
+sky (landscape, 1536x1024): `<THEME>`, as a nebula or dust cloud, not as objects.
+
+planet (square, 1024x1024): One whole planet centred on a flat pure black background, with a clear margin around it. `<THEME>`, as the surface of a world. Lit from the upper left, with a soft terminator and a thin atmosphere rim.
+
+emblem (square, 1024x1024): One flat heraldic emblem seen from the front, filling most of the image, centred on a flat solid magenta background (#FF00FF) with nothing else on it. `<THEME>`, as a single bold simple shape that can still be read at 30 pixels, in brass and enamel with no magenta in it. Pre-rendered look with metallic highlights. No shadow on the background.

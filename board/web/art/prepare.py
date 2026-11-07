@@ -4,11 +4,14 @@
 Standard library only. Sprites on magenta lose their background, balls on black are cropped to the ball and
 lose the black around it, and macOS `sips` scales the results into src/map/art. Files named backdrop-*.png
 become the skies of the star systems.
+
+With --project TARGET_DIR it prepares the art of one repository instead: sky.png, planet.png and emblem.png,
+whichever exist, go into TARGET_DIR, which lies outside this repository (see PROMPTS.md).
 """
 
+import argparse
 import struct
 import subprocess
-import sys
 import tempfile
 import zlib
 from pathlib import Path
@@ -30,6 +33,12 @@ SPRITES = {
     "planet-roadstead": ("ball", 288),
     "planet-cryo": ("ball", 352),
     "sun": ("sun", 512),
+}
+
+# The same for the art of one repository. Its sky goes through as a JPEG.
+PROJECT_SPRITES = {
+    "planet": ("ball", 448),
+    "emblem": ("key", 128),
 }
 
 
@@ -139,22 +148,46 @@ def scale(source, target, longest):
     subprocess.run(["sips", "-Z", str(longest), str(source), "--out", str(target)], check=True, capture_output=True)
 
 
+def prepare_sprite(source, target, kind, longest, temp):
+    image = read_png(source)
+    if kind == "key":
+        width, height, rows = key_magenta(*image)
+    elif kind == "ball":
+        width, height, rows = cut_ball(*image, level=40, margin=1.04, gain=2.2)
+    else:
+        width, height, rows = cut_ball(*image, level=150, margin=1.5, gain=1.6)
+    keyed = Path(temp) / source.name
+    write_png(keyed, width, height, rows)
+    scale(keyed, target, longest)
+    print(source.stem, width, height)
+
+
+def prepare_project(source, target):
+    target.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as temp:
+        for name, (kind, longest) in PROJECT_SPRITES.items():
+            if (source / f"{name}.png").exists():
+                prepare_sprite(source / f"{name}.png", target / f"{name}.png", kind, longest, temp)
+    if (source / "sky.png").exists():
+        subprocess.run(
+            ["sips", "-s", "format", "jpeg", "-s", "formatOptions", "68", str(source / "sky.png"), "--out", str(target / "sky.jpg")],
+            check=True, capture_output=True,
+        )
+
+
 def main():
-    source = Path(sys.argv[1])
+    parser = argparse.ArgumentParser(description="Turn generated art into the files the map loads.")
+    parser.add_argument("source", type=Path)
+    parser.add_argument("--project", type=Path, metavar="TARGET_DIR", help="prepare one repository's art into this directory")
+    args = parser.parse_args()
+    source = args.source
+    if args.project:
+        prepare_project(source, args.project.expanduser())
+        return
     OUT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temp:
         for name, (kind, longest) in SPRITES.items():
-            image = read_png(source / f"{name}.png")
-            if kind == "key":
-                width, height, rows = key_magenta(*image)
-            elif kind == "ball":
-                width, height, rows = cut_ball(*image, level=40, margin=1.04, gain=2.2)
-            else:
-                width, height, rows = cut_ball(*image, level=150, margin=1.5, gain=1.6)
-            keyed = Path(temp) / f"{name}.png"
-            write_png(keyed, width, height, rows)
-            scale(keyed, OUT / f"{name}.png", longest)
-            print(name, width, height)
+            prepare_sprite(source / f"{name}.png", OUT / f"{name}.png", kind, longest, temp)
     subprocess.run(
         ["sips", "-s", "format", "jpeg", "-s", "formatOptions", "70", str(source / "nebula.png"), "--out", str(OUT / "nebula.jpg")],
         check=True, capture_output=True,
