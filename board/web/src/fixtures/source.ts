@@ -7,6 +7,7 @@ import type { ServerMessage, Snapshot, TaskDetail, TaskFile } from "../types";
 import snapshotJson from "./snapshot.json";
 import streamJson from "./stream.json";
 import detailsJson from "./details.json";
+import { FIXTURE_EVENTS, FIXTURE_LIVE, demoEvents, demoReport, logEvent } from "./events";
 
 interface FixtureDetail {
   timeline: { at: number; text: string }[];
@@ -18,6 +19,8 @@ const stream = streamJson as unknown as ServerMessage[];
 const details = detailsJson as unknown as Record<string, FixtureDetail>;
 const BASE = snapshot.generated_at;
 const STEP_MS = 1000;
+/** A new line in the ship's log this often. */
+const EVENT_MS = 9000;
 
 const TIME_KEYS = new Set([
   "generated_at", "phase_started_at", "sleeping_until", "created", "updated_at", "at", "fetched_at",
@@ -48,6 +51,8 @@ export function shiftTimes<T>(value: T, delta: number): T {
 export function fixtureSource(): BoardSource {
   let state: BoardState = emptyState;
   let delta = 0;
+  // The history is anchored once, so that a reload returns the same events rather than shifted copies.
+  const origin = Date.now() / 1000;
   return {
     label: "фикстуры",
     connect(onMessage, onState) {
@@ -71,7 +76,15 @@ export function fixtureSource(): BoardSource {
       onState("open", null);
       step();
       const timer = setInterval(step, STEP_MS);
-      return () => clearInterval(timer);
+      let live = 0;
+      const events = setInterval(() => {
+        const event = FIXTURE_LIVE[live++ % FIXTURE_LIVE.length]!;
+        onMessage({ type: "event", event: logEvent(event, Date.now() / 1000) });
+      }, EVENT_MS);
+      return () => {
+        clearInterval(timer);
+        clearInterval(events);
+      };
     },
     async fetchDetail(slug) {
       const task = state.tasks[slug];
@@ -93,6 +106,21 @@ export function fixtureSource(): BoardSource {
     // Shared pictures in other roles, so that one repository looks like itself and the others stay as they are.
     async fetchArt() {
       return { "demo-game": { sky: BACKDROPS[0], planet: ART.planetRoadstead, emblem: ART.gate } };
+    },
+    async fetchEvents(since, until) {
+      return demoEvents(FIXTURE_EVENTS, origin, since, until);
+    },
+    async fetchReport() {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return demoReport(Date.now() / 1000, [
+        { slug: "accounts-json-schema", repo: "teamster", minutes: 96, turns: 2 },
+        { slug: "budget-overrun", repo: "ml-lab", minutes: 74, turns: 3 },
+        { slug: "cdp-screenshot-tool", repo: "teamster", minutes: 41, turns: 2 },
+        { slug: "board-web-frontend", repo: "teamster", minutes: 33, turns: 1 },
+        { slug: "review-ws-reconnect", repo: "demo-vault", minutes: 18, turns: 1 },
+        { slug: "demo-tunnel-land", repo: "demo-tunnel", minutes: 12, turns: 1 },
+        { slug: "scout-api-shape", repo: "demo-assistant", minutes: 6, turns: 1 },
+      ]);
     },
   };
 }

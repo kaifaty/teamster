@@ -1,4 +1,4 @@
-import type { ArtIndex, ServerMessage, TaskDetail, TaskFile } from "../types";
+import type { ArtIndex, Events, Report, ServerMessage, TaskDetail, TaskFile } from "../types";
 import { connectSocket, type ConnectionState } from "./socket";
 
 /** Where the board gets its data: the real server, or the fixtures in `dev:fixture` mode. */
@@ -12,6 +12,10 @@ export interface BoardSource {
   fetchFile(slug: string, name: TaskFile): Promise<string | null>;
   /** Which repositories have their own map art. */
   fetchArt(): Promise<ArtIndex>;
+  /** Completed phases and verdicts between two Unix times, both inclusive. */
+  fetchEvents(since: number, until: number): Promise<Events>;
+  /** `teamster report` from the local date `since` (YYYY-MM-DD), grouped by `by` (e.g. "executor"). */
+  fetchReport(since: string, by: string): Promise<Report>;
 }
 
 async function get(path: string): Promise<Response | null> {
@@ -37,6 +41,16 @@ export function serverSource(): BoardSource {
     async fetchArt() {
       const response = await get("/api/art");
       return response ? ((await response.json()) as ArtIndex) : {};
+    },
+    async fetchEvents(since, until) {
+      const response = await get(`/api/events?since=${Math.floor(since)}&until=${Math.ceil(until)}`);
+      if (!response) throw new Error("404");
+      return (await response.json()) as Events;
+    },
+    async fetchReport(since, by) {
+      const response = await get(`/api/report?since=${encodeURIComponent(since)}&by=${encodeURIComponent(by)}`);
+      if (!response) throw new Error("404");
+      return (await response.json()) as Report;
     },
   };
 }
