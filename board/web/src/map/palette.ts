@@ -17,11 +17,26 @@ export const SPACE = {
   hover: "#c8d7f0",
   sleep: "#a9cdf0",
   gauge: "#1a2130",
+  /** A ship whose CI failed: smoke, sparks and the glow of a fire under the plating. */
+  smoke: "#5d5550",
+  spark: "#ffd38a",
+  burn: "#ff3c1e",
+  /** Patches of the fix rounds: plain steel plates with darker seams and bright rivets. */
+  plate: "#8b8f97",
+  seam: "#3c3f46",
+  rivet: "#d6d9de",
+  /** A storm over a star in trouble, and its lightning. */
+  storm: "#17121f",
+  stormEdge: "#3a2d4a",
+  lightning: "#e6dcff",
+  /** The dim warning light of an empty depot. */
+  empty: "#ff7a50",
 } as const;
 
-export const FLEET: Record<Family, { hull: string; engine: string }> = {
-  codex: { hull: "#7ea6f5", engine: "#ffb648" },
-  claude: { hull: "#e59472", engine: "#74d6e8" },
+/** `escort` tints the reviewer's drone: the family's hue, light enough that the art's paint still shows. */
+export const FLEET: Record<Family, { hull: string; engine: string; escort: string }> = {
+  codex: { hull: "#7ea6f5", engine: "#ffb648", escort: "#b4ccff" },
+  claude: { hull: "#e59472", engine: "#74d6e8", escort: "#ffc2a6" },
 };
 
 /**

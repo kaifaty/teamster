@@ -27,10 +27,86 @@ export interface Depot {
   bad: boolean;
   status: string | null;
   duty: boolean;
+  /**
+   * Unix seconds when the depot refuels: a limited or exhausted account at the end of its limit, a low one at
+   * the weekly reset; null when unknown or when the account needs a login or a token rather than a reset.
+   */
+  refuelAt: number | null;
 }
 
 /** Below this share the depot is shown as low. */
 export const LOW_FUEL = 20;
+
+/** The depot gives nothing or almost nothing: it blinks on the map and its label tells when it refuels. */
+export function depotEmpty(depot: Pick<Depot, "bad" | "fuel">): boolean {
+  return depot.bad || (depot.fuel !== null && depot.fuel <= LOW_FUEL);
+}
+
+/** "заправка через N ч", or "через N мин" under an hour, until `at` (Unix seconds); null without a future time. */
+export function refuelText(at: number | null, now: number): string | null {
+  if (at === null || at <= now) return null;
+  const minutes = Math.max(1, Math.ceil((at - now) / 60));
+  return minutes < 60 ? `заправка через ${minutes} мин` : `заправка через ${Math.round(minutes / 60)} ч`;
+}
+
+/**
+ * A ship's hull: sessions are flagships and scouts stay scouts; a task's ship grows with its effort, a light
+ * ship up to medium, a frigate at high and a cruiser above it.
+ */
+export type Hull = "light" | "frigate" | "cruiser" | "scout" | "flagship";
+
+export function hullOf(task: Pick<TaskSummary, "kind" | "effort">): Hull {
+  if (task.kind === "session") return "flagship";
+  if (task.kind === "scout") return "scout";
+  switch (task.effort) {
+    case "high":
+      return "frigate";
+    case "xhigh":
+    case "max":
+    case "ultra":
+      return "cruiser";
+    default:
+      return "light";
+  }
+}
+
+/** A hull's size on the map, in world units: a frigate and a cruiser are clearly larger than a light ship. */
+export const HULL_SIZE: Record<Hull, number> = { light: 74, frigate: 92, cruiser: 114, scout: 46, flagship: 150 };
+
+/** A ship shows at most this many patches, one per fix round. */
+export const MAX_PATCHES = 3;
+
+/** Spots on the middle of every hull, in shares of the ship's size from its centre, nose up. */
+const PATCH_SPOTS: readonly { x: number; y: number }[] = [
+  { x: -0.1, y: -0.08 },
+  { x: 0.09, y: -0.02 },
+  { x: -0.07, y: 0.13 },
+  { x: 0.08, y: 0.18 },
+  { x: 0.01, y: 0.05 },
+  { x: -0.02, y: -0.17 },
+];
+
+function hashSlug(text: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+  return hash >>> 0;
+}
+
+/**
+ * Where the patches of `slug`'s ship sit after `fixRound` fix rounds: one per round, at most MAX_PATCHES, at
+ * distinct spots that depend only on the slug, so that a patch stays where it was put.
+ */
+export function patchSpots(slug: string, fixRound: number): { x: number; y: number; angle: number }[] {
+  const count = Math.max(0, Math.min(MAX_PATCHES, Math.floor(fixRound)));
+  const free = [...PATCH_SPOTS];
+  const result: { x: number; y: number; angle: number }[] = [];
+  for (let i = 0; i < count; i++) {
+    const hash = hashSlug(`${slug}#${i}`);
+    const spot = free.splice(hash % free.length, 1)[0]!;
+    result.push({ x: spot.x, y: spot.y, angle: (((hash >>> 8) % 100) / 100 - 0.5) * 1.2 });
+  }
+  return result;
+}
 
 export interface SupplyLine {
   depot: string;
@@ -70,6 +146,7 @@ export function depots(data: unknown, now: number): Depot[] {
       bad: row.bad,
       status: row.status,
       duty: row.duty !== null,
+      refuelAt: row.bad ? row.limitedUntil : row.weeklyResetsAt,
     });
   }
   return result;

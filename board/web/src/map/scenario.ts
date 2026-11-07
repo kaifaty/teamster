@@ -1,11 +1,13 @@
 // Demo for `npm run dev:fixture`: three agents (Codex, Claude and a reviewer) go round every station of a
 // system. One of them changes every SCENARIO_STEP_SECONDS, in turn, so every place and every walk shows up
-// without real tasks.
+// without real tasks. A standing fleet keeps the rest in view: every hull of both families, a damaged ship with
+// patches, a ship under review with its escort, and a second system in trouble.
 
 import type { BoardSource } from "../lib/source";
 import type { Activity, Column, Phase, TaskDetail, TaskSummary } from "../types";
 
 export const SCENARIO_REPO = "demo-system";
+export const SCENARIO_OUTPOST = "demo-outpost";
 export const SCENARIO_STEP_SECONDS = 4;
 
 interface Stage {
@@ -166,6 +168,71 @@ function build(index: number, stageIndex: number, changedAt: number, start: numb
   };
 }
 
+/** Ships that stay where they are; the working ones keep their activity fresh. */
+const STANDING: readonly (Partial<TaskSummary> & Pick<TaskSummary, "slug" | "executor" | "effort">)[] = [
+  {
+    slug: "ci-burns-after-fixes", executor: "claude", account: "claude-pool-1", effort: "xhigh", reviewer: "codex",
+    phase: "fix", fix_round: 2, ci: "failed", pr: "https://github.com/example/demo-system/pull/131",
+    activity: { at: null, kind: "edit", text: "Edit src/store/reduce.ts: третий заход на падающий CI" },
+  },
+  {
+    slug: "inspector-escort", executor: "claude", account: "claude-pool-1", effort: "high", reviewer: "codex",
+    phase: "review", fix_round: 1, activity: { at: null, kind: "message", text: "Отдал на ревью, жду замечаний" },
+  },
+  {
+    slug: "heavy-range-check", executor: "codex", account: "codex-team-1", effort: "max", reviewer: "claude",
+    phase: "check", activity: { at: null, kind: "command", text: "npm run build" },
+  },
+  {
+    slug: "light-through-gate", executor: "codex", account: "codex-team-2", effort: "low", reviewer: "claude",
+    phase: "ci", ci: "pending", pr: "https://github.com/example/demo-system/pull/132",
+    activity: { at: null, kind: "message", text: "Запушил ветку, жду CI" },
+  },
+  {
+    slug: "outpost-migration", repo: SCENARIO_OUTPOST, executor: "codex", account: "codex-team-1", effort: "ultra",
+    reviewer: "claude", column: "attention", phase: "idle", alive: false, result_status: "blocked", outcome: "done",
+    summary: "Заблокировано: миграция требует доступа к базе",
+  },
+  {
+    slug: "outpost-patrol", repo: SCENARIO_OUTPOST, executor: "claude", account: "claude-pool-2", effort: "low",
+    reviewer: "codex", phase: "turn", activity: { at: null, kind: "tool", text: "Read README.md" },
+  },
+];
+
+/** The standing fleet of a scenario that started at `start`, with activity as fresh as `now`. */
+export function scenarioFleet(start: number, now: number = start): TaskSummary[] {
+  return STANDING.map((ship, index) => {
+    const alive = ship.alive ?? true;
+    return {
+      kind: "work",
+      title: null,
+      link: null,
+      repo: SCENARIO_REPO,
+      branch: `codex/${ship.slug}`,
+      task_type: "feature",
+      reviewer: null,
+      model: ship.executor === "codex" ? "gpt-5.5-codex" : "claude-opus-5-5",
+      column: "running",
+      phase: "turn",
+      phase_started_at: start - 300 - index * 40,
+      alive,
+      turn: 1 + (ship.fix_round ?? 0),
+      fix_round: 0,
+      outcome: alive ? "running" : null,
+      result_status: null,
+      summary: null,
+      pr: null,
+      ci: null,
+      sleeping_until: null,
+      created: start - 7200 + index * 60,
+      account: null,
+      ...ship,
+      updated_at: start - 300 - index * 40,
+      activity: alive && ship.activity ? { ...ship.activity, at: now - 2 } : null,
+    };
+  });
+}
+
 /** The three tasks at step `step` of a scenario that started at `start` (Unix seconds). */
 export function scenarioTasks(step: number, start: number): TaskSummary[] {
   return AGENTS.map((agent, index) => {
@@ -194,17 +261,19 @@ const BRIEF = `# Демо-сценарий карты
 один из них. Это не настоящие задачи: сценарий есть только в режиме \`npm run dev:fixture\`.
 `;
 
-/** Fuel depots of the demo: enough, low and spent, so that the galaxy shows them all. */
-const ACCOUNTS = {
-  codex: [
-    { name: "codex-team-1", status: "available", secondary: { used_percent: 41, window_minutes: 10080 } },
-    { name: "codex-team-2", status: "available", secondary: { used_percent: 88, window_minutes: 10080 } },
-  ],
-  claude: [
-    { name: "claude-pool-1", seven_day: { used_percent: 30 } },
-    { name: "claude-pool-2", seven_day: { used_percent: 100 } },
-  ],
-};
+/** Fuel depots of the demo: enough, low and spent, so that the galaxy shows them all, with their refuel times. */
+function accounts(start: number) {
+  return {
+    codex: [
+      { name: "codex-team-1", status: "available", secondary: { used_percent: 41, window_minutes: 10080, resets_at: start + 4 * 86400 } },
+      { name: "codex-team-2", status: "available", secondary: { used_percent: 88, window_minutes: 10080, resets_at: start + 40 * 60 } },
+    ],
+    claude: [
+      { name: "claude-pool-1", seven_day: { used_percent: 30 } },
+      { name: "claude-pool-2", seven_day: { used_percent: 100, resets_at: start + 2 * 86400 }, limited_until: start + 5 * 3600 },
+    ],
+  };
+}
 
 /** A source that plays the scenario, for the map's demo mode. */
 export function scenarioSource(): BoardSource {
@@ -222,7 +291,11 @@ export function scenarioSource(): BoardSource {
       onState("open", null);
       onMessage({
         type: "snapshot",
-        snapshot: { generated_at: start, tasks, accounts: { fetched_at: start, error: null, data: ACCOUNTS } },
+        snapshot: {
+          generated_at: start,
+          tasks: [...tasks, ...scenarioFleet(start)],
+          accounts: { fetched_at: start, error: null, data: accounts(start) },
+        },
       });
       const timer = setInterval(() => {
         step += 1;
@@ -232,17 +305,22 @@ export function scenarioSource(): BoardSource {
           if (!previous || previous.updated_at !== task.updated_at) onMessage({ type: "task", task });
         }
         tasks = next;
+        for (const ship of scenarioFleet(start, Date.now() / 1000)) {
+          if (ship.activity) onMessage({ type: "activity", slug: ship.slug, activity: ship.activity });
+        }
       }, SCENARIO_STEP_SECONDS * 1000);
       return () => clearInterval(timer);
     },
     async fetchDetail(slug) {
       const index = tasks.findIndex((task) => task.slug === slug);
-      if (index < 0) return null;
-      const detail: TaskDetail = { ...tasks[index]!, timeline: timeline(index, step, start), files: ["brief"] };
-      return detail;
+      if (index >= 0) return { ...tasks[index]!, timeline: timeline(index, step, start), files: ["brief"] } satisfies TaskDetail;
+      const ship = scenarioFleet(start, Date.now() / 1000).find((task) => task.slug === slug);
+      if (!ship) return null;
+      return { ...ship, timeline: [{ at: ship.created!, text: "демо-корабль на месте" }], files: ["brief"] } satisfies TaskDetail;
     },
     async fetchFile(slug, name) {
-      return name === "brief" && tasks.some((task) => task.slug === slug) ? BRIEF : null;
+      const known = tasks.some((task) => task.slug === slug) || STANDING.some((ship) => ship.slug === slug);
+      return name === "brief" && known ? BRIEF : null;
     },
   };
 }

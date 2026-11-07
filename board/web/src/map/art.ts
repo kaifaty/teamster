@@ -1,6 +1,7 @@
 // The map's pictures, made by art/prepare.py. Vite turns the imports into URLs of hashed files.
 
 import depot from "./art/depot.png";
+import escort from "./art/escort.png";
 import flagship from "./art/flagship.png";
 import gate from "./art/gate.png";
 import nebula from "./art/nebula.jpg";
@@ -10,13 +11,19 @@ import planetRange from "./art/planet-range.png";
 import planetRoadstead from "./art/planet-roadstead.png";
 import planetYard from "./art/planet-yard.png";
 import shipBlue from "./art/ship-blue.png";
+import shipBlueCruiser from "./art/ship-blue-cruiser.png";
+import shipBlueFrigate from "./art/ship-blue-frigate.png";
 import shipCopper from "./art/ship-copper.png";
+import shipCopperCruiser from "./art/ship-copper-cruiser.png";
+import shipCopperFrigate from "./art/ship-copper-frigate.png";
 import shipScout from "./art/ship-scout.png";
 import stationCommand from "./art/station-command.png";
 import sun from "./art/sun.png";
+import tanker from "./art/tanker.png";
 
 export const ART = {
   depot,
+  escort,
   flagship,
   gate,
   nebula,
@@ -26,10 +33,15 @@ export const ART = {
   planetRoadstead,
   planetYard,
   shipBlue,
+  shipBlueCruiser,
+  shipBlueFrigate,
   shipCopper,
+  shipCopperCruiser,
+  shipCopperFrigate,
   shipScout,
   stationCommand,
   sun,
+  tanker,
 };
 
 export type ArtName = keyof typeof ART;
