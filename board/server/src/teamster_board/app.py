@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from .accounts import Accounts
 from .art import MEDIA_TYPES, art_file, art_index
 from .machines import Machines
+from .research import Research
 from .store import Store
 
 REPOSITORY = Path(__file__).resolve().parents[4]
@@ -67,6 +68,8 @@ class Settings:
     machines_seconds: float = 30
     ssh_command: str = "ssh"
     layout: str = "legacy"
+    research_seconds: float = 30
+    reflection_task: str = "codex-batch-reflection"
 
     def path(self, purpose):
         return self.task_home / LAYOUT_FILES[self.layout][purpose]
@@ -91,6 +94,8 @@ class Settings:
             machines_file=Path(os.environ["BOARD_MACHINES_FILE"]).expanduser()
             if "BOARD_MACHINES_FILE" in os.environ else None,
             machines_seconds=float(os.environ.get("BOARD_MACHINES_SECONDS", "30")),
+            research_seconds=float(os.environ.get("BOARD_RESEARCH_SECONDS", "30")),
+            reflection_task=os.environ.get("BOARD_REFLECTION_TASK") or "codex-batch-reflection",
         )
 
 
@@ -133,6 +138,8 @@ class Board:
             claude_desktop_dir=settings.claude_desktop_dir, claude_home=settings.claude_home,
             sessions_seconds=settings.sessions_seconds, session_stale_hours=settings.session_stale_hours,
         )
+        self.research = Research(settings.path("tasks"), settings.reflection_task,
+                                 settings.research_seconds)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),
                                  settings.ssh_command)
@@ -227,6 +234,10 @@ def create_app(settings=None):
             except OSError:
                 raise HTTPException(404)
         return PlainTextResponse(content)
+
+    @app.get("/api/research")
+    async def research():
+        return await asyncio.to_thread(board.research.view)
 
     @app.get("/api/art")
     async def art():

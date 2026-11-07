@@ -410,6 +410,11 @@ def test_session_repo_and_allowlisted_summary(tmp_path, cwd, origin, expected):
     store.poll()
     assert store.detail("local_example")["pr"] == "https://example.test/pr/3"
     assert store.detail("local_example")["branch"] is None
+    assert detail["scheduled"] is None
+    write_session(desktop, scheduledTaskId="codex-batch-reflection")
+    store.poll()
+    assert store.summaries()[0]["scheduled"] == "codex-batch-reflection"
+    assert store.detail("local_example")["scheduled"] == "codex-batch-reflection"
 
 
 def test_session_live_state_only_opens_numeric_json_and_checks_pid(tmp_path, pids, monkeypatch):

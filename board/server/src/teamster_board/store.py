@@ -239,6 +239,7 @@ class Store:
             "created": number(state.get("created")),
             "updated_at": record.updated_at,
             "activity": record.activity if is_alive else None,
+            "scheduled": None,
         }
 
     def poll(self):
@@ -419,6 +420,8 @@ class Store:
             return None
         if any("\0" in (state.get(key) or "") for key in ("cwd", "originCwd")):
             return None
+        # Scheduled sessions (such as the batch reflection) carry their task id.
+        state["scheduledTaskId"] = text(raw.get("scheduledTaskId"))
         state["prs"] = [{key: pr[key] for key in ("url", "state", "branch", "own") if key in pr}
                         for pr in raw.get("prs", []) if isinstance(pr, dict)]
         return state
@@ -533,6 +536,7 @@ class Store:
             "pr": text(pr.get("url")), "ci": None, "sleeping_until": None,
             "created": number(state.get("createdAt")) / 1000,
             "updated_at": updated_at, "activity": record.activity if is_alive else None,
+            "scheduled": state.get("scheduledTaskId"),
         }
 
     def _poll_sessions(self):

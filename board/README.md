@@ -51,6 +51,8 @@ every station.
 | `BOARD_CLAUDE_HOME` | `~/.claude` | Read live state from `sessions/<pid>.json` and activity from `projects/*/<cliSessionId>.jsonl`. Key files are never opened. |
 | `BOARD_SESSIONS_SECONDS` | `5` | Interval between desktop metadata scans, in seconds; unchanged files are not read again. Live state is read on every board poll. |
 | `BOARD_SESSION_STALE_HOURS` | `48` | Close inactive sessions older than this many hours by `lastActivityAt`. Busy sessions and sessions awaiting a person take precedence. |
+| `BOARD_RESEARCH_SECONDS` | `30` | Minimum interval between rebuilds of `GET /api/research` from `tasks/.archive/`, in seconds; unchanged record states are not read again. |
+| `BOARD_REFLECTION_TASK` | `codex-batch-reflection` | Scheduled task id of the Claude Desktop sessions that run the batch reflection, returned as `reflection_task`. |
 | `BOARD_TEAMSTER_COMMAND` (fallback `BOARD_CODEX_TASK`) | Repository `src/teamster/__main__.py` | Script called as `python3 -I <script> accounts --json`, without `--refresh`, with a 60-second timeout. |
 
 Account calls run outside the event loop. Errors preserve the previous account data and expose an
