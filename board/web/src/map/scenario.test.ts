@@ -62,7 +62,8 @@ describe("scenario", () => {
     }
     expect(tasks.some((task) => task.ci === "failed" && task.fix_round === 2)).toBe(true);
     const review = tasks.map((task) => placement(task, START, tasks)!).find((where) => where.place === "inspection" && where.placeWorking);
-    expect(review?.companion).not.toBeNull();
+    expect(review).toBeDefined();
+    expect(review!.companion).toBe("codex");
     expect(stars(tasks).some((star) => star.attention > 0)).toBe(true);
   });
 });
