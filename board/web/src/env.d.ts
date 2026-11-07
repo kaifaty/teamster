@@ -3,3 +3,13 @@ declare module "*.vue" {
   const component: DefineComponent<object, object, unknown>;
   export default component;
 }
+
+declare module "*.png" {
+  const url: string;
+  export default url;
+}
+
+declare module "*.jpg" {
+  const url: string;
+  export default url;
+}

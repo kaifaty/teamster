@@ -27,8 +27,8 @@ describe("scenario", () => {
     for (const marks of seen.values()) {
       for (const mark of [
         "turn/command", "turn/edit", "turn/thinking", "turn/message", "turn/tool", "turn/message/stale",
-        "bench/terminal", "bench/tool", "bench/think", "bench/stand",
-        "stand/wait", "review/sit", "gate/wait", "tent/sleep", "dock/carry", "bench/stand/beacon",
+        "yard/work", "yard/idle", "range/wait", "inspection/wait", "gate/wait", "cryo/sleep", "roadstead/ready",
+        "yard/idle/beacon",
         "phase/check", "phase/review", "phase/fix", "phase/ci",
         "column/running", "column/sleeping", "column/review_me", "column/attention",
       ]) {

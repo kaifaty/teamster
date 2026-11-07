@@ -1,963 +1,854 @@
-// The island in three.js. It draws what `placement` decided and moves the HTML labels of the overlay;
-// it decides nothing about the tasks itself.
+// The map in PixiJS: a galaxy of repositories and a star system per repository, in painted art at the full
+// resolution of the screen. Labels are HTML in MapView; the scene draws, moves the camera and reports what the
+// pointer does.
 
-import * as THREE from "three";
-import { MapControls } from "three/addons/controls/MapControls.js";
+import { Application, Assets, ColorMatrixFilter, Container, Graphics, Sprite, Texture, type ColorMatrix } from "pixi.js";
 import type { TaskSummary } from "../types";
-import type { Action, Placement } from "./placement";
-import { Kit, buildBench, buildFigure, buildWorld, type BenchModel, type Figure, type PlaceModels } from "./models";
-import { DAY, DUSK } from "./palette";
+import { ART, BACKDROPS, type ArtName } from "./art";
+import type { Depot, Family, Star, SupplyLine } from "./fleet";
+import { LOW_FUEL, depotPositions } from "./fleet";
 import {
-  GATE,
-  PIER,
-  STAND,
-  TABLES,
-  TENTS,
-  YARD,
-  attachOf,
-  benchAt,
-  companionSpot,
-  route,
-  seated,
-  spotAt,
-  type Attach,
+  ROUTE,
+  STATIONS,
+  SUN_CLEARANCE,
+  SUN_RADIUS,
+  backdropOf,
+  clampCamera,
+  fitCamera,
+  hashName,
+  ringOf,
+  ringPoint,
+  starPositions,
+  starRadius,
+  stationAt,
+  systemFrame,
+  worldSize,
+  zoomCamera,
+  type Camera,
   type Point,
-  type Spot,
+  type Size,
+  type SystemFrame,
 } from "./layout";
+import { FLEET, SPACE, SUN_KINDS } from "./palette";
+import type { Place, Placement } from "./placement";
 
-export interface SceneEntry {
+export interface ShipEntry {
   task: TaskSummary;
   placement: Placement;
-  /** The task's bench number on the island. */
-  bench: number;
 }
 
-export type ZoomLevel = "far" | "mid" | "close";
+export interface GalaxyModel {
+  stars: Star[];
+  depots: Depot[];
+  lines: SupplyLine[];
+}
 
 export interface SceneOptions {
-  /** Gets the canvas. */
   host: HTMLElement;
-  /** Holds the labels: elements with data-anchor, data-align ("above" | "below") and data-priority. */
-  overlay: HTMLElement;
-  /** Pixels at the top of the host that labels keep clear of (the toolbar). */
-  topInset(): number;
-  onPick(slug: string): void;
-  onZoom(level: ZoomLevel): void;
-  /** The WebGL context is gone; the scene no longer draws. */
-  onLost(): void;
+  onEnter: (repo: string) => void;
+  onLeave: () => void;
+  onPick: (slug: string) => void;
+  onHover: (slug: string | null) => void;
+  /** The world's shape and the camera over it, for the labels. */
+  onCamera: (world: Size, camera: Camera) => void;
+  onLost: () => void;
 }
 
-export interface IslandScene {
-  setEntries(entries: readonly SceneEntry[]): void;
+export interface FleetScene {
+  setGalaxy(model: GalaxyModel): void;
+  /** Shows system `repo`, or the galaxy for null, flying there unless motion is reduced. */
+  setView(repo: string | null): void;
+  setShips(entries: ShipEntry[]): void;
   setSelected(slug: string | null): void;
-  /** Draws only while active; the scene also stops by itself while the document is hidden. */
+  setHovered(slug: string | null): void;
   setActive(active: boolean): void;
-  /** The label elements or their text changed. */
-  refreshLabels(): void;
   dispose(): void;
 }
 
-export class NoWebGLError extends Error {}
+/** Seconds of the flight between the galaxy and a system. */
+export const FLIGHT_SECONDS = 0.9;
+/** The share of the flight spent falling towards the star; the rest brings up the system. */
+const FALL = 0.55;
+const MAX_SPEED = 300;
+const CIRCLING_SPEED = 0.4;
+const SHIP_SIZE: Record<Hull, number> = { ship: 74, scout: 46, flagship: 150 };
+const DEPOT_SIZE = 116;
+/** Pixels the pointer may move and still make a click. */
+const CLICK_SLOP = 5;
+const WHEEL_ZOOM = 0.0016;
+const WHEEL_STEP = 80;
+const WHEEL_PAUSE_MS = 900;
+/** The art is cropped a little wider than the ball, to keep its glow; see art/prepare.py. */
+const BALL_MARGIN = 1.04;
+const SUN_MARGIN = 1.5;
 
-const WALK_SPEED = 3.2; // units per second
-const AMBIENT_FRAME_MS = 1000 / 24; // work animations alone draw at 24 fps
-const FOV = 34;
-const POLAR = 0.72; // default tilt, radians from straight down
-const TARGET = new THREE.Vector3(0, 0, 2.6);
+type Hull = "ship" | "scout" | "flagship";
 
-interface Agent {
+const ROUTE_BEND = 0.14;
+const FIX_BEND = -0.07;
+
+function curvePoint(a: Point, b: Point, bend: number, u: number): Point {
+  const middle = { x: (a.x + b.x) / 2 + (b.y - a.y) * bend, y: (a.y + b.y) / 2 - (b.x - a.x) * bend };
+  const v = 1 - u;
+  return { x: v * v * a.x + 2 * v * u * middle.x + u * u * b.x, y: v * v * a.y + 2 * v * u * middle.y + u * u * b.y };
+}
+
+/** Stable pseudo-random number in [0, 1) from an index. */
+function noise(index: number): number {
+  const value = Math.sin(index * 127.1 + 3.3) * 43758.5453;
+  return value - Math.floor(value);
+}
+
+/** The shortest turn from one angle to another. */
+function turn(from: number, to: number): number {
+  return Math.atan2(Math.sin(to - from), Math.cos(to - from));
+}
+
+/** The art's brightness in pale blue: a tint on the sprite would not survive a filter. */
+const COLD_STAR: ColorMatrix = [
+  0.32, 0.62, 0.12, 0, 0,
+  0.39, 0.77, 0.14, 0, 0,
+  0.51, 1.0, 0.19, 0, 0,
+  0, 0, 0, 1, 0,
+];
+
+function softDisc(): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 128;
+  const context = canvas.getContext("2d")!;
+  const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.35, "rgba(255,255,255,0.45)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 128, 128);
+  return canvas;
+}
+
+interface Ship {
   slug: string;
-  family: "codex" | "claude";
-  figure: Figure;
-  pos: Point;
-  yaw: number;
-  /** Where the agent rests now, or will once the path is walked. */
-  spot: Spot;
-  attach: Attach;
-  place: Placement["place"];
-  slot: number;
-  /** Waypoints still to walk; the last one is `spot`. */
-  path: Attach[];
-  action: Action;
-  working: boolean;
-  stride: number;
-  companion: Figure | null;
+  body: Container;
+  hull: Sprite;
+  engine: Sprite;
+  size: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  /** Where the ship is on its ring. */
+  angle: number;
+  entry: ShipEntry;
+  /** Set for a ship that left the map: it dives into the sun or fades out. */
+  leaving: "dive" | "fade" | null;
 }
 
-interface Bench {
-  model: BenchModel;
-  slot: number;
-}
+export async function createFleetScene(options: SceneOptions): Promise<FleetScene> {
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const viewportOf = (): Size => ({ width: Math.max(1, options.host.clientWidth), height: Math.max(1, options.host.clientHeight) });
 
-interface LabelBox {
-  el: HTMLElement;
-  anchor: string;
-  above: boolean;
-  priority: number;
-  /** Bench labels are no wider than the distance between benches on screen. */
-  fit: boolean;
-  width: number;
-  height: number;
-  /** What was last written to the element; null before the first write. */
-  shown: boolean | null;
-  maxWidth: number;
-  transform: string;
-}
+  let viewport = viewportOf();
+  const app = new Application();
+  await app.init({
+    width: viewport.width,
+    height: viewport.height,
+    background: SPACE.void,
+    antialias: true,
+    resolution: Math.min(window.devicePixelRatio || 1, 2),
+    autoDensity: true,
+    preference: "webgl",
+    autoStart: false,
+    sharedTicker: false,
+  });
+  const loaded = (await Assets.load(Object.values(ART))) as Record<string, Texture>;
+  const art = (name: ArtName): Texture => loaded[ART[name]]!;
+  const glowTexture = Texture.from(softDisc(), true);
 
-function webglAvailable(): boolean {
-  try {
-    const canvas = document.createElement("canvas");
-    return !!(canvas.getContext("webgl2") ?? canvas.getContext("webgl"));
-  } catch {
-    return false;
-  }
-}
-
-export function createIslandScene(options: SceneOptions): IslandScene {
-  if (!webglAvailable()) throw new NoWebGLError("WebGL is not available");
-  let renderer: THREE.WebGLRenderer;
-  try {
-    renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "low-power" });
-  } catch (error) {
-    throw new NoWebGLError(error instanceof Error ? error.message : String(error));
-  }
-  const { host, overlay } = options;
-  const canvas = renderer.domElement;
+  const canvas = app.canvas;
   canvas.className = "map-canvas";
-  canvas.tabIndex = 0;
-  canvas.setAttribute("aria-label", "Карта острова: перетаскивание сдвигает, правая кнопка или два пальца поворачивают");
-  host.prepend(canvas);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  canvas.tabIndex = -1;
+  options.host.prepend(canvas);
 
-  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
-  const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-  let reduced = motionQuery.matches;
-  const kit = new Kit(darkQuery.matches ? DUSK : DAY);
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color();
-  scene.fog = new THREE.Fog(0xffffff, 70, 190);
-  const hemi = new THREE.HemisphereLight();
-  const sun = new THREE.DirectionalLight();
-  sun.position.set(-9, 20, 11);
-  scene.add(hemi, sun);
-
-  const world = new THREE.Group();
-  scene.add(world);
-  const places: PlaceModels = buildWorld(kit, world);
-  const dynamic = new THREE.Group();
-  scene.add(dynamic);
-
-  const ring = new THREE.Mesh(
-    kit.geo("ring", () => new THREE.RingGeometry(0.52, 0.66, 28).rotateX(-Math.PI / 2)),
-    kit.glow("select"),
-  );
-  ring.position.y = 0.05;
-  ring.visible = false;
-  scene.add(ring);
-
-  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.5, 400);
-  const controls = new MapControls(camera, canvas);
-  controls.enableDamping = !reduced;
-  controls.dampingFactor = 0.14;
-  controls.minAzimuthAngle = -Math.PI / 4;
-  controls.maxAzimuthAngle = Math.PI / 4;
-  controls.minPolarAngle = 0.38;
-  controls.maxPolarAngle = 1.1;
-  controls.minDistance = 7;
-  controls.maxDistance = 120;
-  controls.zoomToCursor = true;
-  // The target stays near the middle of the island, so a pan never pushes the island off the screen.
-  controls.cursor.copy(TARGET);
-  controls.maxTargetRadius = 9;
-  controls.target.copy(TARGET);
-  controls.listenToKeyEvents(canvas);
-  let fitted = true; // the camera still shows the default view
-
-  function applyTheme() {
-    const palette = darkQuery.matches ? DUSK : DAY;
-    kit.setPalette(palette);
-    (scene.background as THREE.Color).set(palette.sky);
-    scene.fog!.color.set(palette.sky);
-    hemi.color.set(palette.hemiSky);
-    hemi.groundColor.set(palette.hemiGround);
-    hemi.intensity = palette.hemi;
-    sun.color.set(palette.sun);
-    sun.intensity = palette.sunIntensity;
-    invalidate();
-  }
-
-  // Agents and benches ----------------------------------------------------------------------------
-
-  const agents = new Map<string, Agent>();
-  const benches = new Map<string, Bench>();
-  let entries: readonly SceneEntry[] = [];
-  let selected: string | null = null;
-  const pickables: THREE.Object3D[] = [];
-
-  const tag = (objects: THREE.Mesh[], slug: string) => {
-    for (const object of objects) object.userData.slug = slug;
+  const sprite = (texture: Texture, size: number): Sprite => {
+    const made = new Sprite(texture);
+    made.anchor.set(0.5);
+    made.scale.set(size / Math.max(texture.width, texture.height));
+    return made;
   };
-  function rebuildPickables() {
-    pickables.length = 0;
-    for (const bench of benches.values()) pickables.push(...bench.model.parts);
-    for (const agent of agents.values()) {
-      pickables.push(...agent.figure.parts);
-      if (agent.companion) pickables.push(...agent.companion.parts);
-    }
-  }
-
-  function targetOf(entry: SceneEntry): { spot: Spot; attach: Attach; slot: number } {
-    const { place } = entry.placement;
-    const slot = place === "bench" ? entry.bench : entry.placement.slot;
-    return { spot: spotAt(place, slot), attach: attachOf(place, slot), slot };
-  }
-
-  function walkTo(agent: Agent, spot: Spot, attach: Attach) {
-    const target: Attach = { at: spot, edge: attach.edge };
-    if (reduced) {
-      agent.path = [];
-      agent.pos = { x: spot.x, z: spot.z };
-      agent.yaw = spot.face;
+  const glow = (color: string, size: number): Sprite => {
+    const made = sprite(glowTexture, size);
+    made.tint = color;
+    made.blendMode = "add";
+    return made;
+  };
+  const sunKind = (repo: string) => SUN_KINDS[hashName(repo) % SUN_KINDS.length]!;
+  const paintSun = (body: Sprite, repo: string) => {
+    const { hue, cold } = sunKind(repo);
+    if (hue === 0 && !cold) {
+      body.filters = [];
       return;
     }
-    // Finish the leg in progress unless it leads to the old spot; then turn back at its entrance.
-    let start: Attach;
-    const prefix: Attach[] = [];
-    if (agent.path.length > 1) {
-      prefix.push(agent.path[0]!);
-      start = agent.path[0]!;
-    } else {
-      start = agent.attach;
-    }
-    const steps = [...prefix, ...route(start, attach), target];
-    agent.path = steps.filter((step, index) => index === 0 || Math.hypot(step.at.x - steps[index - 1]!.at.x, step.at.z - steps[index - 1]!.at.z) > 1e-6);
+    const filter = new ColorMatrixFilter();
+    if (cold) filter.matrix = COLD_STAR;
+    else filter.hue(hue, false);
+    body.filters = [filter];
+  };
+
+  // Layers ----------------------------------------------------------------------------------------
+
+  const backdrop = new Sprite(art("nebula"));
+  backdrop.anchor.set(0.5);
+  const systemBackdrop = new Sprite(art("nebula"));
+  systemBackdrop.anchor.set(0.5);
+  const dust = new Graphics();
+
+  const galaxy = new Container();
+  const lanes = new Graphics();
+  const depotLayer = new Container();
+  const starLayer = new Container();
+  const galaxyFx = new Graphics();
+  galaxy.addChild(lanes, depotLayer, starLayer, galaxyFx);
+
+  const system = new Container();
+  const charts = new Graphics();
+  const corona = glow("#ff9a3c", SUN_RADIUS * 7);
+  const sun = sprite(art("sun"), SUN_RADIUS * 2 * SUN_MARGIN);
+  const stationLayer = new Container();
+  const gateGlow = glow(SPACE.gold, STATIONS.gate.radius * 2.4);
+  const gate = sprite(art("gate"), STATIONS.gate.radius * 2.3);
+  const beams = new Graphics();
+  const shipLayer = new Container();
+  const systemFx = new Graphics();
+  system.addChild(charts, corona, sun, stationLayer, gateGlow, gate, beams, shipLayer, systemFx);
+
+  const veil = new Graphics();
+  app.stage.addChild(backdrop, systemBackdrop, dust, galaxy, system, veil);
+
+  // State -----------------------------------------------------------------------------------------
+
+  let world = worldSize(viewport);
+  let fit = fitCamera(world, viewport);
+  let camera = fit;
+  let frame: SystemFrame = systemFrame(world);
+  let model: GalaxyModel = { stars: [], depots: [], lines: [] };
+  let stars = new Map<string, Point>();
+  let depotPoints = new Map<string, Point>();
+  let repo: string | null = null;
+  let focus: string | null = null;
+  let flight = 0;
+  let time = 0;
+  let flash = 0;
+  let selected: string | null = null;
+  let hovered: string | null = null;
+  let disposed = false;
+  const ships = new Map<string, Ship>();
+
+  const report = () => options.onCamera(world, repo ? camera : fit);
+
+  // Drawing what changes rarely ---------------------------------------------------------------------
+
+  function fitBackdrop(sky: Sprite) {
+    const { width, height } = sky.texture;
+    sky.scale.set(Math.max(viewport.width / width, viewport.height / height) * 1.15);
   }
 
-  /** What of the entries the scene shows; equal signatures draw the same picture. */
-  const signature = (list: readonly SceneEntry[]) =>
-    list
-      .map(({ task, placement: p, bench }) =>
-        [task.slug, task.executor, task.ci, bench, p.place, p.slot, p.action, p.working, p.placeWorking, p.beacon, p.companion].join(" "),
-      )
-      .join("\n");
-  let shown = "";
-
-  function setEntries(next: readonly SceneEntry[]) {
-    // The clock re-sends the same entries every second; only a visible change reaches the scene.
-    const key = signature(next);
-    entries = next;
-    if (key === shown) return;
-    shown = key;
-    const seen = new Set<string>();
-    let changed = false;
-    for (const entry of next) {
-      const { task, placement } = entry;
-      seen.add(task.slug);
-      let bench = benches.get(task.slug);
-      if (!bench) {
-        const model = buildBench(kit);
-        tag(model.parts, task.slug);
-        dynamic.add(model.root);
-        bench = { model, slot: -1 };
-        benches.set(task.slug, bench);
-        changed = true;
-      }
-      if (bench.slot !== entry.bench) {
-        const at = benchAt(entry.bench);
-        bench.model.root.position.set(at.x, 0, at.z);
-        bench.slot = entry.bench;
-      }
-      bench.model.beacon.visible = placement.beacon;
-      bench.model.patch.material = kit.mat(placement.beacon ? "alarmGround" : "yard");
-
-      const target = targetOf(entry);
-      let agent = agents.get(task.slug);
-      if (!agent || agent.family !== task.executor) {
-        if (agent) dynamic.remove(agent.figure.root);
-        const figure = buildFigure(kit, task.executor);
-        tag(figure.parts, task.slug);
-        dynamic.add(figure.root);
-        agent = {
-          slug: task.slug,
-          family: task.executor,
-          figure,
-          pos: { x: target.spot.x, z: target.spot.z },
-          yaw: target.spot.face,
-          spot: target.spot,
-          attach: target.attach,
-          place: placement.place,
-          slot: target.slot,
-          path: [],
-          action: placement.action,
-          working: placement.working,
-          stride: 0,
-          companion: agent?.companion ?? null,
-        };
-        agents.set(task.slug, agent);
-        changed = true;
-      } else if (agent.place !== placement.place || agent.slot !== target.slot) {
-        walkTo(agent, target.spot, target.attach);
-      }
-      // A resting agent joins the paths where its new place does; a walking one keeps its waypoint's.
-      if (!agent.path.length) agent.attach = target.attach;
-      agent.spot = target.spot;
-      agent.place = placement.place;
-      agent.slot = target.slot;
-      agent.action = placement.action;
-      agent.working = placement.working;
-
-      // The reviewer sits across the table while the review runs.
-      const companionAt = placement.place === "review" && placement.companion ? companionSpot(target.slot) : null;
-      if (companionAt && placement.companion) {
-        if (!agent.companion || agent.companion.root.userData.family !== placement.companion) {
-          if (agent.companion) dynamic.remove(agent.companion.root);
-          agent.companion = buildFigure(kit, placement.companion, true);
-          agent.companion.root.userData.family = placement.companion;
-          tag(agent.companion.parts, task.slug);
-          dynamic.add(agent.companion.root);
-          changed = true;
-        }
-        agent.companion.root.position.set(companionAt.x, 0, companionAt.z);
-        agent.companion.root.rotation.y = companionAt.face;
-        pose(agent.companion, "sit", 0, false, true);
-      } else if (agent.companion) {
-        dynamic.remove(agent.companion.root);
-        agent.companion = null;
-        changed = true;
-      }
-    }
-    for (const [slug, agent] of agents) {
-      if (seen.has(slug)) continue;
-      dynamic.remove(agent.figure.root);
-      if (agent.companion) dynamic.remove(agent.companion.root);
-      agents.delete(slug);
-      changed = true;
-    }
-    for (const [slug, bench] of benches) {
-      if (seen.has(slug)) continue;
-      dynamic.remove(bench.model.root);
-      benches.delete(slug);
-      changed = true;
-    }
-    if (changed) rebuildPickables();
-    updateFixtures();
-    invalidate();
+  /** The sky of system `name`; the galaxy's sky stands in until it has loaded. */
+  function showSky(name: string) {
+    const index = backdropOf(name, BACKDROPS.length);
+    systemBackdrop.texture = art("nebula");
+    fitBackdrop(systemBackdrop);
+    if (index === null) return;
+    void Assets.load<Texture>(BACKDROPS[index]!).then((texture) => {
+      if (disposed || focus !== name) return;
+      systemBackdrop.texture = texture;
+      fitBackdrop(systemBackdrop);
+    });
   }
 
-  /** Tents and tables beyond the first ones show up only when someone needs them. */
-  function updateFixtures() {
-    let sleepers = 0;
-    let reviews = 0;
+  function drawDepots() {
+    depotLayer.removeChildren().forEach((child) => child.destroy());
+    for (const depot of model.depots) {
+      const point = depotPoints.get(depot.key);
+      if (!point) continue;
+      const body = sprite(art("depot"), DEPOT_SIZE);
+      body.position.set(point.x, point.y);
+      body.rotation = (hashName(depot.key) % 6) * 1.047;
+      if (depot.bad) body.tint = "#8a8a94";
+      const gauge = new Graphics();
+      const width = 112;
+      const left = point.x - width / 2;
+      const top = point.y + DEPOT_SIZE / 2 + 4;
+      gauge.roundRect(left, top, width, 9, 3).fill(SPACE.gauge);
+      const low = depot.bad || (depot.fuel !== null && depot.fuel < LOW_FUEL);
+      if (depot.fuel) gauge.roundRect(left + 1, top + 1, ((width - 2) * depot.fuel) / 100, 7, 2).fill(low ? SPACE.alarm : FLEET[depot.executor].hull);
+      depotLayer.addChild(body, gauge);
+      if (depot.duty) {
+        const mark = glow(SPACE.gold, 46);
+        mark.position.set(point.x, point.y);
+        depotLayer.addChild(mark);
+      }
+    }
+  }
+
+  function drawLanes() {
+    lanes.clear();
+    for (const line of model.lines) {
+      const from = depotPoints.get(line.depot);
+      const to = stars.get(line.repo);
+      if (!from || !to) continue;
+      const length = Math.hypot(to.x - from.x, to.y - from.y);
+      for (let d = DEPOT_SIZE / 2; d < length - 30; d += 11) {
+        lanes.circle(from.x + ((to.x - from.x) * d) / length, from.y + ((to.y - from.y) * d) / length, 1.5);
+      }
+      lanes.fill({ color: SPACE.lane, alpha: line.active ? 0.8 : 0.35 });
+    }
+  }
+
+  function drawStars() {
+    starLayer.removeChildren().forEach((child) => child.destroy());
+    for (const star of model.stars) {
+      const point = stars.get(star.repo);
+      if (!point) continue;
+      const radius = starRadius(star.live);
+      const halo = glow(sunKind(star.repo).glow, radius * 6);
+      const body = sprite(art("sun"), radius * 2 * SUN_MARGIN);
+      paintSun(body, star.repo);
+      body.rotation = hashName(star.repo) % 6;
+      halo.alpha = star.live ? 0.55 : 0.15;
+      body.alpha = star.live ? 1 : 0.55;
+      halo.position.set(point.x, point.y);
+      body.position.set(point.x, point.y);
+      starLayer.addChild(halo, body);
+    }
+  }
+
+  function drawGalaxy() {
+    stars = starPositions(model.stars.map((star) => star.repo), world);
+    depotPoints = depotPositions(model.depots, world);
+    drawLanes();
+    drawDepots();
+    drawStars();
+  }
+
+  function stationSprite(place: Exclude<Place, "gate">): Sprite {
+    const name: Record<typeof place, ArtName> = {
+      yard: "planetYard",
+      range: "planetRange",
+      inspection: "planetInspection",
+      roadstead: "planetRoadstead",
+      cryo: "planetCryo",
+      command: "stationCommand",
+    };
+    return sprite(art(name[place]), STATIONS[place].radius * 2 * BALL_MARGIN);
+  }
+
+  function drawCharts() {
+    charts.clear();
+    const orbits = [...new Set(ROUTE.map((place) => STATIONS[place].orbit))];
+    for (const orbit of orbits) charts.ellipse(frame.cx, frame.cy, orbit * frame.rx, orbit * frame.ry);
+    charts.stroke({ width: 1.2, color: SPACE.orbit, alpha: 0.16 });
+
+    const dots = (a: Point, b: Point, bend: number, gap: number, radius: number) => {
+      const steps = Math.round(Math.hypot(b.x - a.x, b.y - a.y) / gap);
+      for (let i = 1; i < steps; i++) {
+        const point = curvePoint(a, b, bend, i / steps);
+        charts.circle(point.x, point.y, radius);
+      }
+    };
+    ROUTE.slice(1).forEach((place, index) => dots(stationAt(ROUTE[index]!, frame), stationAt(place, frame), ROUTE_BEND, 15, 1.7));
+    charts.fill({ color: SPACE.route, alpha: 0.5 });
+    dots(stationAt("roadstead", frame), { x: frame.cx, y: frame.cy }, 0.1, 13, 2);
+    charts.fill({ color: SPACE.gold, alpha: 0.8 });
+    dots(stationAt("inspection", frame), stationAt("yard", frame), FIX_BEND, 19, 2);
+    charts.fill({ color: SPACE.fix, alpha: 0.7 });
+
+    stationLayer.removeChildren().forEach((child) => child.destroy());
+    for (const place of ["yard", "range", "inspection", "roadstead", "cryo", "command"] as const) {
+      const body = stationSprite(place);
+      const point = stationAt(place, frame);
+      body.position.set(point.x, point.y);
+      // The art is lit from the upper left: mirror each planet so that its bright side faces the sun.
+      if (place !== "command") {
+        if (point.x < frame.cx) body.scale.x *= -1;
+        if (point.y < frame.cy) body.scale.y *= -1;
+      }
+      stationLayer.addChild(body);
+    }
+    const point = stationAt("gate", frame);
+    gate.position.set(point.x, point.y);
+    gateGlow.position.copyFrom(gate.position);
+    sun.position.set(frame.cx, frame.cy);
+    corona.position.copyFrom(sun.position);
+  }
+
+  function layoutAll() {
+    world = worldSize(viewport);
+    fit = fitCamera(world, viewport);
+    camera = fit;
+    frame = systemFrame(world);
+    fitBackdrop(backdrop);
+    fitBackdrop(systemBackdrop);
+    drawGalaxy();
+    drawCharts();
+    for (const item of ships.values()) {
+      const { place, slot } = item.entry.placement;
+      const point = ringPoint(stationAt(place, frame), ringOf(place, slot).radius, item.angle);
+      item.x = point.x;
+      item.y = point.y;
+    }
+    report();
+  }
+
+  // Ships -----------------------------------------------------------------------------------------
+
+  function hullOf(task: TaskSummary): Hull {
+    return task.kind === "session" ? "flagship" : task.kind === "scout" ? "scout" : "ship";
+  }
+
+  function textureOf(family: Family, hull: Hull): Texture {
+    if (hull === "flagship") return art("flagship");
+    if (hull === "scout") return art("shipScout");
+    return art(family === "codex" ? "shipBlue" : "shipCopper");
+  }
+
+  function addShip(entry: ShipEntry, arrive: boolean): Ship {
+    const kind = hullOf(entry.task);
+    const size = SHIP_SIZE[kind];
+    const body = new Container();
+    const engine = glow(FLEET[entry.task.executor].engine, size * 0.8);
+    engine.position.set(0, size * 0.46);
+    const hull = sprite(textureOf(entry.task.executor, kind), size);
+    body.addChild(engine, hull);
+    shipLayer.addChild(body);
+    const station = stationAt(entry.placement.place, frame);
+    const { radius, angle } = ringOf(entry.placement.place, entry.placement.slot);
+    const start = arrive ? { x: -160, y: station.y } : ringPoint(station, radius, angle);
+    const item: Ship = { slug: entry.task.slug, body, hull, engine, size, x: start.x, y: start.y, vx: 0, vy: 0, angle, entry, leaving: null };
+    body.rotation = angle + Math.PI;
+    ships.set(item.slug, item);
+    return item;
+  }
+
+  function removeShip(item: Ship) {
+    item.body.destroy({ children: true });
+    ships.delete(item.slug);
+  }
+
+  function clearShips() {
+    for (const item of [...ships.values()]) removeShip(item);
+  }
+
+  function setShips(entries: ShipEntry[]) {
+    const known = new Set(entries.map((entry) => entry.task.slug));
+    for (const item of [...ships.values()]) {
+      if (known.has(item.slug) || item.leaving) continue;
+      item.leaving = item.entry.placement.place === "roadstead" ? "dive" : "fade";
+      if (still) removeShip(item);
+    }
+    const first = ships.size === 0;
     for (const entry of entries) {
-      if (entry.placement.place === "tent") sleepers = Math.max(sleepers, entry.placement.slot + 1);
-      if (entry.placement.place === "review") reviews = Math.max(reviews, entry.placement.slot + 1);
-    }
-    places.tents.forEach((tent, index) => (tent.visible = index < Math.max(2, sleepers)));
-    places.tables.forEach((table, index) => (table.visible = index < Math.max(2, reviews)));
-  }
-
-  // Poses -----------------------------------------------------------------------------------------
-
-  type Pose = Action | "walk";
-
-  /** Sets the figure for `action`. `t` is seconds; work animations move only when `working`. */
-  function pose(figure: Figure, action: Pose, t: number, working: boolean, reviewer = false) {
-    const { body, armLeft, armRight, legLeft, legRight } = figure;
-    body.position.set(0, 0, 0);
-    body.rotation.set(0, 0, 0);
-    armLeft.rotation.set(0, 0, 0);
-    armRight.rotation.set(0, 0, 0);
-    legLeft.rotation.set(0, 0, 0);
-    legRight.rotation.set(0, 0, 0);
-    figure.tool.visible = action === "tool";
-    figure.crate.visible = action === "carry";
-    figure.bulb.visible = action === "think";
-    figure.bulb.scale.setScalar(1);
-    figure.shadow.visible = true;
-    const animate = working && !reduced;
-    switch (action) {
-      case "walk": {
-        const swing = Math.sin(t);
-        legLeft.rotation.x = 0.55 * swing;
-        legRight.rotation.x = -0.55 * swing;
-        armLeft.rotation.x = -0.45 * swing;
-        armRight.rotation.x = 0.45 * swing;
-        body.position.y = 0.035 * Math.abs(Math.cos(t));
-        break;
+      const item = ships.get(entry.task.slug);
+      if (!item) {
+        addShip(entry, !first && !still);
+        continue;
       }
-      case "terminal": {
-        const tap = animate ? 0.13 * Math.sin(t * 15) : 0;
-        armLeft.rotation.x = -1.2 + tap;
-        armRight.rotation.x = -1.2 - tap;
-        break;
-      }
-      case "tool":
-        armLeft.rotation.x = -0.55;
-        armRight.rotation.x = -1.45 + (animate ? 0.5 * Math.sin(t * 7.5) : 0);
-        break;
-      case "think":
-        legLeft.rotation.x = -1.25;
-        legRight.rotation.x = -1.25;
-        armRight.rotation.x = -2.0;
-        armRight.rotation.z = 0.35;
-        if (animate) figure.bulb.scale.setScalar(1 + 0.14 * Math.sin(t * 3.2));
-        break;
-      case "sit":
-        legLeft.rotation.x = -1.3;
-        legRight.rotation.x = -1.3;
-        armLeft.rotation.x = reviewer ? -1.0 : -0.85;
-        armRight.rotation.x = -0.85;
-        break;
-      case "carry":
-        armLeft.rotation.x = -0.95;
-        armRight.rotation.x = -0.95;
-        break;
-      case "sleep":
-        body.rotation.x = -Math.PI / 2;
-        body.position.set(0, 0.22, 0.72);
-        figure.shadow.visible = false;
-        break;
-      case "wait":
-        armLeft.rotation.x = 0.18;
-        armRight.rotation.x = 0.18;
-        break;
-      case "stand":
-        break;
+      const moved = item.entry.placement.place !== entry.placement.place || item.entry.placement.slot !== entry.placement.slot;
+      item.entry = entry;
+      item.leaving = null;
+      if (moved) item.angle = ringOf(entry.placement.place, entry.placement.slot).angle;
     }
   }
 
-  // Animation -------------------------------------------------------------------------------------
-
-  let active = false;
-  let raf = 0;
-  let lastFrame = 0;
-  let lastDraw = 0;
-  let sceneDirty = true;
-  let labelsDirty = true;
-  let sizesDirty = true;
-
-  function running() {
-    return active && !document.hidden;
+  function moveShip(item: Ship, dt: number) {
+    if (item.leaving === "fade") {
+      item.body.alpha -= dt * 1.5;
+      if (item.body.alpha <= 0) removeShip(item);
+      return;
+    }
+    const { place, slot, working } = item.entry.placement;
+    let target: Point;
+    if (item.leaving === "dive") {
+      target = { x: frame.cx, y: frame.cy };
+    } else {
+      if (working && !still) item.angle += dt * CIRCLING_SPEED;
+      target = ringPoint(stationAt(place, frame), ringOf(place, slot).radius, item.angle);
+    }
+    const dx = target.x - item.x;
+    const dy = target.y - item.y;
+    const distance = Math.hypot(dx, dy);
+    const step = still ? distance : Math.min(distance, Math.min(MAX_SPEED, distance * 2.4 + 20) * dt);
+    const previous = { x: item.x, y: item.y };
+    if (distance > 0) {
+      item.x += (dx / distance) * step;
+      item.y += (dy / distance) * step;
+    }
+    if (item.leaving === "dive") {
+      item.body.scale.set(Math.min(1, Math.max(0.2, distance / 200)));
+      if (distance < SUN_RADIUS * 0.6) {
+        flash = 1;
+        removeShip(item);
+      }
+      return;
+    }
+    // Ships fly around the sun, not through it.
+    const fromSun = Math.hypot(item.x - frame.cx, item.y - frame.cy);
+    if (fromSun < SUN_CLEARANCE && fromSun > 0) {
+      item.x = frame.cx + ((item.x - frame.cx) / fromSun) * SUN_CLEARANCE;
+      item.y = frame.cy + ((item.y - frame.cy) / fromSun) * SUN_CLEARANCE;
+    }
+    item.vx = (item.x - previous.x) / Math.max(dt, 0.001);
+    item.vy = (item.y - previous.y) / Math.max(dt, 0.001);
   }
 
-  function request() {
-    if (!raf && running()) raf = requestAnimationFrame(frame);
+  function drawShip(item: Ship, dt: number) {
+    const { body, hull, engine, entry } = item;
+    const where = entry.placement;
+    const speed = Math.hypot(item.vx, item.vy);
+    body.position.set(item.x, item.y);
+    if (speed > 3) body.rotation += turn(body.rotation, Math.atan2(item.vy, item.vx) + Math.PI / 2) * Math.min(1, dt * 6);
+
+    const blink = Math.floor(time * 3) % 2 === 0;
+    hull.tint = where.beacon && blink ? "#ff9d90" : where.action === "sleep" ? SPACE.sleep : "#ffffff";
+    if (item.leaving !== "fade") body.alpha = where.action === "sleep" ? 0.75 : 1;
+    const burning = where.working || speed > 30;
+    engine.alpha = burning ? 0.75 + 0.25 * Math.sin(time * 18 + item.x) : 0.08;
+    engine.tint = where.fixing ? SPACE.fix : FLEET[entry.task.executor].engine;
+
+    if (speed > 60) {
+      const color = where.fixing ? SPACE.fix : FLEET[entry.task.executor].engine;
+      for (let i = 1; i <= 7; i++) {
+        const back = item.size * 0.5 + i * 9;
+        systemFx.circle(item.x - (item.vx / speed) * back, item.y - (item.vy / speed) * back, 3.4 - i * 0.35);
+        systemFx.fill({ color, alpha: 0.5 - i * 0.06 });
+      }
+    }
+    if (where.beacon) {
+      const pulse = (time * 0.7) % 1;
+      systemFx.circle(item.x, item.y, item.size * (0.7 + pulse * 0.8));
+      systemFx.stroke({ width: 2.5, color: SPACE.alarm, alpha: 1 - pulse });
+    }
+    if (item.slug === selected || item.slug === hovered) {
+      const half = item.size * 0.72;
+      const arm = half * 0.4;
+      for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+        const x = item.x + sx * half;
+        const y = item.y + sy * half;
+        systemFx.moveTo(x - sx * arm, y).lineTo(x, y).lineTo(x, y - sy * arm);
+      }
+      systemFx.stroke({ width: 2.2, color: item.slug === selected ? SPACE.select : SPACE.hover, alpha: 0.95 });
+    }
   }
 
-  /** Something changed: draw a frame. */
-  function invalidate() {
-    sceneDirty = true;
-    labelsDirty = true;
-    request();
-  }
+  // Frames ----------------------------------------------------------------------------------------
 
-  function turnTowards(current: number, goal: number, step: number): number {
-    let delta = ((goal - current + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-    if (Math.abs(delta) <= step) return goal;
-    delta = Math.sign(delta) * step;
-    return current + delta;
-  }
-
-  /** Moves the agents; true while one of them walks or turns. */
-  function step(dt: number): boolean {
-    let moving = false;
-    for (const agent of agents.values()) {
-      const next = agent.path[0];
-      if (next) {
-        moving = true;
-        const dx = next.at.x - agent.pos.x;
-        const dz = next.at.z - agent.pos.z;
-        const length = Math.hypot(dx, dz);
-        const travel = WALK_SPEED * dt;
-        if (length <= travel) {
-          agent.pos = { x: next.at.x, z: next.at.z };
-          agent.attach = next;
-          agent.path.shift();
-          if (!agent.path.length) agent.attach = attachOf(agent.place, agent.slot);
-        } else {
-          agent.pos = { x: agent.pos.x + (dx / length) * travel, z: agent.pos.z + (dz / length) * travel };
+  function drawDust() {
+    dust.clear();
+    if (still) return;
+    const count = Math.round((viewport.width * viewport.height) / 16000);
+    for (let band = 0; band < 3; band++) {
+      for (let i = band; i < count; i += 3) {
+        if (Math.sin(time * (0.5 + noise(i + 11)) + i) > 0.3) {
+          dust.circle(noise(i + 300) * viewport.width, noise(i + 600) * viewport.height, 0.7 + band * 0.3);
         }
-        if (length > 1e-4) agent.yaw = turnTowards(agent.yaw, Math.atan2(dx, dz), dt * 10);
-        agent.stride += travel * 3.4;
-      } else if (agent.yaw !== agent.spot.face) {
-        moving = true;
-        agent.yaw = reduced ? agent.spot.face : turnTowards(agent.yaw, agent.spot.face, dt * 6);
+      }
+      dust.fill({ color: SPACE.star, alpha: 0.35 + band * 0.25 });
+    }
+  }
+
+  function frameGalaxy() {
+    galaxyFx.clear();
+    for (const line of model.lines) {
+      const depot = model.depots.find((item) => item.key === line.depot);
+      const from = depotPoints.get(line.depot);
+      const to = stars.get(line.repo);
+      if (!depot || !from || !to || !line.active || depot.bad) continue;
+      for (const lag of [0, 0.5]) {
+        const u = (time * 0.14 + lag + (hashName(line.repo + line.depot) % 100) / 100) % 1;
+        galaxyFx.circle(from.x + (to.x - from.x) * u, from.y + (to.y - from.y) * u, 3.5);
+        galaxyFx.fill(FLEET[depot.executor].hull);
       }
     }
-    return moving;
-  }
-
-  function hasAmbient(): boolean {
-    if (reduced) return false;
-    return entries.some((entry) => entry.placement.working || entry.placement.placeWorking);
-  }
-
-  function updateVisuals(t: number) {
-    for (const agent of agents.values()) {
-      const root = agent.figure.root;
-      root.position.set(agent.pos.x, 0, agent.pos.z);
-      root.rotation.y = agent.yaw;
-      const walking = agent.path.length > 0;
-      // A review without a table seat, or a seat not reached yet, is waiting on foot.
-      const action: Pose = walking
-        ? "walk"
-        : agent.action === "sit" && !seated(agent.place, agent.slot)
-          ? "wait"
-          : agent.action;
-      pose(agent.figure, action, walking ? agent.stride : t, agent.working);
-      const bench = benches.get(agent.slug);
-      if (bench) {
-        const home = !walking && agent.place === "bench";
-        bench.model.stool.visible = home && agent.action === "think";
-        const typing = home && agent.action === "terminal" && agent.working;
-        bench.model.led.material = kit.glow(typing ? "screen" : "screenOff");
-        bench.model.keys.material = typing ? kit.glow("screen") : kit.mat("metalDark");
+    for (const star of model.stars) {
+      const point = stars.get(star.repo);
+      if (!point) continue;
+      const radius = starRadius(star.live);
+      star.dots.forEach((dot, index) => {
+        const ring = radius * 1.25 + 16 + (index % 2) * 10;
+        const angle = (still ? 0 : time * (dot.state === "work" ? 0.45 : 0.08)) + (index * Math.PI * 2) / star.dots.length;
+        const color = dot.state === "attention" ? SPACE.alarm : dot.state === "ready" ? SPACE.gold : dot.state === "sleep" ? SPACE.sleep : FLEET[dot.executor].hull;
+        galaxyFx.circle(point.x + ring * Math.cos(angle), point.y + ring * 0.72 * Math.sin(angle), 4.5);
+        galaxyFx.fill(color);
+      });
+      if (star.attention) {
+        const pulse = (time * 0.6) % 1;
+        galaxyFx.circle(point.x, point.y, radius * 1.25 + 30 + pulse * 14);
+        galaxyFx.stroke({ width: 2.5, color: SPACE.alarm, alpha: 0.9 * (1 - pulse) });
       }
     }
-    const pick = selected ? agents.get(selected) : undefined;
-    ring.visible = !!pick;
-    if (pick) ring.position.set(pick.pos.x, 0.05, pick.pos.z);
-
-    // The beacon lamp keeps its size on screen when the camera moves away.
-    const scale = THREE.MathUtils.clamp(camera.position.distanceTo(controls.target) / 24, 1, 3.5);
-    for (const bench of benches.values()) bench.model.lamp.scale.setScalar(scale);
-
-    // The test stand runs while a check runs; the gate light shows the CI state of who waits there.
-    const checking = entries.some((entry) => entry.placement.place === "stand" && entry.placement.placeWorking);
-    const lit = reduced ? -1 : Math.floor(t * 5) % places.standLights.length;
-    places.standLights.forEach((light, index) => {
-      light.material = kit.glow(checking && (lit < 0 || lit === index) ? "standLight" : "screenOff");
-    });
-    places.standLamp.material = kit.glow(checking ? "standLight" : "lampOff");
-    if (checking && !reduced) places.standFan.rotation.y = t * 2.6;
-
-    const atGate = entries.filter((entry) => entry.placement.place === "gate" && entry.placement.placeWorking);
-    const pending = atGate.some((entry) => entry.task.ci === "pending" || entry.task.ci === null);
-    const failed = atGate.some((entry) => entry.task.ci === "failed" || entry.task.ci === "timeout");
-    const gateTone = !atGate.length ? "lampOff" : pending ? "gateLight" : failed ? "beacon" : "screen";
-    places.gateLamp.material = kit.glow(gateTone);
-    const scan = reduced || !pending ? -1 : Math.floor(t * 4) % places.gateLights.length;
-    places.gateLights.forEach((light, index) => {
-      light.material = kit.glow(atGate.length && (scan < 0 || scan === index) ? gateTone : "screenOff");
-    });
   }
 
-  function frame(time: number) {
-    raf = 0;
-    if (!running()) return;
-    // A slow frame still moves the agents by the time that passed, up to a quarter of a second.
-    const dt = lastFrame ? Math.min(0.25, (time - lastFrame) / 1000) : 0;
-    lastFrame = time;
-    const moved = controls.update(dt);
-    const walking = step(dt);
-    const ambient = hasAmbient();
-    const draw = sceneDirty || moved || walking || (ambient && time - lastDraw >= AMBIENT_FRAME_MS - 2);
-    if (draw) {
-      updateVisuals(time / 1000);
-      renderer.render(scene, camera);
-      lastDraw = time;
-      sceneDirty = false;
+  function frameSystem(dt: number) {
+    const entries = [...ships.values()];
+    const here = (place: Place) => entries.filter((item) => item.entry.placement.place === place && !item.leaving);
+    const on = Math.sin(time * 5) > 0;
+
+    if (!still) sun.rotation += dt * 0.012;
+    corona.alpha = 0.34 + 0.06 * Math.sin(time * 1.1) + flash * 0.6;
+    corona.scale.set((SUN_RADIUS * 7 * (1 + flash * 0.35)) / 128);
+    flash = Math.max(0, flash - dt * 1.4);
+
+    const running = here("gate").some((item) => item.entry.placement.placeWorking);
+    const failed = here("gate").some((item) => item.entry.task.ci === "failed");
+    if (running && !still) gate.rotation += dt * 0.5;
+    gate.tint = failed ? "#ff9d90" : "#ffffff";
+    gateGlow.tint = failed ? SPACE.alarm : SPACE.gold;
+    gateGlow.alpha = running || failed ? 0.45 + 0.2 * Math.sin(time * 3) : 0.06;
+
+    beams.clear();
+    const range = stationAt("range", frame);
+    for (const item of here("range")) {
+      if (!item.entry.placement.placeWorking) continue;
+      beams.moveTo(range.x, range.y).lineTo(item.x, item.y);
+      beams.stroke({ width: 1.6, color: SPACE.fix, alpha: on ? 0.75 : 0.25 });
     }
-    if (draw || labelsDirty) layoutLabels();
-    if (moved || walking || ambient || (controls.enableDamping && controlsBusy)) request();
-    else lastFrame = 0;
+    const inspection = stationAt("inspection", frame);
+    for (const item of here("inspection")) {
+      const { companion, placeWorking } = item.entry.placement;
+      if (!placeWorking) continue;
+      beams.moveTo(inspection.x, inspection.y).lineTo(item.x, item.y);
+      beams.stroke({ width: 1.6, color: companion ? FLEET[companion].hull : SPACE.route, alpha: on ? 0.75 : 0.3 });
+    }
+
+    systemFx.clear();
+    for (const item of entries) {
+      moveShip(item, dt);
+      if (ships.has(item.slug)) drawShip(item, dt);
+    }
   }
 
-  // Labels ----------------------------------------------------------------------------------------
-
-  let boxes: LabelBox[] = [];
-  let width = 1;
-  let height = 1;
-  let zoom: ZoomLevel | null = null;
-  const projected = new THREE.Vector3();
-
-  function refreshLabels() {
-    const previous = new Map(boxes.map((box) => [box.el, box]));
-    boxes = [...overlay.querySelectorAll<HTMLElement>("[data-anchor]")].map((el) => {
-      const old = previous.get(el);
-      return {
-        el,
-        anchor: el.dataset.anchor ?? "",
-        above: el.dataset.align !== "below",
-        priority: Number(el.dataset.priority ?? 5),
-        fit: el.dataset.fit === "bench",
-        width: 0,
-        height: 0,
-        shown: old?.shown ?? null,
-        maxWidth: old?.maxWidth ?? 0,
-        transform: old?.transform ?? "",
-      };
-    });
-    sizesDirty = true;
-    labelsDirty = true;
-    request();
+  function place(container: Container, view: Camera) {
+    container.scale.set(view.zoom);
+    container.position.set(view.tx, view.ty);
   }
 
-  /** World point of a label anchor, or null when its thing is not on the island. */
-  function anchorPoint(anchor: string, out: THREE.Vector3): THREE.Vector3 | null {
-    const split = anchor.indexOf(":");
-    const kind = split < 0 ? anchor : anchor.slice(0, split);
-    const key = split < 0 ? "" : anchor.slice(split + 1);
-    switch (kind) {
-      case "bench": {
-        const bench = benches.get(key);
-        if (!bench) return null;
-        const at = bench.model.root.position;
-        // Over the head of the agent working there, or just over the bench while the agent is away.
-        return agents.get(key)?.place === "bench" ? out.set(at.x + 0.2, 2.05, at.z - 0.85) : out.set(at.x, 1.5, at.z + 0.1);
-      }
-      case "agent": {
-        const agent = agents.get(key);
-        return agent ? out.set(agent.pos.x, 0, agent.pos.z + 0.45) : null;
-      }
-      case "tent": {
-        const agent = agents.get(key);
-        if (!agent) return null;
-        const tent = TENTS[agent.slot];
-        return tent ? out.set(tent.x, 1.3, tent.z) : out.set(agent.spot.x, 0.6, agent.spot.z);
-      }
-      case "place":
-        switch (key) {
-          case "stand":
-            return out.set(STAND.x, 2.75, STAND.z);
-          case "review":
-            return out.set(TABLES[0]!.x, 1.1, TABLES[0]!.z - 0.7);
-          case "gate":
-            return out.set(GATE.x, 3.7, GATE.z);
-          case "tent":
-            return out.set(TENTS[0]!.x - 0.2, 0, TENTS[0]!.z - 1.0);
-          case "dock":
-            return out.set(PIER.x + PIER.width / 2 + 0.9, 0, PIER.z0 + 0.5);
-        }
-        return null;
-      case "more":
-        return out.set(YARD.x1 - 0.6, 0, YARD.z1 + 0.1);
+  function onFrame(elapsed: number) {
+    // Ships take small steps after a pause; the flight keeps to real time, so it ends even in a slow tab.
+    const dt = Math.min(elapsed, 0.1);
+    time += dt;
+    const goal = repo ? 1 : 0;
+    const step = still ? 1 : elapsed / FLIGHT_SECONDS;
+    flight = goal > flight ? Math.min(goal, flight + step) : Math.max(goal, flight - step);
+
+    drawDust();
+    const inGalaxy = flight < FALL;
+    // The veil is opaque at the turn of the flight, so the skies change unseen.
+    galaxy.visible = backdrop.visible = inGalaxy;
+    system.visible = systemBackdrop.visible = !inGalaxy;
+    let veilAlpha: number;
+    if (inGalaxy) {
+      const u = flight / FALL;
+      const star = (focus && stars.get(focus)) || { x: world.width / 2, y: world.height / 2 };
+      const zoom = fit.zoom * (1 + u * u * 5);
+      const screen = { x: star.x * fit.zoom + fit.tx, y: star.y * fit.zoom + fit.ty };
+      const target = { x: screen.x + (viewport.width / 2 - screen.x) * u, y: screen.y + (viewport.height / 2 - screen.y) * u };
+      place(galaxy, { zoom, tx: target.x - star.x * zoom, ty: target.y - star.y * zoom });
+      frameGalaxy();
+      veilAlpha = u * u;
+    } else {
+      const v = (flight - FALL) / (1 - FALL);
+      const zoom = camera.zoom * (0.82 + 0.18 * v);
+      const middle = { x: viewport.width / 2, y: viewport.height / 2 };
+      place(system, { zoom, tx: middle.x - ((middle.x - camera.tx) / camera.zoom) * zoom, ty: middle.y - ((middle.y - camera.ty) / camera.zoom) * zoom });
+      frameSystem(dt);
+      veilAlpha = 1 - v;
+    }
+    veil.clear();
+    if (veilAlpha > 0) veil.rect(0, 0, viewport.width, viewport.height).fill({ color: SPACE.void, alpha: veilAlpha });
+
+    // The sky drifts a little behind the camera.
+    const view = repo ? camera : fit;
+    const sky = inGalaxy ? backdrop : systemBackdrop;
+    sky.position.set(viewport.width / 2 + (view.tx - fit.tx) * 0.06, viewport.height / 2 + (view.ty - fit.ty) * 0.06);
+  }
+
+  // Pointer ---------------------------------------------------------------------------------------
+
+  function screenPoint(event: MouseEvent): Point {
+    const rect = canvas.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  function worldPoint(screen: Point): Point {
+    const view = repo ? camera : fit;
+    return { x: (screen.x - view.tx) / view.zoom, y: (screen.y - view.ty) / view.zoom };
+  }
+
+  function starAt(point: Point): string | null {
+    for (const star of model.stars) {
+      const at = stars.get(star.repo);
+      if (at && Math.hypot(at.x - point.x, at.y - point.y) < starRadius(star.live) * 1.25 + 34) return star.repo;
     }
     return null;
   }
 
-  function toScreen(point: THREE.Vector3): { x: number; y: number } | null {
-    projected.copy(point).project(camera);
-    if (projected.z > 1 || projected.z < -1) return null;
-    return { x: ((projected.x + 1) / 2) * width, y: ((1 - projected.y) / 2) * height };
-  }
-
-  const side = new THREE.Vector3();
-  /** As wide as the gap to the nearest bench in the same row allows. */
-  function benchWidth(slug: string, point: THREE.Vector3): number {
-    const own = benches.get(slug)?.model.root.position;
-    let gap = Infinity;
-    for (const bench of benches.values()) {
-      const at = bench.model.root.position;
-      if (own && at !== own && Math.abs(at.z - own.z) < 0.1) gap = Math.min(gap, Math.abs(at.x - own.x));
-    }
-    if (gap === Infinity) return 200;
-    side.copy(point).setX(point.x - gap / 2);
-    const a = toScreen(side);
-    side.setX(point.x + gap / 2);
-    const b = toScreen(side);
-    if (!a || !b) return 120;
-    return THREE.MathUtils.clamp(Math.hypot(b.x - a.x, b.y - a.y) - 8, 48, 200);
-  }
-
-  function updateZoom() {
-    const distance = camera.position.distanceTo(controls.target);
-    const perUnit = height / (2 * distance * Math.tan(THREE.MathUtils.degToRad(FOV / 2)));
-    // The thresholds keep a bench label (1, 3 or 4 lines) clear of the agent of the row behind.
-    const level: ZoomLevel = perUnit < 22 ? "far" : perUnit < 44 ? "mid" : "close";
-    if (level !== zoom) {
-      zoom = level;
-      sizesDirty = true;
-      options.onZoom(level);
-    }
-  }
-
-  const point = new THREE.Vector3();
-  function layoutLabels() {
-    labelsDirty = false;
-    updateZoom();
-    const inset = options.topInset() + 4;
-    const candidates: { box: LabelBox; x: number; y: number }[] = [];
-    for (const box of boxes) {
-      const anchor = anchorPoint(box.anchor, point);
-      const screen = anchor ? toScreen(anchor) : null;
-      if (!screen || screen.x < -60 || screen.x > width + 60 || screen.y < -60 || screen.y > height + 60) continue;
-      if (box.fit) {
-        const max = Math.round(benchWidth(box.anchor.slice("bench:".length), anchor!));
-        if (Math.abs(max - box.maxWidth) >= 2) {
-          box.maxWidth = max;
-          box.el.style.maxWidth = `${max}px`;
-          sizesDirty = true;
-        }
-      }
-      candidates.push({ box, x: screen.x, y: screen.y });
-    }
-    if (sizesDirty) {
-      // One layout read for all labels, after all the writes above.
-      sizesDirty = false;
-      for (const box of boxes) {
-        box.width = box.el.offsetWidth;
-        box.height = box.el.offsetHeight;
+  function shipAt(point: Point): string | null {
+    let best: string | null = null;
+    let bestDistance = Infinity;
+    for (const item of ships.values()) {
+      const distance = Math.hypot(item.x - point.x, item.y - point.y);
+      if (!item.leaving && distance < item.size * 0.7 && distance < bestDistance) {
+        bestDistance = distance;
+        best = item.slug;
       }
     }
-    // Most important first; among equals, the nearer one (lower on screen) wins.
-    candidates.sort((a, b) => a.box.priority - b.box.priority || b.y - a.y);
-    const placed: { left: number; top: number; right: number; bottom: number }[] = [];
-    const overlaps = (r: { left: number; top: number; right: number; bottom: number }) =>
-      placed.find((p) => r.left < p.right + 2 && r.right > p.left - 2 && r.top < p.bottom + 1 && r.bottom > p.top - 1);
-    const positions = new Map<LabelBox, string>();
-    for (const { box, x, y } of candidates) {
-      const w = box.width;
-      const h = box.height;
-      if (!w || !h) continue; // hidden at this zoom
-      const left = THREE.MathUtils.clamp(x - w / 2, 4, Math.max(4, width - w - 4));
-      const top = THREE.MathUtils.clamp(box.above ? y - h - 3 : y + 3, inset, Math.max(inset, height - h - 4));
-      let rect = { left, top, right: left + w, bottom: top + h };
-      // One nudge away from a label that is already there; failing that, hide rather than overlap.
-      const hit = overlaps(rect);
-      if (hit) {
-        const moved = box.above ? hit.top - h - 2 : hit.bottom + 2;
-        if (Math.abs(moved - top) > h * 1.3 || moved < inset || moved > height - h - 4) continue;
-        rect = { left, top: moved, right: left + w, bottom: moved + h };
-        if (overlaps(rect)) continue;
-      }
-      placed.push(rect);
-      positions.set(box, `translate3d(${Math.round(rect.left)}px, ${Math.round(rect.top)}px, 0)`);
-    }
-    for (const box of boxes) {
-      const transform = positions.get(box);
-      const visible = transform !== undefined;
-      if (visible !== box.shown) {
-        box.shown = visible;
-        box.el.style.visibility = visible ? "visible" : "hidden";
-      }
-      if (transform !== undefined && transform !== box.transform) {
-        box.transform = transform;
-        box.el.style.transform = transform;
-      }
-    }
+    return best;
   }
 
-  // Camera ----------------------------------------------------------------------------------------
+  let press: { at: Point; camera: Camera; dragged: boolean } | null = null;
 
-  const offset = new THREE.Vector3();
-  /** Default tilt: steeper on tall screens, where the island is narrow and its rows need height. */
-  let polar = POLAR;
-  /** Default target: chosen so that the island sits in the middle below the toolbar. */
-  const home = TARGET.clone();
-  function placeCamera(distance: number) {
-    offset.setFromSphericalCoords(distance, polar, 0);
-    camera.position.copy(controls.target).add(offset);
-    camera.lookAt(controls.target);
-    camera.updateMatrixWorld();
-  }
-
-  // What the default view must show: the shared places on both sides, the trees in the north, the pier.
-  const CONTENT = [
-    new THREE.Vector3(-13.4, 0, 1.5),
-    new THREE.Vector3(13.4, 0, 1.5),
-    new THREE.Vector3(-12.5, 0, -4.5),
-    new THREE.Vector3(12.5, 0, -4.5),
-    new THREE.Vector3(-12, 0, 7.5),
-    new THREE.Vector3(12, 0, 7.5),
-    new THREE.Vector3(0, 2.2, -9.4),
-    new THREE.Vector3(0, 0, PIER.z1 + 0.3),
-  ];
-
-  /** The nearest distance at which CONTENT fits below the toolbar, looking at (0, 0, z). */
-  function fitDistance(z: number): number {
-    controls.target.set(0, 0, z);
-    const top = 1 - (2 * (options.topInset() + 24)) / height;
-    let low = 8;
-    let high = 240;
-    for (let i = 0; i < 22; i++) {
-      const middle = (low + high) / 2;
-      placeCamera(middle);
-      const fits = CONTENT.every((p) => {
-        projected.copy(p).project(camera);
-        return Math.abs(projected.x) <= 0.96 && projected.y <= top && projected.y >= -0.97;
-      });
-      if (fits) high = middle;
-      else low = middle;
-    }
-    return high;
-  }
-
-  /** Picks the default target and returns the default distance. */
-  function fit(): number {
-    polar = width / height < 0.8 ? 0.55 : POLAR;
-    const saved = controls.target.clone();
-    const position = camera.position.clone();
-    let best = { distance: Infinity, z: TARGET.z };
-    for (let z = 0; z <= 6.01; z += 0.5) {
-      const distance = fitDistance(z);
-      if (distance < best.distance - 1e-3) best = { distance, z };
-    }
-    home.set(0, 0, best.z);
-    controls.target.copy(saved);
-    camera.position.copy(position);
-    camera.lookAt(saved);
-    return best.distance;
-  }
-
-  function resize() {
-    width = Math.max(1, host.clientWidth);
-    height = Math.max(1, host.clientHeight);
-    renderer.setSize(width, height, false);
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
-    const distance = fit();
-    controls.maxDistance = Math.max(distance * 1.2, controls.minDistance + 1);
-    if (fitted) {
-      controls.target.copy(home);
-      placeCamera(distance);
-    } else {
-      camera.lookAt(controls.target);
-    }
-    controls.update();
-    sizesDirty = true;
-    invalidate();
-  }
-
-  // Input -----------------------------------------------------------------------------------------
-
-  const raycaster = new THREE.Raycaster();
-  const pointer = new THREE.Vector2();
-  let down: { x: number; y: number; at: number } | null = null;
-  let controlsBusy = false;
-
-  function hit(event: PointerEvent): string | null {
-    const rect = canvas.getBoundingClientRect();
-    pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
-    raycaster.setFromCamera(pointer, camera);
-    const found = raycaster.intersectObjects(pickables, false)[0];
-    return (found?.object.userData.slug as string | undefined) ?? null;
-  }
-  const onPointerDown = (event: PointerEvent) => {
-    down = { x: event.clientX, y: event.clientY, at: performance.now() };
+  const onDown = (event: PointerEvent) => {
+    press = { at: screenPoint(event), camera, dragged: false };
+    canvas.setPointerCapture(event.pointerId);
   };
-  const onPointerUp = (event: PointerEvent) => {
-    const start = down;
-    down = null;
-    if (!start || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 6 || performance.now() - start.at > 700) return;
-    const slug = hit(event);
-    if (slug) options.onPick(slug);
+
+  let lastHover: string | null = null;
+  const onMove = (event: PointerEvent) => {
+    const at = screenPoint(event);
+    if (press) {
+      const dx = at.x - press.at.x;
+      const dy = at.y - press.at.y;
+      if (Math.hypot(dx, dy) > CLICK_SLOP) press.dragged = true;
+      if (press.dragged && repo) {
+        camera = clampCamera({ ...press.camera, tx: press.camera.tx + dx, ty: press.camera.ty + dy }, world, viewport);
+        report();
+      }
+      return;
+    }
+    const point = worldPoint(at);
+    const found = repo ? shipAt(point) : starAt(point);
+    canvas.style.cursor = found ? "pointer" : repo && camera.zoom > fit.zoom ? "grab" : "";
+    const slug = repo ? found : null;
+    if (slug !== lastHover) {
+      lastHover = slug;
+      options.onHover(slug);
+    }
   };
-  // Labels sit over the canvas; the wheel over a label still zooms the map.
-  const onOverlayWheel = (event: WheelEvent) => {
-    if (event.target === canvas) return;
+
+  const onUp = (event: PointerEvent) => {
+    const wasDragged = press?.dragged ?? true;
+    press = null;
+    if (wasDragged) return;
+    const point = worldPoint(screenPoint(event));
+    if (repo) {
+      const slug = shipAt(point);
+      if (slug) options.onPick(slug);
+      return;
+    }
+    const star = starAt(point);
+    if (star) options.onEnter(star);
+  };
+
+  const onCancel = () => {
+    press = null;
+  };
+
+  // In a system the wheel zooms; past the fitted view it goes back to the galaxy. In the galaxy, forward
+  // over a star enters it.
+  let wheel = 0;
+  let wheelAt = 0;
+  const onWheel = (event: WheelEvent) => {
     event.preventDefault();
-    canvas.dispatchEvent(new WheelEvent("wheel", event));
+    const nowMs = performance.now();
+    if (nowMs - wheelAt < WHEEL_PAUSE_MS) return;
+    const at = screenPoint(event);
+    if (repo && (event.deltaY < 0 || camera.zoom > fit.zoom * 1.001)) {
+      wheel = 0;
+      camera = clampCamera(zoomCamera(camera, Math.exp(-event.deltaY * WHEEL_ZOOM), at, fit), world, viewport);
+      report();
+      return;
+    }
+    wheel += event.deltaY;
+    if (Math.abs(wheel) < WHEEL_STEP) return;
+    const forward = wheel < 0;
+    wheel = 0;
+    if (repo && !forward) {
+      wheelAt = nowMs;
+      options.onLeave();
+    } else if (!repo && forward) {
+      const star = starAt(worldPoint(at));
+      if (star) {
+        wheelAt = nowMs;
+        options.onEnter(star);
+      }
+    }
   };
-  const onPointerMove = (event: PointerEvent) => {
-    if (event.buttons || event.pointerType !== "mouse") return;
-    canvas.style.cursor = hit(event) ? "pointer" : "";
-  };
-  const onStart = () => {
-    controlsBusy = true;
-    fitted = false;
-    request();
-  };
-  const onEnd = () => {
-    controlsBusy = false;
-    request();
-  };
-  const onChange = () => {
-    sceneDirty = true;
-    labelsDirty = true;
-    request();
-  };
-  const onLost = (event: Event) => {
+
+  const onContextLost = (event: Event) => {
     event.preventDefault();
-    setActive(false);
     options.onLost();
   };
-  const onVisibility = () => {
-    if (running()) invalidate();
-    else if (raf) {
-      cancelAnimationFrame(raf);
-      raf = 0;
-      lastFrame = 0;
-    }
-  };
-  const onMotion = () => {
-    reduced = motionQuery.matches;
-    controls.enableDamping = !reduced;
-    if (reduced) {
-      for (const agent of agents.values()) {
-        agent.path = [];
-        agent.pos = { x: agent.spot.x, z: agent.spot.z };
-        agent.yaw = agent.spot.face;
-      }
-    }
-    invalidate();
-  };
 
-  canvas.addEventListener("pointerdown", onPointerDown);
-  canvas.addEventListener("pointerup", onPointerUp);
-  canvas.addEventListener("pointermove", onPointerMove);
-  canvas.addEventListener("webglcontextlost", onLost);
-  overlay.addEventListener("wheel", onOverlayWheel, { passive: false });
-  controls.addEventListener("start", onStart);
-  controls.addEventListener("end", onEnd);
-  controls.addEventListener("change", onChange);
-  document.addEventListener("visibilitychange", onVisibility);
-  darkQuery.addEventListener("change", applyTheme);
-  motionQuery.addEventListener("change", onMotion);
-  const observer = new ResizeObserver(() => resize());
-  observer.observe(host);
+  canvas.addEventListener("pointerdown", onDown);
+  canvas.addEventListener("pointermove", onMove);
+  canvas.addEventListener("pointerup", onUp);
+  canvas.addEventListener("pointercancel", onCancel);
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("webglcontextlost", onContextLost);
 
-  applyTheme();
-  resize();
+  const resize = new ResizeObserver(() => {
+    const next = viewportOf();
+    if (next.width === viewport.width && next.height === viewport.height) return;
+    viewport = next;
+    app.renderer.resize(viewport.width, viewport.height);
+    layoutAll();
+  });
+  resize.observe(options.host);
 
-  function setActive(next: boolean) {
-    active = next;
-    if (running()) {
-      sizesDirty = true;
-      invalidate();
-    } else if (raf) {
-      cancelAnimationFrame(raf);
-      raf = 0;
-      lastFrame = 0;
-    }
-  }
+  layoutAll();
+  app.ticker.add((ticker) => onFrame(ticker.elapsedMS / 1000));
 
   return {
-    setEntries,
+    setGalaxy(next) {
+      model = next;
+      drawGalaxy();
+    },
+    setView(next) {
+      if (next === repo) return;
+      if (next !== null) {
+        clearShips();
+        focus = next;
+        camera = fit;
+        paintSun(sun, next);
+        corona.tint = sunKind(next).glow;
+        showSky(next);
+      }
+      repo = next;
+      lastHover = null;
+      report();
+    },
+    setShips,
     setSelected(slug) {
       selected = slug;
-      invalidate();
     },
-    setActive,
-    refreshLabels,
+    setHovered(slug) {
+      hovered = slug;
+    },
+    setActive(active) {
+      if (active) app.start();
+      else app.stop();
+    },
     dispose() {
-      active = false;
-      if (raf) cancelAnimationFrame(raf);
-      raf = 0;
-      observer.disconnect();
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointerup", onPointerUp);
-      canvas.removeEventListener("pointermove", onPointerMove);
-      canvas.removeEventListener("webglcontextlost", onLost);
-      overlay.removeEventListener("wheel", onOverlayWheel);
-      controls.removeEventListener("start", onStart);
-      controls.removeEventListener("end", onEnd);
-      controls.removeEventListener("change", onChange);
-      document.removeEventListener("visibilitychange", onVisibility);
-      darkQuery.removeEventListener("change", applyTheme);
-      motionQuery.removeEventListener("change", onMotion);
-      controls.stopListenToKeyEvents();
-      controls.dispose();
-      scene.clear();
-      kit.dispose();
-      renderer.dispose();
-      renderer.forceContextLoss();
-      canvas.remove();
-      agents.clear();
-      benches.clear();
-      pickables.length = 0;
-      boxes = [];
+      if (disposed) return;
+      disposed = true;
+      resize.disconnect();
+      canvas.removeEventListener("pointerdown", onDown);
+      canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("pointerup", onUp);
+      canvas.removeEventListener("pointercancel", onCancel);
+      canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("webglcontextlost", onContextLost);
+      // The textures stay in the Assets cache for the next scene.
+      app.destroy({ removeView: true }, { children: true });
+      glowTexture.destroy(true);
     },
   };
 }
