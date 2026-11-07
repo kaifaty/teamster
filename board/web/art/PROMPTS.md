@@ -37,6 +37,22 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 8. frame-light (landscape, 1536x1024): A flat front view of an empty rectangular panel frame. A slim brushed dark metal border only a few percent of the image wide, with a thin brass inner line and small plain corner brackets with one rivet each. No pipes, no lamps, no vents. The frame is symmetrical, runs right along the edges of the image, and its whole centre is a plain flat near-black area.
 
+## Ship classes and convoys
+
+Same STYLE as the first list. Frigates and cruisers carry tasks with more reasoning effort; the escort flies with a ship under review, the tanker along a supply line.
+
+1. ship-blue-frigate (square, 1024x1024): One medium warship seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A long angular frigate with swept forward wings and a spine of armour plates, cobalt blue hull, dark steel panels, a pale cockpit and three glowing engine nozzles at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
+
+2. ship-blue-cruiser (square, 1024x1024): One heavy battlecruiser seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A massive arrowhead hull with layered cobalt blue armour, dark steel gun decks along both sides, a raised bridge tower and a wide bank of five glowing engines at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
+
+3. ship-copper-frigate (square, 1024x1024): One medium warship seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A rounded oval hull with a long prow, side engine pods on short pylons, warm copper and terracotta plating, cream panels and a pale cockpit. Pre-rendered look with metallic highlights. No shadow on the background.
+
+4. ship-copper-cruiser (square, 1024x1024): One heavy battlecruiser seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A broad rounded hull like a fat teardrop, thick copper and terracotta armour rings, cream superstructure domes and four large glowing engines at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
+
+5. tanker (square, 1024x1024): One fuel tanker spacecraft seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A slow cargo hauler made of a short cockpit section pulling a frame of four fat cylindrical tanks in a row, weathered steel and teal paint, small amber lamps and one wide engine at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
+
+6. escort (square, 1024x1024): One tiny escort drone seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A compact round body with a single lens eye, two small stubby wings and one glowing engine, pale steel and violet paint. Pre-rendered look with metallic highlights. No shadow on the background.
+
 ## Skies of the star systems
 
 STYLE: Original science-fiction game art in the manner of late-1990s hand-painted computer game graphics. A deep space backdrop in landscape format, 1536x1024. Painterly and rich, visible brushwork, fine scattered stars. Dark overall, with large calm dark areas, so that text and bright objects can be read over it. The middle of the image stays dim and open. No planets, no ships, no suns, no bright central object. Entirely original design. No text, no letters, no logos, no watermark, no interface elements.
@@ -78,6 +94,10 @@ A repository may have its own sky, home planet and emblem. They live in `board-a
 
 sky (landscape, 1536x1024): `<THEME>`, as a nebula or dust cloud, not as objects.
 
-planet (square, 1024x1024): One whole planet centred on a flat pure black background, with a clear margin around it. `<THEME>`, as the surface of a world. Lit from the upper left, with a soft terminator and a thin atmosphere rim.
+planet (square, 1024x1024): One whole planet centred on a flat pure black background, with a clear margin around it. `<WORLD>`. The planet must read at a glance from far away: one dominant colour and one large feature, with no buildings, no figures, no objects and no small details on it. Lit from the upper left, with a soft terminator and a thin atmosphere rim.
 
-emblem (square, 1024x1024): One flat heraldic emblem seen from the front, filling most of the image, centred on a flat solid magenta background (#FF00FF) with nothing else on it. `<THEME>`, as a single bold simple shape that can still be read at 30 pixels, in brass and enamel with no magenta in it. Pre-rendered look with metallic highlights. No shadow on the background.
+The planet takes the STYLE without its palette sentence, and a world type for the theme instead of the theme sentence (`<WORLD>`): a colour that no other project's planet uses and one big feature, such as rings, a grid of lights or a single storm. Small scenes on the surface make all planets look alike.
+
+emblem (square, 1024x1024): One round heraldic badge seen from the front, filling most of the image, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A plain brass rim around a field of `<ENAMEL>` enamel, and on it one single bold symbol: `<SYMBOL>`, as one large clear silhouette in polished brass filling most of the field. No scene, no landscape, no figures, no small details and no other objects, so that it still reads at 30 pixels. No magenta in the badge. Pre-rendered look with metallic highlights. No shadow on the background.
+
+The emblem takes one object for the theme instead of the theme sentence (`<SYMBOL>`, such as a horseshoe or a keyhole) and a colour that tells it from the other projects (`<ENAMEL>`): a whole scene turns to mush at 30 pixels.
