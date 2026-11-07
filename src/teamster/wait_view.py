@@ -2,7 +2,7 @@
 import json
 import time
 
-from . import account_rotation, checking, ci_runs, clock, config, executors, procs, result_schema, sandboxing, task_state, threads, turn_monitor
+from . import account_rotation, checking, ci_runs, clock, config, executors, procs, result_schema, reviewers, sandboxing, task_state, threads, turn_monitor
 
 
 def wait_rotation_lines(st):
@@ -142,12 +142,13 @@ def wait_review_lines(st, slug):
                    f"targets code from fix round {finding['round']} ({finding['commit']})")
     reviews = st.get("reviews", [])[st.get("review_start", 0):]
     for entry in reviews:
+        reviewer = reviewers.from_entry(entry)
         if "retry_account" in entry:
             reason = " (token unavailable)" if entry.get("unavailable") == "token unavailable" else ""
-            yield (f"== claude account {entry['account']} limited until "
+            yield (f"== {reviewer.name} account {entry['account']} limited until "
                    f"{config.local_time(entry.get('limited_until'))}{reason}; review by {entry['retry_account']}")
         elif entry.get("unavailable"):
-            yield f"== reviewer claude unavailable: {entry['unavailable']}; review by codex"
+            yield f"== reviewer {reviewer.name} unavailable: {entry['unavailable']}; review by {reviewer.fallback}"
     reviews = [entry for entry in reviews if not entry.get("unavailable")]
     if not (st.get("kind") == "review" or st.get("rounds") or reviews):
         return
@@ -159,9 +160,7 @@ def wait_review_lines(st, slug):
     entries = angles or reviews[-1:]
     for entry in entries:
         minutes = ((entry["finished"] if angles else entry.get("finished") or clock.CLOCK.time()) - entry["started"]) / 60
-        account = entry["account"]
-        if entry.get("reviewer") == "claude":
-            account = "claude/" + account
+        account = reviewers.from_entry(entry).account_label(entry)
         heading = "== review " + (f"angle {entry['angle']} " if angles else "") + f"by {account} ({minutes:.1f} min):"
         result = entry.get("result")
         if angles and entry["outcome"] == "refused":

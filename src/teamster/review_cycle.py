@@ -3,9 +3,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
-from . import budgets, checking, claude_accounts, claude_review, clock, config, executors, notifications, procs, prompts, task_state, telemetry_log, threads, turns
+from . import budgets, checking, claude_accounts, claude_review, clock, config, executors, notifications, procs, prompts, reviewers, task_state, telemetry_log, threads, turns
 
 
 def selected_review_angles(st, cfg):
@@ -75,7 +76,7 @@ def merge_reviews(angles):
     return {"verdict": verdict, "findings": findings, "summary": summary, "angles": angles}
 
 
-def claude_review_turn(st, cfg, prompt, stopped, used_accounts):
+def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sleep=None, new_turn=False):
     """Retry a limited Claude account before allowing a Codex fallback."""
     attempted = set()
     deadline = None
@@ -88,8 +89,8 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts):
         used_accounts.add(name)
         st["review_account"] = name
         with telemetry_log.record_phase(st, "review", stopped) as phase:
-            phase.reviewer = "claude"
-            entry = {"reviewer": "claude", "account": name, "thread": "",
+            phase.reviewer = reviewers.CLAUDE_REVIEWER.name
+            entry = {"reviewer": reviewers.CLAUDE_REVIEWER.name, "account": name, "thread": "",
                      "started": clock.CLOCK.time(), "finished": None, "result": None,
                      "round": len(st.get("rounds", [])),
                      "angle": st.get("review_angle") or "correctness", "outcome": "running"}
@@ -114,7 +115,7 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts):
                                                            prefer_unused=used_accounts, stopped=stopped,
                                                            task_type=st.get("task_type"))
                     retry = account is not None
-                    entry["retry_account"] = account["name"] if retry else "codex"
+                    entry["retry_account"] = account["name"] if retry else reviewers.CLAUDE_REVIEWER.fallback
             elif response.get("reason"):
                 st["error"] = response["reason"]
             task_state.save(st)
@@ -123,6 +124,15 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts):
         return response["outcome"]
     st["outcome"] = "unavailable"
     return "unavailable"
+
+
+def codex_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sleep=None, new_turn=False):
+    turns.run_turn(st, cfg, prompt, effort, False, stopped, sleep, new_turn=new_turn)
+    return st["outcome"]
+
+
+reviewers.CLAUDE_REVIEWER.bind(sys.modules[__name__], run="claude_review_turn")
+reviewers.CODEX_REVIEWER.bind(sys.modules[__name__], run="codex_review_turn")
 
 
 def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=None):
@@ -148,15 +158,14 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
             started = clock.CLOCK.time()
             st.update(review_angle=angle, outcome="running")
             focused = prompt + f"\n\nReview angle: {angle}. {prompts.REVIEW_ANGLES[angle]}" if angle else prompt
-            reviewer = st.get("reviewer", "codex")
-            if reviewer == "claude":
-                outcome = claude_review_turn(st, cfg, focused, stopped, used_accounts)
-                if outcome == "unavailable" and not stopped():
-                    reviewer = "codex"
-                    st["review_account"] = None
-                    turns.run_turn(st, cfg, focused, codex_effort, False, stopped, sleep, new_turn=new_turn)
-            else:
-                turns.run_turn(st, cfg, focused, codex_effort, False, stopped, sleep, new_turn=new_turn)
+            reviewer = reviewers.from_entry(st)
+            while True:
+                outcome = reviewer.run(st, cfg, focused, stopped, used_accounts,
+                                       effort=codex_effort, sleep=sleep, new_turn=new_turn)
+                if outcome != "unavailable" or stopped() or reviewer.fallback is None:
+                    break
+                reviewer = reviewers.get(reviewer.fallback)
+                st["review_account"] = None
             reviews = [entry for entry in st.get("reviews", [])[start:] if not entry.get("unavailable")]
             outcome = task_state.stop_outcome(st, stopped) or st["outcome"]
             result = reviews[-1].get("result") if reviews else None
@@ -166,7 +175,7 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
                 reviews[-1]["outcome"] = outcome
             record = {"angle": angle or "correctness", "outcome": outcome, "result": result,
                       "account": notifications.current_turn_account(st),
-                      "reviewer": reviewer,
+                      "reviewer": reviewer.name,
                       "started": started, "finished": clock.CLOCK.time()}
             if outcome == "refused":
                 record["refusal"] = st.get("refusal", "")

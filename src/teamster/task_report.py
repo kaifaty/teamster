@@ -21,6 +21,7 @@ CI_OUTCOMES = frozenset(("passed", "failed", "timeout", "none"))
 CANCELLATION_OUTCOMES = ("stopped", "interrupted")
 LEAD_VERDICTS = ("accepted", "revised", "redone", "dropped")
 DIMENSIONS = ("task-type", "effort", "model", "executor", "reviewer")
+LEGACY_REVIEWERS = ("codex", "claude")
 
 
 def _number(value):
@@ -167,7 +168,7 @@ def _is_work_phase(row):
 def _attribute(row, task):
     """Record what places a task in groups: executor, work model settings, reviewer, first review, follow-ups."""
     if row["phase"] == "review":
-        reviewer = "claude" if row.get("reviewer") == "claude" else "codex"
+        reviewer = row.get("reviewer", LEGACY_REVIEWERS[0])
         if reviewer not in task["reviewers"]:
             task["reviewers"].append(reviewer)
         group = (_round(row.get("turn")), _round(row.get("round")))
@@ -283,8 +284,9 @@ def _accumulate_usage(row, task, accounts, is_turn):
         name = _identifier(segment.get("account")) or _identifier(row.get("account"))
         if name is None:
             continue
-        provider = ("claude" if (segment.get("provider") or row.get("provider")
-                                 or row.get("reviewer")) == "claude" else "codex")
+        provider = segment.get("provider") or row.get("provider")
+        provider = ("claude" if provider == "claude" else "codex") if provider else row.get(
+            "reviewer", LEGACY_REVIEWERS[0])
         key = (provider, name)
         account = accounts.setdefault(key, _account(provider, name))
         account["weekly_used_percent"] += delta
@@ -313,13 +315,14 @@ def _accumulate_checks_and_reviews(row, task, totals):
         elif outcome in CANCELLATION_OUTCOMES:
             task["outcome"] = outcome
     if phase == "review":
-        reviewer = "claude" if row.get("reviewer") == "claude" else "codex"
+        reviewer = row.get("reviewer", LEGACY_REVIEWERS[0])
         task["reviews"].append({"reviewer": reviewer, "account": _identifier(row.get("account")),
                                 "turn": _round(row.get("turn")), "round": _round(row.get("round")),
                                 "angle": _identifier(row.get("angle")),
                                 "outcome": _identifier(row.get("outcome"))})
-        totals["reviewers"][reviewer]["reviews"] += 1
-        totals["reviewers"][reviewer]["cost_usd"] += _number(row.get("cost_usd")) or 0
+        counts = totals["reviewers"].setdefault(reviewer, {"reviews": 0, "cost_usd": 0})
+        counts["reviews"] += 1
+        counts["cost_usd"] += _number(row.get("cost_usd")) or 0
         group = (_round(row.get("turn")), _round(row.get("round")))
         review_rows = task["_reviews"].setdefault(group, [])
         review_rows.append(row)
@@ -343,7 +346,7 @@ def _accumulate_rows(rows, identities, since=0):
     accounts = {}
     totals = {"tokens": _empty_tokens(), "active_seconds": 0, "turns": 0, "capacity_retries": 0,
               "checks": Counter(), "reviews": Counter(), "findings_samples": 0,
-              "reviewers": {name: {"reviews": 0, "cost_usd": 0} for name in ("codex", "claude")}}
+              "reviewers": {name: {"reviews": 0, "cost_usd": 0} for name in LEGACY_REVIEWERS}}
     for row, identity in zip(rows, identities):
         if identity not in window:
             continue

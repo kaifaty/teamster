@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, procs, prompts, result_schema, sandboxing, supervisor, task_state, telemetry_log, threads
+from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, procs, prompts, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads
 
 
 def main_repo(path):
@@ -38,8 +38,7 @@ def cmd_start(a):
         executor.prepare(a.effort, cfg)
     except ValueError as exc:
         procs.die(str(exc))
-    if reviewer == "claude":
-        config.require_claude()
+    reviewers.get(reviewer).prepare(cfg)
     if (config.TASKS / a.slug).exists():
         procs.die(f"task {a.slug!r} exists; pick another slug or clean it")
     busy = task_state.running_tasks()
@@ -213,8 +212,7 @@ def cmd_review(a):
     require_idle(st)
     cfg = config.accounts_config()
     reviewer = getattr(a, "reviewer", None) or st["reviewer"]
-    if reviewer == "claude":
-        config.require_claude()
+    reviewers.get(reviewer).prepare(cfg)
     st["reviewer"] = reviewer
     if getattr(a, "review_model", None) is not None:
         st["review_model"] = None if a.review_model == "default" else a.review_model
@@ -283,15 +281,21 @@ def cmd_stats(a):
     cfg = config.accounts_config()
     executors.from_state(st).stats(st)
     for entry in st["threads"] + st["reviews"]:
-        if entry.get("reviewer") == "claude":
-            continue
-        account = accounts.account_named(cfg, entry["account"])
-        path = threads.rollout_path(account["home"], entry["thread"])
-        print(f"== {entry['account']}: {entry['thread']}", flush=True)
-        if path:
-            subprocess.run([sys.executable, "-I", str(config.STATS), str(path)], check=True)
-        else:
-            print("(rollout not found)")
+        reviewers.from_entry(entry).stats(entry, cfg)
+
+
+def print_codex_review_stats(entry, cfg):
+    account = accounts.account_named(cfg, entry["account"])
+    path = threads.rollout_path(account["home"], entry["thread"])
+    print(f"== {entry['account']}: {entry['thread']}", flush=True)
+    if path:
+        subprocess.run([sys.executable, "-I", str(config.STATS), str(path)], check=True)
+    else:
+        print("(rollout not found)")
+
+
+def prepare_claude_review(cfg):
+    config.require_claude()
 
 
 def prepare_claude_work(effort, cfg):
@@ -383,11 +387,7 @@ def cmd_clean(a):
             subprocess.run(config.GIT + ["branch", "-D", st["branch"]], cwd=repo, capture_output=True)
     cfg = config.accounts_config()
     for entry in st["threads"] + st["reviews"]:
-        if entry.get("reviewer") == "claude":
-            continue
-        account = accounts.account_named(cfg, entry["account"])
-        accounts.prepare_home(account)
-        subprocess.run([config.codex_binary(), "archive", entry["thread"]], env=accounts.account_env(account), capture_output=True)
+        reviewers.from_entry(entry).clean(entry, cfg)
     record = config.TASKS / a.slug
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock.CLOCK.time()))
     archive = config.TASKS / ".archive" / f"{a.slug}-{stamp}"
@@ -414,6 +414,16 @@ def cmd_clean(a):
     if verdict is None:
         print(f"no lead verdict for {a.slug}; record it: verdict {a.slug} "
               + "|".join(telemetry_log.LEAD_VERDICTS) + " [--note TEXT]")
+
+
+def clean_codex_review(entry, cfg):
+    account = accounts.account_named(cfg, entry["account"])
+    accounts.prepare_home(account)
+    subprocess.run([config.codex_binary(), "archive", entry["thread"]], env=accounts.account_env(account), capture_output=True)
+
+
+reviewers.CODEX_REVIEWER.bind(sys.modules[__name__], stats="print_codex_review_stats", clean="clean_codex_review")
+reviewers.CLAUDE_REVIEWER.bind(sys.modules[__name__], prepare="prepare_claude_review")
 
 
 def cmd_verdict(a):

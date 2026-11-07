@@ -5,7 +5,7 @@ import os
 from contextlib import contextmanager
 from typing import Callable, Literal, NamedTuple, Optional
 
-from . import clock, config, procs, threads
+from . import clock, config, procs, reviewers, threads
 
 
 def interruption_message(st):
@@ -134,7 +134,7 @@ STATE_FIELDS = {
     "check_paths": StateField("history"),  # Accumulating protected paths; explicit --no-check clears it.
     "max_turn_minutes": StateField("turn"),  # say replaces this launch parameter, not spawn.
     "review_angles": StateField("turn"),  # say/review replace this launch parameter, not spawn.
-    "reviewer": StateField("task", load_default=lambda st: "codex"),
+    "reviewer": StateField("task", load_default=lambda st: reviewers.CODEX_REVIEWER.name),
     "publish": StateField("turn"),  # Last work receipt survives standalone review, like result.
     # New user turns discard the exec cursor; automatic phases retain the last attempt.
     "exec_event_start": StateField("attempt", spawn_reset=STATE_DELETE),

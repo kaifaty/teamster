@@ -1,16 +1,142 @@
 """Review angles and automatic fix cycle tests."""
+import contextlib
+import io
 import json
 import os
 import shlex
 import shutil
 import signal
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 from rotation_support import PYTHON, SCRIPT, RotationTestCase
 
 
+def fixture_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sleep=None, new_turn=False):
+    from teamster import clock, reviewers, task_state, telemetry_log
+
+    reviewer = reviewers.from_entry(st)
+    with telemetry_log.record_phase(st, "review", stopped) as phase:
+        phase.reviewer = reviewer.name
+        now = clock.CLOCK.time()
+        st["reviews"].append({"reviewer": reviewer.name, "account": "fixture-review-account",
+                              "thread": "fixture-review-position", "started": now, "finished": now,
+                              "result": {"verdict": "clean", "findings": [], "summary": "Fixture review complete."},
+                              "round": len(st.get("rounds", [])), "outcome": "completed"})
+        st.update(outcome="completed", review_account="fixture-review-account")
+        task_state.save(st)
+    return st["outcome"]
+
+
 class ReviewFixTests(RotationTestCase):
+    def test_registered_reviewer_lifecycle(self):
+        self.env.update(HOME=str(self.root), USER="fixture-user")
+        name = "fixture-reviewer"
+        self.configure(reviewer=name)
+        self.account(self.home, "A", self.reset,
+                     runs=[{"mode": "complete", "reply": self.work_result()}])
+        worker = self.worker()
+        owner = sys.modules[__name__]
+        reviewer = worker.reviewers.Reviewer(name)
+        reviewer.bind(owner, run="fixture_review_turn", prepare="fixture_review_prepare",
+                      stats="fixture_review_stats", clean="fixture_review_clean")
+        worker.reviewers.register(reviewer)
+        self.addCleanup(worker.reviewers.REVIEWERS.pop, name)
+        for path in SCRIPT.parent.glob("*.py"):
+            self.assertNotIn(name, path.read_text())
+
+        original_spawn = worker.supervisor.spawn
+
+        def inline_supervisor(st, *args, **kwargs):
+            # Preserve the supervisor cycle while retaining the test-only registry.
+            proc = SimpleNamespace(pid=os.getpid(), poll=lambda: 0)
+            with mock.patch.object(worker.supervisor.subprocess, "Popen", return_value=proc):
+                original_spawn(st, *args, **kwargs)
+            with mock.patch.object(worker.supervisor.signal, "signal"):
+                worker.supervisor.cmd__run(SimpleNamespace(slug=st["slug"]))
+            return proc
+
+        def cli(*args):
+            output = io.StringIO()
+            with mock.patch.object(sys, "argv", [str(SCRIPT), *args]), contextlib.redirect_stdout(output):
+                worker.cli.main()
+            return output.getvalue()
+
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "spawn", side_effect=inline_supervisor), \
+                mock.patch.object(owner, "fixture_review_turn", wraps=fixture_review_turn) as run, \
+                mock.patch.object(owner, "fixture_review_prepare", create=True) as prepare, \
+                mock.patch.object(owner, "fixture_review_stats", create=True) as stats, \
+                mock.patch.object(owner, "fixture_review_clean", create=True) as clean:
+            cli("start", "registered-review", "--brief", str(self.brief), "--repo", str(self.repo), "--no-push")
+            self.assertEqual(self.state("registered-review")["reviewer"], name)
+            self.assertEqual(self.state("registered-review")["outcome"], "completed")
+            cli("review", "registered-review", "--reviewer", name)
+            state = self.state("registered-review")
+            self.assertEqual(state["outcome"], "completed", state.get("error"))
+            self.assertEqual(state["review_result"]["verdict"], "clean")
+            run.assert_called_once()
+            self.assertEqual(prepare.call_count, 2)
+            entry, = state["reviews"]
+            self.assertEqual(entry["reviewer"], name)
+            self.assertIn("Fixture review complete.", cli("wait", "registered-review"))
+            with mock.patch.object(worker.commands, "print_codex_review_stats") as legacy_stats:
+                cli("stats", "registered-review")
+            legacy_stats.assert_called_once_with(state["threads"][0], worker.config.accounts_config())
+            stats.assert_called_once_with(entry, worker.config.accounts_config())
+            report = json.loads(cli("report", "--json", "--by", "reviewer"))
+            task, = report["tasks"]
+            self.assertEqual(task["reviewers"], [name])
+            self.assertEqual(task["reviews"][0]["reviewer"], name)
+            self.assertEqual(report["summary"]["reviewers"][name], {"reviews": 1, "cost_usd": 0})
+            cli("clean", "registered-review")
+            clean.assert_called_once_with(entry, worker.config.accounts_config())
+            self.assertFalse((worker.config.TASKS / "registered-review").exists())
+            archived, = (worker.config.TASKS / ".archive").glob("registered-review-*/state.json")
+            self.assertEqual(json.loads(archived.read_text())["reviews"][0]["reviewer"], name)
+            self.assertEqual(json.loads(cli("report", "--json"))["tasks"][0]["reviewers"], [name])
+
+    def test_registered_reviewer_fallback_chain_and_stop(self):
+        self.configure()
+        worker = self.worker()
+        owner = sys.modules[__name__]
+        first = worker.reviewers.Reviewer("fixture-first-review", fallback="fixture-second-review")
+        second = worker.reviewers.Reviewer("fixture-second-review", fallback=worker.reviewers.CODEX_REVIEWER.name)
+        for reviewer in (first, second):
+            reviewer.bind(owner, run="fixture_review_turn")
+            worker.reviewers.register(reviewer)
+            self.addCleanup(worker.reviewers.REVIEWERS.pop, reviewer.name)
+
+        for stop in (False, True):
+            with self.subTest(stopped=stop):
+                stopped = [False]
+                state = {"slug": "fallback-review", "reviewer": first.name, "reviews": [], "account": "fixture-work"}
+
+                def unavailable(st, *args, **kwargs):
+                    st.update(outcome="unavailable", review_account="fixture-unavailable")
+                    if stop:
+                        st.update(pid=os.getpid(), stop_request={"pid": os.getpid()})
+                    stopped[0] = stop
+                    return "unavailable"
+
+                def complete(st, *args, **kwargs):
+                    self.assertIsNone(st["review_account"])
+                    st.update(outcome="completed")
+
+                with mock.patch.object(owner, "fixture_review_turn", side_effect=unavailable) as run, \
+                        mock.patch.object(worker.turns, "run_turn", side_effect=complete) as fallback, \
+                        mock.patch.object(worker.task_state, "save"), \
+                        mock.patch.object(worker.budgets, "stop_at_weekly_budget", return_value=False), \
+                        mock.patch.object(worker.notifications, "notify"):
+                    worker.review_cycle.review_turn(state, worker.config.accounts_config(), "Review.", None,
+                                                     lambda: stopped[0], mock.Mock(), angles=[])
+                self.assertEqual(run.call_count, 1 if stop else 2)
+                self.assertEqual(fallback.call_count, 0 if stop else 1)
+                self.assertEqual(state["outcome"], "stopped" if stop else "completed")
+
     def test_claude_pr_text_start_check_publish_and_say_resume_the_same_account_session(self):
         self.fixture_timeout = 90
         result = self.work_result(pr_title="Implement Claude execution", pr_body="Run task work with Claude.")

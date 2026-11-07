@@ -2,6 +2,7 @@
 
 Layer 0:
     executors (implemented): work-executor contract, registry and state-only policies.
+    reviewers (implemented): reviewer contract, registry and state-only policies.
     procs (implemented): process execution, signals, and termination.
     result_schema (implemented): result schemas, parsing, and output lines.
 Layer 1:
@@ -57,6 +58,7 @@ owned definitions through their module so patches reach every caller. Lower
 layers never import higher layers, imports remain acyclic, and package modules
 never import an entrypoint. Do not rebind module aliases or use dynamic
 namespaces. Only config.py and __main__.py may use __file__; usage text stays in cli.py.
+The executors and reviewers registries share the register, get and names API.
 """
 
-__version__ = "1.53.1"
+__version__ = "1.53.2"

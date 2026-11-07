@@ -452,12 +452,14 @@ def check_layout(scripts):
             if name not in global_reads:
                 report(path, line, "unused-import", name)
         for name, line in bindings.nonimports.items():
-            if name in definitions:
-                other_path, other_line = definitions[name]
+            key = ((module, name) if module in {"teamster.executors", "teamster.reviewers"}
+                   and name in {"register", "get", "names"} else name)
+            if key in definitions:
+                other_path, other_line = definitions[key]
                 report(path, line, "duplicate-name", "%s already defined at %s:%s"
                        % (name, other_path, other_line))
             else:
-                definitions[name] = (path, line)
+                definitions[key] = (path, line)
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in aliases:
                 target = aliases[node.value.id][0]
