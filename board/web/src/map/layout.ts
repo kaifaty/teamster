@@ -1,229 +1,195 @@
-// Where things stand on the island, in world units. Pure numbers: the scene and the tests share it.
-// x grows to the east (right on screen), z to the south (towards the camera), the ground is y = 0.
+// Where things stand on the map, in world units. Pure numbers: the scene, the labels and the tests share it.
+// x grows to the right, y downwards. The camera turns world units into screen pixels.
 
 import type { Place } from "./placement";
 
 export interface Point {
   x: number;
-  z: number;
+  y: number;
 }
 
-/** A place an agent stands at; it faces the direction (sin face, cos face). */
-export interface Spot extends Point {
-  face: number;
+export interface Size {
+  width: number;
+  height: number;
 }
 
-const SOUTH = 0;
-const NORTH = Math.PI;
-/** The agent stands a little east of its bench's middle, beside the monitor. */
-const BENCH_AGENT_X = 0.2;
-const EAST = Math.PI / 2;
-const WEST = -Math.PI / 2;
-
-/** The island: an ellipse with a fixed, slightly uneven coast. */
-export const ISLAND = { x: 0, z: 1.5, rx: 15.6, rz: 11.4 };
-
-/** Coast points, counter-clockwise seen from above; the same every time. */
-export function islandOutline(count = 30): Point[] {
-  const points: Point[] = [];
-  for (let i = 0; i < count; i++) {
-    const angle = (i / count) * Math.PI * 2;
-    const bump = 1 + 0.035 * Math.sin(angle * 3 + 0.6) + 0.025 * Math.sin(angle * 7 + 1.9);
-    points.push({ x: ISLAND.x + Math.cos(angle) * ISLAND.rx * bump, z: ISLAND.z - Math.sin(angle) * ISLAND.rz * bump });
-  }
-  return points;
+/** The world is laid out for the shape of the window: wide on a desktop, tall on a phone. */
+export function worldSize(viewport: Size): Size {
+  return viewport.width >= viewport.height ? { width: 1600, height: 1000 } : { width: 1000, height: 1500 };
 }
 
-/** 0 at the centre, 1 on the smooth ellipse; the uneven coast stays within ±6 % of it. */
-export function islandRadius(p: Point): number {
-  return Math.hypot((p.x - ISLAND.x) / ISLAND.rx, (p.z - ISLAND.z) / ISLAND.rz);
+/** The camera: a world point (x, y) is drawn at (x * zoom + tx, y * zoom + ty). */
+export interface Camera {
+  zoom: number;
+  tx: number;
+  ty: number;
 }
 
-// Workbenches: a yard of 3 rows by 4 columns. The agent works behind its bench, facing the camera, so
-// that a label over its head covers the furniture of the row behind and never an agent.
-export const MAX_BENCHES = 12;
-export const BENCH_COLUMNS = [-5.1, -1.7, 1.7, 5.1] as const;
-export const BENCH_ROWS = [-4.5, 0, 4.5] as const;
-/** Benches fill from the middle, so that a few tasks stand near the centre. [row, column] */
-const BENCH_ORDER: readonly (readonly [number, number])[] = [
-  [1, 1], [1, 2], [0, 1], [0, 2], [2, 1], [2, 2],
-  [1, 0], [1, 3], [0, 0], [0, 3], [2, 0], [2, 3],
-];
-
-function benchCell(slot: number): readonly [number, number] {
-  return BENCH_ORDER[((slot % MAX_BENCHES) + MAX_BENCHES) % MAX_BENCHES]!;
+/** The whole world in the window, centred. */
+export function fitCamera(world: Size, viewport: Size): Camera {
+  const zoom = Math.min(viewport.width / world.width, viewport.height / world.height);
+  return { zoom, tx: (viewport.width - world.width * zoom) / 2, ty: (viewport.height - world.height * zoom) / 2 };
 }
 
-/** Centre of bench `slot`. */
-export function benchAt(slot: number): Point {
-  const [row, column] = benchCell(slot);
-  return { x: BENCH_COLUMNS[column]!, z: BENCH_ROWS[row]! };
+/** How far the camera may zoom in, as a multiple of the fitted zoom. */
+export const MAX_ZOOM = 3;
+
+/** `camera` zoomed by `factor` around the screen point `at`, within the fitted zoom and MAX_ZOOM. */
+export function zoomCamera(camera: Camera, factor: number, at: Point, fit: Camera): Camera {
+  const zoom = Math.min(fit.zoom * MAX_ZOOM, Math.max(fit.zoom, camera.zoom * factor));
+  const scale = zoom / camera.zoom;
+  return { zoom, tx: at.x - (at.x - camera.tx) * scale, ty: at.y - (at.y - camera.ty) * scale };
 }
 
-/** The yard of benches and their agents. */
-export const YARD = { x0: -6.6, x1: 6.6, z0: -6.7, z1: 5.3 };
-
-// Shared places. Each has a fixed landmark and slots that never overlap, for up to 12 agents.
-export const STAND = { x: -11.7, z: -3.2 }; // the test stand, facing east
-export const TABLES: readonly Point[] = [
-  { x: 10.0, z: -4.6 },
-  { x: 10.0, z: -2.4 },
-  { x: 10.0, z: -0.2 },
-];
-export const GATE = { x: 10.8, z: 2.6 }; // the gate faces south; agents wait in front of it
-export const TENTS: readonly Point[] = [
-  { x: -11.6, z: 1.6 },
-  { x: -9.75, z: 1.6 },
-  { x: -7.9, z: 1.6 },
-  { x: -11.6, z: 3.9 },
-  { x: -9.75, z: 3.9 },
-  { x: -7.9, z: 3.9 },
-];
-export const PIER = { x: 0, z0: 10.8, z1: 14.8, width: 3.2 };
-
-/** Distance between neighbouring slots at a shared place; agents are about 0.6 wide. */
-export const SLOT_STEP = 0.95;
-
-/** Where the agent of `slot` stands at `place`. For a bench the slot is the bench number. */
-export function spotAt(place: Place, slot: number): Spot {
-  switch (place) {
-    case "bench": {
-      const bench = benchAt(slot);
-      return { x: bench.x + BENCH_AGENT_X, z: bench.z - 0.85, face: SOUTH };
-    }
-    case "stand": {
-      // A queue in front of the stand, 4 deep, filling away from it.
-      const column = Math.floor(slot / 4);
-      return { x: -10.0 + column * SLOT_STEP, z: -4.6 + (slot % 4) * SLOT_STEP, face: WEST };
-    }
-    case "review": {
-      // The first three sit at a table; the rest wait beside the tables.
-      const table = TABLES[slot];
-      if (table) return { x: table.x - 0.85, z: table.z, face: EAST };
-      const wait = slot - TABLES.length;
-      if (wait < 7) return { x: 8.15, z: -4.8 + wait * SLOT_STEP, face: EAST };
-      return { x: 11.75, z: -2.9 + (wait - 7) * SLOT_STEP, face: WEST };
-    }
-    case "gate": {
-      // Rows of three in front of the gate, the first row nearest.
-      const offsets = [0, -SLOT_STEP, SLOT_STEP] as const;
-      return { x: GATE.x + offsets[slot % 3]!, z: GATE.z + 1.0 + Math.floor(slot / 3) * 0.9, face: NORTH };
-    }
-    case "tent": {
-      // In front of a tent; past six tents, on mats in a row.
-      const tent = TENTS[slot];
-      if (tent) return { x: tent.x, z: tent.z + 0.85, face: SOUTH };
-      return { x: -11.6 + (slot - TENTS.length) * 0.9, z: 6.5, face: SOUTH };
-    }
-    case "dock": {
-      // Rows of three, the first at the end of the pier.
-      const row = Math.floor(slot / 3);
-      const offsets = [0, -SLOT_STEP, SLOT_STEP] as const;
-      return { x: PIER.x + offsets[slot % 3]!, z: PIER.z1 - 0.6 - row * SLOT_STEP, face: SOUTH };
-    }
-  }
-}
-
-/** Seat of the second, reviewing agent at table `slot`, or null when the agent waits without a table. */
-export function companionSpot(slot: number): Spot | null {
-  const table = TABLES[slot];
-  return table ? { x: table.x + 0.85, z: table.z, face: WEST } : null;
-}
-
-/** Whether the agent at `place` / `slot` has a seat (a stool or a table chair). */
-export function seated(place: Place, slot: number): boolean {
-  return place === "review" && slot < TABLES.length;
-}
-
-// Paths. Agents walk along lanes between the bench rows, the two side roads and short spurs to the
-// shared places, so that they never cut through benches.
-const LANES = BENCH_ROWS.map((z) => z - 1.9);
-const SIDE = 7.2;
-const NODES: readonly Point[] = [
-  { x: -SIDE, z: LANES[0]! }, // 0 L0
-  { x: -SIDE, z: LANES[1]! }, // 1 L1
-  { x: -SIDE, z: LANES[2]! }, // 2 L2
-  { x: SIDE, z: LANES[0]! }, // 3 R0
-  { x: SIDE, z: LANES[1]! }, // 4 R1
-  { x: SIDE, z: LANES[2]! }, // 5 R2
-  { x: 0, z: LANES[2]! }, // 6 M2, where the dock path leaves lane 2
-  { x: -8.4, z: -0.9 }, // 7 stand
-  { x: 7.9, z: 1.0 }, // 8 review
-  { x: 8.7, z: 4.3 }, // 9 gate
-  { x: -7.2, z: 5.6 }, // 10 tents
-  { x: 0, z: 10.6 }, // 11 dock
-];
-const EDGES: readonly (readonly [number, number])[] = [
-  [0, 3], [1, 4], [2, 6], [6, 5], // lanes
-  [0, 1], [1, 2], [3, 4], [4, 5], // side roads
-  [6, 11], // dock path
-  [7, 1], [7, 2], [8, 4], [8, 5], [9, 5], [10, 2],
-];
-/** The paths agents walk, as segments to draw on the ground. */
-export const PATHS: readonly (readonly [Point, Point])[] = EDGES.map(([a, b]) => [NODES[a]!, NODES[b]!] as const);
-const DOOR: Record<Exclude<Place, "bench">, number> = { stand: 7, review: 8, gate: 9, tent: 10, dock: 11 };
-
-/** Where a point joins the path network: a point on edge [a, b] (a == b for a node). */
-export interface Attach {
-  at: Point;
-  edge: readonly [number, number];
-}
-
-/** How the agent resting at `place` / `slot` joins the path network. */
-export function attachOf(place: Place, slot: number): Attach {
-  if (place !== "bench") {
-    const node = DOOR[place];
-    return { at: NODES[node]!, edge: [node, node] };
-  }
-  const [row, column] = benchCell(slot);
-  const at = { x: BENCH_COLUMNS[column]!, z: LANES[row]! };
-  const edge: readonly [number, number] = row === 0 ? [0, 3] : row === 1 ? [1, 4] : at.x < 0 ? [2, 6] : [6, 5];
-  return { at, edge };
-}
-
-const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.z - b.z);
-const sameEdge = (a: readonly [number, number], b: readonly [number, number]) =>
-  (a[0] === b[0] && a[1] === b[1]) || (a[0] === b[1] && a[1] === b[0]);
-
-/** Waypoints along the network from `from.at` to `to.at`, both included, each with its own attachment. */
-export function route(from: Attach, to: Attach): Attach[] {
-  // Dijkstra over the nodes plus two virtual ones: FROM = n, TO = n + 1.
-  const n = NODES.length;
-  const point = (i: number) => (i === n ? from.at : i === n + 1 ? to.at : NODES[i]!);
-  const links: [number, number][][] = Array.from({ length: n + 2 }, () => []);
-  const link = (a: number, b: number) => {
-    const d = distance(point(a), point(b));
-    links[a]!.push([b, d]);
-    links[b]!.push([a, d]);
+/** `camera` kept so that the world covers the window; a world smaller than the window stays centred. */
+export function clampCamera(camera: Camera, world: Size, viewport: Size): Camera {
+  const axis = (offset: number, worldLength: number, viewLength: number) => {
+    const length = worldLength * camera.zoom;
+    if (length <= viewLength) return (viewLength - length) / 2;
+    return Math.min(0, Math.max(viewLength - length, offset));
   };
-  for (const [a, b] of EDGES) link(a, b);
-  for (const node of new Set(from.edge)) link(n, node);
-  for (const node of new Set(to.edge)) link(n + 1, node);
-  if (sameEdge(from.edge, to.edge)) link(n, n + 1);
+  return { zoom: camera.zoom, tx: axis(camera.tx, world.width, viewport.width), ty: axis(camera.ty, world.height, viewport.height) };
+}
 
-  const best = new Array<number>(n + 2).fill(Infinity);
-  const previous = new Array<number>(n + 2).fill(-1);
-  const done = new Array<boolean>(n + 2).fill(false);
-  best[n] = 0;
-  for (;;) {
-    let current = -1;
-    for (let i = 0; i < n + 2; i++) if (!done[i] && best[i]! < Infinity && (current < 0 || best[i]! < best[current]!)) current = i;
-    if (current < 0 || current === n + 1) break;
-    done[current] = true;
-    for (const [next, d] of links[current]!) {
-      if (best[current]! + d < best[next]!) {
-        best[next] = best[current]! + d;
-        previous[next] = current;
-      }
-    }
+/** Stable, well spread number from a name. */
+export function hashName(name: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) {
+    hash ^= name.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
   }
-  if (best[n + 1] === Infinity) return [from, to];
-  const path: Attach[] = [];
-  for (let i = n + 1; i >= 0; i = previous[i]!) {
-    const step: Attach = i === n ? from : i === n + 1 ? to : { at: NODES[i]!, edge: [i, i] };
-    const last = path[path.length - 1];
-    if (!last || distance(last.at, step.at) > 1e-6) path.push(step);
-    if (i === n) break;
+  return hash >>> 0;
+}
+
+/** Which of `count` skies system `repo` has; the same every time, or null when there are none. */
+export function backdropOf(repo: string, count: number): number | null {
+  return count > 0 ? hashName(repo) % count : null;
+}
+
+// System ------------------------------------------------------------------------------------------
+
+/** The ellipse of the outermost orbit. */
+export interface SystemFrame {
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+}
+
+export function systemFrame(size: Size): SystemFrame {
+  const ry = size.height / 2 - 130;
+  return { cx: size.width / 2, cy: size.height / 2 + 24, rx: Math.min(size.width / 2 - 150, ry * 2.6), ry };
+}
+
+/** Stations never move, so the eye learns them: `orbit` is a share of the frame, `angle` is in degrees. */
+export const STATIONS: Record<Place, { orbit: number; angle: number; radius: number }> = {
+  yard: { orbit: 0.9, angle: 180, radius: 110 },
+  range: { orbit: 0.74, angle: 238, radius: 64 },
+  inspection: { orbit: 0.64, angle: 320, radius: 96 },
+  gate: { orbit: 0.46, angle: 62, radius: 58 },
+  roadstead: { orbit: 0.3, angle: 170, radius: 46 },
+  cryo: { orbit: 0.97, angle: 345, radius: 70 },
+  command: { orbit: 0.9, angle: 128, radius: 76 },
+};
+
+/** The way a task goes, towards the sun. */
+export const ROUTE: readonly Place[] = ["yard", "range", "inspection", "gate", "roadstead"];
+
+export const SUN_RADIUS = 78;
+
+export function orbitPoint(frame: SystemFrame, orbit: number, degrees: number): Point {
+  const angle = (degrees * Math.PI) / 180;
+  return { x: frame.cx + orbit * frame.rx * Math.cos(angle), y: frame.cy + orbit * frame.ry * Math.sin(angle) };
+}
+
+/** Ships keep out of the sun by this distance from its centre. */
+export const SUN_CLEARANCE = SUN_RADIUS + 44;
+
+/** A station's point. On a narrow screen the inner orbits squeeze, so a station is kept clear of the sun. */
+export function stationAt(place: Place, frame: SystemFrame): Point {
+  const { orbit, angle, radius } = STATIONS[place];
+  const point = orbitPoint(frame, orbit, angle);
+  const distance = Math.hypot(point.x - frame.cx, point.y - frame.cy);
+  const least = SUN_RADIUS + radius + 36;
+  if (distance >= least) return point;
+  return { x: frame.cx + ((point.x - frame.cx) / distance) * least, y: frame.cy + ((point.y - frame.cy) / distance) * least };
+}
+
+/** Ships circle this far from a station's edge; further rings follow at RING_STEP. */
+const RING_GAP = 46;
+const RING_STEP = 62;
+
+/** Ship `slot` circles its station on a ring: `radius` from the station's centre, starting at `angle` radians. */
+export function ringOf(place: Place, slot: number): { radius: number; angle: number } {
+  let ring = 0;
+  let index = slot;
+  for (let capacity = 8; index >= capacity; capacity += 4) {
+    index -= capacity;
+    ring += 1;
   }
-  return path.reverse();
+  const capacity = 8 + ring * 4;
+  return { radius: STATIONS[place].radius + RING_GAP + ring * RING_STEP, angle: (index / capacity) * Math.PI * 2 + ring * 0.4 };
+}
+
+/** A ship's point on its ring; the rings are flattened a little, like the orbits. */
+export function ringPoint(station: Point, radius: number, angle: number): Point {
+  return { x: station.x + radius * Math.cos(angle), y: station.y + radius * RING_FLATTENING * Math.sin(angle) };
+}
+
+const RING_FLATTENING = 0.75;
+
+/**
+ * Where a station's card stands: centred under the first ring of its ships. The command station is low on the
+ * map, so its card starts beside the ring instead, and a long list still fits.
+ */
+export function cardPlace(place: Place, frame: SystemFrame): Point & { side: boolean } {
+  const station = stationAt(place, frame);
+  const reach = STATIONS[place].radius + RING_GAP;
+  if (place === "command") return { x: station.x + reach + 30, y: station.y - 18, side: true };
+  return { x: station.x, y: station.y + reach * RING_FLATTENING + 34, side: false };
+}
+
+// Galaxy ------------------------------------------------------------------------------------------
+
+const GRIDS: readonly (readonly [number, number])[] = [
+  [6, 3],
+  [8, 4],
+  [10, 5],
+  [14, 7],
+];
+
+/**
+ * Stars of the repositories. Each takes a cell of a grid by the hash of its name, so a star stays in place
+ * when other repositories come and go, and two stars never share a cell while the grid has room.
+ */
+export function starPositions(repos: readonly string[], size: Size): Map<string, Point> {
+  const [columns, rows] = GRIDS.find(([c, r]) => c * r >= repos.length * 1.5) ?? GRIDS[GRIDS.length - 1]!;
+  const count = columns * rows;
+  const taken = new Set<number>();
+  const result = new Map<string, Point>();
+  for (const repo of [...repos].sort((a, b) => a.localeCompare(b))) {
+    const hash = hashName(repo);
+    let cell = hash % count;
+    for (let tries = 0; tries < count && taken.has(cell); tries++) cell = (cell + 1) % count;
+    taken.add(cell);
+    const jitterX = ((hash >>> 8) % 100) / 100 - 0.5;
+    const jitterY = ((hash >>> 16) % 100) / 100 - 0.5;
+    const column = (cell % columns) + 0.5 + jitterX * 0.4;
+    const row = Math.floor(cell / columns) + 0.5 + jitterY * 0.4;
+    result.set(repo, { x: size.width * (0.08 + (0.84 * column) / columns), y: size.height * (0.26 + (0.46 * row) / rows) });
+  }
+  return result;
+}
+
+/** A star grows with the number of its ships; a star without ships stays small. */
+export function starRadius(live: number): number {
+  return live === 0 ? 16 : Math.min(46, 18 + Math.round(Math.sqrt(live) * 9));
+}
+
+/** Codex depots stand along the top edge, Claude depots along the bottom one. */
+export function depotPosition(index: number, count: number, row: "top" | "bottom", size: Size): Point {
+  return {
+    x: (size.width * (index + 0.5)) / Math.max(1, count),
+    y: row === "top" ? 125 : size.height - 90,
+  };
 }

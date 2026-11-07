@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
 import { formatAge, formatDuration, formatUntil } from "../lib/format";
 import { ACTIVITY, EXECUTORS, PHASES, prLabel, problemLabel, taskTitle } from "../lib/labels";
 import TaskPanel from "../components/TaskPanel.vue";
-import { defaultRepo, islandTasks, placement, type Placement } from "./placement";
-import { NoWebGLError, createIslandScene, type IslandScene, type SceneEntry, type ZoomLevel } from "./scene";
+import frameLight from "./art/frame-light.png";
+import { LOW_FUEL, depots, depotPositions, stars, supplyLines } from "./fleet";
+import { cardPlace, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
+import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
+import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type ShipEntry } from "./scene";
 
 const props = defineProps<{ board: Board; active: boolean }>();
 const emit = defineEmits<{ board: [] }>();
@@ -23,7 +26,7 @@ const demo = import.meta.env.MODE === "fixture";
 const sourceKind = ref<"board" | "scenario">("board");
 const scenario = shallowRef<Board | null>(null);
 watch(sourceKind, async (kind) => {
-  chosen.value = null;
+  repo.value = null;
   selected.value = null;
   if (kind !== "scenario" || scenario.value) return;
   // Written out so that a production build drops the scenario.
@@ -38,37 +41,35 @@ const source = computed(() => (sourceKind.value === "scenario" && scenario.value
 const tasks = computed(() => source.value.tasks.value);
 const loaded = computed(() => source.value.state.value.loaded);
 
-// Islands: one per repository; by default the one with the most tasks that are not closed.
-const chosen = ref<string | null>(null);
-const repos = computed(() => {
-  const counts = new Map<string, number>();
-  for (const task of tasks.value) counts.set(task.repo, (counts.get(task.repo) ?? 0) + (task.column === "closed" ? 0 : 1));
-  return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([name, live]) => ({ name, live }));
-});
-const repo = computed(() =>
-  chosen.value && repos.value.some((item) => item.name === chosen.value) ? chosen.value : defaultRepo(tasks.value),
-);
+// Galaxy: one star per repository, one depot per account. Null means the whole galaxy is shown.
+const repo = ref<string | null>(null);
+const starList = computed(() => stars(tasks.value));
+const depotList = computed(() => depots(source.value.state.value.accounts?.data ?? null, now.value));
+const lines = computed(() => supplyLines(tasks.value, depotList.value));
 const repoModel = computed({
   get: () => repo.value ?? "",
   set: (value: string) => {
-    chosen.value = value;
+    repo.value = value || null;
   },
 });
+watch(starList, (list) => {
+  if (repo.value && !list.some((star) => star.repo === repo.value)) repo.value = null;
+});
 
-const island = computed(() => (repo.value ? islandTasks(tasks.value, repo.value) : { shown: [], hidden: [] }));
-const entries = computed<SceneEntry[]>(() =>
-  island.value.shown.map((task, bench) => ({ task, bench, placement: placement(task, now.value, island.value.shown)! })),
+const system = computed(() => (repo.value ? systemTasks(tasks.value, repo.value) : { shown: [], hidden: [] }));
+const entries = computed<ShipEntry[]>(() =>
+  system.value.shown.map((task) => ({ task, placement: placement(task, now.value, system.value.shown)! })),
 );
 
 // Labels ------------------------------------------------------------------------------------------
 
-const zoom = ref<ZoomLevel>("mid");
+const world = ref<Size>(worldSize({ width: 1600, height: 1000 }));
 const glyph = (task: TaskSummary) => (task.executor === "codex" ? "◆" : "✳");
 
 function phaseText(task: TaskSummary): string {
   switch (task.column) {
     case "sleeping":
-      return PHASES.sleeping;
+      return task.sleeping_until !== null ? `сон ${formatUntil(task.sleeping_until, now.value)}` : PHASES.sleeping;
     case "review_me":
       return "ждёт тебя";
     case "attention":
@@ -80,67 +81,96 @@ function phaseText(task: TaskSummary): string {
   }
 }
 
-function phaseClass(task: TaskSummary): string {
-  if (task.column === "attention") return "p-attention";
-  if (task.column === "review_me") return "p-ready";
-  if (task.column === "sleeping") return "p-sleeping";
-  return `p-${task.phase}`;
-}
-
-/** The agent's line: its latest activity and how old it is, or why it no longer works. */
-function activityLine(task: TaskSummary, where: Placement): { icon: string; text: string; age: string; stale: boolean } {
-  if (task.column === "review_me") {
-    return { icon: "▣", text: task.pr ? `готово · ${prLabel(task.pr)}` : "готово", age: formatAge(task.updated_at, now.value), stale: false };
-  }
-  if (!task.alive) {
-    const text = task.summary ?? problemLabel(task) ?? "надзиратель не запущен";
-    return { icon: "!", text, age: formatAge(task.updated_at, now.value), stale: true };
-  }
+/** The ship's line: its latest activity and how old it is, or why it no longer works. */
+function activityLine(task: TaskSummary, where: Placement): string {
+  if (task.column === "review_me") return task.pr ? `готово · ${prLabel(task.pr)}` : "готово";
+  if (!task.alive) return `${task.summary ?? problemLabel(task) ?? "надзиратель не запущен"} · ${formatAge(task.updated_at, now.value)}`;
   const activity = task.activity;
-  if (!activity) return { icon: "·", text: "нет активности", age: "", stale: true };
-  // The age matters once the activity is stale: the agent stands still, and the label says since when.
-  return {
-    icon: ACTIVITY[activity.kind].icon,
-    text: activity.text,
-    age: where.stale && activity.at !== null ? formatAge(activity.at, now.value) : "",
-    stale: where.stale,
-  };
+  if (!activity) return "нет активности";
+  const age = where.stale && activity.at !== null ? ` · ${formatAge(activity.at, now.value)}` : "";
+  return `${ACTIVITY[activity.kind].icon} ${activity.text}${age}`;
 }
 
-const labels = computed(() =>
-  entries.value.map(({ task, placement: where }) => {
-    const phase = phaseText(task);
-    const line = activityLine(task, where);
-    const who = `${EXECUTORS[task.executor]}${task.account ? ` · ${task.account}` : ""}`;
+const STATION_TEXT: Record<Place, { name: string; note: string }> = {
+  command: { name: "Штаб", note: "твои сессии" },
+  yard: { name: "Верфь", note: "работа и фиксы" },
+  range: { name: "Полигон", note: "проверка" },
+  inspection: { name: "Инспекция", note: "ревью" },
+  gate: { name: "Гиперврата", note: "CI" },
+  roadstead: { name: "Рейд", note: "ждёт тебя" },
+  cryo: { name: "Криополе", note: "сон" },
+};
+
+/** Rows a station card shows before it folds the rest. */
+const CARD_ROWS = 4;
+const unfolded = ref<Place | null>(null);
+watch(repo, () => {
+  unfolded.value = null;
+});
+
+/** Where a label stands in the world; the camera's --tx, --ty and --zoom on the overlay turn it into pixels. */
+const at = (x: number, y: number) => ({ "--x": Math.round(x), "--y": Math.round(y) });
+
+const starLabels = computed(() => {
+  const places = starPositions(starList.value.map((star) => star.repo), world.value);
+  return starList.value.map((star) => {
+    const point = places.get(star.repo)!;
+    const notes = [
+      star.attention ? `тревог ${star.attention}` : "",
+      star.ready ? `ждут ${star.ready}` : "",
+      star.sleeping ? `спят ${star.sleeping}` : "",
+    ].filter(Boolean);
+    return { star, style: at(point.x, point.y + starRadius(star.live) * 1.25 + 44), notes: notes.join(" · ") };
+  });
+});
+
+const depotLabels = computed(() => {
+  const places = depotPositions(depotList.value, world.value);
+  return depotList.value.map((depot) => {
+    const point = places.get(depot.key)!;
+    const top = depot.executor === "codex";
     return {
-      task,
-      name: taskTitle(task),
-      where,
-      // At its bench the agent shares the bench label; elsewhere it has its own.
-      home: where.place === "bench",
-      phase,
-      phaseClass: phaseClass(task),
-      line,
-      who,
-      title: [taskTitle(task), phase, who, `${line.text}${line.age ? ` · ${line.age}` : ""}`].join("\n"),
-      wake: task.sleeping_until !== null ? formatUntil(task.sleeping_until, now.value) : "до сброса",
+      depot,
+      top,
+      style: at(point.x, point.y + (top ? 76 : -66)),
+      fuel: depot.status ?? (depot.fuel === null ? "нет данных" : `${depot.fuel}%`),
+      low: depot.bad || (depot.fuel !== null && depot.fuel < LOW_FUEL),
     };
-  }),
-);
+  });
+});
 
-const CAPTIONS = [
-  { id: "stand", text: "стенд проверок" },
-  { id: "review", text: "стол ревью" },
-  { id: "gate", text: "ворота CI" },
-  { id: "tent", text: "палатки" },
-  { id: "dock", text: "причал" },
-] as const;
+const cards = computed(() => {
+  const frame = systemFrame(world.value);
+  return PLACES.map((place) => {
+    const ships = entries.value
+      .filter((entry) => entry.placement.place === place)
+      .sort((a, b) => Number(b.placement.beacon) - Number(a.placement.beacon) || a.placement.slot - b.placement.slot)
+      .map(({ task, placement: where }) => ({
+        task,
+        name: taskTitle(task),
+        phase: phaseText(task),
+        beacon: where.beacon,
+        title: [taskTitle(task), phaseText(task), `${EXECUTORS[task.executor]}${task.account ? ` · ${task.account}` : ""}`, activityLine(task, where)].join("\n"),
+      }));
+    const point = cardPlace(place, frame);
+    const open = unfolded.value === place;
+    return {
+      place,
+      text: STATION_TEXT[place],
+      ships: open ? ships : ships.slice(0, CARD_ROWS),
+      folded: open ? 0 : Math.max(0, ships.length - CARD_ROWS),
+      side: point.side,
+      style: at(point.x, point.y),
+    };
+  });
+});
 
-const hiddenTitle = computed(() => island.value.hidden.map(taskTitle).join("\n"));
+const hiddenTitle = computed(() => system.value.hidden.map(taskTitle).join("\n"));
 
 // Panel -------------------------------------------------------------------------------------------
 
 const selected = ref<string | null>(null);
+const hovered = ref<string | null>(null);
 const selectedTask = computed(() => (selected.value ? (source.value.state.value.tasks[selected.value] ?? null) : null));
 
 function open(slug: string) {
@@ -151,29 +181,76 @@ function close() {
   const slug = selected.value;
   selected.value = null;
   void nextTick(() => {
-    const label = slug ? overlay.value?.querySelector<HTMLElement>(`[data-anchor="agent:${CSS.escape(slug)}"]`) : null;
-    (label && label.style.visibility !== "hidden" ? label : host.value?.querySelector<HTMLElement>("canvas"))?.focus();
+    const row = slug ? overlay.value?.querySelector<HTMLElement>(`[data-ship="${CSS.escape(slug)}"]`) : null;
+    (row ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus();
   });
+}
+
+// The labels of the place the map flies to wait for it to arrive.
+const flying = ref(false);
+let flightTimer: ReturnType<typeof setTimeout> | undefined;
+watch(repo, () => {
+  clearTimeout(flightTimer);
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  flying.value = true;
+  flightTimer = setTimeout(() => {
+    flying.value = false;
+  }, FLIGHT_SECONDS * 1000);
+});
+
+function enter(name: string) {
+  repo.value = name;
+}
+
+function leave() {
+  repo.value = null;
+  selected.value = null;
+}
+
+function onKey(event: KeyboardEvent) {
+  if (event.key === "Escape" && props.active && repo.value && !selected.value) leave();
 }
 
 // Scene -------------------------------------------------------------------------------------------
 
 const host = ref<HTMLElement | null>(null);
 const overlay = ref<HTMLElement | null>(null);
-const toolbar = ref<HTMLElement | null>(null);
 const failure = ref<"webgl" | "lost" | null>(null);
-let scene: IslandScene | null = null;
+let scene: FleetScene | null = null;
+let unmounted = false;
 
-function mount() {
-  if (!host.value || !overlay.value) return;
+function feed() {
+  if (!scene) return;
+  scene.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value });
+  scene.setView(repo.value);
+  scene.setShips(entries.value);
+  scene.setSelected(selected.value);
+  scene.setHovered(hovered.value);
+  scene.setActive(props.active);
+}
+
+function applyCamera(camera: Camera) {
+  const style = overlay.value?.style;
+  style?.setProperty("--tx", `${camera.tx}px`);
+  style?.setProperty("--ty", `${camera.ty}px`);
+  style?.setProperty("--zoom", `${camera.zoom}`);
+}
+
+async function mount() {
+  if (!host.value) return;
+  let made: FleetScene;
   try {
-    scene = createIslandScene({
+    made = await createFleetScene({
       host: host.value,
-      overlay: overlay.value,
-      topInset: () => (toolbar.value ? toolbar.value.offsetTop + toolbar.value.offsetHeight : 0),
+      onEnter: enter,
+      onLeave: leave,
       onPick: open,
-      onZoom: (level) => {
-        zoom.value = level;
+      onHover: (slug) => {
+        hovered.value = slug;
+      },
+      onCamera: (next, camera) => {
+        world.value = next;
+        applyCamera(camera);
       },
       onLost: () => {
         failure.value = "lost";
@@ -182,15 +259,17 @@ function mount() {
       },
     });
   } catch (error) {
-    if (!(error instanceof NoWebGLError)) console.error(error);
+    console.error(error);
     failure.value = "webgl";
     return;
   }
+  if (unmounted) {
+    made.dispose();
+    return;
+  }
   failure.value = null;
-  scene.setEntries(entries.value);
-  scene.setSelected(selected.value);
-  scene.refreshLabels();
-  scene.setActive(props.active);
+  scene = made;
+  feed();
 }
 
 function retry() {
@@ -198,8 +277,11 @@ function retry() {
   void nextTick(mount);
 }
 
-watch(entries, (next) => scene?.setEntries(next));
+watch([starList, depotList, lines], () => scene?.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value }));
+watch(repo, (name) => scene?.setView(name), { flush: "sync" });
+watch(entries, (next) => scene?.setShips(next));
 watch(selected, (slug) => scene?.setSelected(slug));
+watch(hovered, (slug) => scene?.setHovered(slug));
 watch(
   () => props.active,
   (active) => {
@@ -208,9 +290,14 @@ watch(
     if (!active) selected.value = null;
   },
 );
-onMounted(mount);
-onUpdated(() => scene?.refreshLabels());
+onMounted(() => {
+  window.addEventListener("keydown", onKey);
+  void mount();
+});
 onBeforeUnmount(() => {
+  unmounted = true;
+  clearTimeout(flightTimer);
+  window.removeEventListener("keydown", onKey);
   scene?.dispose();
   scene = null;
   scenario.value?.stop();
@@ -218,13 +305,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="map" aria-label="Карта острова">
-    <div ref="toolbar" class="toolbar">
-      <label class="island">
-        <span>Остров</span>
-        <select v-model="repoModel" class="btn" :disabled="!repos.length">
-          <option v-if="!repos.length" value="">нет задач</option>
-          <option v-for="item in repos" :key="item.name" :value="item.name">{{ item.name }} · {{ item.live }}</option>
+  <section class="map" aria-label="Карта флота">
+    <div class="toolbar">
+      <button v-if="repo" type="button" class="btn" @click="leave">← Галактика</button>
+      <label class="picker">
+        <span>Система</span>
+        <select v-model="repoModel" class="btn" :disabled="!starList.length">
+          <option value="">вся галактика</option>
+          <option v-for="star in starList" :key="star.repo" :value="star.repo">{{ star.repo }} · {{ star.live }}</option>
         </select>
       </label>
       <div v-if="demo" class="seg" role="group" aria-label="Источник карты">
@@ -235,11 +323,11 @@ onBeforeUnmount(() => {
         <span class="codex">◆ Codex</span>
         <span class="claude">✳ Claude</span>
       </span>
-      <span class="hint">Перетаскивание — сдвиг, правая кнопка или два пальца — поворот, колесо — масштаб</span>
+      <span class="hint">{{ repo ? "Колесо назад или Esc — к галактике" : "Нажми на звезду или прокрути к ней колесо" }}</span>
     </div>
 
     <div v-if="failure" class="fallback" role="alert">
-      <p v-if="failure === 'webgl'">Карте нужен WebGL, а этот браузер его не даёт. Задачи видны на доске.</p>
+      <p v-if="failure === 'webgl'">Карта не смогла запустить графику в этом браузере. Задачи видны на доске.</p>
       <p v-else>Видеокарта сбросила карту. Можно попробовать ещё раз или перейти на доску.</p>
       <p>
         <a href="#" @click.prevent="emit('board')">Открыть доску</a>
@@ -248,68 +336,58 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-show="!failure" ref="host" class="stage">
-      <div ref="overlay" class="overlay" :class="`z-${zoom}`">
-        <span v-for="caption in CAPTIONS" :key="caption.id" class="lbl caption" :data-anchor="`place:${caption.id}`" data-priority="7">
-          {{ caption.text }}
-        </span>
-        <template v-for="label in labels" :key="label.task.slug">
+      <div ref="overlay" class="overlay" :class="{ flying }" :style="{ '--frame': `url(${frameLight})` }">
+        <template v-if="!repo">
           <button
+            v-for="label in starLabels"
+            :key="label.star.repo"
             type="button"
-            class="lbl bench"
-            :class="[label.phaseClass, label.task.executor, { selected: selected === label.task.slug, home: label.home }]"
-            :data-anchor="`bench:${label.task.slug}`"
-            data-fit="bench"
-            :data-priority="label.where.beacon ? 0 : selected === label.task.slug ? 1 : 2"
-            :title="label.title"
-            @click="open(label.task.slug)"
+            class="star"
+            :class="{ quiet: !label.star.live, alarm: label.star.attention }"
+            :style="label.style"
+            @click="enter(label.star.repo)"
           >
-            <span class="b-slug"><span v-if="label.where.beacon" class="alarm" aria-label="нужно внимание">!</span>{{ label.name }}</span>
-            <span class="b-phase"><span class="dot" aria-hidden="true"></span>{{ label.phase }}</span>
-            <template v-if="label.home">
-              <span class="b-who"><span class="glyph" aria-hidden="true">{{ glyph(label.task) }}</span>{{ label.who }}</span>
-              <span class="b-act" :class="{ stale: label.line.stale }">
-                <span class="icon" aria-hidden="true">{{ label.line.icon }}</span>
-                <span class="text">{{ label.line.text }}</span>
-                <span v-if="label.line.age" class="age num">{{ label.line.age }}</span>
-              </span>
-            </template>
+            <span class="s-name">{{ label.star.repo }}<span class="num"> · {{ label.star.live || "тихо" }}</span></span>
+            <span v-if="label.notes" class="s-notes">{{ label.notes }}</span>
           </button>
-          <button
-            v-if="label.where.action === 'sleep'"
-            type="button"
-            class="lbl tent"
-            :data-anchor="`tent:${label.task.slug}`"
-            data-priority="3"
-            :title="`${label.name}: спит, проснётся ${label.wake}`"
-            @click="open(label.task.slug)"
+          <span
+            v-for="label in depotLabels"
+            :key="label.depot.key"
+            class="depot"
+            :class="{ up: !label.top, low: label.low }"
+            :style="label.style"
+            :title="label.depot.name"
           >
-            ⏾ {{ label.wake }}
-          </button>
-          <button
-            v-else-if="!label.home"
-            type="button"
-            class="lbl agent"
-            :class="[label.task.executor, { stale: label.line.stale, selected: selected === label.task.slug }]"
-            :data-anchor="`agent:${label.task.slug}`"
-            data-align="below"
-            :data-priority="selected === label.task.slug ? 1 : 4"
-            :title="label.title"
-            @click="open(label.task.slug)"
-          >
-            <span class="b-who"><span class="glyph" aria-hidden="true">{{ glyph(label.task) }}</span>{{ label.who }}</span>
-            <span class="b-act" :class="{ stale: label.line.stale }">
-              <span class="icon" aria-hidden="true">{{ label.line.icon }}</span>
-              <span class="text">{{ label.line.text }}</span>
-              <span v-if="label.line.age" class="age num">{{ label.line.age }}</span>
-            </span>
-          </button>
+            <span class="d-name">{{ label.depot.name }}</span>
+            <span class="num">{{ label.fuel }}{{ label.depot.duty ? " · дежурный" : "" }}</span>
+          </span>
         </template>
-        <span v-if="island.hidden.length" class="lbl more" data-anchor="more" data-align="below" data-priority="2" :title="hiddenTitle">
-          ещё {{ island.hidden.length }}
-        </span>
+        <template v-else>
+          <div v-for="card in cards" :key="card.place" class="card" :class="{ empty: !card.ships.length, side: card.side }" :style="card.style">
+            <div class="c-head">{{ card.text.name }}<span> · {{ card.text.note }}</span></div>
+            <button
+              v-for="ship in card.ships"
+              :key="ship.task.slug"
+              type="button"
+              class="ship"
+              :class="[ship.task.executor, { selected: selected === ship.task.slug, hovered: hovered === ship.task.slug, alarm: ship.beacon }]"
+              :data-ship="ship.task.slug"
+              :title="ship.title"
+              @click="open(ship.task.slug)"
+              @pointerenter="hovered = ship.task.slug"
+              @pointerleave="hovered = null"
+            >
+              <span class="r-name"><span class="glyph" aria-hidden="true">{{ glyph(ship.task) }}</span>{{ ship.name }}</span>
+              <span class="r-phase num">{{ ship.phase }}</span>
+            </button>
+            <button v-if="card.folded" type="button" class="more" @click="unfolded = card.place">ещё {{ card.folded }}</button>
+          </div>
+          <span v-if="system.hidden.length" class="hidden-count" :title="hiddenTitle">не показано {{ system.hidden.length }}</span>
+        </template>
       </div>
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
-      <p v-else-if="!entries.length" class="status">На этом острове сейчас никого: все задачи закрыты.</p>
+      <p v-else-if="!starList.length" class="status">Пока ни одной задачи: галактика пуста.</p>
+      <p v-else-if="repo && !entries.length" class="status">В этой системе сейчас никого: все задачи закрыты.</p>
     </div>
 
     <TaskPanel
@@ -337,22 +415,16 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: var(--surface-2);
+  background: #05070d;
 }
 
 .stage :deep(.map-canvas) {
   position: absolute;
-  inset: 0;
+  left: 0;
+  top: 0;
   display: block;
-  width: 100%;
-  height: 100%;
   touch-action: none;
   outline: none;
-}
-
-.stage :deep(.map-canvas:focus-visible) {
-  outline: 2px solid var(--focus);
-  outline-offset: -2px;
 }
 
 .toolbar {
@@ -372,7 +444,7 @@ onBeforeUnmount(() => {
   pointer-events: auto;
 }
 
-.island {
+.picker {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -384,7 +456,7 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.island select {
+.picker select {
   max-width: 260px;
   padding: 1px 6px;
   text-overflow: ellipsis;
@@ -466,200 +538,216 @@ onBeforeUnmount(() => {
   margin: 4px 0;
 }
 
-/* Labels: positioned by the scene with transform; hidden until it places them. */
+/* Labels stand on the dark sky in both of the board's themes, so their colours are fixed. */
 .overlay {
+  --tx: 0px;
+  --ty: 0px;
+  --zoom: 1;
   position: absolute;
   inset: 0;
   z-index: 1;
   overflow: hidden;
   pointer-events: none;
+  color: #e8e2d4;
+  font-size: 12px;
+  line-height: 16px;
 }
 
-.lbl {
+.overlay.flying {
+  visibility: hidden;
+}
+
+.star,
+.depot,
+.card {
   position: absolute;
-  left: 0;
-  top: 0;
+  left: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
+  top: calc(var(--ty) + var(--y) * var(--zoom) * 1px);
+  transform: translateX(-50%);
+}
+
+.star {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  max-width: 190px;
-  margin: 0;
-  padding: 1px 6px 2px;
-  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--surface) 90%, transparent);
-  color: var(--text);
+  align-items: center;
+  max-width: 220px;
+  padding: 2px 9px;
+  border: 1px solid rgba(214, 170, 96, 0.28);
+  border-radius: 3px;
+  background: rgba(8, 11, 18, 0.74);
+  color: inherit;
   font: inherit;
-  font-size: 11px;
-  line-height: 15px;
-  text-align: left;
-  white-space: nowrap;
-  visibility: hidden;
+  font-size: 13px;
+  line-height: 17px;
   pointer-events: auto;
   cursor: pointer;
-  will-change: transform;
 }
 
-.lbl > span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
+.star:hover {
+  border-color: rgba(243, 198, 78, 0.8);
+  background: rgba(26, 28, 34, 0.92);
 }
 
-.lbl:focus-visible {
-  outline: 2px solid var(--focus);
+.star:focus-visible,
+.ship:focus-visible,
+.more:focus-visible {
+  outline: 2px solid #f3c64e;
   outline-offset: 1px;
 }
 
-.lbl.selected {
-  border-color: var(--focus);
-  box-shadow: 0 0 0 1px var(--focus);
+.star.quiet {
+  border-color: transparent;
+  background: none;
+  color: #9aa3b4;
 }
 
-.b-slug {
+.s-name {
+  max-width: 100%;
+  overflow: hidden;
   font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.alarm {
-  display: inline-block;
-  margin-right: 4px;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: var(--bad);
-  color: var(--surface);
-  font-weight: 800;
+.s-name .num {
+  font-weight: 400;
+  color: #b8ad98;
 }
 
-.b-phase {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
+.s-notes {
+  color: #b8ad98;
+  font-size: 11.5px;
+  white-space: nowrap;
 }
 
-.b-phase .dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 4px;
-  border-radius: 50%;
-  background: var(--phase-idle);
-  vertical-align: 0;
+.star.alarm .s-notes {
+  color: #ff8d7a;
 }
 
-.p-turn .dot { background: var(--phase-turn); }
-.p-check .dot { background: var(--phase-check); }
-.p-review .dot { background: var(--phase-review); }
-.p-fix .dot { background: var(--phase-fix); }
-.p-ci .dot { background: var(--phase-ci); }
-.p-sleeping .dot { background: var(--phase-sleeping); }
-.p-ready .dot { background: var(--ok); }
-.p-attention .dot { background: var(--bad); }
-
-.bench.p-attention {
-  border-color: var(--bad);
-}
-
-.bench.p-attention .b-phase {
-  color: var(--bad);
-}
-
-.agent,
-.bench.home {
-  border-left: 3px solid var(--codex);
-}
-
-.agent.claude,
-.bench.home.claude {
-  border-left-color: var(--claude);
-}
-
-.agent {
-  background: color-mix(in srgb, var(--surface) 84%, transparent);
-}
-
-.b-who {
-  color: var(--muted);
-  font-size: 10.5px;
-  line-height: 14px;
-}
-
-.codex .glyph {
-  color: var(--codex);
-}
-
-.claude .glyph {
-  color: var(--claude);
-}
-
-.b-who .glyph {
-  margin-right: 3px;
-}
-
-.lbl > .b-act {
+.depot {
   display: flex;
-  gap: 4px;
-  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  max-width: 170px;
+  color: #b8ad98;
+  font-size: 11.5px;
+  line-height: 15px;
+  white-space: nowrap;
 }
 
-.b-act .icon {
-  flex: none;
-  color: var(--muted);
-  font-family: var(--mono);
+.depot.up {
+  transform: translate(-50%, -100%);
 }
 
-.b-act .text {
+.depot.low .num {
+  color: #ff8d7a;
+}
+
+.d-name {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
 }
 
-.b-act .age {
-  flex: none;
-  color: var(--faint);
+.card {
+  box-sizing: border-box;
+  width: 200px;
+  padding: 3px 4px 4px;
+  border: 10px solid transparent;
+  border-image: var(--frame) 30 / 10px / 0 stretch;
+  background: rgba(8, 10, 15, 0.86);
+  background-clip: padding-box;
 }
 
-.b-act.stale .text {
-  color: var(--muted);
+.card.side {
+  transform: none;
 }
 
-.tent {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
+.card.empty {
+  width: auto;
+  padding: 1px 6px;
+  white-space: nowrap;
 }
 
-.caption {
-  padding: 0 5px;
-  border-color: transparent;
-  background: color-mix(in srgb, var(--surface) 55%, transparent);
-  color: var(--muted);
-  font-size: 10.5px;
-  line-height: 14px;
-  letter-spacing: 0.02em;
-  pointer-events: none;
+.c-head {
+  padding: 0 3px;
+  color: #f3c27a;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.c-head span {
+  color: #9b907c;
+  font-weight: 400;
+}
+
+.ship,
+.more {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 2px 3px;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.ship:hover,
+.ship.hovered {
+  background: rgba(214, 170, 96, 0.18);
+}
+
+.ship.selected {
+  background: rgba(243, 198, 78, 0.28);
+}
+
+.r-name,
+.r-phase {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.r-name {
+  font-weight: 600;
+}
+
+.r-phase {
+  color: #a89c86;
+  font-size: 11.5px;
+}
+
+.ship.alarm .r-phase {
+  color: #ff8d7a;
+}
+
+.glyph {
+  margin-right: 4px;
+}
+
+.ship.codex .glyph {
+  color: #7ea6f5;
+}
+
+.ship.claude .glyph {
+  color: #e59472;
 }
 
 .more {
-  background: var(--surface);
-  color: var(--muted);
-  font-weight: 650;
-  cursor: default;
+  color: #b8ad98;
 }
 
-/* What the labels show at each zoom: far — the slugs; middle — phases and activity; close — accounts too. */
-.z-far .b-phase,
-.z-far .b-act,
-.z-far .b-who,
-.z-far .agent,
-.z-mid .bench .b-who {
-  display: none;
-}
-
-.z-far .bench.home {
-  border-left-width: 1px;
-}
-
-.z-far .lbl {
-  padding: 0 4px;
+.hidden-count {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  color: #b8ad98;
 }
 
 @media (max-width: 760px) {
@@ -667,14 +755,24 @@ onBeforeUnmount(() => {
     display: none;
   }
 
-  .island select {
+  .picker select {
     max-width: 52vw;
   }
-}
 
-@media (prefers-color-scheme: dark) {
-  .stage {
-    background: #262d40;
+  /* There is no room for the rows: the ships are picked on the map. */
+  .ship,
+  .more {
+    display: none;
+  }
+
+  .card {
+    width: auto;
+    padding: 0 3px;
+    white-space: nowrap;
+  }
+
+  .c-head span {
+    display: none;
   }
 }
 </style>

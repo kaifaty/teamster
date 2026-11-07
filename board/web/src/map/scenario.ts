@@ -1,11 +1,11 @@
-// Demo for `npm run dev:fixture`: three agents (Codex, Claude and a reviewer) go round every place of the
-// island. One of them changes every SCENARIO_STEP_SECONDS, in turn, so every place and every walk shows up
+// Demo for `npm run dev:fixture`: three agents (Codex, Claude and a reviewer) go round every station of a
+// system. One of them changes every SCENARIO_STEP_SECONDS, in turn, so every place and every walk shows up
 // without real tasks.
 
 import type { BoardSource } from "../lib/source";
 import type { Activity, Column, Phase, TaskDetail, TaskSummary } from "../types";
 
-export const SCENARIO_REPO = "demo-island";
+export const SCENARIO_REPO = "demo-system";
 export const SCENARIO_STEP_SECONDS = 4;
 
 interface Stage {
@@ -43,7 +43,7 @@ interface Agent {
 
 const AGENTS: readonly Agent[] = [
   {
-    slug: "island-scene",
+    slug: "fleet-scene",
     kind: "work",
     executor: "codex",
     reviewer: "claude",
@@ -52,7 +52,7 @@ const AGENTS: readonly Agent[] = [
     effort: "high",
     task_type: "feature",
     first: 0,
-    words: { file: "src/map/scene.ts", command: "npm run build", idea: "Где поставить стенд проверок" },
+    words: { file: "src/map/scene.ts", command: "npm run build", idea: "Где поставить полигон" },
   },
   {
     slug: "label-overlap-fix",
@@ -154,7 +154,7 @@ function build(index: number, stageIndex: number, changedAt: number, start: numb
     outcome: stage.outcome ?? (stage.alive ? "running" : null),
     result_status: stage.result_status ?? null,
     summary: stage.summary ?? null,
-    pr: stage.pr ? `https://github.com/example/demo-island/pull/${118 + index}` : null,
+    pr: stage.pr ? `https://github.com/example/demo-system/pull/${118 + index}` : null,
     ci: stage.ci ?? null,
     sleeping_until: stage.sleep !== undefined ? changedAt + stage.sleep : null,
     created: start - 3600 + index * 60,
@@ -189,10 +189,22 @@ function timeline(index: number, step: number, start: number): { at: number; tex
 
 const BRIEF = `# Демо-сценарий карты
 
-Три агента — Codex, Claude и ревьюер — по кругу проходят все места острова: рабочее место, стенд
-проверок, стол ревью, ворота CI, причал, палатку и красный маяк. Каждые ${SCENARIO_STEP_SECONDS} с меняется
+Три агента — Codex, Claude и ревьюер — по кругу проходят все станции системы: верфь, полигон,
+инспекцию, гиперврата, рейд, криополе и сигнал бедствия. Каждые ${SCENARIO_STEP_SECONDS} с меняется
 один из них. Это не настоящие задачи: сценарий есть только в режиме \`npm run dev:fixture\`.
 `;
+
+/** Fuel depots of the demo: enough, low and spent, so that the galaxy shows them all. */
+const ACCOUNTS = {
+  codex: [
+    { name: "codex-team-1", status: "available", secondary: { used_percent: 41, window_minutes: 10080 } },
+    { name: "codex-team-2", status: "available", secondary: { used_percent: 88, window_minutes: 10080 } },
+  ],
+  claude: [
+    { name: "claude-pool-1", seven_day: { used_percent: 30 } },
+    { name: "claude-pool-2", seven_day: { used_percent: 100 } },
+  ],
+};
 
 /** A source that plays the scenario, for the map's demo mode. */
 export function scenarioSource(): BoardSource {
@@ -209,7 +221,7 @@ export function scenarioSource(): BoardSource {
       onState("open", null);
       onMessage({
         type: "snapshot",
-        snapshot: { generated_at: start, tasks, accounts: { fetched_at: null, error: null, data: null } },
+        snapshot: { generated_at: start, tasks, accounts: { fetched_at: start, error: null, data: ACCOUNTS } },
       });
       const timer = setInterval(() => {
         step += 1;

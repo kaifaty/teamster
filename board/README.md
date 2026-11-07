@@ -24,12 +24,16 @@ npm --prefix board/web ci && npm --prefix board/web run build
 
 Until that directory exists, `/` returns a short build instruction. The API is available independently.
 
-The header switches between two views of the same data: «Доска», the columns, and «Карта», a prototype
-that draws one repository as a low-poly island (three.js, loaded only when the tab opens). Each task has a
-workbench there, and its agent walks to the place of its phase: the test stand, the review table, the CI
-gate, a tent while it sleeps, the pier when it waits for review. `board/web/src/map/placement.ts` decides
-the place and the action. `npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map
-that takes three demo agents through every place.
+The header switches between two views of the same data: «Доска», the columns, and «Карта», a space fleet
+in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy shows every repository as a star and every account
+as a fuel depot, with lines from the depots to the systems they feed. A click on a star flies into its system: the
+sun is the main branch, and each task is a ship that moves towards it, from the yard through the range, the
+inspection and the hypergate to the roadstead, where it waits for you. Sleeping ships drift in the cryofield, the
+lead's sessions stay at the command station. In a system the wheel zooms and dragging moves the camera; the wheel
+past the full view or Esc goes back. `board/web/src/map/placement.ts` decides the station and the action.
+`board/web/art/` holds the prompts of the art and the script that prepares it.
+`npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
+every station.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |

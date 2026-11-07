@@ -51,7 +51,7 @@ type View = "board" | "map";
 const VIEW_KEY = "codex-board.view.v1";
 const view = ref<View>(loadJson(VIEW_KEY, "board", (v): v is View => v === "board" || v === "map"));
 watch(view, (value) => saveJson(VIEW_KEY, value));
-// The map and three.js load on first use, in their own chunk, and then stay mounted; the map stops
+// The map and PixiJS load on first use, in their own chunk, and then stay mounted; the map stops
 // drawing while the board is shown.
 const MapView = shallowRef<(typeof import("./map/MapView.vue"))["default"] | null>(null);
 const mapError = ref(false);
