@@ -67,7 +67,14 @@ async def _snapshot(script, command, arguments, previous):
                     proc.kill()
                 except ProcessLookupError:
                     pass
-            await proc.communicate()
+            # Process has no public close; descendants may still hold its pipes open.
+            proc._transport.close()
+            waiter = asyncio.create_task(proc.wait())
+            try:
+                await asyncio.wait([waiter], timeout=2)
+            finally:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
     return {"fetched_at": time.time(), "error": error, "data": data}
 
 

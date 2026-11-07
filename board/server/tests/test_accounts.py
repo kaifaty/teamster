@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import os
+import signal
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +64,28 @@ def test_accounts_error_and_timeout_keep_previous_data(tmp_path, monkeypatch):
         assert "timed out" in timed_out["error"]
         assert "0.2" in timed_out["error"]
         assert timed_out["data"] == first["data"]
+
+        child_pid = tmp_path / "child-pid"
+        script.write_text(
+            "import subprocess\nfrom pathlib import Path\n"
+            "child = subprocess.Popen(['sleep', '6'])\n"
+            f"Path({str(child_pid)!r}).write_text(str(child.pid))\nprint('{{}}')\n"
+        )
+        monkeypatch.setattr(accounts_module, "ACCOUNTS_TIMEOUT", 0.5)
+        reports = Reports(script)
+        for request in (accounts.refresh, lambda: reports.get("2026-11-08")):
+            started = time.monotonic()
+            try:
+                timed_out = await asyncio.wait_for(request(), timeout=3)
+                assert time.monotonic() - started < 3
+                assert "timed out after 0.5 seconds" in timed_out["error"]
+            finally:
+                if child_pid.exists():
+                    try:
+                        os.kill(int(child_pid.read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    child_pid.unlink()
 
         write_script(script, "print('{}')\n")
         gather = asyncio.gather
