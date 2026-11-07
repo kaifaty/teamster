@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PLACES } from "./placement";
 import {
-  MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, ringOf, ringPoint, skyChoices,
+  MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, LIGHT_SHIP, ringOf, ringPoint, ringsOf, skyChoices,
   starPositions, starRadius, stationAt, systemFrame, worldSize, zoomCamera,
 } from "./layout";
 
@@ -113,6 +113,18 @@ describe("system", () => {
       return ringPoint(station, radius, angle);
     });
     points.forEach((a, i) => points.slice(i + 1).forEach((b) => expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(40)));
+  });
+
+  it("keeps frigates and cruisers apart from each other and from the station", () => {
+    const station = { x: 500, y: 500 };
+    for (const place of PLACES) {
+      const sizes = Array.from({ length: 30 }, (_, slot) => [LIGHT_SHIP, 92, 114][slot % 3]!);
+      const ships = ringsOf(place, sizes).map(({ radius, angle }, slot) => ({ ...ringPoint(station, radius, angle), size: sizes[slot]! }));
+      ships.forEach((a, i) => {
+        expect(Math.hypot(a.x - station.x, (a.y - station.y) / 0.75)).toBeGreaterThan(STATIONS[place].radius + a.size * 0.4);
+        ships.slice(i + 1).forEach((b) => expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(((a.size + b.size) / 2) * 0.8));
+      });
+    }
   });
 
   it("keeps a station's card clear of its ships and a long card inside the world", () => {

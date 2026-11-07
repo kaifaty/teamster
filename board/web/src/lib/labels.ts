@@ -133,3 +133,8 @@ export const FLASH_MS = 2400;
 export function isFlashing(changedAt: number | undefined, nowMs: number): boolean {
   return changedAt !== undefined && nowMs - changedAt < FLASH_MS;
 }
+
+/** The browser tab's title: the count of tasks that need attention goes first while there are any. */
+export function tabTitle(base: string, alarms: number): string {
+  return alarms > 0 ? `(${alarms}) ${base}` : base;
+}

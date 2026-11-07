@@ -121,20 +121,58 @@ export function stationAt(place: Place, frame: SystemFrame): Point {
   return { x: frame.cx + ((point.x - frame.cx) / distance) * least, y: frame.cy + ((point.y - frame.cy) / distance) * least };
 }
 
-/** Ships circle this far from a station's edge; further rings follow at RING_STEP. */
+/** Ships circle this far from a station's edge; further rings follow, each clear of the one inside it. */
 const RING_GAP = 46;
-const RING_STEP = 62;
+/** The size of a light ship; a larger ship's ring moves out so that it keeps the same clearance. */
+export const LIGHT_SHIP = 74;
+/** The share of its size a ship's art fills, and the room left between two ships on a ring. */
+const FOOTPRINT = 0.8;
+const SHIP_GAP = 12;
 
-/** Ship `slot` circles its station on a ring: `radius` from the station's centre, starting at `angle` radians. */
-export function ringOf(place: Place, slot: number): { radius: number; angle: number } {
+/**
+ * The rings of a station's ships, `sizes` in slot order: each ship gets the `radius` of its ring from the
+ * station's centre and its starting `angle` in radians. A ring takes ships in order while they fit around it
+ * with SHIP_GAP between them even where the ring is flattened; a ring of larger ships moves out, so that the
+ * ships keep clear of the station and of the ring inside.
+ */
+export function ringsOf(place: Place, sizes: readonly number[]): { radius: number; angle: number }[] {
+  const result: { radius: number; angle: number }[] = [];
+  const width = (size: number) => size * FOOTPRINT + SHIP_GAP;
+  let first = 0;
   let ring = 0;
-  let index = slot;
-  for (let capacity = 8; index >= capacity; capacity += 4) {
-    index -= capacity;
+  let inner: { radius: number; largest: number } | null = null;
+  const radiusFor = (largest: number) =>
+    inner === null
+      ? STATIONS[place].radius + RING_GAP + Math.max(0, largest - LIGHT_SHIP) / 2
+      : inner.radius + ((inner.largest + largest) / 2) * (FOOTPRINT / RING_FLATTENING);
+  while (first < sizes.length) {
+    let last = first + 1;
+    let largest = sizes[first]!;
+    let used = width(largest);
+    while (last < sizes.length) {
+      const next = Math.max(largest, sizes[last]!);
+      if (used + width(sizes[last]!) > Math.PI * 2 * RING_FLATTENING * radiusFor(next)) break;
+      largest = next;
+      used += width(sizes[last]!);
+      last += 1;
+    }
+    const radius = radiusFor(largest);
+    // Neighbours stand half their widths apart, measured where the ring is flattened most.
+    let angle = ring * 0.4;
+    for (let index = first; index < last; index++) {
+      if (index > first) angle += (width(sizes[index - 1]!) + width(sizes[index]!)) / 2 / (RING_FLATTENING * radius);
+      result.push({ radius, angle });
+    }
+    inner = { radius, largest };
+    first = last;
     ring += 1;
   }
-  const capacity = 8 + ring * 4;
-  return { radius: STATIONS[place].radius + RING_GAP + ring * RING_STEP, angle: (index / capacity) * Math.PI * 2 + ring * 0.4 };
+  return result;
+}
+
+/** Light ship `slot` of a station with light ships only: see ringsOf. */
+export function ringOf(place: Place, slot: number): { radius: number; angle: number } {
+  return ringsOf(place, Array.from({ length: slot + 1 }, () => LIGHT_SHIP))[slot]!;
 }
 
 /** A ship's point on its ring; the rings are flattened a little, like the orbits. */

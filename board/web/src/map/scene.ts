@@ -5,18 +5,19 @@
 import { Application, Assets, ColorMatrixFilter, Container, Graphics, Sprite, Texture, type ColorMatrix } from "pixi.js";
 import type { ArtIndex, TaskSummary } from "../types";
 import { ART, BACKDROPS, type ArtName } from "./art";
-import type { Depot, Family, Star, SupplyLine } from "./fleet";
-import { LOW_FUEL, depotPositions } from "./fleet";
+import type { Depot, Family, Hull, Star, SupplyLine } from "./fleet";
+import { HULL_SIZE, depotEmpty, depotPositions, hullOf, patchSpots } from "./fleet";
 import {
   ROUTE,
   STATIONS,
   SUN_CLEARANCE,
   SUN_RADIUS,
+  LIGHT_SHIP,
   clampCamera,
   fitCamera,
   hashName,
-  ringOf,
   ringPoint,
+  ringsOf,
   skyChoices,
   starPositions,
   starRadius,
@@ -73,8 +74,16 @@ export const FLIGHT_SECONDS = 0.9;
 const FALL = 0.55;
 const MAX_SPEED = 300;
 const CIRCLING_SPEED = 0.4;
-const SHIP_SIZE: Record<Hull, number> = { ship: 74, scout: 46, flagship: 150 };
 const DEPOT_SIZE = 116;
+const TANKER_SIZE = 40;
+/** World units a tanker covers in a second. */
+const TANKER_SPEED = 46;
+const ESCORT_SIZE = 30;
+/** Smoke puffs shared by all damaged ships: no puff is made after the scene starts. */
+const SMOKE_PUFFS = 160;
+/** Seconds between two puffs of one damaged ship, and how long a puff lives. */
+const PUFF_EVERY = 0.15;
+const PUFF_LIFE = 1.7;
 /** Pixels the pointer may move and still make a click. */
 const CLICK_SLOP = 5;
 const WHEEL_ZOOM = 0.0016;
@@ -83,8 +92,6 @@ const WHEEL_PAUSE_MS = 900;
 /** The art is cropped a little wider than the ball, to keep its glow; see art/prepare.py. */
 const BALL_MARGIN = 1.04;
 const SUN_MARGIN = 1.5;
-
-type Hull = "ship" | "scout" | "flagship";
 
 const ROUTE_BEND = 0.14;
 const FIX_BEND = -0.07;
@@ -127,21 +134,112 @@ function softDisc(): HTMLCanvasElement {
   return canvas;
 }
 
+/** A drone that circles a ship while it is under review, tinted for the reviewer's family. */
+interface Escort {
+  sprite: Sprite;
+  angle: number;
+  /** 0 to 1: the drone fades in, and out when the review ends. */
+  shown: number;
+  /** World units the drone has drifted out after the review ended. */
+  out: number;
+  leaving: boolean;
+}
+
 interface Ship {
   slug: string;
   body: Container;
   hull: Sprite;
   engine: Sprite;
+  /** Plates of the fix rounds, drawn on the hull. */
+  patches: Graphics;
+  /** The red glow of a ship whose CI failed. */
+  burn: Sprite;
+  kind: Hull;
   size: number;
+  /** The fix rounds the patches show. */
+  patched: number;
+  /** Stable per ship: when it sparks, and where it smokes and sparks, in shares of its size. */
+  seed: number;
+  hit: Point;
+  sparkAt: Point;
   x: number;
   y: number;
   vx: number;
   vy: number;
-  /** Where the ship is on its ring. */
+  /** The ship's ring, its starting angle there, and where it is on it now. */
+  radius: number;
+  base: number;
   angle: number;
+  /** The station and ring the angle belongs to; a new one sends the ship to its new place. */
+  ring: string;
+  /** False until the ship has a ring: a ship that does not fly in starts on it. */
+  placed: boolean;
+  arrive: boolean;
+  /** Seconds to the next smoke puff. */
+  smoke: number;
+  escort: Escort | null;
   entry: ShipEntry;
   /** Set for a ship that left the map: it dives into the sun or fades out. */
   leaving: "dive" | "fade" | null;
+}
+
+interface Puff {
+  sprite: Sprite;
+  owner: Ship | null;
+  /** Offset from the owner's centre, so that the smoke goes with the ship. */
+  ox: number;
+  oy: number;
+  vx: number;
+  vy: number;
+  age: number;
+  size: number;
+}
+
+interface Storm {
+  point: Point;
+  radius: number;
+  seed: number;
+  layers: Sprite[];
+  flash: Sprite;
+}
+
+/** The ship's own point of damage, in shares of its size from the centre, nose up. */
+function damageSpot(seed: number): Point {
+  return { x: (noise(seed) - 0.5) * 0.2, y: noise(seed + 1) * 0.28 - 0.1 };
+}
+
+/** A point of a ship's art in the world: `local` in shares of its size, turned with the ship. */
+function onHull(item: { x: number; y: number; size: number; body: Container }, local: Point, out: Point): Point {
+  const cos = Math.cos(item.body.rotation);
+  const sin = Math.sin(item.body.rotation);
+  const scale = item.size * item.body.scale.x;
+  out.x = item.x + (local.x * cos - local.y * sin) * scale;
+  out.y = item.y + (local.x * sin + local.y * cos) * scale;
+  return out;
+}
+
+/** A dark cloud with curling arms and a thinner eye, for a storm over a star. */
+function stormCloud(): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 256;
+  const context = canvas.getContext("2d")!;
+  for (let i = 0; i < 70; i++) {
+    const arm = i % 3;
+    const along = noise(i + 40);
+    const angle = (arm * Math.PI * 2) / 3 + along * 2.6;
+    const distance = 30 + along * 82 + (noise(i + 90) - 0.5) * 18;
+    const x = 128 + Math.cos(angle) * distance;
+    const y = 128 + Math.sin(angle) * distance;
+    const size = 18 + noise(i + 140) * 26 * (1 - along * 0.4);
+    const gradient = context.createRadialGradient(x, y, 0, x, y, size);
+    const edge = noise(i + 190) > 0.7;
+    gradient.addColorStop(0, edge ? "rgba(70,56,92,0.55)" : "rgba(26,20,36,0.62)");
+    gradient.addColorStop(0.6, edge ? "rgba(50,40,68,0.25)" : "rgba(20,16,30,0.3)");
+    gradient.addColorStop(1, "rgba(20,16,30,0)");
+    context.fillStyle = gradient;
+    context.fillRect(x - size, y - size, size * 2, size * 2);
+  }
+  return canvas;
 }
 
 export async function createFleetScene(options: SceneOptions): Promise<FleetScene> {
@@ -164,6 +262,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const loaded = (await Assets.load(Object.values(ART))) as Record<string, Texture>;
   const art = (name: ArtName): Texture => loaded[ART[name]]!;
   const glowTexture = Texture.from(softDisc(), true);
+  const stormTexture = Texture.from(stormCloud(), true);
 
   const canvas = app.canvas;
   canvas.className = "map-canvas";
@@ -206,9 +305,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const galaxy = new Container();
   const lanes = new Graphics();
   const depotLayer = new Container();
+  const tankerLayer = new Container();
   const starLayer = new Container();
+  const stormLayer = new Container();
   const galaxyFx = new Graphics();
-  galaxy.addChild(lanes, depotLayer, starLayer, galaxyFx);
+  galaxy.addChild(lanes, depotLayer, tankerLayer, starLayer, stormLayer, galaxyFx);
 
   const system = new Container();
   const charts = new Graphics();
@@ -219,8 +320,18 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const gate = sprite(art("gate"), STATIONS.gate.radius * 2.3);
   const beams = new Graphics();
   const shipLayer = new Container();
+  const smokeLayer = new Container();
+  const escortLayer = new Container();
   const systemFx = new Graphics();
-  system.addChild(charts, corona, sun, stationLayer, gateGlow, gate, beams, shipLayer, systemFx);
+  system.addChild(charts, corona, sun, stationLayer, gateGlow, gate, beams, shipLayer, smokeLayer, escortLayer, systemFx);
+  const puffs: Puff[] = Array.from({ length: SMOKE_PUFFS }, () => {
+    const made = sprite(glowTexture, 10);
+    made.tint = SPACE.smoke;
+    made.visible = false;
+    smokeLayer.addChild(made);
+    return { sprite: made, owner: null, ox: 0, oy: 0, vx: 0, vy: 0, age: 0, size: 0 };
+  });
+  let nextPuff = 0;
 
   const veil = new Graphics();
   app.stage.addChild(backdrop, systemBackdrop, dust, galaxy, system, veil);
@@ -248,6 +359,12 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   /** Counts the times a system was dressed, so that a late picture does not land on the next one. */
   let dressing = 0;
   const ships = new Map<string, Ship>();
+  const tankers = new Map<string, { sprite: Sprite; line: SupplyLine; seed: number }>();
+  let blinks: Sprite[] = [];
+  let storms: Storm[] = [];
+  /** Scratch points, so that the frame makes no objects for its effects. */
+  const spot: Point = { x: 0, y: 0 };
+  const spot2: Point = { x: 0, y: 0 };
 
   const report = () => options.onCamera(world, repo ? camera : fit);
 
@@ -291,6 +408,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   function drawDepots() {
     depotLayer.removeChildren().forEach((child) => child.destroy());
+    blinks = [];
     for (const depot of model.depots) {
       const point = depotPoints.get(depot.key);
       if (!point) continue;
@@ -303,9 +421,17 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       const left = point.x - width / 2;
       const top = point.y + DEPOT_SIZE / 2 + 4;
       gauge.roundRect(left, top, width, 9, 3).fill(SPACE.gauge);
-      const low = depot.bad || (depot.fuel !== null && depot.fuel < LOW_FUEL);
+      const low = depotEmpty(depot);
       if (depot.fuel) gauge.roundRect(left + 1, top + 1, ((width - 2) * depot.fuel) / 100, 7, 2).fill(low ? SPACE.alarm : FLEET[depot.executor].hull);
       depotLayer.addChild(body, gauge);
+      if (low) {
+        // An empty depot blinks a dim warning light.
+        const light = glow(SPACE.empty, DEPOT_SIZE * 1.15);
+        light.position.set(point.x, point.y);
+        light.alpha = 0.16;
+        depotLayer.addChild(light);
+        blinks.push(light);
+      }
       if (depot.duty) {
         const mark = glow(SPACE.gold, 46);
         mark.position.set(point.x, point.y);
@@ -344,6 +470,48 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       body.position.set(point.x, point.y);
       starLayer.addChild(halo, body);
     }
+    drawStorms();
+  }
+
+  /** A storm over every star with ships in trouble, kept above the star so that its label stays clear. */
+  function drawStorms() {
+    stormLayer.removeChildren().forEach((child) => child.destroy({ children: true }));
+    storms = [];
+    for (const star of model.stars) {
+      const point = stars.get(star.repo);
+      if (!point || !star.attention) continue;
+      const radius = starRadius(star.live) * 1.25 + 46;
+      const body = new Container();
+      body.position.set(point.x, point.y - 10);
+      body.scale.set(1, 0.72);
+      const layers = [sprite(stormTexture, radius * 2), sprite(stormTexture, radius * 1.6)];
+      layers[1]!.scale.x *= -1;
+      const flash = glow(SPACE.lightning, radius * 1.6);
+      flash.alpha = 0;
+      body.addChild(...layers, flash);
+      stormLayer.addChild(body);
+      storms.push({ point: { x: point.x, y: point.y - 10 }, radius, seed: hashName(star.repo) % 997, layers, flash });
+    }
+  }
+
+  /** One tanker on every active supply line; a line that stays keeps its tanker. */
+  function syncTankers() {
+    const wanted = new Map(model.lines.filter((line) => line.active).map((line) => [`${line.depot}|${line.repo}`, line]));
+    for (const [key, tanker] of tankers) {
+      if (wanted.has(key)) continue;
+      tanker.sprite.destroy();
+      tankers.delete(key);
+    }
+    for (const [key, line] of wanted) {
+      const known = tankers.get(key);
+      if (known) {
+        known.line = line;
+        continue;
+      }
+      const body = sprite(art("tanker"), TANKER_SIZE);
+      tankerLayer.addChild(body);
+      tankers.set(key, { sprite: body, line, seed: (hashName(key) % 100) / 100 });
+    }
   }
 
   function drawGalaxy() {
@@ -352,6 +520,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     drawLanes();
     drawDepots();
     drawStars();
+    syncTankers();
   }
 
   function stationSprite(place: Exclude<Place, "gate">): Sprite {
@@ -419,8 +588,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     drawGalaxy();
     drawCharts();
     for (const item of ships.values()) {
-      const { place, slot } = item.entry.placement;
-      const point = ringPoint(stationAt(place, frame), ringOf(place, slot).radius, item.angle);
+      const point = ringPoint(stationAt(item.entry.placement.place, frame), item.radius, item.angle);
       item.x = point.x;
       item.y = point.y;
     }
@@ -429,41 +597,156 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   // Ships -----------------------------------------------------------------------------------------
 
-  function hullOf(task: TaskSummary): Hull {
-    return task.kind === "session" ? "flagship" : task.kind === "scout" ? "scout" : "ship";
+  function textureOf(family: Family, kind: Hull): Texture {
+    switch (kind) {
+      case "flagship":
+        return art("flagship");
+      case "scout":
+        return art("shipScout");
+      case "frigate":
+        return art(family === "codex" ? "shipBlueFrigate" : "shipCopperFrigate");
+      case "cruiser":
+        return art(family === "codex" ? "shipBlueCruiser" : "shipCopperCruiser");
+      default:
+        return art(family === "codex" ? "shipBlue" : "shipCopper");
+    }
   }
 
-  function textureOf(family: Family, hull: Hull): Texture {
-    if (hull === "flagship") return art("flagship");
-    if (hull === "scout") return art("shipScout");
-    return art(family === "codex" ? "shipBlue" : "shipCopper");
+  /** Scouts and flagships keep the room of a light ship on their ring, as before the larger hulls. */
+  const ringSize = (item: Ship) => (item.kind === "frigate" || item.kind === "cruiser" ? item.size : LIGHT_SHIP);
+
+  /** Fits the ship's art to its task: the hull of its effort and family, and a patch per fix round. */
+  function dress(item: Ship) {
+    const { task } = item.entry;
+    const kind = hullOf(task);
+    const family = task.executor;
+    const texture = textureOf(family, kind);
+    if (kind !== item.kind || item.hull.texture !== texture) {
+      item.kind = kind;
+      item.size = HULL_SIZE[kind];
+      item.hull.texture = texture;
+      item.hull.scale.set(item.size / Math.max(texture.width, texture.height));
+      item.engine.scale.set((item.size * 0.8) / 128);
+      item.engine.position.set(0, item.size * 0.46);
+      item.burn.scale.set((item.size * 0.8) / 128);
+      item.burn.position.set(item.hit.x * item.size, item.hit.y * item.size);
+      item.patched = -1;
+    }
+    if (item.patched === task.fix_round) return;
+    item.patched = task.fix_round;
+    const patches = item.patches.clear();
+    const width = item.size * 0.13;
+    const height = item.size * 0.09;
+    for (const { x, y, angle } of patchSpots(task.slug, task.fix_round)) {
+      const cx = x * item.size;
+      const cy = y * item.size;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const at = (u: number, v: number) => [cx + u * cos - v * sin, cy + u * sin + v * cos] as const;
+      const corners = [at(-width / 2, -height / 2), at(width / 2, -height / 2), at(width / 2, height / 2), at(-width / 2, height / 2)];
+      patches.poly(corners.flat()).fill(SPACE.plate).stroke({ width: 1, color: SPACE.seam, alpha: 0.9 });
+      // A lit upper edge, so that the plate stands off the hull.
+      const [a, b] = [at(-width / 2 + 1, -height / 2 + 1), at(width / 2 - 1, -height / 2 + 1)];
+      patches.moveTo(a[0], a[1]).lineTo(b[0], b[1]).stroke({ width: 0.8, color: SPACE.rivet, alpha: 0.6 });
+      for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+        const [rx, ry] = at(u * (width / 2 - 1.6), v * (height / 2 - 1.6));
+        patches.circle(rx, ry, 0.7);
+      }
+      patches.fill(SPACE.rivet);
+    }
   }
 
   function addShip(entry: ShipEntry, arrive: boolean): Ship {
-    const kind = hullOf(entry.task);
-    const size = SHIP_SIZE[kind];
     const body = new Container();
-    const engine = glow(FLEET[entry.task.executor].engine, size * 0.8);
-    engine.position.set(0, size * 0.46);
-    const hull = sprite(textureOf(entry.task.executor, kind), size);
-    body.addChild(engine, hull);
+    const engine = glow(FLEET[entry.task.executor].engine, 128);
+    const hull = new Sprite(Texture.EMPTY);
+    hull.anchor.set(0.5);
+    const patches = new Graphics();
+    const burn = glow(SPACE.burn, 128);
+    burn.visible = false;
+    body.addChild(engine, hull, patches, burn);
     shipLayer.addChild(body);
     const station = stationAt(entry.placement.place, frame);
-    const { radius, angle } = ringOf(entry.placement.place, entry.placement.slot);
-    const start = arrive ? { x: -160, y: station.y } : ringPoint(station, radius, angle);
-    const item: Ship = { slug: entry.task.slug, body, hull, engine, size, x: start.x, y: start.y, vx: 0, vy: 0, angle, entry, leaving: null };
-    body.rotation = angle + Math.PI;
+    const item: Ship = {
+      slug: entry.task.slug,
+      body,
+      hull,
+      engine,
+      patches,
+      burn,
+      kind: "light",
+      size: HULL_SIZE.light,
+      patched: -1,
+      seed: hashName(entry.task.slug) % 1000,
+      hit: damageSpot(hashName(entry.task.slug) % 1000),
+      sparkAt: damageSpot((hashName(entry.task.slug) % 1000) + 3),
+      x: arrive ? -160 : station.x,
+      y: station.y,
+      vx: 0,
+      vy: 0,
+      radius: 0,
+      base: 0,
+      angle: 0,
+      ring: "",
+      placed: false,
+      arrive,
+      smoke: 0,
+      escort: null,
+      entry,
+      leaving: null,
+    };
+    dress(item);
     ships.set(item.slug, item);
     return item;
   }
 
+  function dropEscort(item: Ship) {
+    item.escort?.sprite.destroy();
+    item.escort = null;
+  }
+
   function removeShip(item: Ship) {
+    dropEscort(item);
     item.body.destroy({ children: true });
     ships.delete(item.slug);
   }
 
   function clearShips() {
     for (const item of [...ships.values()]) removeShip(item);
+  }
+
+  /** Puts the ships of every station on their rings, larger hulls given more room. */
+  function arrange() {
+    const byPlace = new Map<Place, Ship[]>();
+    for (const item of ships.values()) {
+      if (item.leaving) continue;
+      const list = byPlace.get(item.entry.placement.place) ?? [];
+      list.push(item);
+      byPlace.set(item.entry.placement.place, list);
+    }
+    for (const [place, list] of byPlace) {
+      list.sort((a, b) => a.entry.placement.slot - b.entry.placement.slot);
+      const rings = ringsOf(place, list.map(ringSize));
+      list.forEach((item, index) => {
+        const { radius, angle } = rings[index]!;
+        const ring = `${place}|${radius}|${angle}`;
+        if (ring !== item.ring) {
+          item.ring = ring;
+          item.radius = radius;
+          item.base = angle;
+          item.angle = angle;
+        }
+        if (!item.placed) {
+          item.placed = true;
+          if (!item.arrive) {
+            const point = ringPoint(stationAt(place, frame), radius, angle);
+            item.x = point.x;
+            item.y = point.y;
+            item.body.rotation = angle + Math.PI;
+          }
+        }
+      });
+    }
   }
 
   function setShips(entries: ShipEntry[]) {
@@ -480,11 +763,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         addShip(entry, !first && !still);
         continue;
       }
-      const moved = item.entry.placement.place !== entry.placement.place || item.entry.placement.slot !== entry.placement.slot;
       item.entry = entry;
       item.leaving = null;
-      if (moved) item.angle = ringOf(entry.placement.place, entry.placement.slot).angle;
+      dress(item);
     }
+    arrange();
   }
 
   function moveShip(item: Ship, dt: number) {
@@ -493,13 +776,13 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       if (item.body.alpha <= 0) removeShip(item);
       return;
     }
-    const { place, slot, working } = item.entry.placement;
+    const { place, working } = item.entry.placement;
     let target: Point;
     if (item.leaving === "dive") {
       target = { x: frame.cx, y: frame.cy };
     } else {
       if (working && !still) item.angle += dt * CIRCLING_SPEED;
-      target = ringPoint(stationAt(place, frame), ringOf(place, slot).radius, item.angle);
+      target = ringPoint(stationAt(place, frame), item.radius, item.angle);
     }
     const dx = target.x - item.x;
     const dy = target.y - item.y;
@@ -537,6 +820,16 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
     const blink = Math.floor(time * 3) % 2 === 0;
     hull.tint = where.beacon && blink ? "#ff9d90" : where.action === "sleep" ? SPACE.sleep : "#ffffff";
+    item.patches.tint = hull.tint;
+    const damaged = entry.task.ci === "failed";
+    item.burn.visible = damaged;
+    if (damaged) {
+      // The glow of a fire under the plating flickers unevenly; still, it only glows.
+      const flicker = still ? 0.5 : 0.5 + 0.3 * Math.sin(time * 11 + item.seed) * Math.sin(time * 6.7 + item.seed * 0.37) + 0.2 * noise(Math.floor(time * 9) + item.seed);
+      item.burn.alpha = 0.22 + 0.3 * flicker;
+      if (!still && !item.leaving) sparks(item);
+    }
+    escort(item, dt);
     if (item.leaving !== "fade") body.alpha = where.action === "sleep" ? 0.75 : 1;
     const burning = where.working || speed > 30;
     engine.alpha = burning ? 0.75 + 0.25 * Math.sin(time * 18 + item.x) : 0.08;
@@ -567,6 +860,111 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
   }
 
+  /** Now and then a short burst of sparks from a damaged hull. */
+  function sparks(item: Ship) {
+    const period = 1.6 + noise(item.seed + 5) * 1.8;
+    const cycle = Math.floor((time + item.seed) / period);
+    const age = (time + item.seed) % period;
+    if (age > 0.16) return;
+    onHull(item, item.sparkAt, spot);
+    const reach = item.size * (0.08 + age * 1.2);
+    for (let i = 0; i < 4; i++) {
+      const angle = noise(cycle * 7 + i + item.seed) * Math.PI * 2;
+      const near = reach * 0.35;
+      systemFx.moveTo(spot.x + Math.cos(angle) * near, spot.y + Math.sin(angle) * near);
+      systemFx.lineTo(spot.x + Math.cos(angle) * reach, spot.y + Math.sin(angle) * reach);
+    }
+    systemFx.stroke({ width: 1.4, color: SPACE.spark, alpha: 1 - age / 0.16 });
+  }
+
+  /** The reviewer's drone: it circles a ship under review and drifts off fading when the review ends. */
+  function escort(item: Ship, dt: number) {
+    const { place, placeWorking, companion } = item.entry.placement;
+    const reviewing = !item.leaving && place === "inspection" && placeWorking;
+    if (reviewing && (!item.escort || item.escort.leaving)) {
+      dropEscort(item);
+      const body = sprite(art("escort"), ESCORT_SIZE);
+      escortLayer.addChild(body);
+      item.escort = { sprite: body, angle: noise(item.seed + 9) * Math.PI * 2, shown: still ? 1 : 0, out: 0, leaving: false };
+    }
+    const drone = item.escort;
+    if (!drone) return;
+    if (!reviewing && !drone.leaving) drone.leaving = true;
+    if (drone.leaving) {
+      if (still) return dropEscort(item);
+      drone.shown -= dt * 1.1;
+      drone.out += dt * 70;
+      if (drone.shown <= 0) return dropEscort(item);
+    } else {
+      drone.shown = Math.min(1, drone.shown + dt * 2);
+    }
+    if (!still) drone.angle += dt * 1.4;
+    const orbit = item.size * 0.62 + 16 + drone.out;
+    const cos = Math.cos(drone.angle);
+    const sin = Math.sin(drone.angle);
+    drone.sprite.position.set(item.x + cos * orbit, item.y + sin * orbit * 0.8);
+    // Nose along its path round the ship.
+    drone.sprite.rotation = Math.atan2(cos * 0.8, -sin) + Math.PI / 2;
+    drone.sprite.alpha = drone.shown * item.body.alpha;
+    drone.sprite.tint = companion ? FLEET[companion].escort : "#ffffff";
+  }
+
+  /** Smoke from the damaged ships, from one pool of puffs; with reduced motion it hangs still. */
+  function smoke(dt: number) {
+    if (still) {
+      let index = 0;
+      for (const item of ships.values()) {
+        if (item.entry.task.ci !== "failed" || item.leaving) continue;
+        for (let k = 0; k < 3 && index < puffs.length; k++, index++) {
+          const puff = puffs[index]!;
+          onHull(item, item.hit, spot);
+          const size = item.size * (0.3 + k * 0.12);
+          puff.sprite.visible = true;
+          puff.sprite.position.set(spot.x + k * size * 0.35, spot.y - k * size * 0.3);
+          puff.sprite.scale.set(size / 128);
+          puff.sprite.alpha = 0.5 - k * 0.12;
+        }
+      }
+      for (; index < puffs.length; index++) puffs[index]!.sprite.visible = false;
+      return;
+    }
+    for (const item of ships.values()) {
+      if (item.entry.task.ci !== "failed" || item.leaving) continue;
+      item.smoke -= dt;
+      if (item.smoke > 0) continue;
+      item.smoke += PUFF_EVERY * (0.7 + noise(time * 13 + item.seed) * 0.6);
+      const puff = puffs[nextPuff]!;
+      nextPuff = (nextPuff + 1) % puffs.length;
+      onHull(item, item.hit, spot);
+      // Drifts back from the nose, a little to either side.
+      const back = item.body.rotation;
+      const side = (noise(time * 31 + item.seed) - 0.5) * 16;
+      puff.owner = item;
+      puff.ox = spot.x - item.x;
+      puff.oy = spot.y - item.y;
+      puff.vx = -Math.sin(back) * 22 + Math.cos(back) * side;
+      puff.vy = Math.cos(back) * 22 + Math.sin(back) * side;
+      puff.age = 0;
+      puff.size = item.size;
+    }
+    for (const puff of puffs) {
+      const owner = puff.owner;
+      if (!owner || owner.body.destroyed || puff.age >= PUFF_LIFE) {
+        puff.owner = null;
+        puff.sprite.visible = false;
+        continue;
+      }
+      puff.age += dt;
+      puff.ox += puff.vx * dt;
+      puff.oy += puff.vy * dt;
+      const u = puff.age / PUFF_LIFE;
+      puff.sprite.visible = true;
+      puff.sprite.position.set(owner.x + puff.ox, owner.y + puff.oy);
+      puff.sprite.scale.set((puff.size * (0.16 + u * 0.5)) / 128);
+      puff.sprite.alpha = 0.55 * (1 - u) * Math.min(1, u * 8) * owner.body.alpha;
+    }
+  }
+
   // Frames ----------------------------------------------------------------------------------------
 
   function drawDust() {
@@ -585,16 +983,31 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   function frameGalaxy() {
     galaxyFx.clear();
-    for (const line of model.lines) {
-      const depot = model.depots.find((item) => item.key === line.depot);
+    for (const { sprite: body, line, seed } of tankers.values()) {
       const from = depotPoints.get(line.depot);
       const to = stars.get(line.repo);
-      if (!depot || !from || !to || !line.active || depot.bad) continue;
-      for (const lag of [0, 0.5]) {
-        const u = (time * 0.14 + lag + (hashName(line.repo + line.depot) % 100) / 100) % 1;
-        galaxyFx.circle(from.x + (to.x - from.x) * u, from.y + (to.y - from.y) * u, 3.5);
-        galaxyFx.fill(FLEET[depot.executor].hull);
-      }
+      body.visible = !!from && !!to;
+      if (!from || !to) continue;
+      // From the depot's edge to the star's, nose ahead; it fades in on leaving and out on arrival.
+      const length = Math.hypot(to.x - from.x, to.y - from.y);
+      const start = DEPOT_SIZE / 2;
+      const span = Math.max(1, length - start - 40);
+      const u = still ? 0.5 : (seed + (time * TANKER_SPEED) / span) % 1;
+      const d = start + span * u;
+      body.position.set(from.x + ((to.x - from.x) * d) / length, from.y + ((to.y - from.y) * d) / length);
+      body.rotation = Math.atan2(to.y - from.y, to.x - from.x) + Math.PI / 2;
+      body.alpha = Math.min(1, u * 10, (1 - u) * 8);
+    }
+    blinks.forEach((light, index) => {
+      light.alpha = still ? 0.16 : 0.04 + 0.22 * Math.max(0, Math.sin(time * 2.2 + index * 1.3)) ** 2;
+    });
+    for (const storm of storms) {
+      const [outer, inner] = storm.layers;
+      outer!.rotation = still ? storm.seed : storm.seed + time * 0.22;
+      inner!.rotation = still ? -storm.seed : -storm.seed - time * 0.36;
+      storm.flash.alpha = 0;
+      outer!.tint = inner!.tint = "#ffffff";
+      if (!still) lightning(storm);
     }
     for (const star of model.stars) {
       const point = stars.get(star.repo);
@@ -607,12 +1020,40 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         galaxyFx.circle(point.x + ring * Math.cos(angle), point.y + ring * 0.72 * Math.sin(angle), 4.5);
         galaxyFx.fill(color);
       });
-      if (star.attention) {
-        const pulse = (time * 0.6) % 1;
-        galaxyFx.circle(point.x, point.y, radius * 1.25 + 30 + pulse * 14);
-        galaxyFx.stroke({ width: 2.5, color: SPACE.alarm, alpha: 0.9 * (1 - pulse) });
+    }
+  }
+
+  /** A rare flash in a storm: a forked bolt across the cloud that lights it up for a moment. */
+  function lightning(storm: Storm) {
+    const period = 2.4 + noise(storm.seed) * 2.2;
+    const cycle = Math.floor((time + storm.seed) / period);
+    const age = (time + storm.seed) % period;
+    if (age > 0.22) return;
+    // Two quick strokes in one flash.
+    const strength = age < 0.07 ? 1 - age / 0.07 : age > 0.11 && age < 0.18 ? 0.7 : 0;
+    if (strength <= 0) return;
+    storm.flash.alpha = 0.35 * strength;
+    storm.layers[0]!.tint = storm.layers[1]!.tint = "#b9a8d8";
+    const { point, radius } = storm;
+    const angle = noise(cycle + storm.seed * 3) * Math.PI * 2;
+    spot.x = point.x + Math.cos(angle) * radius * 0.75;
+    spot.y = point.y + Math.sin(angle) * radius * 0.75 * 0.72;
+    galaxyFx.moveTo(spot.x, spot.y);
+    for (let i = 1; i <= 4; i++) {
+      const toward = angle + Math.PI + (noise(cycle * 5 + i + storm.seed) - 0.5) * 1.1;
+      spot.x += Math.cos(toward) * radius * 0.2;
+      spot.y += Math.sin(toward) * radius * 0.2 * 0.72;
+      galaxyFx.lineTo(spot.x, spot.y);
+      if (i === 2) {
+        spot2.x = spot.x;
+        spot2.y = spot.y;
       }
     }
+    galaxyFx.stroke({ width: 1.8, color: SPACE.lightning, alpha: 0.9 * strength });
+    // A short fork from the second bend.
+    const fork = angle + Math.PI + (noise(cycle + 77) > 0.5 ? 0.9 : -0.9);
+    galaxyFx.moveTo(spot2.x, spot2.y).lineTo(spot2.x + Math.cos(fork) * radius * 0.25, spot2.y + Math.sin(fork) * radius * 0.25 * 0.72);
+    galaxyFx.stroke({ width: 1.1, color: SPACE.lightning, alpha: 0.7 * strength });
   }
 
   function frameSystem(dt: number) {
@@ -652,6 +1093,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       moveShip(item, dt);
       if (ships.has(item.slug)) drawShip(item, dt);
     }
+    smoke(dt);
   }
 
   function place(container: Container, view: Camera) {
@@ -882,6 +1324,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       // The textures stay in the Assets cache for the next scene.
       app.destroy({ removeView: true }, { children: true });
       glowTexture.destroy(true);
+      stormTexture.destroy(true);
     },
   };
 }

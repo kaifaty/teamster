@@ -6,7 +6,7 @@ import { formatAge, formatDuration, formatUntil } from "../lib/format";
 import { ACTIVITY, EXECUTORS, PHASES, prLabel, problemLabel, taskTitle } from "../lib/labels";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
-import { LOW_FUEL, depots, depotPositions, stars, supplyLines } from "./fleet";
+import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines } from "./fleet";
 import { cardPlace, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
 import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type ShipEntry } from "./scene";
@@ -148,7 +148,8 @@ const depotLabels = computed(() => {
       top,
       style: at(point.x, point.y + (top ? 76 : -66)),
       fuel: depot.status ?? (depot.fuel === null ? "нет данных" : `${depot.fuel}%`),
-      low: depot.bad || (depot.fuel !== null && depot.fuel < LOW_FUEL),
+      low: depotEmpty(depot),
+      refuel: depotEmpty(depot) ? refuelText(depot.refuelAt, now.value) : null,
     };
   });
 });
@@ -383,6 +384,7 @@ onBeforeUnmount(() => {
           >
             <span class="d-name">{{ label.depot.name }}</span>
             <span class="num">{{ label.fuel }}{{ label.depot.duty ? " · дежурный" : "" }}</span>
+            <span v-if="label.refuel" class="num d-refuel">{{ label.refuel }}</span>
           </span>
         </template>
         <template v-else>
@@ -689,6 +691,9 @@ onBeforeUnmount(() => {
 
 .depot.low .num {
   color: #ff8d7a;
+}
+.depot.low .d-refuel {
+  color: #d9c08a;
 }
 
 .d-name {

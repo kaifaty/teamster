@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../types";
-import { FLASH_MS, ciChip, claudeLink, isFlashing, matchesKind, problemLabel, taskTitle } from "./labels";
+import { FLASH_MS, ciChip, claudeLink, isFlashing, matchesKind, problemLabel, tabTitle, taskTitle } from "./labels";
 
 const task = (extra: Partial<TaskSummary>): TaskSummary => ({
   slug: "t", kind: "work", title: null, link: null, repo: "r", branch: null, task_type: null, executor: "codex", account: null,
@@ -74,5 +74,12 @@ describe("desktop sessions", () => {
     expect(slugs("all")).toEqual(["a", "b", sid]);
     expect(slugs("tasks")).toEqual(["a", "b"]);
     expect(slugs("sessions")).toEqual([sid]);
+  });
+});
+
+describe("tabTitle", () => {
+  it("puts the count of alarms first and leaves the title alone without them", () => {
+    expect(tabTitle("Доска задач teamster", 3)).toBe("(3) Доска задач teamster");
+    expect(tabTitle("Доска задач teamster", 0)).toBe("Доска задач teamster");
   });
 });

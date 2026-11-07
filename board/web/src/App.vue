@@ -5,6 +5,7 @@ import type { Board } from "./store/board";
 import { useNow } from "./store/board";
 import { COLUMNS, KIND_FILTERS, isKindFilter, matchesKind, type KindFilter } from "./lib/labels";
 import { loadJson, saveJson } from "./lib/storage";
+import { tabAlarm } from "./lib/tab";
 import AccountsPanel from "./components/AccountsPanel.vue";
 import BoardColumn from "./components/BoardColumn.vue";
 import MachinePanel from "./components/MachinePanel.vue";
@@ -162,8 +163,16 @@ const retryText = computed(() =>
 
 const live = computed(() => board.tasks.value.filter((t) => t.column !== "closed").length);
 
+// The tab shows the tasks that need attention on either view, even while it is in the background.
+const alarms = computed(() => board.tasks.value.filter((t) => t.column === "attention").length);
+const tab = tabAlarm(document);
+watch(alarms, (count) => tab.show(count), { immediate: true });
+
 onMounted(() => board.start());
-onBeforeUnmount(() => board.stop());
+onBeforeUnmount(() => {
+  board.stop();
+  tab.show(0);
+});
 </script>
 
 <template>

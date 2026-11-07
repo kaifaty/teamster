@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../types";
-import { depotPositions, depots, stars, supplyLines } from "./fleet";
+import { MAX_PATCHES, depotEmpty, depotPositions, depots, hullOf, patchSpots, refuelText, stars, supplyLines } from "./fleet";
 
 const NOW = 1_800_000_000;
 
@@ -20,7 +20,10 @@ const ACCOUNTS = {
     { name: "spent", status: "exhausted", secondary: { used_percent: 100, window_minutes: 10080 } },
     { name: "spare", status: "not_logged_in" },
   ],
-  claude: [{ name: "pool-1", seven_day: { used_percent: 58 } }],
+  claude: [
+    { name: "pool-1", seven_day: { used_percent: 58 } },
+    { name: "pool-2", seven_day: { used_percent: 90, resets_at: NOW + 7200 }, limited_until: NOW + 1500 },
+  ],
 };
 
 describe("stars", () => {
@@ -47,7 +50,25 @@ describe("depots", () => {
       ["codex:spent", 0, true],
       ["codex:spare", null, true],
       ["claude:pool-1", 42, false],
+      ["claude:pool-2", 10, true],
     ]);
+    expect(list.map(depotEmpty)).toEqual([false, true, true, false, true]);
+  });
+
+  it("refuels at the end of the account's own limit, else at the weekly reset", () => {
+    const list = depots(ACCOUNTS, NOW);
+    expect(list.find((depot) => depot.key === "claude:pool-2")!.refuelAt).toBe(NOW + 1500);
+    expect(list.find((depot) => depot.key === "codex:personal")!.refuelAt).toBeNull();
+    expect(depots({ claude: [{ name: "p", seven_day: { used_percent: 99, resets_at: NOW + 60 } }] }, NOW)[0]!.refuelAt).toBe(NOW + 60);
+  });
+
+  it("tells when a depot refuels in hours, or in minutes under an hour", () => {
+    expect(refuelText(NOW + 1500, NOW)).toBe("заправка через 25 мин");
+    expect(refuelText(NOW + 20, NOW)).toBe("заправка через 1 мин");
+    expect(refuelText(NOW + 3600, NOW)).toBe("заправка через 1 ч");
+    expect(refuelText(NOW + 5 * 3600 + 600, NOW)).toBe("заправка через 5 ч");
+    expect(refuelText(NOW - 10, NOW)).toBeNull();
+    expect(refuelText(null, NOW)).toBeNull();
   });
 
   it("is empty without account data", () => {
@@ -59,6 +80,27 @@ describe("depots", () => {
     const places = depotPositions(depots(ACCOUNTS, NOW), { width: 1600, height: 1000 });
     expect(places.get("codex:personal")!.y).toBeLessThan(places.get("claude:pool-1")!.y);
     expect(places.get("codex:personal")!.x).toBeLessThan(places.get("codex:spent")!.x);
+  });
+});
+
+describe("ships", () => {
+  it("picks the hull by effort and leaves scouts and flagships as they are", () => {
+    const hull = (effort: string | null, kind: TaskSummary["kind"] = "work") => hullOf({ kind, effort });
+    expect([null, "low", "medium", "high", "xhigh", "max", "ultra"].map((effort) => hull(effort))).toEqual([
+      "light", "light", "light", "frigate", "cruiser", "cruiser", "cruiser",
+    ]);
+    expect(hull("high", "review")).toBe("frigate");
+    expect(hull("max", "scout")).toBe("scout");
+    expect(hull("max", "session")).toBe("flagship");
+  });
+
+  it("gives one patch per fix round, at most three, always at the same distinct spots", () => {
+    expect(patchSpots("a", 0)).toEqual([]);
+    expect(patchSpots("a", 2)).toHaveLength(2);
+    expect(patchSpots("a", 9)).toHaveLength(MAX_PATCHES);
+    expect(patchSpots("a", 3).slice(0, 2)).toEqual(patchSpots("a", 2));
+    const spots = patchSpots("a", 3).map(({ x, y }) => `${x},${y}`);
+    expect(new Set(spots).size).toBe(3);
   });
 });
 
