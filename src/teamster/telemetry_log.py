@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import budgets, clock, config, executors, notifications, task_state, threads
+from . import budgets, clock, config, executors, notifications, reviewers, task_state, threads
 
 
 TELEMETRY_PHASES = []
@@ -188,7 +188,7 @@ class PhaseTelemetry:
         self.rotation_start = len(st.get("rotations", []))
         self.capacity_start = st.get("capacity_retries", 0)
         self.check = None
-        self.reviewer = "codex"
+        self.reviewer = reviewers.CODEX_REVIEWER.name
         self.cost_usd = None
         self.model = None
         self.reasoning_effort = None
@@ -220,7 +220,7 @@ class PhaseTelemetry:
                            "weekly_spent": weekly_spent})
 
     def add_claude_usage(self, telemetry, account, weekly_before=None, weekly_after=None, weekly_spent=0):
-        self.reviewer = "claude"
+        self.reviewer = reviewers.CLAUDE_REVIEWER.name
         self.cost_usd = telemetry.get("cost_usd")
         self.model = telemetry.get("model")
         self.reasoning_effort = telemetry.get("reasoning_effort")
@@ -291,8 +291,7 @@ class PhaseTelemetry:
                 row["reviewer"] = self.reviewer
                 if "findings" in result:
                     row["severe_findings"] = new_severe_findings(st.get("review_result"), result)
-                if self.reviewer == "claude":
-                    row.update(thread=None, weekly_spent=0, cost_usd=self.cost_usd)
+                row.update(reviewers.get(self.reviewer).phase_fields(self.cost_usd))
             if self.provider is not None:
                 row.update(executors.from_state(st).phase_fields(st, last, self.cost_usd))
             write_telemetry(st, row, self.stopped)

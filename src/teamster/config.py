@@ -12,7 +12,7 @@ from pathlib import Path
 
 import teamster
 
-from . import executors, procs, result_schema
+from . import executors, procs, result_schema, reviewers
 
 
 def env(legacy_name, default=None):
@@ -237,8 +237,10 @@ def accounts_config():
         executors.from_state(cfg)
     except (KeyError, TypeError):
         procs.die("executor must be " + " or ".join('"' + name + '"' for name in executors.names()))
-    if cfg["reviewer"] not in ("codex", "claude"):
-        procs.die('reviewer must be "codex" or "claude"')
+    try:
+        reviewers.get(cfg["reviewer"])
+    except (KeyError, TypeError):
+        procs.die("reviewer must be " + " or ".join('"' + name + '"' for name in reviewers.names()))
     claude = cfg["claude"]
     if not isinstance(claude, dict):
         procs.die("claude must be an object")

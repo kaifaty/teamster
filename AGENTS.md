@@ -14,6 +14,7 @@ Worker prompts and `src/teamster/docs/lead-guide.md` do not name the lead Claude
 - Tests patch a function on the module that owns it, for example `worker.task_state.save`.
 - Every CLI option must be documented in `SKILL.md` or `src/teamster/docs/*.md`; `tests/test_options.py` checks this.
 - Connect new work executors through `executors.py`.
+- Connect new reviewers through `reviewers.py`.
 
 ## Checks
 

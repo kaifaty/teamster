@@ -45,7 +45,7 @@ import math
 import re
 import sys
 
-from . import commands, config, executors, home_migration, prompts, supervisor, telemetry_log, wait_view
+from . import commands, config, executors, home_migration, prompts, reviewers, supervisor, telemetry_log, wait_view
 
 
 HELP_TEXT = __doc__
@@ -178,7 +178,7 @@ OPTION_REGISTRY = (
      "argparse": {"action": "store_true", "help": "review in a fresh thread after successful completion"},
      "synopsis": "[--review]", "commands": {"start": {}, "say": {}}},
     {"names": ("--reviewer",),
-     "argparse": {"choices": ("codex", "claude"), "default": None,
+     "argparse": {"choices": reviewers.names(), "default": None,
                   "help": "review provider (default: saved reviewer; Claude work uses Codex reviews)"},
      "synopsis": "[--reviewer codex|claude]", "commands": {"start": {}, "say": {}, "review": {}}},
     {"names": ("--review-angles",),
