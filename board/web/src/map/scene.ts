@@ -218,27 +218,52 @@ function onHull(item: { x: number; y: number; size: number; body: Container }, l
   return out;
 }
 
-/** A dark cloud with curling arms and a thinner eye, for a storm over a star. */
+/** A dark cloud with curling arms and a thinner eye, for a storm over a star; its rims catch a cold light. */
 function stormCloud(): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 256;
   const context = canvas.getContext("2d")!;
-  for (let i = 0; i < 70; i++) {
-    const arm = i % 3;
-    const along = noise(i + 40);
-    const angle = (arm * Math.PI * 2) / 3 + along * 2.6;
-    const distance = 30 + along * 82 + (noise(i + 90) - 0.5) * 18;
-    const x = 128 + Math.cos(angle) * distance;
-    const y = 128 + Math.sin(angle) * distance;
-    const size = 18 + noise(i + 140) * 26 * (1 - along * 0.4);
-    const gradient = context.createRadialGradient(x, y, 0, x, y, size);
-    const edge = noise(i + 190) > 0.7;
-    gradient.addColorStop(0, edge ? "rgba(70,56,92,0.55)" : "rgba(26,20,36,0.62)");
-    gradient.addColorStop(0.6, edge ? "rgba(50,40,68,0.25)" : "rgba(20,16,30,0.3)");
-    gradient.addColorStop(1, "rgba(20,16,30,0)");
-    context.fillStyle = gradient;
-    context.fillRect(x - size, y - size, size * 2, size * 2);
+  // A body that is thin over the star and dense around it.
+  const body = context.createRadialGradient(128, 128, 0, 128, 128, 124);
+  body.addColorStop(0, "rgba(14,10,22,0)");
+  body.addColorStop(0.3, "rgba(14,10,22,0.08)");
+  body.addColorStop(0.45, "rgba(20,15,30,0.5)");
+  body.addColorStop(0.75, "rgba(24,18,34,0.45)");
+  body.addColorStop(1, "rgba(24,18,34,0)");
+  context.fillStyle = body;
+  context.fillRect(0, 0, 256, 256);
+  // Spiral arms: a dark band each, soft-edged, with a thin lit rim along its outer side.
+  const arm = (start: number, width: number, inner: number, outer: number, sweep: number) => {
+    context.beginPath();
+    for (let i = 0; i <= 40; i++) {
+      const u = i / 40;
+      const angle = start + u * sweep;
+      const distance = inner + (outer - inner) * u;
+      const x = 128 + Math.cos(angle) * distance;
+      const y = 128 + Math.sin(angle) * distance;
+      if (i === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    }
+    context.lineWidth = width;
+    context.stroke();
+  };
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  for (let i = 0; i < 4; i++) {
+    const start = (i * Math.PI) / 2 + noise(i + 20) * 0.5;
+    const sweep = 2.2 + noise(i + 30) * 0.8;
+    context.filter = "blur(9px)";
+    context.strokeStyle = "rgba(18,13,28,0.9)";
+    arm(start, 38 - i * 3, 46, 116, sweep);
+    arm(start, 38 - i * 3, 46, 116, sweep);
+    context.filter = "blur(3px)";
+    context.strokeStyle = "rgba(12,9,20,0.7)";
+    arm(start, 14, 48, 114, sweep);
+    context.filter = "blur(4px)";
+    context.strokeStyle = "rgba(150,128,186,0.34)";
+    arm(start - 0.16, 6, 60, 124, sweep);
   }
+  context.filter = "none";
   return canvas;
 }
 
@@ -480,17 +505,18 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     for (const star of model.stars) {
       const point = stars.get(star.repo);
       if (!point || !star.attention) continue;
-      const radius = starRadius(star.live) * 1.25 + 46;
+      const radius = starRadius(star.live) * 1.25 + 62;
       const body = new Container();
-      body.position.set(point.x, point.y - 10);
+      body.position.set(point.x, point.y - 14);
       body.scale.set(1, 0.72);
-      const layers = [sprite(stormTexture, radius * 2), sprite(stormTexture, radius * 1.6)];
+      const layers = [sprite(stormTexture, radius * 2), sprite(stormTexture, radius * 1.75)];
+      layers[1]!.alpha = 0.8;
       layers[1]!.scale.x *= -1;
       const flash = glow(SPACE.lightning, radius * 1.6);
       flash.alpha = 0;
       body.addChild(...layers, flash);
       stormLayer.addChild(body);
-      storms.push({ point: { x: point.x, y: point.y - 10 }, radius, seed: hashName(star.repo) % 997, layers, flash });
+      storms.push({ point: { x: point.x, y: point.y - 14 }, radius, seed: hashName(star.repo) % 997, layers, flash });
     }
   }
 
@@ -826,7 +852,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     if (damaged) {
       // The glow of a fire under the plating flickers unevenly; still, it only glows.
       const flicker = still ? 0.5 : 0.5 + 0.3 * Math.sin(time * 11 + item.seed) * Math.sin(time * 6.7 + item.seed * 0.37) + 0.2 * noise(Math.floor(time * 9) + item.seed);
-      item.burn.alpha = 0.22 + 0.3 * flicker;
+      item.burn.alpha = 0.35 + 0.5 * flicker;
       if (!still && !item.leaving) sparks(item);
     }
     escort(item, dt);
@@ -942,8 +968,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       puff.owner = item;
       puff.ox = spot.x - item.x;
       puff.oy = spot.y - item.y;
-      puff.vx = -Math.sin(back) * 22 + Math.cos(back) * side;
-      puff.vy = Math.cos(back) * 22 + Math.sin(back) * side;
+      puff.vx = -Math.sin(back) * 34 + Math.cos(back) * side;
+      puff.vy = Math.cos(back) * 34 + Math.sin(back) * side;
       puff.age = 0;
       puff.size = item.size;
     }
@@ -960,8 +986,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       const u = puff.age / PUFF_LIFE;
       puff.sprite.visible = true;
       puff.sprite.position.set(owner.x + puff.ox, owner.y + puff.oy);
-      puff.sprite.scale.set((puff.size * (0.16 + u * 0.5)) / 128);
-      puff.sprite.alpha = 0.55 * (1 - u) * Math.min(1, u * 8) * owner.body.alpha;
+      puff.sprite.scale.set((puff.size * (0.2 + u * 0.7)) / 128);
+      puff.sprite.alpha = 0.7 * (1 - u) * Math.min(1, u * 8) * owner.body.alpha;
     }
   }
 

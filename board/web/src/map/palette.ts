@@ -18,9 +18,9 @@ export const SPACE = {
   sleep: "#a9cdf0",
   gauge: "#1a2130",
   /** A ship whose CI failed: smoke, sparks and the glow of a fire under the plating. */
-  smoke: "#2e2a29",
+  smoke: "#5d5550",
   spark: "#ffd38a",
-  burn: "#ff5a32",
+  burn: "#ff3c1e",
   /** Patches of the fix rounds: plain steel plates with darker seams and bright rivets. */
   plate: "#8b8f97",
   seam: "#3c3f46",
