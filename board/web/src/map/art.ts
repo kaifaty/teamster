@@ -18,6 +18,7 @@ import shipCopperCruiser from "./art/ship-copper-cruiser.png";
 import shipCopperFrigate from "./art/ship-copper-frigate.png";
 import shipScout from "./art/ship-scout.png";
 import stationCommand from "./art/station-command.png";
+import stationResearch from "./art/station-research.png";
 import sun from "./art/sun.png";
 import tanker from "./art/tanker.png";
 
@@ -40,6 +41,7 @@ export const ART = {
   shipCopperFrigate,
   shipScout,
   stationCommand,
+  stationResearch,
   sun,
   tanker,
 };

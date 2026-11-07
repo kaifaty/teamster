@@ -1,4 +1,4 @@
-import type { ArtIndex, ServerMessage, TaskDetail, TaskFile } from "../types";
+import type { ArtIndex, ResearchView, ServerMessage, TaskDetail, TaskFile } from "../types";
 import { connectSocket, type ConnectionState } from "./socket";
 
 /** Where the board gets its data: the real server, or the fixtures in `dev:fixture` mode. */
@@ -12,6 +12,8 @@ export interface BoardSource {
   fetchFile(slug: string, name: TaskFile): Promise<string | null>;
   /** Which repositories have their own map art. */
   fetchArt(): Promise<ArtIndex>;
+  /** What the reflection learned; null when the server has no such route yet (404). */
+  fetchResearch(): Promise<ResearchView | null>;
 }
 
 async function get(path: string): Promise<Response | null> {
@@ -37,6 +39,10 @@ export function serverSource(): BoardSource {
     async fetchArt() {
       const response = await get("/api/art");
       return response ? ((await response.json()) as ArtIndex) : {};
+    },
+    async fetchResearch() {
+      const response = await get("/api/research");
+      return response ? ((await response.json()) as ResearchView) : null;
     },
   };
 }

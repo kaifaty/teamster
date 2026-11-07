@@ -283,6 +283,7 @@ export function scenarioSource(): BoardSource {
   return {
     label: "сценарий",
     fetchArt: async () => ({}),
+    fetchResearch: async () => null,
     connect(onMessage, onState) {
       start = Date.now() / 1000;
       step = 0;

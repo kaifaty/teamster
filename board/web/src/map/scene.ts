@@ -13,11 +13,13 @@ import {
   SUN_CLEARANCE,
   SUN_RADIUS,
   LIGHT_SHIP,
+  RESEARCH_SIZE,
   clampCamera,
   fitCamera,
   hashName,
   ringPoint,
   ringsOf,
+  researchPosition,
   skyChoices,
   starPositions,
   starRadius,
@@ -38,10 +40,21 @@ export interface ShipEntry {
   placement: Placement;
 }
 
+/** What the research station shows: see research.ts. */
+export interface ResearchMarks {
+  running: boolean;
+  /** Lessons that wait for a decision. */
+  proposed: number;
+  watched: { repo: string; count: number }[];
+  probes: string[];
+}
+
 export interface GalaxyModel {
   stars: Star[];
   depots: Depot[];
   lines: SupplyLine[];
+  /** null: no station, the server tells nothing about research. */
+  research: ResearchMarks | null;
 }
 
 export interface SceneOptions {
@@ -50,6 +63,8 @@ export interface SceneOptions {
   onLeave: () => void;
   onPick: (slug: string) => void;
   onHover: (slug: string | null) => void;
+  /** The research station was clicked. */
+  onResearch: () => void;
   /** The world's shape and the camera over it, for the labels. */
   onCamera: (world: Size, camera: Camera) => void;
   onLost: () => void;
@@ -79,6 +94,9 @@ const TANKER_SIZE = 40;
 /** World units a tanker covers in a second. */
 const TANKER_SPEED = 46;
 const ESCORT_SIZE = 30;
+const PROBE_SIZE = 40;
+/** World units a probe covers in a second. */
+const PROBE_SPEED = 120;
 /** Smoke puffs shared by all damaged ships: no puff is made after the scene starts. */
 const SMOKE_PUFFS = 160;
 /** Seconds between two puffs of one damaged ship, and how long a puff lives. */
@@ -334,7 +352,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const starLayer = new Container();
   const stormLayer = new Container();
   const galaxyFx = new Graphics();
-  galaxy.addChild(lanes, depotLayer, tankerLayer, starLayer, stormLayer, galaxyFx);
+  const watchFx = new Graphics();
+  const researchLayer = new Container();
+  const probeLayer = new Container();
+  galaxy.addChild(lanes, watchFx, depotLayer, tankerLayer, researchLayer, starLayer, stormLayer, probeLayer, galaxyFx);
 
   const system = new Container();
   const charts = new Graphics();
@@ -367,7 +388,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   let fit = fitCamera(world, viewport);
   let camera = fit;
   let frame: SystemFrame = systemFrame(world);
-  let model: GalaxyModel = { stars: [], depots: [], lines: [] };
+  let model: GalaxyModel = { stars: [], depots: [], lines: [], research: null };
   let stars = new Map<string, Point>();
   let depotPoints = new Map<string, Point>();
   let repo: string | null = null;
@@ -386,6 +407,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const ships = new Map<string, Ship>();
   const tankers = new Map<string, { sprite: Sprite; line: SupplyLine; seed: number }>();
   let blinks: Sprite[] = [];
+  let station: { body: Sprite; halo: Sprite; beacon: Sprite } | null = null;
+  const probes = new Map<string, { sprite: Container; seed: number }>();
   let storms: Storm[] = [];
   /** Scratch points, so that the frame makes no objects for its effects. */
   const spot: Point = { x: 0, y: 0 };
@@ -540,6 +563,40 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
   }
 
+  /** The research station in the middle of the galaxy: a teal glow, and a gold light while lessons wait. */
+  function drawResearch() {
+    researchLayer.removeChildren().forEach((child) => child.destroy());
+    station = null;
+    if (!model.research) return;
+    const point = researchPosition(world);
+    const halo = glow(SPACE.research, RESEARCH_SIZE * 2.6);
+    const body = sprite(art("stationResearch"), RESEARCH_SIZE);
+    const beacon = glow(SPACE.gold, RESEARCH_SIZE * 0.9);
+    for (const part of [halo, body, beacon]) part.position.set(point.x, point.y);
+    beacon.visible = model.research.proposed > 0;
+    researchLayer.addChild(halo, body, beacon);
+    station = { body, halo, beacon };
+  }
+
+  /** One probe for every system the running reflection reads. */
+  function syncProbes() {
+    const wanted = new Set(model.research?.probes ?? []);
+    for (const [repoName, probe] of probes) {
+      if (wanted.has(repoName)) continue;
+      probe.sprite.destroy({ children: true });
+      probes.delete(repoName);
+    }
+    for (const repoName of wanted) {
+      if (probes.has(repoName)) continue;
+      const body = new Container();
+      const light = glow(SPACE.research, PROBE_SIZE * 1.6);
+      light.alpha = 0.7;
+      body.addChild(light, sprite(art("shipScout"), PROBE_SIZE));
+      probeLayer.addChild(body);
+      probes.set(repoName, { sprite: body, seed: (hashName(repoName) % 100) / 100 });
+    }
+  }
+
   function drawGalaxy() {
     stars = starPositions(model.stars.map((star) => star.repo), world);
     depotPoints = depotPositions(model.depots, world);
@@ -547,6 +604,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     drawDepots();
     drawStars();
     syncTankers();
+    drawResearch();
+    syncProbes();
   }
 
   function stationSprite(place: Exclude<Place, "gate">): Sprite {
@@ -1035,6 +1094,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       outer!.tint = inner!.tint = "#ffffff";
       if (!still) lightning(storm);
     }
+    frameResearch();
     for (const star of model.stars) {
       const point = stars.get(star.repo);
       if (!point) continue;
@@ -1046,6 +1106,55 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         galaxyFx.circle(point.x + ring * Math.cos(angle), point.y + ring * 0.72 * Math.sin(angle), 4.5);
         galaxyFx.fill(color);
       });
+    }
+  }
+
+  /**
+   * The station breathes while the reflection runs, its gold light blinks while lessons wait, a pulse runs
+   * along a beam to every system with records for the next reflection, and probes fly to the systems it reads.
+   */
+  function frameResearch() {
+    watchFx.clear();
+    const marks = model.research;
+    if (!marks || !station) return;
+    const center = researchPosition(world);
+    const { body, halo, beacon } = station;
+    if (marks.running && !still) body.rotation = time * 0.12;
+    halo.alpha = marks.running ? (still ? 0.5 : 0.38 + 0.18 * Math.sin(time * 2.4)) : 0.16;
+    beacon.alpha = still ? 0.35 : 0.08 + 0.4 * Math.max(0, Math.sin(time * 1.8)) ** 2;
+    for (const { repo: name, count } of marks.watched) {
+      const to = stars.get(name);
+      if (!to) continue;
+      const length = Math.hypot(to.x - center.x, to.y - center.y);
+      const end = length - starRadius(model.stars.find((star) => star.repo === name)?.live ?? 0) * 1.25 - 18;
+      const size = 2.2 + Math.min(count, 4) * 0.45;
+      const start = RESEARCH_SIZE * 0.55;
+      if (end <= start) continue;
+      watchFx.moveTo(center.x + ((to.x - center.x) * start) / length, center.y + ((to.y - center.y) * start) / length);
+      watchFx.lineTo(center.x + ((to.x - center.x) * end) / length, center.y + ((to.y - center.y) * end) / length);
+      watchFx.stroke({ width: 1.4, color: SPACE.research, alpha: 0.22 });
+      for (let d = start; d < end; d += 13) {
+        // A wave runs outwards along the beam, from the station to the star.
+        const wave = still ? 0.5 : Math.max(0, Math.sin(d / 46 - time * 2.6)) ** 3;
+        watchFx.circle(center.x + ((to.x - center.x) * d) / length, center.y + ((to.y - center.y) * d) / length, size * (0.7 + 0.5 * wave));
+        watchFx.fill({ color: SPACE.research, alpha: 0.3 + 0.65 * wave });
+      }
+    }
+    for (const [name, { sprite: probe, seed }] of probes) {
+      const to = stars.get(name);
+      probe.visible = !!to;
+      if (!to) continue;
+      // Out to the star and back, nose ahead; it fades at both ends.
+      const length = Math.hypot(to.x - center.x, to.y - center.y);
+      const start = RESEARCH_SIZE * 0.45;
+      const span = Math.max(1, length - start - 46);
+      const cycle = still ? 0.25 : (seed + (time * PROBE_SPEED) / (span * 2)) % 1;
+      const out = cycle < 0.5;
+      const u = out ? cycle * 2 : (1 - cycle) * 2;
+      const d = start + span * u;
+      probe.position.set(center.x + ((to.x - center.x) * d) / length, center.y + ((to.y - center.y) * d) / length);
+      probe.rotation = Math.atan2(to.y - center.y, to.x - center.x) + (out ? Math.PI / 2 : -Math.PI / 2);
+      probe.alpha = Math.min(1, u * 8, (1 - u) * 6 + 0.25);
     }
   }
 
@@ -1187,6 +1296,12 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     return null;
   }
 
+  function researchAt(point: Point): boolean {
+    if (!model.research) return false;
+    const center = researchPosition(world);
+    return Math.hypot(center.x - point.x, center.y - point.y) < RESEARCH_SIZE * 0.5;
+  }
+
   function shipAt(point: Point): string | null {
     let best: string | null = null;
     let bestDistance = Infinity;
@@ -1221,7 +1336,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       return;
     }
     const point = worldPoint(at);
-    const found = repo ? shipAt(point) : starAt(point);
+    const found = repo ? shipAt(point) : (starAt(point) ?? (researchAt(point) ? "research" : null));
     canvas.style.cursor = found ? "pointer" : repo && camera.zoom > fit.zoom ? "grab" : "";
     const slug = repo ? found : null;
     if (slug !== lastHover) {
@@ -1242,6 +1357,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
     const star = starAt(point);
     if (star) options.onEnter(star);
+    else if (researchAt(point)) options.onResearch();
   };
 
   const onCancel = () => {

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import type { ArtIndex, TaskSummary } from "../types";
+import type { ArtIndex, ResearchView, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
 import { formatAge, formatDuration, formatUntil } from "../lib/format";
 import { ACTIVITY, EXECUTORS, PHASES, prLabel, problemLabel, taskTitle } from "../lib/labels";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
 import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines } from "./fleet";
-import { cardPlace, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
+import { RESEARCH_SIZE, cardPlace, researchPosition, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
+import ResearchPanel from "./ResearchPanel.vue";
+import { isReflection, research, shortDate } from "./research";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
 import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type ShipEntry } from "./scene";
 
@@ -38,7 +40,15 @@ watch(sourceKind, async (kind) => {
   }
 });
 const source = computed(() => (sourceKind.value === "scenario" && scenario.value ? scenario.value : props.board));
-const tasks = computed(() => source.value.tasks.value);
+// What the reflection learned. Runs of the reflection are the research station's own work, not a system's.
+const researchView = shallowRef<ResearchView | null>(null);
+async function loadResearch() {
+  const from = source.value.source;
+  const view = await from.fetchResearch().catch(() => researchView.value);
+  if (from === source.value.source && JSON.stringify(view) !== JSON.stringify(researchView.value)) researchView.value = view;
+}
+const allTasks = computed(() => source.value.tasks.value);
+const tasks = computed(() => allTasks.value.filter((task) => !isReflection(task, researchView.value)));
 const loaded = computed(() => source.value.state.value.loaded);
 
 // Galaxy: one star per repository, one depot per account. Null means the whole galaxy is shown.
@@ -65,10 +75,26 @@ async function loadArt() {
   if (from === source.value.source && JSON.stringify(art) !== JSON.stringify(repoArt.value)) repoArt.value = art;
 }
 watch(source, loadArt, { immediate: true });
+watch(source, () => {
+  researchView.value = null;
+  void loadResearch();
+}, { immediate: true });
 const emblemOf = (name: string | null) => (name ? (repoArt.value[name]?.emblem ?? null) : null);
 const hideImage = (event: Event) => {
   (event.target as HTMLElement).hidden = true;
 };
+
+const station = computed(() => research(researchView.value, allTasks.value, starList.value.map((star) => star.repo)));
+const researchMarks = computed(() =>
+  station.value
+    ? { running: station.value.running, proposed: station.value.proposed.length, watched: station.value.watched, probes: station.value.probes }
+    : null,
+);
+// A finished run has written its report: read it at once rather than at the next refresh.
+watch(() => station.value?.running ?? false, (running, was) => {
+  if (was && !running) void loadResearch();
+});
+const researchOpen = ref(false);
 
 const system = computed(() => (repo.value ? systemTasks(tasks.value, repo.value) : { shown: [], hidden: [] }));
 const entries = computed<ShipEntry[]>(() =>
@@ -138,6 +164,18 @@ const starLabels = computed(() => {
   });
 });
 
+const stationLabel = computed(() => {
+  const marks = station.value;
+  if (!marks) return null;
+  const point = researchPosition(world.value);
+  const last = marks.batch ? `разбор ${shortDate(marks.batch.date)}` : "разборов не было";
+  const proposed = marks.proposed.length;
+  // One note under the name, the most pressing one; the panel has the rest.
+  const note = marks.running ? "идёт разбор" : proposed ? `ждут решения ${proposed}` : last;
+  const title = [marks.running ? "идёт разбор" : last, `ждут решения ${proposed}`, `с сигналом ${marks.pending.signals} из ${marks.pending.records}`].join("\n");
+  return { style: at(point.x, point.y + RESEARCH_SIZE * 0.5 + 18), note, title, running: marks.running, waiting: !marks.running && proposed > 0 };
+});
+
 const depotLabels = computed(() => {
   const places = depotPositions(depotList.value, world.value);
   return depotList.value.map((depot) => {
@@ -189,7 +227,18 @@ const hovered = ref<string | null>(null);
 const selectedTask = computed(() => (selected.value ? (source.value.state.value.tasks[selected.value] ?? null) : null));
 
 function open(slug: string) {
+  researchOpen.value = false;
   selected.value = slug;
+}
+
+function openResearch() {
+  selected.value = null;
+  researchOpen.value = true;
+}
+
+function closeResearch() {
+  researchOpen.value = false;
+  void nextTick(() => overlay.value?.querySelector<HTMLElement>(".station")?.focus());
 }
 
 function close() {
@@ -223,7 +272,7 @@ function leave() {
 }
 
 function onKey(event: KeyboardEvent) {
-  if (event.key === "Escape" && props.active && repo.value && !selected.value) leave();
+  if (event.key === "Escape" && props.active && repo.value && !selected.value && !researchOpen.value) leave();
 }
 
 // Scene -------------------------------------------------------------------------------------------
@@ -236,7 +285,7 @@ let unmounted = false;
 
 function feed() {
   if (!scene) return;
-  scene.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value });
+  scene.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value, research: researchMarks.value });
   scene.setArt(repoArt.value);
   scene.setView(repo.value);
   scene.setShips(entries.value);
@@ -261,6 +310,7 @@ async function mount() {
       onEnter: enter,
       onLeave: leave,
       onPick: open,
+      onResearch: openResearch,
       onHover: (slug) => {
         hovered.value = slug;
       },
@@ -293,7 +343,9 @@ function retry() {
   void nextTick(mount);
 }
 
-watch([starList, depotList, lines], () => scene?.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value }));
+watch([starList, depotList, lines, researchMarks], () =>
+  scene?.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value, research: researchMarks.value }),
+);
 watch(repoArt, (art) => scene?.setArt(art));
 watch(repo, (name) => scene?.setView(name), { flush: "sync" });
 watch(entries, (next) => scene?.setShips(next));
@@ -305,17 +357,28 @@ watch(
     if (active) {
       now.value = Date.now() / 1000;
       void loadArt();
+      void loadResearch();
     }
     scene?.setActive(active);
-    if (!active) selected.value = null;
+    if (!active) {
+      selected.value = null;
+      researchOpen.value = false;
+    }
   },
 );
+// The reflection writes rarely; a visible map asks again every minute.
+const RESEARCH_REFRESH_MS = 60_000;
+let researchTimer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   window.addEventListener("keydown", onKey);
   void mount();
+  researchTimer = setInterval(() => {
+    if (props.active) void loadResearch();
+  }, RESEARCH_REFRESH_MS);
 });
 onBeforeUnmount(() => {
   unmounted = true;
+  clearInterval(researchTimer);
   clearTimeout(flightTimer);
   window.removeEventListener("keydown", onKey);
   scene?.dispose();
@@ -374,6 +437,19 @@ onBeforeUnmount(() => {
               <span v-if="label.notes" class="s-notes">{{ label.notes }}</span>
             </span>
           </button>
+          <button
+            v-if="stationLabel"
+            type="button"
+            class="station"
+            :class="{ live: stationLabel.running, waiting: stationLabel.waiting }"
+            :style="stationLabel.style"
+            :title="stationLabel.title"
+            :aria-expanded="researchOpen"
+            @click="openResearch"
+          >
+            <span class="st-name">Исследовательский центр</span>
+            <span class="st-notes">{{ stationLabel.note }}</span>
+          </button>
           <span
             v-for="label in depotLabels"
             :key="label.depot.key"
@@ -415,6 +491,7 @@ onBeforeUnmount(() => {
       <p v-else-if="repo && !entries.length" class="status">В этой системе сейчас никого: все задачи закрыты.</p>
     </div>
 
+    <ResearchPanel v-if="researchOpen && active && station" :research="station" :now="now" @close="closeResearch" @open="open" />
     <TaskPanel
       v-if="selected && active"
       :slug="selected"
@@ -583,6 +660,7 @@ onBeforeUnmount(() => {
 }
 
 .star,
+.station,
 .depot,
 .card {
   position: absolute;
@@ -672,6 +750,53 @@ onBeforeUnmount(() => {
 
 .star.alarm .s-notes {
   color: #ff8d7a;
+}
+
+/* The research station's label: teal, like its glow; a gold note while lessons wait for a decision. */
+.station {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 260px;
+  padding: 2px 10px;
+  border: 1px solid rgba(95, 214, 200, 0.35);
+  border-radius: 3px;
+  background: rgba(8, 14, 18, 0.78);
+  color: #bfeee6;
+  font: inherit;
+  font-size: 13px;
+  line-height: 17px;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.station:hover {
+  border-color: rgba(95, 214, 200, 0.85);
+  background: rgba(14, 26, 30, 0.92);
+}
+
+.station:focus-visible {
+  outline: 2px solid #5fd6c8;
+  outline-offset: 1px;
+}
+
+.st-name {
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.st-notes {
+  color: #9cc2bc;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.station.live .st-notes {
+  color: #7ff0df;
+}
+
+.station.waiting .st-notes {
+  color: #f3c64e;
 }
 
 .depot {
@@ -826,6 +951,16 @@ onBeforeUnmount(() => {
 
   .c-head span {
     display: none;
+  }
+
+  .station {
+    padding: 1px 6px;
+    font-size: 11.5px;
+    line-height: 15px;
+  }
+
+  .st-notes {
+    font-size: 11px;
   }
 }
 </style>

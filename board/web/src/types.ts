@@ -38,6 +38,7 @@ export interface TaskSummary {
   created: number | null;
   updated_at: number; // task state mtime, or session lastActivityAt / 1000
   activity: Activity | null; // latest activity, only while alive
+  scheduled?: string | null; // a session's scheduled task id; null for tasks; absent from older servers
 }
 
 export type TaskFile = "brief" | "last" | "review" | "check";
@@ -51,6 +52,57 @@ export interface RepoArt {
 
 /** By repository; repositories without art are absent. */
 export type ArtIndex = Record<string, RepoArt>;
+
+// Research: what the reflection learned from finished tasks (GET /api/research).
+
+export type LessonStatus = "proposed" | "applied" | "declined" | "other";
+export type Signal =
+  | "blocked"
+  | "refused"
+  | "needs_decision"
+  | "escalate"
+  | "round_cap"
+  | "fix_rounds"
+  | "check_failed"
+  | "ci_repair"
+  | "budget_exhausted";
+
+/** One row of the reflection index, in file order. */
+export interface Lesson {
+  date: string;
+  entry: string;
+  scope: "invariant" | "domain" | "other";
+  scope_text: string;
+  repos: string[]; // for a domain lesson, the repositories it names
+  cue: string;
+  status: LessonStatus;
+  status_text: string;
+}
+
+/** The newest batch reflection. */
+export interface ResearchBatch {
+  name: string;
+  date: string | null;
+  through: string | null;
+  records: number;
+  repos: Record<string, number>;
+}
+
+export interface PendingRecord {
+  slug: string;
+  repo: string;
+  stamp: string;
+  signals: Signal[];
+}
+
+export interface ResearchView {
+  lessons: Lesson[];
+  batch: ResearchBatch | null;
+  /** Archived records after the newest batch: the next batch's material. */
+  pending: { records: number; signals: number; repos: Record<string, number>; items: PendingRecord[] };
+  /** Sessions whose `scheduled` is this id are runs of the reflection. */
+  reflection_task: string;
+}
 
 export interface TaskDetail extends TaskSummary {
   timeline: { at: number; text: string }[]; // task events (≤ 200), or session creation and last activity
