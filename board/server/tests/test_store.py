@@ -724,7 +724,7 @@ def test_log_events_allowlist_and_invalid_rows(tmp_path, monkeypatch):
     rows = [row, verdict, [], {"kind": "work"}, {"kind": "work", "at": True},
             {"kind": "work", "at": "5000000"}, {"kind": "work", "at": float("nan")},
             {"kind": "work", "at": float("inf")}, {"kind": "unknown", "at": 5000000}]
-    path.write_bytes(b"broken json\n\xff\n" + b"".join(
+    path.write_bytes(b"broken json\n\xff\n" + b"[" * 100000 + b"\n" + b"".join(
         json.dumps(item).encode() + b"\n" for item in rows))
     store = Store(tmp_path / "tasks", telemetry_path=path)
     messages = store.poll()
@@ -741,6 +741,7 @@ def test_log_events_allowlist_and_invalid_rows(tmp_path, monkeypatch):
     assert all(events[1][key] is None for key in (
         "started", "turn", "round", "findings", "severe_findings", "model", "ci", "phase"))
     assert messages == [{"type": "event", "event": event} for event in events]
+    assert store.poll() == []
 
 
 def test_log_incremental_append_waits_for_complete_line(tmp_path, monkeypatch):
@@ -775,17 +776,33 @@ def test_log_incremental_append_waits_for_complete_line(tmp_path, monkeypatch):
 def test_log_truncation_and_inode_replacement_reset_history(tmp_path, monkeypatch):
     monkeypatch.setattr("teamster_board.store.time.time", lambda: 1000)
     path = tmp_path / "log.jsonl"
-    path.write_text(json.dumps({"at": 997, "kind": "work", "slug": "long-" * 40}) + "\n")
+    first = {"at": 997, "kind": "work"}
+    second = {"at": 998, "kind": "scout"}
+    third = {"at": 999, "kind": "work"}
+    path.write_text("".join(json.dumps(row) + "\n" for row in (first, second)))
     store = Store(tmp_path / "tasks", telemetry_path=path)
-    store.poll()
-    path.write_text(json.dumps({"at": 998, "kind": "scout"}) + "\n")
-    assert [message["event"]["at"] for message in store.poll()] == [998]
-    assert [event["at"] for event in store.events(0, 1000)["events"]] == [998]
+    assert [message["event"]["at"] for message in store.poll()] == [997, 998]
     replacement = tmp_path / "replacement.jsonl"
-    replacement.write_text(json.dumps({"at": 999, "kind": "work"}) + "\n")
+    replacement.write_text("".join(json.dumps(row, sort_keys=True) + "\n"
+                                   for row in (first, second, third)))
     replacement.replace(path)
     assert [message["event"]["at"] for message in store.poll()] == [999]
-    assert [event["at"] for event in store.events(0, 1000)["events"]] == [999]
+    assert [event["at"] for event in store.events(0, 1000)["events"]] == [997, 998, 999]
+    path.write_text("".join(json.dumps(row) + "\n" for row in (first, third)))
+    assert store.poll() == []
+    assert [event["at"] for event in store.events(0, 1000)["events"]] == [997, 999]
+    metadata = path.stat()
+    fourth = {"at": 996, "kind": "work"}
+    path.write_text("".join(json.dumps(row) + "\n" for row in (first, fourth)))
+    assert path.stat().st_size == metadata.st_size
+    os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1000000))
+    assert [message["event"]["at"] for message in store.poll()] == [996]
+    assert [event["at"] for event in store.events(0, 1000)["events"]] == [996, 997]
+    replacement.write_text("".join(json.dumps(row) + "\n"
+                                   for row in (first, second, third, fourth)))
+    replacement.replace(path)
+    assert store.poll() == []
+    assert [event["at"] for event in store.events(0, 1000)["events"]] == [996, 997, 998, 999]
 
 
 def test_log_missing_symlinks_and_retention(tmp_path, monkeypatch):

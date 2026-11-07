@@ -27,6 +27,7 @@ async def _read_output(stream, truncate=False):
 
 async def _snapshot(script, command, arguments, previous):
     proc = None
+    output = None
     readers = []
     data, error = previous, None
     try:
@@ -38,13 +39,17 @@ async def _snapshot(script, command, arguments, previous):
         )
         readers = [asyncio.create_task(_read_output(proc.stdout)),
                    asyncio.create_task(_read_output(proc.stderr, truncate=True))]
-        stdout, stderr, _ = await asyncio.wait_for(
-            asyncio.gather(*readers, proc.wait()), ACCOUNTS_TIMEOUT,
-        )
+        output = asyncio.gather(*readers, proc.wait())
+        # Python 3.10 wait_for can swallow shutdown cancellation as output finishes.
+        done, _ = await asyncio.wait([output], timeout=ACCOUNTS_TIMEOUT)
+        if not done:
+            raise asyncio.TimeoutError
+        stdout, stderr, _ = output.result()
         if stderr:
             LOGGER.warning("%s stderr: %s", command, stderr.decode("utf-8", "replace").strip())
         if proc.returncode:
-            raise ValueError(f"{command} exited with status {proc.returncode}")
+            detail = stderr.decode("utf-8", "replace").strip() if command == "accounts" else ""
+            raise ValueError(detail or f"{command} exited with status {proc.returncode}")
         data = json.loads(stdout)
     except asyncio.TimeoutError:
         error = f"{command} timed out after {ACCOUNTS_TIMEOUT:g} seconds"
@@ -53,7 +58,9 @@ async def _snapshot(script, command, arguments, previous):
     finally:
         for reader in readers:
             reader.cancel()
-        await asyncio.gather(*readers, return_exceptions=True)
+        if output is not None:
+            output.cancel()
+            await asyncio.gather(output, *readers, return_exceptions=True)
         if proc is not None:
             if proc.returncode is None:
                 try:

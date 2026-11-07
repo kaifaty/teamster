@@ -174,6 +174,7 @@ class Store:
         self.records = {}
         self.telemetry_path = Path(telemetry_path) if telemetry_path is not None else None
         self._log_events = []
+        self._log_seen = {}
         self._log_signature = None
         self._log_offset = 0
         self.lock = threading.RLock()
@@ -283,6 +284,7 @@ class Store:
     def _poll_log(self):
         cutoff = time.time() - LOG_RETENTION_SECONDS
         self._log_events = [event for event in self._log_events if event["at"] >= cutoff]
+        self._log_seen = {key: at for key, at in self._log_seen.items() if at >= cutoff}
         path = self.telemetry_path
         if path is None:
             return []
@@ -304,9 +306,10 @@ class Store:
                     return []
                 signature = (metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_size)
                 previous = self._log_signature
-                if (previous is None or signature[:2] != previous[:2]
-                        or signature[3] < previous[3]
-                        or (signature[3] == previous[3] and signature[2] != previous[2])):
+                reset = (previous is None or signature[:2] != previous[:2]
+                         or signature[3] < previous[3]
+                         or (signature[3] == previous[3] and signature[2] != previous[2]))
+                if reset:
                     self._log_offset = 0
                     self._log_events = []
                 stream.seek(self._log_offset)
@@ -317,11 +320,14 @@ class Store:
                     self._log_offset = stream.tell()
                     try:
                         event = log_event(json.loads(line))
-                    except (ValueError, UnicodeDecodeError, OverflowError):
+                    except (ValueError, UnicodeDecodeError, OverflowError, RecursionError):
                         continue
                     if event is not None and event["at"] >= cutoff:
                         self._log_events.append(event)
-                        added.append(event)
+                        key = tuple(event.items())
+                        if not reset or key not in self._log_seen:
+                            added.append(event)
+                        self._log_seen[key] = event["at"]
                 self._log_signature = signature
         except OSError:
             return []

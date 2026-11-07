@@ -49,7 +49,7 @@ def test_accounts_error_and_timeout_keep_previous_data(tmp_path, monkeypatch):
         assert first["error"] is None
         write_script(script, "print('fake accounts failure', file=sys.stderr)\nsys.exit(7)\n")
         failed = await accounts.refresh()
-        assert failed["error"] == "accounts exited with status 7"
+        assert failed["error"] == "fake accounts failure"
         assert failed["data"] == first["data"]
         monkeypatch.setattr(accounts_module, "ACCOUNTS_TIMEOUT", 0.2)
         write_script(script, "import time\ntime.sleep(30)\n")
@@ -62,6 +62,22 @@ def test_accounts_error_and_timeout_keep_previous_data(tmp_path, monkeypatch):
         assert "0.2" in timed_out["error"]
         assert timed_out["data"] == first["data"]
 
+        write_script(script, "print('{}')\n")
+        gather = asyncio.gather
+
+        def cancel_when_output_finishes(*awaitables, **options):
+            output = gather(*awaitables, **options)
+            if len(awaitables) == 3 and not options.get("return_exceptions"):
+                owner = asyncio.current_task()
+                output.add_done_callback(lambda _: owner.cancel())
+            return output
+
+        # Python 3.10 wait_for can swallow cancellation when its input has just finished.
+        monkeypatch.setattr(accounts_module.asyncio, "gather", cancel_when_output_finishes)
+        pending = asyncio.create_task(accounts.refresh())
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, timeout=5)
+
     asyncio.run(check())
 
 
@@ -69,6 +85,7 @@ def test_reports_arguments_and_cache_per_pair(tmp_path, monkeypatch):
     script, marker = tmp_path / "report.py", tmp_path / "calls"
     script.write_text(
         "import json, sys\nfrom pathlib import Path\nassert sys.flags.isolated\n"
+        "assert sys.stdin.read() == ''\n"
         "assert sys.argv[1:3] == ['report', '--json']\n"
         f"Path({str(marker)!r}).open('a').write(json.dumps(sys.argv[3:]) + '\\n')\n"
         "print(json.dumps({'args': sys.argv[3:]}))\n"

@@ -5,9 +5,10 @@ import os
 import subprocess
 from pathlib import Path
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
-from starlette.testclient import WebSocketDenialResponse
+from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 
 from teamster_board import app as board_app
 from teamster_board.app import Settings, create_app
@@ -21,6 +22,17 @@ SUMMARY_FIELDS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def websocket_receive_timeout(monkeypatch):
+    def receive(socket):
+        async def read():
+            with anyio.fail_after(5):
+                return await socket._send_rx.receive()
+        return socket.portal.call(read)
+
+    monkeypatch.setattr(WebSocketTestSession, "receive", receive)
+
+
 @pytest.fixture
 def board(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
@@ -31,7 +43,7 @@ def board(tmp_path, monkeypatch):
         "assert sys.argv[1:] == ['accounts', '--json']\nprint('{\"accounts\": []}')\n"
     )
     settings = Settings(tmp_path, fake, poll_seconds=0.01, web_dist=tmp_path / "dist")
-    with subprocess.Popen(["sleep", "30"]) as process:
+    with subprocess.Popen(["sleep", "30"], stdin=subprocess.DEVNULL) as process:
         directory = tmp_path / "claude-tasks" / "demo"
         directory.mkdir(parents=True)
         state = {
@@ -319,9 +331,12 @@ def test_machine_environment_and_websocket(tmp_path, monkeypatch):
             assert "machines" in first["snapshot"]
             # A config error changes the payload even if the first probe already completed.
             config.write_text('{"machines": [')
-            message = receive_until(socket, "machines")
-            while message["machines"]["config_error"] is None:
+            for _ in range(50):
                 message = receive_until(socket, "machines")
+                if message["machines"]["config_error"] is not None:
+                    break
+            else:
+                pytest.fail("No machine config error received")
             item = message["machines"]["items"][0]
             assert item["error"] == "unreachable"
             assert item["status"] == "offline"

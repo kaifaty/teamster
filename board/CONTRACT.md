@@ -25,8 +25,9 @@ stops or changes work, and never writes under either source's home.
   `BOARD_ACCOUNTS_SECONDS` (default 300). The script path comes from `BOARD_TEAMSTER_COMMAND`, then `BOARD_CODEX_TASK` and defaults to this
   repository's `src/teamster/__main__.py`.
 - Reports: `python3 -I <script> report --json --since <date> [--by <dimensions>]`, using the same script
-  as accounts. Both commands have a 60-second timeout and a 1 MiB stdout limit. Stderr goes only to
-  server logs. A report response is cached for 60 seconds per `(since, by)` pair, including errors;
+  as accounts. Both commands have a 60-second timeout and a 1 MiB stdout limit. Report stderr goes
+  only to server logs; accounts errors retain their stderr reason. A report response is cached for
+  60 seconds per `(since, by)` pair, including errors;
   a failed refresh retains the pair's previous successful data.
 - Machines: `$BOARD_MACHINES_FILE` (default `board-machines.json` in the task home), with local or SSH
   probes every `BOARD_MACHINES_SECONDS` (default 30). The configuration and probe are described below.
@@ -373,7 +374,8 @@ Server → client only; the server ignores client messages. Every message is one
   `closed` if it was archived), or a session's metadata disappeared or became archived.
 - `{"type": "activity", "slug": string, "activity": Activity}` — new latest activity of a live task.
 - `{"type": "event", "event": LogEvent}` — a newly read completed event, from the same polling cycle
-  as tasks. History is fetched through `/api/events`; it is not added to `Snapshot`.
+  as tasks. Cursor resets rebuild history without resending previously published event content.
+  History is fetched through `/api/events`; it is not added to `Snapshot`.
 - `{"type": "accounts", "accounts": Accounts}` — new account data.
 - `{"type": "machines", "machines": Machines}` — at the end of a machine polling cycle when data
   changed, comparing without `checked_at`. Metric and history changes count as changes.
