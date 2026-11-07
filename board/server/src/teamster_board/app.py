@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from .accounts import Accounts
+from .art import MEDIA_TYPES, art_file, art_index
 from .machines import Machines
 from .store import Store
 
@@ -23,8 +24,10 @@ FILE_LIMIT = 256 * 1024
 LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", re.I)
 # The board's files in the worker's data home, by layout. The board never imports the worker.
 LAYOUT_FILES = {
-    "legacy": {"tasks": "claude-tasks", "board_machines": "board-machines.json", "board_log": "board-server.log"},
-    "new": {"tasks": "tasks", "board_machines": "board-machines.json", "board_log": "board-server.log"},
+    "legacy": {"tasks": "claude-tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
+               "board_art": "board-art"},
+    "new": {"tasks": "tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
+            "board_art": "board-art"},
 }
 
 
@@ -224,6 +227,17 @@ def create_app(settings=None):
             except OSError:
                 raise HTTPException(404)
         return PlainTextResponse(content)
+
+    @app.get("/api/art")
+    async def art():
+        return await asyncio.to_thread(art_index, board.settings.path("board_art"))
+
+    @app.get("/api/art/{repo}/{name}")
+    async def art_picture(repo: str, name: str):
+        path = await asyncio.to_thread(art_file, board.settings.path("board_art"), repo, name)
+        if path is None:
+            raise HTTPException(404)
+        return FileResponse(path, media_type=MEDIA_TYPES[name])
 
     @app.websocket("/ws")
     async def websocket(socket: WebSocket):

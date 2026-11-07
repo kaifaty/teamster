@@ -1,4 +1,4 @@
-import type { ServerMessage, TaskDetail, TaskFile } from "../types";
+import type { ArtIndex, ServerMessage, TaskDetail, TaskFile } from "../types";
 import { connectSocket, type ConnectionState } from "./socket";
 
 /** Where the board gets its data: the real server, or the fixtures in `dev:fixture` mode. */
@@ -10,6 +10,8 @@ export interface BoardSource {
   fetchDetail(slug: string): Promise<TaskDetail | null>;
   /** null when the file does not exist (404). */
   fetchFile(slug: string, name: TaskFile): Promise<string | null>;
+  /** Which repositories have their own map art. */
+  fetchArt(): Promise<ArtIndex>;
 }
 
 async function get(path: string): Promise<Response | null> {
@@ -31,6 +33,10 @@ export function serverSource(): BoardSource {
     async fetchFile(slug, name) {
       const response = await get(`/api/tasks/${encodeURIComponent(slug)}/files/${name}`);
       return response ? response.text() : null;
+    },
+    async fetchArt() {
+      const response = await get("/api/art");
+      return response ? ((await response.json()) as ArtIndex) : {};
     },
   };
 }

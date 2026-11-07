@@ -1,14 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { PLACES } from "./placement";
 import {
-  MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, ringOf, ringPoint, starPositions,
-  starRadius, stationAt, systemFrame, worldSize, zoomCamera,
+  MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, ringOf, ringPoint, skyChoices,
+  starPositions, starRadius, stationAt, systemFrame, worldSize, zoomCamera,
 } from "./layout";
 
 const SIZES = [
   { width: 1600, height: 1000 },
   { width: 1000, height: 1500 },
 ];
+
+describe("skyChoices", () => {
+  const backdrops = ["a.jpg", "b.jpg", "c.jpg"];
+  const shared = backdrops[backdropOf("teamster", backdrops.length)!]!;
+
+  it("tries the repository's own sky first and keeps its shared one to fall back on", () => {
+    expect(skyChoices("teamster", "/api/art/teamster/sky.jpg", backdrops)).toEqual(["/api/art/teamster/sky.jpg", shared]);
+  });
+
+  it("gives a repository without its own sky the shared one", () => {
+    expect(skyChoices("teamster", undefined, backdrops)).toEqual([shared]);
+  });
+
+  it("works with no shared skies at all", () => {
+    expect(skyChoices("teamster", undefined, [])).toEqual([]);
+    expect(skyChoices("teamster", "own.jpg", [])).toEqual(["own.jpg"]);
+  });
+});
 
 describe("backdropOf", () => {
   it("keeps a repository's sky and spreads repositories over the skies", () => {

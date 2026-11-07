@@ -1,6 +1,7 @@
 // `npm run dev:fixture`: plays the fixtures instead of talking to the server. The fixture times are
 // shifted so that the snapshot looks fresh and stream message i happens i seconds after it.
 import type { BoardSource } from "../lib/source";
+import { ART, BACKDROPS } from "../map/art";
 import { emptyState, reduce, type BoardState } from "../store/reduce";
 import type { ServerMessage, Snapshot, TaskDetail, TaskFile } from "../types";
 import snapshotJson from "./snapshot.json";
@@ -88,6 +89,10 @@ export function fixtureSource(): BoardSource {
     async fetchFile(slug, name) {
       await new Promise((resolve) => setTimeout(resolve, 150));
       return details[slug]?.files[name] ?? null;
+    },
+    // Shared pictures in other roles, so that one repository looks like itself and the others stay as they are.
+    async fetchArt() {
+      return { "demo-game": { sky: BACKDROPS[0], planet: ART.planetRoadstead, emblem: ART.gate } };
     },
   };
 }

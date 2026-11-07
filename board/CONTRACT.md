@@ -33,6 +33,8 @@ stops or changes work, and never writes under either source's home.
   tailed through the same bounded incremental reader as task activity. Until a transcript is found,
   check the direct path on each poll and search `projects/*/` at most once per 60 seconds. Cache a found
   path. Assistant events may carry ISO `timestamp` values.
+- Map art: `board-art/<repo>/` in the task home, holding any of `sky.jpg`, `planet.png` and `emblem.png`. It stays
+  outside the repository because project names and themes can be private, and is written by hand.
 - The server never reads `auth.json`, credentials or account homes.
 
 Missing directories are skipped. Malformed metadata or live-state files preserve their last valid
@@ -152,6 +154,14 @@ interface Machines {
   config_error: string | null;
   items: Machine[];
 }
+
+interface RepoArt {           // only the pictures that exist; each value is a URL for GET /api/art/{repo}/{file}
+  sky?: string;
+  planet?: string;
+  emblem?: string;
+}
+
+type ArtIndex = Record<string, RepoArt>;   // by `repo`; repositories without pictures are absent
 
 interface Snapshot {
   generated_at: number;
@@ -290,6 +300,12 @@ The additional fields are additive; existing clients may ignore `title` and `lin
   Session paths come only from scanned records, never from a requested slug; path-like slugs return 404.
 - `GET /api/tasks/{slug}/files/{name}` with `name` in `brief`, `last`, `review`, `check` → `text/plain;
   charset=utf-8`, at most the last 256 KiB; 404 when missing or for a session. No other names, no paths.
+- `GET /api/art` → `ArtIndex`, empty when `board-art/` is missing. URLs carry the file's mtime as `?v=`, so a
+  replaced picture gets a new URL.
+- `GET /api/art/{repo}/{file}` with `file` in `sky.jpg` (`image/jpeg`), `planet.png`, `emblem.png` (`image/png`) →
+  the file; 404 when missing. `repo` passes the same check as a task slug: one path component, no leading dot, no
+  backslash. No other names, no paths, and neither `board-art/`, the repository's folder nor the file may be a
+  symbolic link. A client falls back to shared art for anything absent.
 
 ## WebSocket `/ws`
 

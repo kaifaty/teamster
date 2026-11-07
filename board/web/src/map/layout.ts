@@ -66,6 +66,12 @@ export function backdropOf(repo: string, count: number): number | null {
   return count > 0 ? hashName(repo) % count : null;
 }
 
+/** The skies to try for system `repo`, best first: its own, then its shared one. */
+export function skyChoices(repo: string, own: string | undefined, backdrops: readonly string[]): string[] {
+  const index = backdropOf(repo, backdrops.length);
+  return [...(own ? [own] : []), ...(index === null ? [] : [backdrops[index]!])];
+}
+
 // System ------------------------------------------------------------------------------------------
 
 /** The ellipse of the outermost orbit. */

@@ -3,7 +3,7 @@
 // pointer does.
 
 import { Application, Assets, ColorMatrixFilter, Container, Graphics, Sprite, Texture, type ColorMatrix } from "pixi.js";
-import type { TaskSummary } from "../types";
+import type { ArtIndex, TaskSummary } from "../types";
 import { ART, BACKDROPS, type ArtName } from "./art";
 import type { Depot, Family, Star, SupplyLine } from "./fleet";
 import { LOW_FUEL, depotPositions } from "./fleet";
@@ -12,12 +12,12 @@ import {
   STATIONS,
   SUN_CLEARANCE,
   SUN_RADIUS,
-  backdropOf,
   clampCamera,
   fitCamera,
   hashName,
   ringOf,
   ringPoint,
+  skyChoices,
   starPositions,
   starRadius,
   stationAt,
@@ -56,6 +56,8 @@ export interface SceneOptions {
 
 export interface FleetScene {
   setGalaxy(model: GalaxyModel): void;
+  /** The repositories' own pictures; whatever is missing stays shared art. */
+  setArt(art: ArtIndex): void;
   /** Shows system `repo`, or the galaxy for null, flying there unless motion is reduced. */
   setView(repo: string | null): void;
   setShips(entries: ShipEntry[]): void;
@@ -240,6 +242,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   let selected: string | null = null;
   let hovered: string | null = null;
   let disposed = false;
+  let repoArt: ArtIndex = {};
+  /** The focused system's own planet, in place of the shipyard's. */
+  let home: Texture | null = null;
+  /** Counts the times a system was dressed, so that a late picture does not land on the next one. */
+  let dressing = 0;
   const ships = new Map<string, Ship>();
 
   const report = () => options.onCamera(world, repo ? camera : fit);
@@ -251,16 +258,34 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     sky.scale.set(Math.max(viewport.width / width, viewport.height / height) * 1.15);
   }
 
-  /** The sky of system `name`; the galaxy's sky stands in until it has loaded. */
-  function showSky(name: string) {
-    const index = backdropOf(name, BACKDROPS.length);
+  /** The first of `urls` that loads, or null. */
+  async function firstTexture(urls: string[]): Promise<Texture | null> {
+    for (const url of urls) {
+      const texture = await Assets.load<Texture>(url).catch(() => null);
+      if (texture) return texture;
+    }
+    return null;
+  }
+
+  /** Gives system `name` its sky and planet; shared art stands in until they load, and stays if they cannot. */
+  function dressSystem(name: string) {
+    const turn = ++dressing;
+    const current = () => !disposed && turn === dressing;
+    const own = repoArt[name];
     systemBackdrop.texture = art("nebula");
     fitBackdrop(systemBackdrop);
-    if (index === null) return;
-    void Assets.load<Texture>(BACKDROPS[index]!).then((texture) => {
-      if (disposed || focus !== name) return;
+    void firstTexture(skyChoices(name, own?.sky, BACKDROPS)).then((texture) => {
+      if (!texture || !current()) return;
       systemBackdrop.texture = texture;
       fitBackdrop(systemBackdrop);
+    });
+    home = null;
+    drawStations();
+    if (!own?.planet) return;
+    void firstTexture([own.planet]).then((texture) => {
+      if (!texture || !current()) return;
+      home = texture;
+      drawStations();
     });
   }
 
@@ -338,7 +363,22 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       cryo: "planetCryo",
       command: "stationCommand",
     };
-    return sprite(art(name[place]), STATIONS[place].radius * 2 * BALL_MARGIN);
+    return sprite(place === "yard" && home ? home : art(name[place]), STATIONS[place].radius * 2 * BALL_MARGIN);
+  }
+
+  function drawStations() {
+    stationLayer.removeChildren().forEach((child) => child.destroy());
+    for (const place of ["yard", "range", "inspection", "roadstead", "cryo", "command"] as const) {
+      const body = stationSprite(place);
+      const point = stationAt(place, frame);
+      body.position.set(point.x, point.y);
+      // The art is lit from the upper left: mirror each planet so that its bright side faces the sun.
+      if (place !== "command") {
+        if (point.x < frame.cx) body.scale.x *= -1;
+        if (point.y < frame.cy) body.scale.y *= -1;
+      }
+      stationLayer.addChild(body);
+    }
   }
 
   function drawCharts() {
@@ -361,18 +401,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     dots(stationAt("inspection", frame), stationAt("yard", frame), FIX_BEND, 19, 2);
     charts.fill({ color: SPACE.fix, alpha: 0.7 });
 
-    stationLayer.removeChildren().forEach((child) => child.destroy());
-    for (const place of ["yard", "range", "inspection", "roadstead", "cryo", "command"] as const) {
-      const body = stationSprite(place);
-      const point = stationAt(place, frame);
-      body.position.set(point.x, point.y);
-      // The art is lit from the upper left: mirror each planet so that its bright side faces the sun.
-      if (place !== "command") {
-        if (point.x < frame.cx) body.scale.x *= -1;
-        if (point.y < frame.cy) body.scale.y *= -1;
-      }
-      stationLayer.addChild(body);
-    }
+    drawStations();
     const point = stationAt("gate", frame);
     gate.position.set(point.x, point.y);
     gateGlow.position.copyFrom(gate.position);
@@ -811,6 +840,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       model = next;
       drawGalaxy();
     },
+    setArt(next) {
+      repoArt = next;
+      if (focus) dressSystem(focus);
+    },
     setView(next) {
       if (next === repo) return;
       if (next !== null) {
@@ -819,7 +852,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         camera = fit;
         paintSun(sun, next);
         corona.tint = sunKind(next).glow;
-        showSky(next);
+        dressSystem(next);
       }
       repo = next;
       lastHover = null;

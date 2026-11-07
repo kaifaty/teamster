@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import type { TaskSummary } from "../types";
+import type { ArtIndex, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
 import { formatAge, formatDuration, formatUntil } from "../lib/format";
 import { ACTIVITY, EXECUTORS, PHASES, prLabel, problemLabel, taskTitle } from "../lib/labels";
@@ -55,6 +55,20 @@ const repoModel = computed({
 watch(starList, (list) => {
   if (repo.value && !list.some((star) => star.repo === repo.value)) repo.value = null;
 });
+
+// Each repository may have its own pictures. They are looked up again whenever the map comes back, so new
+// art shows up without a reload. Without them the map keeps its shared art.
+const repoArt = shallowRef<ArtIndex>({});
+async function loadArt() {
+  const from = source.value.source;
+  const art = await from.fetchArt().catch(() => repoArt.value);
+  if (from === source.value.source && JSON.stringify(art) !== JSON.stringify(repoArt.value)) repoArt.value = art;
+}
+watch(source, loadArt, { immediate: true });
+const emblemOf = (name: string | null) => (name ? (repoArt.value[name]?.emblem ?? null) : null);
+const hideImage = (event: Event) => {
+  (event.target as HTMLElement).hidden = true;
+};
 
 const system = computed(() => (repo.value ? systemTasks(tasks.value, repo.value) : { shown: [], hidden: [] }));
 const entries = computed<ShipEntry[]>(() =>
@@ -120,7 +134,7 @@ const starLabels = computed(() => {
       star.ready ? `ждут ${star.ready}` : "",
       star.sleeping ? `спят ${star.sleeping}` : "",
     ].filter(Boolean);
-    return { star, style: at(point.x, point.y + starRadius(star.live) * 1.25 + 44), notes: notes.join(" · ") };
+    return { star, style: at(point.x, point.y + starRadius(star.live) * 1.25 + 44), notes: notes.join(" · "), emblem: emblemOf(star.repo) };
   });
 });
 
@@ -222,6 +236,7 @@ let unmounted = false;
 function feed() {
   if (!scene) return;
   scene.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value });
+  scene.setArt(repoArt.value);
   scene.setView(repo.value);
   scene.setShips(entries.value);
   scene.setSelected(selected.value);
@@ -278,6 +293,7 @@ function retry() {
 }
 
 watch([starList, depotList, lines], () => scene?.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value }));
+watch(repoArt, (art) => scene?.setArt(art));
 watch(repo, (name) => scene?.setView(name), { flush: "sync" });
 watch(entries, (next) => scene?.setShips(next));
 watch(selected, (slug) => scene?.setSelected(slug));
@@ -285,7 +301,10 @@ watch(hovered, (slug) => scene?.setHovered(slug));
 watch(
   () => props.active,
   (active) => {
-    if (active) now.value = Date.now() / 1000;
+    if (active) {
+      now.value = Date.now() / 1000;
+      void loadArt();
+    }
     scene?.setActive(active);
     if (!active) selected.value = null;
   },
@@ -309,6 +328,7 @@ onBeforeUnmount(() => {
     <div class="toolbar">
       <button v-if="repo" type="button" class="btn" @click="leave">← Галактика</button>
       <label class="picker">
+        <img v-if="emblemOf(repo)" :key="emblemOf(repo)!" class="emblem" :src="emblemOf(repo)!" alt="" @error="hideImage" />
         <span>Система</span>
         <select v-model="repoModel" class="btn" :disabled="!starList.length">
           <option value="">вся галактика</option>
@@ -347,8 +367,11 @@ onBeforeUnmount(() => {
             :style="label.style"
             @click="enter(label.star.repo)"
           >
-            <span class="s-name">{{ label.star.repo }}<span class="num"> · {{ label.star.live || "тихо" }}</span></span>
-            <span v-if="label.notes" class="s-notes">{{ label.notes }}</span>
+            <img v-if="label.emblem" :key="label.emblem" class="emblem" :src="label.emblem" alt="" @error="hideImage" />
+            <span class="s-text">
+              <span class="s-name">{{ label.star.repo }}<span class="num"> · {{ label.star.live || "тихо" }}</span></span>
+              <span v-if="label.notes" class="s-notes">{{ label.notes }}</span>
+            </span>
           </button>
           <span
             v-for="label in depotLabels"
@@ -568,8 +591,8 @@ onBeforeUnmount(() => {
 
 .star {
   display: flex;
-  flex-direction: column;
   align-items: center;
+  gap: 6px;
   max-width: 220px;
   padding: 2px 9px;
   border: 1px solid rgba(214, 170, 96, 0.28);
@@ -599,6 +622,31 @@ onBeforeUnmount(() => {
   border-color: transparent;
   background: none;
   color: #9aa3b4;
+}
+
+.s-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+
+/* A repository's own mark. It stands on dark in both of the board's themes, like the rest of the map. */
+.emblem {
+  flex: none;
+  box-sizing: border-box;
+  width: 30px;
+  height: 30px;
+  padding: 1px;
+  border-radius: 3px;
+  background: #0b0e15;
+  object-fit: contain;
+}
+
+.picker .emblem {
+  width: 24px;
+  height: 24px;
+  margin-left: -6px;
 }
 
 .s-name {

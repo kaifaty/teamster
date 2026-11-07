@@ -369,3 +369,126 @@ def test_data_home_layouts(tmp_path, monkeypatch, layout):
     assert board.machines.path == data / "board-machines.json"
     board.store.poll()
     assert [task["slug"] for task in board.store.summaries()] == ["demo"]
+
+
+def write_art(settings, repo="alpha", pictures=None):
+    directory = settings.task_home / "board-art" / repo
+    directory.mkdir(parents=True)
+    for name, content in (pictures or {"sky.jpg": b"sky", "planet.png": b"planet", "emblem.png": b"emblem"}).items():
+        (directory / name).write_bytes(content)
+    return directory
+
+
+def test_art_index_is_empty_without_the_directory(board):
+    client, _, _, _, _ = board
+    assert client.get("/api/art").json() == {}
+
+
+def test_art_index_lists_only_pictures_that_exist(board):
+    client, _, _, _, settings = board
+    directory = write_art(settings)
+    write_art(settings, "only emblem", {"emblem.png": b"emblem"})
+    (settings.task_home / "board-art" / "empty").mkdir()
+    (settings.task_home / "board-art" / ".hidden").mkdir()
+    (settings.task_home / "board-art" / "loose.png").write_bytes(b"file")
+    (directory / "notes.txt").write_text("not art")
+
+    index = client.get("/api/art").json()
+
+    assert sorted(index) == ["alpha", "only emblem"]
+    assert sorted(index["alpha"]) == ["emblem", "planet", "sky"]
+    version = (directory / "sky.jpg").stat().st_mtime_ns
+    assert index["alpha"]["sky"] == f"/api/art/alpha/sky.jpg?v={version}"
+    assert list(index["only emblem"]) == ["emblem"]
+    assert index["only emblem"]["emblem"].startswith("/api/art/only%20emblem/emblem.png?v=")
+    assert client.get(index["only emblem"]["emblem"]).content == b"emblem"
+
+
+def test_art_url_changes_with_the_file(board):
+    client, _, _, _, settings = board
+    directory = write_art(settings, pictures={"planet.png": b"old"})
+    before = client.get("/api/art").json()["alpha"]["planet"]
+    os.utime(directory / "planet.png", ns=(1, 1))
+    assert client.get("/api/art").json()["alpha"]["planet"] != before
+
+
+@pytest.mark.parametrize("name, kind, content", [
+    ("sky.jpg", "image/jpeg", b"sky"), ("planet.png", "image/png", b"planet"), ("emblem.png", "image/png", b"emblem"),
+])
+def test_art_is_served_with_its_fixed_type(board, name, kind, content):
+    client, _, _, _, settings = board
+    write_art(settings)
+    response = client.get(f"/api/art/alpha/{name}")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == kind
+    assert response.content == content
+
+
+def test_art_reads_from_a_new_layout_data_home(board, tmp_path):
+    _, _, _, _, settings = board
+    home = tmp_path / "home"
+    new = Settings(home, settings.teamster, web_dist=tmp_path / "dist", layout="new")
+    write_art(new)
+    with TestClient(create_app(new), base_url="http://localhost", headers={"Host": "localhost"}) as client:
+        assert client.get("/api/art/alpha/planet.png").content == b"planet"
+
+
+def test_art_route_is_read_only(board):
+    client, _, _, _, settings = board
+    write_art(settings)
+    assert client.put("/api/art/alpha/sky.jpg", content=b"x").status_code == 405
+    assert client.delete("/api/art/alpha/sky.jpg").status_code == 405
+
+
+@pytest.mark.parametrize("path", [
+    "/api/art/alpha/notes.txt",
+    "/api/art/alpha/planet.jpg",
+    "/api/art/missing/sky.jpg",
+    "/api/art/.hidden/sky.jpg",
+    "/api/art/%2e%2e/sky.jpg",
+    "/api/art/..%2f..%2fclaude-tasks/sky.jpg",
+    "/api/art/alpha/..%2fsecret.png",
+    "/api/art/alpha%5c..%5c/sky.jpg",
+])
+def test_art_refuses_other_paths(board, path):
+    client, _, _, _, settings = board
+    directory = write_art(settings)
+    (directory / "notes.txt").write_text("not art")
+    (directory.parent / ".hidden").mkdir()
+    (directory.parent / ".hidden" / "sky.jpg").write_bytes(b"hidden")
+    (settings.task_home / "sky.jpg").write_bytes(b"outside")
+    (directory.parent / "secret.png").write_bytes(b"outside")
+    assert client.get(path).status_code == 404
+
+
+def test_art_follows_no_symbolic_links(board, tmp_path):
+    client, _, _, _, settings = board
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sky.jpg").write_bytes(b"outside")
+    directory = write_art(settings, pictures={"planet.png": b"planet"})
+    (directory / "sky.jpg").symlink_to(outside / "sky.jpg")
+    (directory.parent / "linked").symlink_to(outside, target_is_directory=True)
+
+    assert client.get("/api/art/alpha/sky.jpg").status_code == 404
+    assert client.get("/api/art/linked/sky.jpg").status_code == 404
+    assert client.get("/api/art").json().keys() == {"alpha"}
+    assert client.get("/api/art").json()["alpha"].keys() == {"planet"}
+
+
+def test_art_root_may_not_be_a_symbolic_link(board, tmp_path):
+    client, _, _, _, settings = board
+    outside = tmp_path / "outside"
+    (outside / "alpha").mkdir(parents=True)
+    (outside / "alpha" / "sky.jpg").write_bytes(b"outside")
+    (settings.task_home / "board-art").symlink_to(outside, target_is_directory=True)
+
+    assert client.get("/api/art").json() == {}
+    assert client.get("/api/art/alpha/sky.jpg").status_code == 404
+
+
+def test_art_needs_a_localhost_host_header(board):
+    client, _, _, _, settings = board
+    write_art(settings)
+    assert client.get("/api/art", headers={"Host": "example.com"}).status_code == 403
+    assert client.get("/api/art/alpha/sky.jpg", headers={"Host": "example.com"}).status_code == 403

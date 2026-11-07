@@ -32,6 +32,10 @@ inspection and the hypergate to the roadstead, where it waits for you. Sleeping 
 lead's sessions stay at the command station. In a system the wheel zooms and dragging moves the camera; the wheel
 past the full view or Esc goes back. `board/web/src/map/placement.ts` decides the station and the action.
 `board/web/art/` holds the prompts of the art and the script that prepares it.
+A repository may look like itself: `<data home>/board-art/<repo>/` can hold its own `sky.jpg`, `planet.png` and `emblem.png`, outside
+this public repository. The sky replaces the system's shared sky, the planet its shipyard, and the emblem stands next to the star's
+label and in the system's toolbar; whatever is missing stays shared art. The server serves these files read-only through `GET /api/art`.
+Generation is manual: see "The art of one project" in [PROMPTS.md](web/art/PROMPTS.md).
 `npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
 every station.
 
