@@ -3,6 +3,7 @@
 
 Run with python3 -I tests/compare_cli_help.py --base origin/main. The baseline
 worker tree is extracted to a temporary directory and supplies the command list.
+The other side is the working tree, or the revision given with --current.
 """
 
 import argparse
@@ -110,13 +111,18 @@ def commands_from_help(output):
     return [name.decode("ascii") for name in commands]
 
 
-def compare(revision, root=None):
+def compare(revision, root=None, current=None):
     root = ROOT if root is None else Path(root).resolve()
     with tempfile.TemporaryDirectory(prefix="codex-cli-help-") as temporary:
         directory = Path(temporary)
         baseline = directory / "baseline"
         baseline.mkdir()
         archive_plugins(root, revision, baseline)
+        working = root
+        if current is not None:
+            working = directory / "current"
+            working.mkdir()
+            archive_plugins(root, current, working)
         environment = help_environment(directory)
         original = run_help(entrypoint(baseline), (), environment, directory)
         if original.returncode:
@@ -127,7 +133,7 @@ def compare(revision, root=None):
         for command in commands:
             before = (original if not command else run_help(
                 entrypoint(baseline), command, environment, directory))
-            after = run_help(entrypoint(root), command, environment, directory)
+            after = run_help(entrypoint(working), command, environment, directory)
             if (before.stdout, before.stderr, before.returncode) != (
                     after.stdout, after.stderr, after.returncode):
                 differences.append((command, before, after))
@@ -159,9 +165,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", metavar="REV", required=True,
                         help="local Git revision to compare")
+    parser.add_argument("--current", metavar="REV",
+                        help="compare this revision instead of the working tree")
     args = parser.parse_args(argv)
     try:
-        count, differences = compare(args.base)
+        count, differences = compare(args.base, current=args.current)
     except (OSError, ValueError, tarfile.TarError,
             subprocess.SubprocessError) as error:
         parser.exit(2, "comparison failed: {}\n".format(error))

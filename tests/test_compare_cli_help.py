@@ -38,9 +38,10 @@ parser.parse_args()
 
 class CompareCliHelpTests(unittest.TestCase):
     def test_head_help_is_identical(self):
+        # Compare HEAD with itself so uncommitted help edits do not fail it.
         result = subprocess.run(
             [sys.executable, "-I", str(ROOT / "tests/compare_cli_help.py"),
-             "--base", "HEAD"],
+             "--base", "HEAD", "--current", "HEAD"],
             cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=60,
         )
@@ -65,12 +66,22 @@ class CompareCliHelpTests(unittest.TestCase):
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return root, script
 
-    def compare_output(self, root):
+    def compare_output(self, root, *arguments):
         output = io.StringIO()
         with mock.patch.object(compare_cli_help, "ROOT", root), \
                 contextlib.redirect_stdout(output):
-            status = compare_cli_help.main(["--base", "HEAD"])
+            status = compare_cli_help.main(["--base", "HEAD"] + list(arguments))
         return status, output.getvalue()
+
+    def test_current_revision_ignores_uncommitted_help(self):
+        root, script = self.synthetic_repository()
+        script.write_text(SYNTHETIC_SCRIPT.replace(
+            "Original command help", "Changed command help"), encoding="utf-8")
+        status, output = self.compare_output(root, "--current", "HEAD")
+        self.assertEqual((status, output), (0, "PASS: 4 commands identical\n"))
+        status, output = self.compare_output(root)
+        self.assertEqual(status, 1)
+        self.assertIn("+b'Changed command help", output)
 
     def test_archive_extraction_has_no_deprecation_warnings(self):
         root, script = self.synthetic_repository()
