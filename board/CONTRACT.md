@@ -14,9 +14,20 @@ stops or changes work, and never writes under either source's home.
   `last.md`, `review.md`, `check.log`.
 - Live activity: `events.jsonl` (Codex executor, `codex exec --json` lines) and `claude-events.jsonl` (Claude
   executor, `claude --output-format stream-json` lines; written by teamster 1.47+). Either may be missing.
+- Completed events: `log.jsonl` in the task home (legacy: `codex-worker-log.jsonl`), one JSON line per
+  completed phase (`work`, `fix`, `check`, `base_check`, `review`, `wrapup`, `scout`, `turn`) or lead
+  verdict (`kind: "verdict"`). The server keeps a byte cursor and reads only appended complete lines;
+  an incomplete final line waits for a newline. A smaller file or a new inode resets the cursor and
+  replaces the cached events. Missing files give an empty history; symbolic links are never opened.
+  Malformed lines, unknown kinds and lines without a finite numeric `at` are skipped. Only the
+  `LogEvent` fields below are retained, for the last 31 days, in memory; no history is written.
 - Accounts: `python3 -I <script> accounts --json` (never `--refresh`), at most once per
   `BOARD_ACCOUNTS_SECONDS` (default 300). The script path comes from `BOARD_TEAMSTER_COMMAND`, then `BOARD_CODEX_TASK` and defaults to this
   repository's `src/teamster/__main__.py`.
+- Reports: `python3 -I <script> report --json --since <date> [--by <dimensions>]`, using the same script
+  as accounts. Both commands have a 60-second timeout and a 1 MiB stdout limit. Stderr goes only to
+  server logs. A report response is cached for 60 seconds per `(since, by)` pair, including errors;
+  a failed refresh retains the pair's previous successful data.
 - Machines: `$BOARD_MACHINES_FILE` (default `board-machines.json` in the task home), with local or SSH
   probes every `BOARD_MACHINES_SECONDS` (default 30). The configuration and probe are described below.
 - Desktop sessions: `$BOARD_CLAUDE_DESKTOP_DIR/claude-code-sessions/*/*/local_*.json` (default desktop
@@ -54,6 +65,37 @@ interface Activity {
   at: number | null;
   kind: "command" | "edit" | "message" | "tool" | "thinking";
   text: string;               // one line, ≤ 200 chars
+}
+
+interface LogEvent {
+  at: number;
+  started: number | null;
+  slug: string | null;
+  repo: string | null;
+  kind: "work" | "review" | "scout" | "verdict";
+  phase: string | null;
+  turn: number | null;
+  round: number | null;
+  outcome: string | null;
+  result_status: string | null;
+  verdict: string | null;
+  findings: number | null;
+  severe_findings: number | null;
+  angle: string | null;
+  account: string | null;
+  reviewer: string | null;
+  provider: string | null;
+  model: string | null;
+  task_type: string | null;
+  ci: string | null;          // only ci.outcome from the journal row
+  note: string | null;        // verdict only; one line, ≤ 200 chars
+}
+
+interface Events {
+  since: number;
+  until: number;
+  events: LogEvent[];         // ascending at, at most 5000 newest matching events
+  truncated?: true;          // present only when older matching events were dropped by the limit
 }
 
 interface TaskSummary {
@@ -295,6 +337,20 @@ The additional fields are additive; existing clients may ignore `title` and `lin
 ## REST
 
 - `GET /api/snapshot` → `Snapshot`.
+- `GET /api/events?since=<unix>&until=<unix>` → `Events`. Both bounds are inclusive finite Unix
+  seconds. `until` defaults to now; `since` defaults to 24 hours before `until`. Reversed windows,
+  invalid numbers and windows longer than 31 days get 422. Only events retained for the last 31 days
+  are available. If more than 5000 events match, keep the newest 5000 and set `truncated: true`.
+  The response contains only `LogEvent` fields: tokens, usage, thread/session IDs, costs, weekly
+  quotas and all other journal fields are discarded. Nonempty strings use the existing task text
+  rules; the verdict note collapses whitespace and is cut to 200 characters. Numeric fields accept
+  only finite JSON numbers, excluding booleans; missing or invalid optional fields are `null`.
+- `GET /api/report?since=YYYY-MM-DD&by=<dimensions>` → `{"fetched_at", "error", "data"}`, the same
+  envelope as `Accounts`, with the `report --json` output passed through as `data`. `since` is required
+  and must match `[0-9]{4}-[0-9]{2}-[0-9]{2}`; optional `by` is a comma-separated list drawn from
+  `task-type`, `effort`, `model`, `executor`, `reviewer`, without spaces or empty entries. Invalid
+  arguments get 422 and never reach a process. Only these validated values are passed as arguments;
+  the report runs on demand and is cached per argument pair as described above.
 - `GET /api/tasks/{slug}` → `TaskDetail`; 404 for an unknown slug. Archived tasks are addressed by their
   archive folder name. Sessions have an empty `files` array and creation/last-activity timeline entries.
   Session paths come only from scanned records, never from a requested slug; path-like slugs return 404.
@@ -316,6 +372,8 @@ Server → client only; the server ignores client messages. Every message is one
 - `{"type": "task_removed", "slug": string}` — a live task folder disappeared (it is then sent again as
   `closed` if it was archived), or a session's metadata disappeared or became archived.
 - `{"type": "activity", "slug": string, "activity": Activity}` — new latest activity of a live task.
+- `{"type": "event", "event": LogEvent}` — a newly read completed event, from the same polling cycle
+  as tasks. History is fetched through `/api/events`; it is not added to `Snapshot`.
 - `{"type": "accounts", "accounts": Accounts}` — new account data.
 - `{"type": "machines", "machines": Machines}` — at the end of a machine polling cycle when data
   changed, comparing without `checked_at`. Metric and history changes count as changes.

@@ -13,10 +13,10 @@ import anyio
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from .accounts import Accounts
+from .accounts import Accounts, Reports
 from .art import MEDIA_TYPES, art_file, art_index
 from .machines import Machines
-from .store import Store
+from .store import LOG_RETENTION_SECONDS, Store, number
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 PING_SECONDS = 20
@@ -25,9 +25,9 @@ LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", re.I)
 # The board's files in the worker's data home, by layout. The board never imports the worker.
 LAYOUT_FILES = {
     "legacy": {"tasks": "claude-tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
-               "board_art": "board-art"},
+               "board_art": "board-art", "telemetry": "codex-worker-log.jsonl"},
     "new": {"tasks": "tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
-            "board_art": "board-art"},
+            "board_art": "board-art", "telemetry": "log.jsonl"},
 }
 
 
@@ -132,8 +132,10 @@ class Board:
             settings.path("tasks"), stale_days=settings.stale_days,
             claude_desktop_dir=settings.claude_desktop_dir, claude_home=settings.claude_home,
             sessions_seconds=settings.sessions_seconds, session_stale_hours=settings.session_stale_hours,
+            telemetry_path=settings.path("telemetry"),
         )
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
+        self.reports = Reports(settings.teamster)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),
                                  settings.ssh_command)
         self.lock = asyncio.Lock()
@@ -207,6 +209,23 @@ def create_app(settings=None):
     @app.get("/api/snapshot")
     async def snapshot():
         return await board.snapshot()
+
+    @app.get("/api/events")
+    async def events(since: float | None = None, until: float | None = None):
+        until = time.time() if until is None else until
+        since = until - 24 * 3600 if since is None else since
+        if (number(since) is None or number(until) is None
+                or since > until or until - since > LOG_RETENTION_SECONDS):
+            raise HTTPException(422, "Event window must be ordered and at most 31 days")
+        async with board.lock:
+            return await asyncio.to_thread(board.store.events, since, until)
+
+    @app.get("/api/report")
+    async def report(since: str, by: str | None = None):
+        try:
+            return await board.reports.get(since, by)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
 
     @app.get("/api/tasks/{slug}")
     async def detail(slug: str):

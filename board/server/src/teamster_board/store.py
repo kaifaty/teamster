@@ -15,6 +15,8 @@ from .activity import EventTail
 FILES = {"brief": "brief.md", "last": "last.md", "review": "review.md", "check": "check.log"}
 FAILURES = {"failed", "stopped", "interrupted", "budget_exhausted", "conflict", "stuck",
             "refused", "unavailable", "exhausted", "running", "sleeping"}
+LOG_RETENTION_SECONDS = 31 * 24 * 3600
+LOG_LIMIT = 5000
 
 
 def number(value):
@@ -27,6 +29,26 @@ def text(value):
 
 def one_line(value):
     return " ".join(str(value).split())[:200]
+
+
+def log_event(row):
+    if not isinstance(row, dict) or row.get("kind") not in ("work", "review", "scout", "verdict"):
+        return None
+    at = number(row.get("at"))
+    if at is None:
+        return None
+    event = {key: text(row.get(key)) for key in (
+        "slug", "repo", "kind", "phase", "outcome", "result_status", "verdict", "angle",
+        "account", "reviewer", "provider", "model", "task_type",
+    )}
+    event.update({key: number(row.get(key)) for key in (
+        "started", "turn", "round", "findings", "severe_findings",
+    )})
+    ci = row.get("ci")
+    note = text(row.get("note")) if event["kind"] == "verdict" else None
+    event.update(at=at, ci=text(ci.get("outcome")) if isinstance(ci, dict) else None,
+                 note=one_line(note) if note else None)
+    return event
 
 
 def alive(pid):
@@ -137,7 +159,7 @@ class SessionRecord:
 
 class Store:
     def __init__(self, tasks_path, stale_days=7, claude_desktop_dir=None, claude_home=None,
-                 sessions_seconds=5, session_stale_hours=48):
+                 sessions_seconds=5, session_stale_hours=48, telemetry_path=None):
         self.tasks_path = Path(tasks_path)
         self.stale_days = stale_days
         self.claude_desktop_dir = Path(claude_desktop_dir) if claude_desktop_dir is not None else None
@@ -150,6 +172,10 @@ class Store:
         self._live_sessions = {}
         self._next_sessions_scan = 0.0
         self.records = {}
+        self.telemetry_path = Path(telemetry_path) if telemetry_path is not None else None
+        self._log_events = []
+        self._log_signature = None
+        self._log_offset = 0
         self.lock = threading.RLock()
         self._initial_poll = True
 
@@ -245,6 +271,62 @@ class Store:
         with self.lock:
             return self._poll()
 
+    def events(self, since, until):
+        with self.lock:
+            events = sorted((event for event in self._log_events if since <= event["at"] <= until),
+                            key=lambda event: event["at"])
+            result = {"since": since, "until": until, "events": events[-LOG_LIMIT:]}
+            if len(events) > LOG_LIMIT:
+                result["truncated"] = True
+            return result
+
+    def _poll_log(self):
+        cutoff = time.time() - LOG_RETENTION_SECONDS
+        self._log_events = [event for event in self._log_events if event["at"] >= cutoff]
+        path = self.telemetry_path
+        if path is None:
+            return []
+        if self._source_file(path.parent, path) is None:
+            self._log_events = []
+            self._log_signature = None
+            self._log_offset = 0
+            return []
+        added = []
+        try:
+            metadata = path.lstat()
+            signature = (metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_size)
+            if signature == self._log_signature:
+                return []
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "rb") as stream:
+                metadata = os.fstat(stream.fileno())
+                if not stat.S_ISREG(metadata.st_mode):
+                    return []
+                signature = (metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_size)
+                previous = self._log_signature
+                if (previous is None or signature[:2] != previous[:2]
+                        or signature[3] < previous[3]
+                        or (signature[3] == previous[3] and signature[2] != previous[2])):
+                    self._log_offset = 0
+                    self._log_events = []
+                stream.seek(self._log_offset)
+                while True:
+                    line = stream.readline()
+                    if not line.endswith(b"\n"):
+                        break
+                    self._log_offset = stream.tell()
+                    try:
+                        event = log_event(json.loads(line))
+                    except (ValueError, UnicodeDecodeError, OverflowError):
+                        continue
+                    if event is not None and event["at"] >= cutoff:
+                        self._log_events.append(event)
+                        added.append(event)
+                self._log_signature = signature
+        except OSError:
+            return []
+        return [{"type": "event", "event": event} for event in sorted(added, key=lambda event: event["at"])]
+
     def _read_state(self, record):
         state_path = self._file(record.path, "state.json")
         if state_path is not None:
@@ -317,6 +399,7 @@ class Store:
                     messages.append({"type": "activity", "slug": slug, "activity": summary["activity"]})
             self.records[slug] = record
         messages.extend(self._poll_sessions())
+        messages.extend(self._poll_log())
         self._initial_poll = False
         return messages
 

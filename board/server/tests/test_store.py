@@ -705,3 +705,114 @@ def test_session_closed_limit_is_shared_with_tasks_and_custom_staleness(tmp_path
     custom = session_store(tmp_path, session_stale_hours=0.5)
     custom.poll()
     assert custom.detail("local_recent")["column"] == "closed"
+
+
+def test_log_events_allowlist_and_invalid_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr("teamster_board.store.time.time", lambda: 5000000)
+    path = tmp_path / "log.jsonl"
+    row = {"at": 4999999, "started": 4999990, "slug": "demo", "repo": "project",
+           "kind": "review", "phase": "review", "turn": 2, "round": 1,
+           "outcome": "completed", "result_status": "done", "verdict": "request_changes",
+           "findings": 3, "severe_findings": 1, "angle": "correctness", "account": "main",
+           "reviewer": "claude", "provider": "anthropic", "model": "model",
+           "task_type": "feature", "ci": {"outcome": "passed", "secret": "private"},
+           "note": "only verdict notes are exposed", "tokens": {"input": 123}, "usage": [{}],
+           "thread": "private", "session_id": "private", "cost_usd": 1, "weekly_spent": 2}
+    verdict = {"at": 5000000, "kind": "verdict", "note": " Long\n\t" + "note " * 100,
+               "started": True, "turn": "2", "round": float("inf"), "findings": float("nan"),
+               "severe_findings": {}, "model": [], "ci": "passed"}
+    rows = [row, verdict, [], {"kind": "work"}, {"kind": "work", "at": True},
+            {"kind": "work", "at": "5000000"}, {"kind": "work", "at": float("nan")},
+            {"kind": "work", "at": float("inf")}, {"kind": "unknown", "at": 5000000}]
+    path.write_bytes(b"broken json\n\xff\n" + b"".join(
+        json.dumps(item).encode() + b"\n" for item in rows))
+    store = Store(tmp_path / "tasks", telemetry_path=path)
+    messages = store.poll()
+    events = store.events(4999990, 5000000)["events"]
+    assert len(events) == 2
+    fields = {"at", "started", "slug", "repo", "kind", "phase", "turn", "round", "outcome",
+              "result_status", "verdict", "findings", "severe_findings", "angle", "account",
+              "reviewer", "provider", "model", "task_type", "ci", "note"}
+    assert all(set(event) == fields for event in events)
+    assert events[0] == {**{key: row[key] for key in fields - {"ci", "note"}},
+                         "ci": "passed", "note": None}
+    assert events[1]["note"] == " ".join(verdict["note"].split())[:200]
+    assert len(events[1]["note"]) == 200
+    assert all(events[1][key] is None for key in (
+        "started", "turn", "round", "findings", "severe_findings", "model", "ci", "phase"))
+    assert messages == [{"type": "event", "event": event} for event in events]
+
+
+def test_log_incremental_append_waits_for_complete_line(tmp_path, monkeypatch):
+    monkeypatch.setattr("teamster_board.store.time.time", lambda: 1000)
+    path = tmp_path / "log.jsonl"
+    first = {"at": 998, "kind": "work", "phase": "work"}
+    second = {"at": 999, "kind": "scout", "phase": "scout"}
+    path.write_text(json.dumps(first) + "\n")
+    parsed = []
+    original = json.loads
+
+    def tracked_loads(raw):
+        parsed.append(raw)
+        return original(raw)
+
+    monkeypatch.setattr(json, "loads", tracked_loads)
+    store = Store(tmp_path / "tasks", telemetry_path=path)
+    assert len(store.poll()) == 1
+    assert store.poll() == []
+    with path.open("a") as stream:
+        stream.write(json.dumps(second))
+    assert store.poll() == []
+    assert len(store.events(0, 1000)["events"]) == 1
+    with path.open("a") as stream:
+        stream.write("\n")
+    assert [message["event"]["at"] for message in store.poll()] == [999]
+    assert [original(raw) for raw in parsed] == [first, second]
+    assert [event["at"] for event in store.events(0, 1000)["events"]] == [998, 999]
+    assert store.poll() == []
+
+
+def test_log_truncation_and_inode_replacement_reset_history(tmp_path, monkeypatch):
+    monkeypatch.setattr("teamster_board.store.time.time", lambda: 1000)
+    path = tmp_path / "log.jsonl"
+    path.write_text(json.dumps({"at": 997, "kind": "work", "slug": "long-" * 40}) + "\n")
+    store = Store(tmp_path / "tasks", telemetry_path=path)
+    store.poll()
+    path.write_text(json.dumps({"at": 998, "kind": "scout"}) + "\n")
+    assert [message["event"]["at"] for message in store.poll()] == [998]
+    assert [event["at"] for event in store.events(0, 1000)["events"]] == [998]
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_text(json.dumps({"at": 999, "kind": "work"}) + "\n")
+    replacement.replace(path)
+    assert [message["event"]["at"] for message in store.poll()] == [999]
+    assert [event["at"] for event in store.events(0, 1000)["events"]] == [999]
+
+
+def test_log_missing_symlinks_and_retention(tmp_path, monkeypatch):
+    now = [5000000]
+    monkeypatch.setattr("teamster_board.store.time.time", lambda: now[0])
+    path = tmp_path / "log.jsonl"
+    store = Store(tmp_path / "tasks", telemetry_path=path)
+    assert store.poll() == []
+    assert store.events(0, now[0])["events"] == []
+    boundary = now[0] - 31 * 24 * 3600
+    path.write_text("".join(json.dumps({"at": at, "kind": "work"}) + "\n"
+                            for at in (boundary - 1, boundary, now[0])))
+    assert len(store.poll()) == 2
+    now[0] += 1
+    assert store.poll() == []
+    assert [event["at"] for event in store.events(0, now[0])["events"]] == [5000000]
+    outside = tmp_path / "outside.jsonl"
+    path.rename(outside)
+    assert store.poll() == []
+    assert store.events(0, now[0])["events"] == []
+    path.symlink_to(outside)
+    original_open = os.open
+
+    def guarded_open(target, *args, **kwargs):
+        assert target != path, "a symlinked telemetry file must never be opened"
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", guarded_open)
+    assert store.poll() == []
+    assert store.events(0, now[0])["events"] == []
