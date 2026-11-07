@@ -54,8 +54,9 @@ def signals(state):
         found.add("refused")
     if stop == "escalate":
         found.add("escalate")
-    # auto_fix stops at the round cap with "rounds_exhausted", or "check <outcome>" while a check fails.
-    if stop == "rounds_exhausted" or stop.startswith("check "):
+    # auto_fix stops at the round cap with "rounds_exhausted", "check <outcome>" while a check fails,
+    # or "base conflict" while the base branch still conflicts.
+    if stop in ("rounds_exhausted", "base conflict") or stop.startswith("check "):
         found.add("round_cap")
     if len(_list(state, "rounds")) >= 2:
         found.add("fix_rounds")

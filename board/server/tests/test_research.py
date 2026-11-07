@@ -125,6 +125,7 @@ def test_pending_items_are_capped_and_all_records_count_without_a_batch(tmp_path
     ({"auto_fix_stop": "escalate"}, ["escalate"]),
     ({"auto_fix_stop": "rounds_exhausted"}, ["round_cap"]),
     ({"auto_fix_stop": "check failed"}, ["round_cap"]),
+    ({"auto_fix_stop": "base conflict", "rounds": [{}]}, ["round_cap"]),
     ({"rounds": [{}, {}]}, ["fix_rounds"]),
     ({"checks": [{"exit": 0}, {"exit": 1}]}, ["check_failed"]),
     ({"ci": {"outcome": "passed", "rounds": 1}}, ["ci_repair"]),

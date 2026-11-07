@@ -350,8 +350,9 @@ the next batch. The data lives in `tasks/.archive/`:
 - Records are directories `<slug>-<stamp>` with `stamp` like `20261107T051647Z`. A record's repository is the
   last path component of `state.json`'s `repo`, or `"(unknown)"`. Only `state.json` is used for signals:
   - `blocked`, `needs_decision`: `result.status`; `refused`: `result.status` or `outcome` is `refused`;
-  - `escalate`: `auto_fix_stop` is `escalate`; `round_cap`: `auto_fix_stop` is `rounds_exhausted` or
-    `check <outcome>` (the round cap reached while the check failed);
+  - `escalate`: `auto_fix_stop` is `escalate`; `round_cap`: `auto_fix_stop` is `rounds_exhausted`,
+    `check <outcome>` or `base conflict` (the round cap reached while the check failed or the base branch
+    conflicted);
   - `fix_rounds`: `rounds` holds two or more entries;
   - `check_failed`: an entry of `checks` has an integer `exit` other than 0;
   - `ci_repair`: `ci.rounds` is greater than 0;
