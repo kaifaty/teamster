@@ -44,7 +44,7 @@ def stream_unavailable(event, account):
     return None
 
 
-def event_result(event, telemetry, token, account, reviewing=True):
+def event_result(event, telemetry, token, account, reviewing=True, scouting=False):
     """Decode selected stream fields; return (result, unavailability reason)."""
     if not isinstance(event, dict):
         return None, "invalid JSON output"
@@ -82,7 +82,12 @@ def event_result(event, telemetry, token, account, reviewing=True):
     if reason:
         return None, reason
     if event.get("is_error"):
-        return None, "review failed" if reviewing else "work turn failed"
+        return None, "review failed" if reviewing else "scout failed" if scouting else "work turn failed"
+    if scouting:
+        answer = event.get("result")
+        if not isinstance(answer, str) or not answer.strip():
+            return None, "invalid scout output"
+        return answer.replace(token, "[REDACTED]"), None
     result = event.get("structured_output")
     schema = result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA
     if not result_schema.matches_schema(result, schema):
@@ -120,8 +125,10 @@ def run_work_turn(account, worktree, task_dir, prompt, stopped, session_id=None,
 
 def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, effort=None,
                max_turns=None, *, session_id=None, system_prompt=None, reviewing=False, started=None, progress=None,
-               task_dir=None):
+               task_dir=None, role="work"):
     """Execute and drain one stream; callers own role-specific lifecycle state."""
+    scouting = role == "scout"
+    read_only = reviewing or scouting
     response = {"outcome": "unavailable", "result": None, "reason": None, "deadline": deadline,
                 "telemetry": {"usage": {}, "cost_usd": None, "session_id": None,
                               "model": None, "reasoning_effort": None, "num_turns": None}}
@@ -138,9 +145,10 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         response["reason"] = "Claude CLI was not found"
         return response
     schema = result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA
-    args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose",
-            "--json-schema", json.dumps(schema)]
-    if reviewing:
+    args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose"]
+    if not scouting:
+        args += ["--json-schema", json.dumps(schema)]
+    if read_only:
         args += ["--permission-mode", "dontAsk", "--allowedTools", "Read,Grep,Glob,Bash",
                  "--disallowedTools", "Edit,Write,NotebookEdit"]
     else:
@@ -182,7 +190,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     response["telemetry"].update(model=model, reasoning_effort=effort)
     buffer, eof, termination = b"", False, None
     events_failed = False
-    failure = "review failed" if reviewing else "work turn failed"
+    failure = "review failed" if reviewing else "scout failed" if scouting else "work turn failed"
     try:
         if started is not None:
             started(proc)
@@ -206,9 +214,12 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                             response["reason"] = "invalid structured output"
                         else:
                             response["outcome"] = "completed"
-                    if not reviewing and response["reason"] in (
+                    if not read_only and response["reason"] in (
                             "invalid structured output", "invalid JSON output", failure):
                         response.update(outcome="unknown", result=None)
+                    elif scouting and response["reason"] in (
+                            "invalid structured output", "invalid JSON output", "invalid scout output", failure):
+                        response.update(outcome="failed", result=None)
                     break
                 for key, _ in selector.select(0.2):
                     chunk = os.read(key.fileobj.fileno(), 65536)
@@ -236,7 +247,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                         try:
                             event = json.loads(line)
                         except (ValueError, UnicodeError):
-                            if not reviewing:
+                            if not read_only:
                                 with (Path(system_prompt).parent / "stderr.log").open(
                                         "a", encoding="utf-8") as errors:
                                     errors.write(line.decode("utf-8", errors="replace").replace(
@@ -259,7 +270,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                                 if event["result"]:
                                     response["raw_message"] = event["result"].replace(token, "[REDACTED]")
                         result, reason = event_result(event, response["telemetry"], token,
-                                                      account["name"], reviewing)
+                                                      account["name"], reviewing, scouting)
                         if reason is not None:
                             response["reason"] = response["reason"] or reason
                             response["result"] = None
@@ -268,7 +279,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                         if not reviewing and progress is not None:
                             progress(response["telemetry"])
                 if (response["reason"] and termination is None and
-                        (reviewing or response["reason"] not in
+                        (read_only or response["reason"] not in
                          ("invalid structured output", "invalid JSON output", failure))):
                     # Drain buffered and shutdown usage while terminating, even
                     # when the final result is larger than the stdout pipe.

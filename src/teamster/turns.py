@@ -2,10 +2,91 @@
 import json
 import sys
 
-from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_runner, clock, config, duty, executors, notifications, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
+from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, config, duty, executors, notifications, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
 
 
 LIMIT_REASONS = ("usage limit", "authentication failed", "token unavailable")
+
+
+def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
+    """Run read-only research, retrying review accounts without waiting or falling back."""
+    last = config.TASKS / st["slug"] / "last.md"
+    last.unlink(missing_ok=True)
+    minutes = cfg["max_review_minutes"]
+    deadline = clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
+    settings = cfg["claude"]
+    attempted = set()
+    preferred = st.get("claude_account")
+    account = None
+    if preferred:
+        account = claude_review.select_account(
+            cfg, "review", exclude={a["name"] for a in claude_accounts.accounts(cfg) if a["name"] != preferred},
+            stopped=stopped, task_type=st.get("task_type"))
+    if account is None:
+        account = claude_review.select_account(cfg, "review", stopped=stopped, task_type=st.get("task_type"))
+    # Snapshot the whole work tree even when the inspected directory is a subdirectory.
+    snapshot_state = {"worktree": procs.sh(config.GIT + ["rev-parse", "--show-toplevel"], cwd=st["worktree"])}
+    while account is not None and not stopped():
+        name = account["name"]
+        attempted.add(name)
+        previous = st.get("claude_account")
+        if previous and previous != name:
+            prompt = threads.handoff(st, current_message=current_message, cfg=cfg)
+            st["rotations"].append({"at": clock.CLOCK.time(), "from": previous, "to": name,
+                                    "reason": st.get("error") or "account unavailable", "thread": ""})
+            st["session_id"] = ""
+        st.update(claude_account=name, outcome="running")
+        st.pop("error", None)
+        task_state.save(st)
+        before = claude_review.worktree_snapshot(snapshot_state)
+        launched = False
+
+        def started(proc):
+            nonlocal launched
+            launched = True
+            st["claude_pid"] = proc.pid
+            task_state.save(st)
+
+        def progress(telemetry):
+            if telemetry.get("session_id") and telemetry["session_id"] != st.get("session_id"):
+                st["session_id"] = telemetry["session_id"]
+                task_state.save(st)
+
+        try:
+            response = claude_runner.run_claude(
+                account, st["worktree"], prompt, stopped, deadline,
+                st.get("task_model") or settings.get("model"), effort or settings.get("effort"),
+                settings["max_turns"], role="scout", session_id=st.get("session_id") or None,
+                started=started, progress=progress)
+        finally:
+            st.pop("claude_pid", None)
+            task_state.save(st)
+        if launched and claude_review.worktree_snapshot(snapshot_state) != before:
+            response.update(outcome="failed", result=None, reason="scout modified the directory", raw_message="")
+        telemetry = response["telemetry"]
+        progress(telemetry)
+        phase = telemetry_log.telemetry_phase(st)
+        if phase is not None:
+            phase.add_claude_usage(telemetry, account=name)
+        st["outcome"] = task_state.stop_outcome(st, stopped) or response["outcome"]
+        reason = response.get("reason")
+        if st["outcome"] == "completed":
+            last.write_text(response["result"], encoding="utf-8")
+            threads.record_claude_message(st, response["result"])
+        elif reason:
+            st["error"] = reason
+        if st["outcome"] == "budget_exhausted":
+            claude_review.record_timeout(st, minutes)
+        task_state.save(st)
+        if response["outcome"] != "unavailable" or reason not in LIMIT_REASONS or stopped():
+            return
+        claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable")
+        account = claude_review.select_account(cfg, "review", exclude=attempted, stopped=stopped,
+                                               task_type=st.get("task_type"))
+    st["outcome"] = task_state.stop_outcome(st, stopped) or "unavailable"
+    if st["outcome"] == "unavailable":
+        st["error"] = "No available Claude account for scout" + (f": {st['error']}" if st.get("error") else "")
+    task_state.save(st)
 
 
 def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, deadline=None):
@@ -216,7 +297,7 @@ def run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=
     phase = "fix" if kind == "work" and st.get("rounds") else kind
     with telemetry_log.record_phase(st, phase, stopped):
         st.pop("refusal", None)
-        return executors.for_turn(st).call("turn", st, cfg, prompt, effort, current_message,
+        return executors.for_turn(st).call("scout" if kind == "scout" else "turn", st, cfg, prompt, effort, current_message,
                                            stopped, sleep, new_turn=new_turn)
 
 
@@ -524,5 +605,6 @@ def claude_wrapup_turn(st, cfg, account, prompt, effort, stopped, thread):
     return result
 
 
-executors.get("codex").bind(sys.modules[__name__], turn="_run_turn", wrapup="codex_wrapup_turn")
-executors.get("claude").bind(sys.modules[__name__], turn="run_claude_turn", wrapup="claude_wrapup_turn")
+executors.get("codex").bind(sys.modules[__name__], turn="_run_turn", scout="_run_turn", wrapup="codex_wrapup_turn")
+executors.get("claude").bind(sys.modules[__name__], turn="run_claude_turn", scout="run_claude_scout_turn",
+                             wrapup="claude_wrapup_turn")

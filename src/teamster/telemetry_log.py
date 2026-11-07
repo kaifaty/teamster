@@ -13,14 +13,14 @@ TELEMETRY_PHASES = []
 
 
 def claude_work_rows(st):
-    """Read measured Claude work phases for this task's lifetime."""
+    """Read measured Claude work or scout phases for this task's lifetime."""
     try:
         with journal_path().open(encoding="utf-8") as stream:
             return [row for row in config.ROLLOUT["read_events"](stream)
                     if isinstance(row, dict) and row.get("slug") == st["slug"]
                     and row.get("created") == st.get("created")
-                    and row.get("provider") == "claude" and row.get("kind") == "work"
-                    and row.get("phase") in ("work", "fix", "wrapup")]
+                    and row.get("provider") == "claude" and row.get("kind") in ("work", "scout")
+                    and row.get("phase") in ("work", "fix", "wrapup", "scout")]
     except FileNotFoundError:
         return []
 
@@ -221,7 +221,12 @@ class PhaseTelemetry:
 
     def add_claude_usage(self, telemetry, account, weekly_before=None, weekly_after=None, weekly_spent=0):
         self.reviewer = reviewers.CLAUDE_REVIEWER.name
-        self.cost_usd = telemetry.get("cost_usd")
+        cost = telemetry.get("cost_usd")
+        if self.kind == "scout":
+            if cost is not None:
+                self.cost_usd = (self.cost_usd or 0) + cost
+        else:
+            self.cost_usd = cost
         self.model = telemetry.get("model")
         self.reasoning_effort = telemetry.get("reasoning_effort")
         self.st.update(model=self.model, reasoning_effort=self.reasoning_effort)
@@ -236,9 +241,9 @@ class PhaseTelemetry:
                  "model": self.model, "reasoning_effort": self.reasoning_effort,
                  "weekly_used_before": weekly_before, "weekly_used_after": weekly_after,
                  "weekly_spent": weekly_spent}
-        if self.kind == "work":
+        if self.kind in ("work", "scout"):
             self.provider = "claude"
-            entry.update(provider="claude", session_id=telemetry.get("session_id"), cost_usd=self.cost_usd)
+            entry.update(provider="claude", session_id=telemetry.get("session_id"), cost_usd=cost)
         self.usage.append(entry)
 
     def finish(self, outcome=None, result=None):

@@ -470,6 +470,190 @@ class ClaudeReviewTests(RotationTestCase):
         self.claude_fixture(runs=runs, claude={"accounts": accounts})
         return accounts
 
+    def test_claude_scout_read_only_session_output_telemetry_and_clean(self):
+        answers = ["The entry point reads tracked.txt.", "Its caller passes the current directory."]
+        accounts = self.claude_pool_fixture(runs=[{"text": answer} for answer in answers])
+        (self.repo / "tracked.txt").write_text("Existing uncommitted contents.\n")
+        (self.repo / "pending.txt").write_text("Existing untracked contents.\n")
+        worker = self.worker()
+        # Scouts may spend the headroom that the pool reserves for reviews.
+        for account in accounts:
+            worker.claude_accounts.save_limits(account["name"], {"unifiedWindows": {
+                "seven_day": {"utilization": .9, "resetsAt": self.reset}}})
+        before = worker.claude_review.worktree_snapshot({"worktree": str(self.repo)})
+        self.cli("scout", "claude-scout", "Where is tracked.txt read?", "--executor", "claude")
+        self.assertIn(answers[0], self.wait("claude-scout"))
+        initial = self.state("claude-scout")
+        self.assertEqual(initial["executor"], "claude")
+        self.assertEqual(initial["claude_account"], "first")
+        self.assertTrue(initial["session_id"])
+        self.assertIsNone(initial["result"])
+        # Another account now has more room; a follow-up still keeps its available account.
+        worker.claude_accounts.save_limits("second", {"unifiedWindows": {
+            "five_hour": {"utilization": 0, "resetsAt": self.reset},
+            "seven_day": {"utilization": 0, "resetsAt": self.reset}}})
+        self.cli("say", "claude-scout", "Who calls it?")
+        self.assertIn(answers[1], self.wait("claude-scout"))
+        state = self.state("claude-scout")
+        self.assertEqual((state["claude_account"], state["session_id"]),
+                         (initial["claude_account"], initial["session_id"]))
+        invocations = self.claude_invocations()
+        self.assertEqual(len(invocations), 2)
+        for entry in invocations:
+            argv = entry["argv"]
+            self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+            self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read,Grep,Glob,Bash")
+            self.assertEqual(argv[argv.index("--disallowedTools") + 1], "Edit,Write,NotebookEdit")
+            self.assertNotIn("--json-schema", argv)
+            self.assertNotIn("bypassPermissions", argv)
+            self.assertEqual(entry["cwd"], str(self.repo))
+            self.assertEqual(entry["config_dir"], accounts[0]["config_dir"])
+        self.assertNotIn("--resume", invocations[0]["argv"])
+        resumed = invocations[1]["argv"]
+        self.assertEqual(resumed[resumed.index("--resume") + 1], initial["session_id"])
+        for status in (self.cli("status"), self.cli("status", "claude-scout")):
+            self.assertIn("executor claude", status)
+            self.assertIn("sandbox read-only", status)
+        self.assertIn(answers[1], self.cli("status", "claude-scout"))
+        self.assertIn("fake-claude", self.cli("stats", "claude-scout"))
+        rows = [row for row in self.phase_telemetry_journal() if row["slug"] == "claude-scout"]
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual((row["kind"], row["phase"], row["provider"], row["account"]),
+                             ("scout", "scout", "claude", "first"))
+            self.assertEqual(row["tokens"], {"input": 150, "cached_input": 30, "output": 40,
+                                              "reasoning": None})
+            self.assertEqual(row["cost_usd"], 0.125)
+        report = json.loads(self.cli("report", "--slug", "claude-scout", "--json"))
+        self.assertEqual(report["summary"]["tasks"], 1)
+        self.assertEqual(report["summary"]["turns"], 2)
+        self.assertIn("fake-claude", report["tasks"][0]["models"])
+        trace = self.trace()
+        self.cli("clean", "claude-scout")
+        archive, = (self.home / "claude-tasks" / ".archive").glob("claude-scout-*")
+        self.assertEqual(json.loads((archive / "state.json").read_text())["executor"], "claude")
+        self.assertEqual(self.trace(), trace)
+        self.assertEqual(self.invocations(), [])
+        self.assertEqual(worker.claude_review.worktree_snapshot(state), before)
+
+    def test_claude_scout_discards_answers_after_tracked_and_untracked_writes_including_say(self):
+        for followup in (False, True):
+            for tracked in (False, True):
+                with self.subTest(followup=followup, tracked=tracked):
+                    slug = "scout-write-%d-%d" % (followup, tracked)
+                    filename = "tracked.txt" if tracked else slug + ".txt"
+                    contents = "Visible scout write: " + slug + "\n"
+                    answer = "This answer must be discarded: " + slug
+                    runs = ([{"text": "First answer."}] if followup else [])
+                    runs += [{"text": answer, "write_files": {filename: contents}}]
+                    self.claude_fixture(runs=runs)
+                    self.claude_fixture_path.with_suffix(".count").unlink(missing_ok=True)
+                    self.cli("scout", slug, "Read the current directory.", "--executor", "claude")
+                    if followup:
+                        self.wait(slug)
+                        self.cli("say", slug, "Read it again.")
+                    output = self.cli("wait", slug, "--timeout", "30", timeout=45)
+                    state = self.state(slug)
+                    self.assertEqual(state["outcome"], "failed")
+                    self.assertEqual(state["error"], "scout modified the directory")
+                    self.assertIsNone(state["result"])
+                    self.assertNotIn(answer, output)
+                    self.assertNotIn(answer, self.cli("status", slug))
+                    self.assertEqual(self.worker().threads.last_message(state), "")
+                    self.assertEqual((self.repo / filename).read_text(), contents)
+        self.assertEqual(self.invocations(), [])
+
+    def test_claude_scout_refuses_a_non_git_directory_without_a_record(self):
+        self.claude_fixture()
+        directory = self.root / "plain-directory"
+        directory.mkdir()
+        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "scout", "scout-non-git", "Read files.",
+                                 "--repo", str(directory), "--executor", "claude"],
+                                cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.stderr.lower(), r"claude.*git|git.*claude")
+        self.assertFalse((self.home / "claude-tasks" / "scout-non-git").exists())
+        self.assertEqual(self.claude_invocations(), [])
+        self.assertEqual(self.trace(), [])
+
+    def test_claude_scout_retries_account_errors_without_codex_or_reset_wait(self):
+        rejected = {"status": "rejected", "resetsAt": self.reset}
+        limited = {"mode": "rejected_buffered", "limits": rejected}
+        cases = (("limit", limited), ("auth", {"mode": "auth_error"}),
+                 ("token", None), ("all-limited", limited))
+        for label, first in cases:
+            with self.subTest(case=label):
+                runs = [{"text": "Answer from the next account."}]
+                if first is not None:
+                    runs.insert(0, first)
+                if label == "all-limited":
+                    runs[-1] = limited
+                accounts = self.claude_pool_fixture(runs=runs)
+                self.claude_fixture_path.with_suffix(".count").unlink(missing_ok=True)
+                self.claude_trace_path.unlink(missing_ok=True)
+                if label == "token":
+                    fixture = json.loads(self.claude_fixture_path.read_text())
+                    fixture["security"] = {"codex-worker-claude-first": {"unavailable": True}}
+                    self.claude_fixture_path.write_text(json.dumps(fixture))
+                slug = "scout-account-" + label
+                self.cli("scout", slug, "Read files.", "--executor", "claude")
+                output = self.cli("wait", slug, "--timeout", "30", timeout=45)
+                state = self.state(slug)
+                self.assertEqual(state["outcome"], "unavailable" if label == "all-limited" else "completed")
+                expected = accounts[1:] if label == "token" else accounts
+                self.assertEqual([entry["config_dir"] for entry in self.claude_invocations()],
+                                 [account["config_dir"] for account in expected])
+                self.assertEqual(state["claude_account"], "second")
+                self.assertNotIn("sleeping", state)
+                limits = self.worker().claude_accounts.read_limits()
+                self.assertTrue(self.worker().claude_accounts.limited(limits["first"]))
+                if label == "all-limited":
+                    self.assertTrue(self.worker().claude_accounts.limited(limits["second"]))
+                    self.assertIn("Claude", state["error"])
+                    self.assertIn("usage limit", state["error"])
+                else:
+                    self.assertIn("Answer from the next account.", output)
+                row, = [row for row in self.phase_telemetry_journal() if row["slug"] == slug]
+                measured = 2 if label in ("limit", "all-limited") else 1
+                self.assertEqual(row["provider"], "claude")
+                self.assertEqual(row["tokens"], {"input": 150 * measured, "cached_input": 30 * measured,
+                                                  "output": 40 * measured, "reasoning": None})
+                self.assertEqual(row["cost_usd"], .125 * measured)
+                self.assertEqual(self.trace(), [])
+
+    def test_default_and_legacy_scouts_use_codex_despite_claude_executor_setting(self):
+        self.claude_fixture(executor="claude")
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": "Codex scout answer."}])
+        self.cli("scout", "scout-default", "Read files.")
+        self.wait("scout-default")
+        initial = self.state("scout-default")
+        self.assertEqual(initial["executor"], "codex")
+        self.assert_scout_read_only(self.invocations()[0])
+        initial.pop("executor")
+        (self.home / "claude-tasks" / "scout-default" / "state.json").write_text(json.dumps(initial))
+        self.cli("say", "scout-default", "Continue the old scout.")
+        self.assertIn("Codex scout answer.", self.wait("scout-default"))
+        invocations = self.invocations()
+        self.assertEqual(len(invocations), 2)
+        self.assert_scout_read_only(invocations[1])
+        self.assert_resumed_same_thread(invocations[0], invocations[1], self.home)
+        self.assertEqual(self.claude_invocations(), [])
+
+    def test_claude_scout_uses_review_time_budget_without_a_wrapup(self):
+        self.enable_fake_clock(auto_advance=False)
+        self.env["CODEX_TASK_MINUTE_SECONDS"] = "60"
+        self.claude_fixture(runs=[{"mode": "hold"}], max_review_minutes=2, max_turn_minutes=10)
+        self.cli("scout", "scout-timeout", "Read files.", "--executor", "claude")
+        self.until(lambda: any(entry["command"] == "holding" for entry in self.claude_trace()))
+        self.advance_fake_clock(120.1)
+        self.cli("wait", "scout-timeout", "--timeout", "30", timeout=45)
+        state = self.state("scout-timeout")
+        self.assertEqual(state["outcome"], "budget_exhausted")
+        self.assertEqual(state["turn_stop"], {"outcome": "budget_exhausted", "minutes": 2})
+        self.assertEqual(len(self.claude_invocations()), 1)
+        self.assertFalse(self.process_is_live(self.claude_invocations()[0]["pid"]))
+        self.assertEqual(self.invocations(), [])
+
     def assert_claude_review_telemetry(self, count):
         self.until(lambda: len([row for row in self.phase_telemetry_journal()
                                 if row["phase"] == "review"]) == count)

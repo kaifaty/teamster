@@ -99,7 +99,7 @@ Without `--reviewer`, Claude tasks use Codex reviews; Codex tasks keep the confi
 | Find package files | `teamster path` prints the installed package directory |
 | Check the version | `teamster --version` |
 | Start a task | `teamster start <slug> --brief brief.md [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex\|claude] [--effort E] [--sandbox off\|workspace] --max-minutes M [--max-weekly P] --review [--review-angles LIST] --fix-rounds 2 [--ci] [--ci-rounds N] --check "<command from Checks>" [--check-timeout SEC] [--guard GLOB] [--base-check]` (base defaults to the remote's default branch; `--branch` overrides `codex/<slug>` and must pass `git check-ref-format --branch`; `--guard` is repeatable; `--no-push` keeps commits local through follow-ups, reviews, fixes and wrap-up, with no branch or PR publication and no CI) |
-| Scout code | `teamster scout <slug> "question"` or `teamster scout <slug> --file Q.md`, with `[--repo DIR] [--effort E]`; read-only in the existing directory (default `.`), no worktree or branch |
+| Scout code | `teamster scout <slug> "question"` or `teamster scout <slug> --file Q.md`, with `[--repo DIR] [--executor codex\|claude] [--effort E]`; read-only in the existing directory (default `.`), no worktree or branch |
 | Wait for the cycle | `teamster wait <slug> [--through-sleep]` as a background task that reports completion when the whole review/fix cycle ends; if your harness has no such tasks, run `teamster wait` as an ordinary command or check `teamster status`; read its [output](results.md#what-wait-prints) |
 | Follow-up / fix request | `teamster say <slug> "…"` or `teamster say <slug> --file FILE`, with `--max-minutes M [--max-weekly P] [--effort E] [--review] [--review-angles LIST] [--fix-rounds 2] [--ci\|--no-ci] [--ci-rounds N]` (only when idle), then `teamster wait` again; the saved check is inherited unless replaced with `--check CMD` or removed with `--no-check`; `--no-base-check` drops inherited base tests |
 | First review | `teamster review <slug> [--effort E] [--review-angles LIST] [--max-weekly P]` (only when idle), then `teamster wait` |
@@ -128,6 +128,15 @@ A PR far behind its base (hundreds of commits) is not a plain merge task. Before
 Scouts need no `--parallel`: run several at once, one question each, alongside tasks. `say` continues a
 scout's read-only thread; `--check`, `--review`, `--review-angles`, `--fix-rounds` and `review` don't
 apply to scouts. `clean` on a scout archives its record the same way, never the inspected directory.
+
+Scouts default to Codex even when the `executor` setting is `claude`. Choose
+`scout --executor claude` when the Codex pool is exhausted or you want research from the Claude pool.
+A Claude scout needs a directory inside a git work tree. It uses review-role accounts and
+`max_review_minutes`; if every account is unavailable, it stops without waiting for a reset or
+falling back to Codex. Its answer is free text. `say` resumes the same session and account when
+available. Claude scouts use the review tool restrictions, and teamster compares git snapshots
+before and after every turn: any change fails the turn and discards its answer, leaving the change
+visible for inspection. Existing uncommitted changes alone do not fail a turn.
 
 ### One Codex tool with your prompt
 

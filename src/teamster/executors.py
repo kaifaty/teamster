@@ -5,16 +5,18 @@ persisted executor value and a CLI choice; account_field, cursor_field and
 cursor_label describe its existing task-state fields. Override state-only
 policies here: reviewer defaults, sandbox/effort support, status and telemetry.
 from_state selects the saved executor (legacy tasks default to Codex); for_turn
-always selects Codex for review/scout transport, regardless of the work executor.
+always selects Codex for review transport, regardless of the work executor.
 
 Higher-layer owners bind hooks at import with bind(module, operation="function").
 Hooks store the module and attribute name, never the function, so later patches
 of the owning module remain visible. Required operations and signatures are:
   turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True)
+  scout(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True)
   wrapup(st, cfg, account, prompt, effort, stopped, cursor) -> outcome
   last_message(st) -> str; messages(st) -> list[str]; pr_messages(st) -> list[str]
 Optional status_message(st) overrides the last_message fallback for status.
 Optional prepare(effort, cfg) validates startup/resume and requires its binary;
+optional prepare_scout(effort, cfg, directory) validates a scout directory;
 optional stats(st) prints executor-specific statistics. Missing required hooks
 fail explicitly. Work hooks retain ownership of transport, rotation and state
 writes; this module neither imports those owners nor changes the disk schema.
@@ -47,6 +49,10 @@ class Executor:
     def prepare(self, effort, cfg):
         if "prepare" in self.hooks:
             self.call("prepare", effort, cfg)
+
+    def prepare_scout(self, effort, cfg, directory):
+        if "prepare_scout" in self.hooks:
+            self.call("prepare_scout", effort, cfg, directory)
 
     def stats(self, st):
         if "stats" in self.hooks:
@@ -84,8 +90,9 @@ class Executor:
                     or not self.event_log and self.call("messages", st))
 
     def telemetry_provider(self, st, phase):
-        return (self.provider if st.get("kind", "work") == "work"
-                and phase in ("work", "fix", "wrapup", "turn") else None)
+        return (self.provider if (st.get("kind", "work") == "work"
+                                 and phase in ("work", "fix", "wrapup", "turn")
+                                 or st.get("kind") == "scout" and phase in ("scout", "turn")) else None)
 
     def turn_fields(self, st):
         if self.telemetry_provider(st, "turn") is None:
@@ -151,7 +158,7 @@ def from_state(st):
 
 
 def for_turn(st):
-    return get("codex") if st.get("kind") in ("review", "scout") else from_state(st)
+    return get("codex") if st.get("kind") == "review" else from_state(st)
 
 
 register(Executor("codex"))
