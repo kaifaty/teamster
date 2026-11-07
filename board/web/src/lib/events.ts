@@ -57,11 +57,12 @@ export function describeEvent(event: LogEvent): { text: string; tone: EventTone 
     }
     return { text: `${slug}: вердикт ${event.verdict ?? "без отметки"}`, tone: "plain" };
   }
-  if (event.kind === "scout" || phase === "scout") return ok(`Разведчик ${slug} вернулся`);
+  if (phase === "scout" && outcome === "completed") return ok(`Разведчик ${slug} вернулся`);
   if (event.ci === "failed") return bad(`Ворота отклонили ${slug}`);
   if (event.ci === "passed") return ok(`${slug} прошёл ворота`);
 
-  if (phase === "work" || phase === "fix" || phase === "turn" || phase === "wrapup") {
+  // The final `turn` row repeats its phase's outcome, so only the phase rows tell it.
+  if (phase === "work" || phase === "fix" || phase === "scout") {
     if (outcome === "budget_exhausted") return bad(`${slug} остался без топлива`);
     if (outcome && LOST.has(outcome)) return bad(`${slug} потерял ход`);
     if (outcome === "completed" && phase === "work") return ok(`${slug} вышел с верфи`);

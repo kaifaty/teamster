@@ -68,7 +68,7 @@ const hideImage = (event: Event) => {
     </header>
     <ol class="l-rows" aria-live="polite" aria-relevant="additions">
       <li v-if="error" class="l-note bad" :title="error">Журнал не загрузился: {{ error }}</li>
-      <li v-if="!rows.length" class="l-note">{{ repo ? "В этой системе за сутки тихо." : "За сутки в журнале ни строчки." }}</li>
+      <li v-else-if="!rows.length" class="l-note">{{ repo ? "В этой системе за сутки тихо." : "За сутки в журнале ни строчки." }}</li>
       <li v-for="row in rows" :key="row.key">
         <component
           :is="row.go ? 'button' : 'div'"

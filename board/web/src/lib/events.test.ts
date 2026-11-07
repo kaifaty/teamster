@@ -27,6 +27,9 @@ describe("eventText", () => {
     [{ kind: "verdict", verdict: "redone" }, "ship отправлен на переделку"],
     [{ kind: "verdict", verdict: "dropped" }, "ship списан"],
     [{ kind: "scout", phase: "scout", outcome: "completed" }, "Разведчик ship вернулся"],
+    [{ kind: "scout", phase: "scout", outcome: "failed" }, "ship потерял ход"],
+    [{ kind: "scout", phase: "turn", outcome: "completed" }, "ship: turn completed"],
+    [{ kind: "work", phase: "turn", outcome: "budget_exhausted" }, "ship: turn budget_exhausted"],
     [{ kind: "work", phase: "base_check", outcome: "skipped" }, "ship: base_check skipped"],
     [{ kind: "review", phase: "review", outcome: "refused" }, "ship: review refused"],
   ] as [Partial<LogEvent> & Pick<LogEvent, "kind">, string][])("%o → %s", (fields, text) => {
