@@ -18,7 +18,7 @@ Worker prompts and `src/teamster/docs/lead-guide.md` do not name the lead Claude
 
 ## Checks
 
-- The full suite is `python3 -I tests/test_rotation.py`, about 90 s with its default parallelism. Run it at most twice per task; during the work run the focused test files instead. The supervisor runs the full suite after every turn, so reaching this limit is not a reason for `partial` or `blocked`: commit, finish with `done` if the "Done when" items are met, and report the last full run as `not_run` or `failed` with the failing test names.
+- The full suite is `python3 -I tests/test_rotation.py`, 90 s on an idle machine and up to about 12 minutes under load. Run it at most twice per task; during the work run the focused test files instead. The supervisor runs the full suite after every turn, so reaching this limit is not a reason for `partial` or `blocked`: commit, finish with `done` if the "Done when" items are met, and report the last full run as `not_run` or `failed` with the failing test names.
 - Do not set `CODEX_TEST_JOBS=1` and do not time the suite: other agents' tasks load this machine.
 - A release that changes the fields of `state.json` adds `tests/fixtures/state-<previous version>/`, written with `tests/make_state_fixtures.py` on the previous release, and never deletes existing fixture directories.
 - For a behavior-preserving refactor, prove that tests are unchanged with `/usr/bin/python3 -I tests/compare_rotation_assertions.py --base origin/main`, and list every reported change in the PR.

@@ -325,6 +325,7 @@ class ReviewFixTests(RotationTestCase):
         state = self.state("claude-executor-fixes")
         self.assertEqual(state["reviewer"], "codex", "Claude work defaults to Codex even when config says Claude")
         self.assertEqual([event["review"] for event in self.invocations()], [True, True])
+        self.assertTrue(any(event["command"] == "quota-snapshot" for event in self.trace()))
         self.assertEqual(state["review_result"]["verdict"], "clean")
         self.assertEqual(state["ci"]["outcome"], "passed")
         self.assertEqual(state["ci"]["rounds"], 1)

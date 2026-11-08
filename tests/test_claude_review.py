@@ -798,6 +798,80 @@ class ClaudeReviewTests(RotationTestCase):
                     self.cli("clean", slug)
                     self.assertFalse((self.home / "claude-tasks" / slug).exists())
 
+    def test_claude_only_task_finishes_when_codex_status_is_unreadable(self):
+        decisions = [{"id": finding["id"], "decision": "fixed", "note": "Fixed by Claude."}
+                     for finding in self.review_result()["findings"]]
+        self.claude_fixture(runs=[{"reply": self.work_result()},
+                                  {"reply": self.review_result()},
+                                  {"reply": self.work_result(findings=decisions)},
+                                  {"reply": self.review_result(False)},
+                                  {"reply": self.work_result()},
+                                  {"reply": self.review_result(False)}])
+        self.write_duty("claude", "default")
+        self.env["CODEX_FAKE_RPC_FAILURE"] = "null"
+        slug = "claude-only-broken-codex"
+        self.start(slug, "--executor", "claude", "--reviewer", "claude",
+                   "--review", "--fix-rounds", "1", "--no-push")
+        self.wait(slug)
+        state = self.state(slug)
+        self.assertEqual(state["outcome"], "completed")
+        self.assertEqual(state["result"]["status"], "done")
+        self.assertEqual(state["auto_fix_stop"], "clean")
+        self.assertEqual(state["rounds"][0]["decisions"], decisions)
+        self.assertEqual([entry["reviewer"] for entry in state["reviews"]], ["claude", "claude"])
+        self.env["CODEX_FAKE_RPC_FAILURE"] = ""
+        self.cli("say", slug, "Continue the task.")
+        self.wait(slug)
+        self.cli("review", slug)
+        self.wait(slug)
+        self.assertEqual(self.state(slug)["review_result"]["verdict"], "clean")
+        self.assertEqual(len(self.claude_invocations()), 6)
+        self.assertTrue(any(entry["command"] == "app-server" for entry in self.trace()))
+        self.assertEqual(self.invocations(), [])
+
+    def test_codex_roles_still_require_readable_account_status(self):
+        for executor, reviewer in (("codex", "claude"), ("claude", "codex")):
+            with self.subTest(executor=executor, reviewer=reviewer):
+                self.claude_fixture(runs=[{"reply": self.work_result()}])
+                self.claude_fixture_path.with_suffix(".count").unlink(missing_ok=True)
+                self.claude_trace_path.unlink(missing_ok=True)
+                self.trace_path.unlink(missing_ok=True)
+                self.env["CODEX_FAKE_RPC_FAILURE"] = "null"
+                slug = "codex-status-required-" + executor
+                self.start(slug, "--executor", executor, "--reviewer", reviewer, "--review", "--no-push")
+                self.cli("wait", slug)
+                state = self.state(slug)
+                self.assertEqual(state["outcome"], "failed")
+                self.assertIsNone(state["pid"])
+                self.assertIn("NoneType", state["error"])
+                self.assertEqual(state["kind"], "work" if executor == "codex" else "review")
+                self.assertEqual(len(self.claude_invocations()), 0 if executor == "codex" else 1)
+                self.assertTrue(any(entry["command"] == "app-server" for entry in self.trace()))
+                self.assertEqual(self.invocations(), [])
+
+    def test_claude_review_fallback_fails_clearly_when_codex_status_is_unreadable(self):
+        for label, output in (("garbage", "null"), ("exit", "")):
+            with self.subTest(failure=label):
+                self.claude_fixture(runs=[{"reply": self.work_result()}, {"mode": "invalid_json"}])
+                self.claude_fixture_path.with_suffix(".count").unlink(missing_ok=True)
+                self.claude_trace_path.unlink(missing_ok=True)
+                self.trace_path.unlink(missing_ok=True)
+                self.env.update(CODEX_FAKE_RPC_FAILURE=output, CODEX_TASK_ACCOUNT_RETRY_SECONDS="0.01")
+                slug = "claude-broken-codex-fallback-" + label
+                self.start(slug, "--executor", "claude", "--reviewer", "claude", "--review", "--no-push")
+                self.cli("wait", slug, "--through-sleep", "--timeout", "30", timeout=45)
+                state = self.state(slug)
+                self.assertEqual(state["outcome"], "failed")
+                self.assertIsNone(state["pid"])
+                if label == "garbage":
+                    self.assertIn("Review fallback to codex failed", state["error"])
+                else:
+                    self.assertIn("Account status is unknown after 6 retries", state["error"])
+                self.assertEqual(state["reviews"][0]["outcome"], "unavailable")
+                self.assertEqual(len(self.claude_invocations()), 2)
+                self.assertTrue(any(entry["command"] == "app-server" for entry in self.trace()))
+                self.assertEqual(self.invocations(), [])
+
     def test_claude_missing_after_start_preflight_falls_back_to_codex(self):
         self.claude_fixture()
         self.account(self.home, "A", self.reset, runs=[

@@ -270,7 +270,11 @@ def claude_available(cfg):
 
 def codex_available(cfg, stopped=None):
     """Whether a Codex account can take work now (fresh snapshots, executor thresholds)."""
-    return accounts.available(accounts.snapshots(cfg, stopped or (lambda: False)), cfg) is not None
+    try:
+        return accounts.available(accounts.snapshots(cfg, stopped or (lambda: False)), cfg) is not None
+    except (TypeError, AttributeError):
+        # An unreadable Codex status must not block the Claude duty account.
+        return False
 
 
 def claude_reserved(cfg, role, exclude=(), task_type=None, stopped=None):
