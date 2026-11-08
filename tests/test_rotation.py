@@ -66,7 +66,7 @@ from test_compare_rotation_assertions import CompareRotationAssertionsTests
 from test_compare_cli_help import CompareCliHelpTests
 from test_executors import ExecutorTests
 from test_lead_role import LeadRoleTests
-from test_versions import VersionInstallTests
+from test_versions import PinnedTaskTests, VersionInstallTests
 from rotation_prompts import PromptTests
 from rotation_support import PYTHON, SCRIPT
 

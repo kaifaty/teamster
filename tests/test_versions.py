@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -15,12 +16,34 @@ from unittest import mock
 # Isolated Python omits the script directory from its import path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from rotation_support import RotationTestCase
 from worker_loader import load_worker
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "src/teamster/__main__.py"
 PYTHON = sys.executable
+
+
+def source_git(source, env, *args):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                          cwd=source, env=env, check=True, capture_output=True, text=True).stdout
+
+
+def make_source(source, env):
+    """A local repository with this tree's src/, ready for releases."""
+    shutil.copytree(ROOT / "src", source / "src", ignore=shutil.ignore_patterns("__pycache__"))
+    source_git(source, env, "init", "-q", "-b", "main")
+
+
+def release(source, env, version, layout=1, extra=""):
+    """Commit this tree's src/ under another __version__ and DATA_LAYOUT."""
+    text = (ROOT / "src/teamster/__init__.py").read_text(encoding="utf-8")
+    text = re.sub(r'__version__ = "[^"]*"', '__version__ = "%s"' % version, text)
+    text = text.replace("DATA_LAYOUT = 1", "DATA_LAYOUT = %d" % layout) + extra
+    (source / "src/teamster/__init__.py").write_text(text, encoding="utf-8")
+    source_git(source, env, "add", "-A")
+    source_git(source, env, "commit", "-q", "--allow-empty", "-m", version)
 
 
 class VersionInstallTests(unittest.TestCase):
@@ -35,24 +58,10 @@ class VersionInstallTests(unittest.TestCase):
                         GIT_CONFIG_NOSYSTEM="1")
         (self.root / "home").mkdir()
         self.source = self.root / "source"
-        shutil.copytree(ROOT / "src", self.source / "src", ignore=shutil.ignore_patterns("__pycache__"))
-        self.git("init", "-q", "-b", "main")
-
-    def git(self, *args):
-        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
-                              cwd=self.source, env=self.env, check=True, capture_output=True, text=True).stdout
+        make_source(self.source, self.env)
 
     def release(self, version, layout=1, extra=""):
-        init = self.source / "src/teamster/__init__.py"
-        text = (ROOT / "src/teamster/__init__.py").read_text(encoding="utf-8")
-        text = text.replace('__version__ = "%s"' % self.worker_version(), '__version__ = "%s"' % version)
-        text = text.replace("DATA_LAYOUT = 1", "DATA_LAYOUT = %d" % layout) + extra
-        init.write_text(text, encoding="utf-8")
-        self.git("add", "-A")
-        self.git("commit", "-q", "--allow-empty", "-m", version)
-
-    def worker_version(self):
-        return load_worker({"TEAMSTER_HOME": str(self.data)}, name="versions_worker").config.plugin_version()
+        release(self.source, self.env, version, layout, extra)
 
     def cli(self, *args, code=0, command=None):
         result = subprocess.run((command or [PYTHON, "-I", str(SCRIPT)]) + list(args), cwd=self.root,
@@ -142,8 +151,8 @@ class VersionInstallTests(unittest.TestCase):
             self.upgrade("--yes")
         busy = self.fake_supervisor("busy-task", "9.0.0")
         listing = self.cli("versions")
-        self.assertIn("  9.0.0\tbusy-task\n", listing)
-        self.assertIn("* 9.1.0\tno live supervisors\n", listing)
+        self.assertIn("  9.0.0\tbusy-task\t0 idle tasks pinned\n", listing)
+        self.assertIn("* 9.1.0\tno live supervisors\t0 idle tasks pinned\n", listing)
 
         # A live supervisor does not block a release with the same data layout.
         self.release("9.2.0")
@@ -306,6 +315,109 @@ class VersionInstallTests(unittest.TestCase):
         with environment(self.root / "missing", venv / "bin/python"), self.assertRaises(SystemExit) as refused:
             worker.installs.python()
         self.assertIn("run the upgrade with the system Python", str(refused.exception.code))
+
+
+class PinnedTaskTests(RotationTestCase):
+    """Two installed versions of this tree; the fake Codex runs the turns."""
+    def setUp(self):
+        super().setUp()
+        self.source = self.root / "source"
+        make_source(self.source, self.env)
+        for version in ("9.0.0", "9.1.0"):
+            self.install(version)
+        self.gate = self.root / "turn-gate"
+        self.gate.touch()
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "delay_gate": str(self.gate), "reply": self.work_result()}])
+
+    def install(self, version, layout=1):
+        release(self.source, self.env, version, layout)
+        self.cli("upgrade", "--source", str(self.source), "--ref", "main", "--yes", timeout=120)
+
+    def main(self, version):
+        return self.home / "versions" / version / "src/teamster/__main__.py"
+
+    def run_version(self, command, *args, env=None):
+        """Run a command through a version's __main__.py, or through the launcher when command is None."""
+        argv = [str(self.home / "bin/teamster")] if command is None else [PYTHON, "-I", str(self.main(command))]
+        result = subprocess.run(argv + list(args), cwd=self.repo, env=env or self.env, capture_output=True,
+                                text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stderr, "")
+        for line in result.stdout.splitlines():
+            pid = line.rpartition(", pid ")[2]
+            if pid.isdigit():
+                self.extra_pids.add(int(pid))
+        return result.stdout
+
+    def say(self, *args, env=None):
+        """say through the launcher (current version); return its lines before "sent to"."""
+        output = self.run_version(None, "say", "pin", "Continue the task.", *args, env=env)
+        self.wait("pin")
+        return output.splitlines()[:-1]
+
+    def runtime(self, version):
+        return {"version": version, "script": str(self.main(version).resolve())}
+
+    def edit_state(self, **changes):
+        state = self.state("pin")
+        for key, value in changes.items():
+            if value is None:
+                state.pop(key, None)
+            else:
+                state[key] = value
+        (self.home / "claude-tasks/pin/state.json").write_text(json.dumps(state))
+
+    def test_say_runs_in_the_pinned_version_until_upgrade(self):
+        self.run_version("9.0.0", "start", "pin", "--brief", str(self.brief), "--repo", str(self.repo))
+        self.wait("pin")
+        self.assertEqual(self.state("pin")["runtime"], self.runtime("9.0.0"))
+        listing = self.run_version(None, "versions")
+        self.assertIn("  9.0.0\tno live supervisors\t1 idle task pinned\n", listing)
+        self.assertIn("* 9.1.0\tno live supervisors\t0 idle tasks pinned\n", listing)
+
+        # say from the current version re-runs in 9.0.0, which starts its own supervisor.
+        self.gate.unlink()
+        output = self.run_version(None, "say", "pin", "Continue the task.")
+        self.assertEqual(output.splitlines()[:-1], [])
+        pid = self.state("pin")["pid"]
+        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        self.assertIn("%s _run pin" % self.main("9.0.0").resolve(), command)
+        self.gate.touch()
+        self.wait("pin")
+        self.assertEqual((self.state("pin")["runtime"], self.state("pin")["turns"]), (self.runtime("9.0.0"), 2))
+
+        self.assertEqual(self.say("--upgrade"), ["task pin moves from 9.0.0 to 9.1.0"])
+        self.assertEqual(self.state("pin")["runtime"], self.runtime("9.1.0"))
+        self.assertEqual(self.say(), [])
+        self.assertEqual(self.state("pin")["runtime"], self.runtime("9.1.0"))
+
+    def test_say_moves_when_the_pinned_version_cannot_run(self):
+        self.run_version("9.0.0", "start", "pin", "--brief", str(self.brief), "--repo", str(self.repo))
+        self.wait("pin")
+        self.assertIn("moved 9.0.0 to", self.run_version(None, "versions", "--prune"))
+        self.assertEqual(self.say(), ["task pin moves from 9.0.0 to 9.1.0"])
+        self.assertEqual(self.state("pin")["runtime"], self.runtime("9.1.0"))
+
+        # A record from before runtime falls back to plugin_version; one without either is unknown.
+        self.edit_state(runtime=None, plugin_version="1.20.0")
+        self.assertEqual(self.say(), ["task pin moves from 1.20.0 to 9.1.0"])
+        self.edit_state(runtime=None, plugin_version=None)
+        self.assertEqual(self.say(), ["task pin moves from unknown to 9.1.0"])
+        self.assertEqual(self.state("pin")["runtime"], self.runtime("9.1.0"))
+
+        # versions/9.5.0 holds 9.1.0: after one re-run the version still differs, and it runs no further.
+        shutil.copytree(self.main("9.1.0").parents[2], self.home / "versions/9.5.0")
+        self.edit_state(runtime={"version": "9.5.0", "script": "/gone/__main__.py"})
+        self.assertEqual(self.say(), ["task pin moves from 9.5.0 to 9.1.0"])
+        self.assertEqual(self.state("pin")["runtime"],
+                         {"version": "9.1.0", "script": str(self.main("9.5.0").resolve())})
+
+        # A pinned version with another data layout than current's is not run.
+        self.edit_state(runtime=self.runtime("9.1.0"))
+        self.install("9.2.0", layout=2)
+        self.assertEqual(self.say(), ["task pin moves from 9.1.0 to 9.2.0"])
+        self.assertEqual(self.state("pin")["runtime"], self.runtime("9.2.0"))
 
 
 if __name__ == "__main__":

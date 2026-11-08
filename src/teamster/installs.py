@@ -1,4 +1,4 @@
-"""Immutable side-by-side installs: upgrade, versions, launchers and the current link."""
+"""Immutable side-by-side installs: upgrade, versions, launchers, the current link and task pins."""
 import ast
 import datetime
 import fcntl
@@ -23,6 +23,8 @@ LAUNCHERS = ("teamster", "codex-worker")
 ENTRYPOINT = Path("src/teamster/__main__.py")
 VERSION_NAME = re.compile(r"[0-9][0-9A-Za-z.+-]*")
 VERIFY_TIMEOUT = 120
+# Set for a say or review that re-ran itself in the task's pinned version.
+PINNED_VARIABLE = "TEAMSTER_PINNED"
 
 
 def versions_dir():
@@ -316,6 +318,52 @@ def install(repo, commit, version):
             shutil.rmtree(staging)
 
 
+def task_version(st):
+    """The version a task is pinned to: that of its last spawn, else the one that started it, or None."""
+    runtime = st.get("runtime")
+    if isinstance(runtime, dict) and isinstance(runtime.get("version"), str):
+        return runtime["version"]
+    version = st.get("plugin_version")
+    return version if isinstance(version, str) else None
+
+
+def follow_pin(st, upgrade=False):
+    """Re-run this command in the task's pinned version while it is installed with the current data layout.
+
+    Otherwise, or with upgrade, the command goes on in this version: return the line that reports
+    the move, or None when the task already runs this version. A command that is itself a re-run
+    (PINNED_VARIABLE set) never runs again, so a mismatch cannot loop.
+    """
+    rerun = os.environ.pop(PINNED_VARIABLE, None)
+    pinned, own = task_version(st), config.plugin_version()
+    if pinned == own:
+        return None
+    if not upgrade and rerun is None and pinned and VERSION_NAME.fullmatch(pinned):
+        script = versions_dir() / pinned / ENTRYPOINT
+        if script.is_file() and version_layout(pinned) == version_layout(current_version()):
+            os.environ[PINNED_VARIABLE] = pinned
+            sys.stdout.flush()
+            sys.stderr.flush()
+            flags = ["-I"] if sys.flags.isolated else []
+            os.execv(sys.executable, [sys.executable, *flags, str(script), *sys.argv[1:]])
+    return f"task {st['slug']} moves from {pinned or 'unknown'} to {own}"
+
+
+def pinned_idle_tasks():
+    """{version: count} of tasks pinned to a version whose supervisor is not alive; the archive is skipped."""
+    counts = {}
+    for path in sorted(config.TASKS.glob("*/state.json")):
+        st = task_state.load(path.parent.name)
+        version = task_version(st)
+        if version and not procs.alive(st.get("pid")):
+            counts[version] = counts.get(version, 0) + 1
+    return counts
+
+
+def idle_label(count):
+    return f"{count} idle task{'' if count == 1 else 's'} pinned"
+
+
 def drain_blockers(supervisors, layout):
     return [slug for slug, version in supervisors if version_layout(version) != layout]
 
@@ -392,9 +440,11 @@ def cmd_versions(a):
     current = current_version()
     supervisors = live_supervisors()
     users = {name: [slug for slug, version in supervisors if version == name] for name in names}
+    idle = pinned_idle_tasks()
     for name in names:
         print(("* " if name == current else "  ") + name + "\t"
-              + (", ".join(users[name]) if users[name] else "no live supervisors"))
+              + (", ".join(users[name]) if users[name] else "no live supervisors")
+              + "\t" + idle_label(idle.get(name, 0)))
     outside = [slug for slug, version in supervisors if version is None]
     if outside:
         print(f"outside {versions_dir()}: {', '.join(outside)}")
@@ -404,6 +454,7 @@ def cmd_versions(a):
         supervisors = live_supervisors()
         current = current_version()
         busy = {version for _, version in supervisors}
+        idle = pinned_idle_tasks()
         moved = 0
         for name in installed_versions():
             if name == current or name in busy:
@@ -411,7 +462,9 @@ def cmd_versions(a):
             target = trash_target(name)
             target.parent.mkdir(mode=0o700, exist_ok=True)
             os.replace(versions_dir() / name, target)
-            print(f"moved {name} to {target}")
+            pinned = idle.get(name, 0)
+            print(f"moved {name} to {target}"
+                  + (f"; {idle_label(pinned)} to it will move to {current} at the next say" if pinned else ""))
             moved += 1
     if not moved:
         print("nothing to prune")

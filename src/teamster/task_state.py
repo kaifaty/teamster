@@ -117,6 +117,9 @@ STATE_FIELDS = {
     "weekly_used_percent": StateField("history"),
     "created": StateField("task"),  # Immutable task birth metadata.
     "plugin_version": StateField("task"),
+    # The version and script of the last spawn: say and review re-run in that version (installs.follow_pin).
+    "runtime": StateField("task", spawn_reset=lambda st, turn: {
+        "version": config.plugin_version(), "script": str(config.SCRIPT_RESOLVED)}),
     "pid": StateField("runtime"),
     "codex_pid": StateField("runtime"),
     "claude_pid": StateField("runtime"),
