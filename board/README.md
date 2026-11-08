@@ -51,7 +51,8 @@ live fleet. `board/web/src/map/replay.ts` rebuilds the fleet at each moment from
 hours before the day for ships already under way), shaped like live tasks, so ships, stars and storms show the past
 while live updates wait; depots and tankers stay live, since the accounts' past is not recorded. In replay the log
 marks the lines up to the moment, and a click on a line moves the scale to it. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
-(`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them.
+(`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them. Above the commands
+stands the order the task's state calls for, one reason and one command, and the other commands fold under «Все команды».
 `npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
 every station; both fixture sources include a day of log events, with a ship that reaches the sun, one turned back at the gate and one in trouble, and a day's report.
 
