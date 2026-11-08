@@ -2,11 +2,16 @@
 // teamster commands for the task, copied to the clipboard: the board never runs anything itself.
 // The order the task's state calls for comes first; the other commands fold under "Все команды".
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import type { TaskSummary } from "../types";
+import type { Cargo, TaskSummary } from "../types";
 import { VERDICTS, sayCommand, takesWords, taskCommands, verdictCommand, type Verdict } from "../lib/commands";
-import { recommendedOrder } from "../lib/orders";
+import { recommendedOrder, returnText } from "../lib/orders";
 
-const props = defineProps<{ task: TaskSummary; now: number }>();
+const props = defineProps<{
+  task: TaskSummary;
+  now: number;
+  /** What the task came back with, once its detail has loaded; "вернуть на доработку" lists it. */
+  cargo?: Cargo | null;
+}>();
 
 const plain = computed(() => taskCommands(props.task));
 const words = computed(() => takesWords(props.task));
@@ -16,21 +21,33 @@ const button = computed(() => {
   const value = order.value;
   return value && value.action !== "say" && value.action !== "verdict" && value.command !== null ? { label: value.label, command: value.command } : null;
 });
-/** The plain commands under "Все команды": every one but the order's own. */
-const rest = computed(() => plain.value.filter((item) => item.command !== order.value?.command));
+/** On the roadstead the order block switches between accepting the task and returning it with `say`. */
+const roadstead = computed(() => props.task.column === "review_me" && words.value && order.value !== null);
+/** The human's choice on the roadstead; null follows the order. */
+const choice = ref<"verdict" | "say" | null>(null);
+/** What the order block shows: the order's own action, or the human's choice on the roadstead. */
+const shownAction = computed(() => (roadstead.value ? (choice.value ?? order.value?.action) : order.value?.action));
+const returned = computed(() => returnText(props.cargo));
+/** Lines in the say field: a long text takes the order block's full width. */
+const lines = computed(() => message.value.split("\n").length);
+/** The plain commands under "Все команды": every one but the order's own, which comes back here once the human
+ * chose to accept or return the task and the order's button is hidden. */
+const rest = computed(() => plain.value.filter((item) => choice.value !== null || item.command !== order.value?.command));
 const verdict = ref<Verdict>(order.value?.verdict ?? "accepted");
 const note = ref("");
 const message = ref(order.value?.text ?? "");
 
 /** The last command and where it came from; the field shows it, selected when the clipboard refused it. */
 const last = ref<{ from: string; command: string; copied: boolean } | null>(null);
-const field = ref<HTMLInputElement | null>(null);
+const field = ref<HTMLInputElement | HTMLTextAreaElement | null>(null);
+const sayField = ref<HTMLTextAreaElement | null>(null);
 let timer: ReturnType<typeof setTimeout> | undefined;
 
 watch(
   [() => props.task.slug, () => order.value?.text, () => order.value?.verdict] as const,
   ([slug, text, chosen], [oldSlug, oldText, oldChosen]) => {
     if (slug !== oldSlug) {
+      choice.value = null;
       last.value = null;
       note.value = "";
       message.value = text ?? "";
@@ -38,10 +55,28 @@ watch(
       return;
     }
     // The same task got a new order: follow it only where the human has not touched the field.
+    if (text !== oldText || chosen !== oldChosen) choice.value = null;
     if (!message.value || message.value === (oldText ?? "")) message.value = text ?? "";
     if (verdict.value === (oldChosen ?? "accepted")) verdict.value = chosen ?? "accepted";
   },
 );
+
+/** "вернуть на доработку": the cargo's items go into the say field, and the field takes the focus. */
+async function giveBack() {
+  choice.value = "say";
+  message.value = returned.value;
+  await nextTick();
+  const area = sayField.value;
+  if (!area) return;
+  area.focus();
+  area.setSelectionRange(area.value.length, area.value.length);
+}
+
+/** "принять": back to the verdict, from the order or from the return. */
+function accept() {
+  choice.value = "verdict";
+  verdict.value = "accepted";
+}
 
 async function copy(from: string, command: string) {
   clearTimeout(timer);
@@ -75,12 +110,13 @@ onBeforeUnmount(() => clearTimeout(timer));
 
     <div v-if="order" :class="['order', order.tone]">
       <p class="reason">{{ order.reason }}</p>
-      <div v-if="button" class="row">
+      <div v-if="button && choice === null" class="row">
         <button type="button" class="btn cmd main" :title="button.command" @click="copy('order', button.command)">
           <span class="mono">{{ flash("order") ? "скопировано" : button.label }}</span>
         </button>
+        <button v-if="roadstead" type="button" class="btn cmd" @click="giveBack">вернуть на доработку</button>
       </div>
-      <div v-else-if="order.action === 'verdict' && words" class="row">
+      <div v-else-if="shownAction === 'verdict' && words" class="row">
         <select v-model="verdict" class="btn" aria-label="Вердикт">
           <option v-for="option in VERDICTS" :key="option" :value="option">{{ option }}</option>
         </select>
@@ -88,12 +124,24 @@ onBeforeUnmount(() => clearTimeout(timer));
         <button type="button" class="btn cmd main" @click="copy('verdict', verdictCommand(task.slug, verdict, note))">
           <span class="mono">{{ flash("verdict") ? "скопировано" : `verdict ${verdict}` }}</span>
         </button>
+        <button v-if="roadstead" type="button" class="btn cmd" @click="giveBack">вернуть на доработку</button>
       </div>
-      <div v-else-if="order.action === 'say' && words" class="row">
-        <textarea v-model="message" class="field grow" rows="2" placeholder="Твой ответ задаче" aria-label="Текст для teamster say"></textarea>
+      <div v-else-if="shownAction === 'say' && words" class="row">
+        <textarea
+          ref="sayField"
+          v-model="message"
+          :class="['field', 'grow', { wide: lines > 1 }]"
+          :rows="lines > 1 ? Math.min(10, lines + 1) : 2"
+          placeholder="Твой ответ задаче"
+          aria-label="Текст для teamster say"
+        ></textarea>
         <button type="button" class="btn cmd main" :disabled="!message.trim()" @click="copy('say', sayCommand(task.slug, message))">
           <span class="mono">{{ flash("say") ? "скопировано" : "say" }}</span>
         </button>
+        <template v-if="roadstead">
+          <button v-if="message !== returned" type="button" class="btn cmd" @click="giveBack">вернуть на доработку</button>
+          <button type="button" class="btn cmd" @click="accept">принять</button>
+        </template>
       </div>
     </div>
 
@@ -113,7 +161,7 @@ onBeforeUnmount(() => clearTimeout(timer));
       </div>
 
       <template v-if="words">
-        <div v-if="order?.action !== 'verdict'" class="row">
+        <div v-if="shownAction !== 'verdict'" class="row">
           <select v-model="verdict" class="btn" aria-label="Вердикт">
             <option v-for="option in VERDICTS" :key="option" :value="option">{{ option }}</option>
           </select>
@@ -122,7 +170,7 @@ onBeforeUnmount(() => clearTimeout(timer));
             <span class="mono">{{ flash("verdict") ? "скопировано" : "verdict" }}</span>
           </button>
         </div>
-        <div v-if="order?.action !== 'say'" class="row">
+        <div v-if="shownAction !== 'say'" class="row">
           <textarea v-model="message" class="field grow" rows="2" placeholder="Что сказать задаче" aria-label="Текст для teamster say"></textarea>
           <button type="button" class="btn cmd" :disabled="!message.trim()" @click="copy('say', sayCommand(task.slug, message))">
             <span class="mono">{{ flash("say") ? "скопировано" : "say" }}</span>
@@ -132,8 +180,19 @@ onBeforeUnmount(() => clearTimeout(timer));
     </component>
 
     <p v-if="last && !last.copied" class="manual">Буфер обмена недоступен — скопируй вручную:</p>
+    <!-- A text input drops line breaks, so a command with several lines gets a textarea. -->
+    <textarea
+      v-if="last && last.command.includes('\n')"
+      ref="field"
+      class="field mono out"
+      :rows="Math.min(10, last.command.split('\n').length)"
+      readonly
+      :value="last.command"
+      aria-label="Последняя команда"
+      @focus="($event.target as HTMLTextAreaElement).select()"
+    ></textarea>
     <input
-      v-if="last"
+      v-else-if="last"
       ref="field"
       class="field mono out"
       type="text"
@@ -188,6 +247,10 @@ h3 {
 
 .grow {
   flex: 1 1 160px;
+}
+
+.wide {
+  flex-basis: 100%;
 }
 
 textarea.field {

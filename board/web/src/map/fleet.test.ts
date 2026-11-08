@@ -9,7 +9,7 @@ function task(overrides: Partial<TaskSummary>): TaskSummary {
     slug: "t", kind: "work", title: null, link: null, repo: "repo", branch: null, task_type: null, executor: "codex",
     account: "personal", reviewer: "claude", model: null, effort: null, column: "running", phase: "turn",
     phase_started_at: NOW, alive: true, turn: 1, fix_round: 0, outcome: "running", result_status: null, summary: null,
-    pr: null, ci: null, sleeping_until: null, created: NOW, updated_at: NOW, activity: null,
+    pr: null, ci: null, sleeping_until: null, created: NOW, updated_at: NOW, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0,
     ...overrides,
   };
 }

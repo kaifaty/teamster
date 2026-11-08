@@ -27,6 +27,46 @@
       "last": "## Итог хода 1\n\nСобрал каркас приложения, редьюсер и тесты.\n\n| проверка | итог |\n|---|---|\n| build | passed |\n| test | 3 failed |\n",
       "review": "### Находки\n\n1. `reduce.ts`: `task_removed` для неизвестного slug возвращает новый объект.\n2. Нет видимого фокуса у карточек.\n",
       "check": "$ npm run build\n> vue-tsc --noEmit && vite build\n\nsrc/components/TaskCard.vue:42:7 - error TS2322: Type 'string | null' is not assignable to type 'string'.\nvite v8.3.6 building for production... transforming (0) src/deep/deep/deep/deep/deep/deep/module-0.ts\nvite v8.3.6 building for production... transforming (7) src/deep/deep/deep/deep/deep/deep/module-1.ts\nvite v8.3.6 building for production... transforming (14) src/deep/deep/deep/deep/deep/deep/module-2.ts\nvite v8.3.6 building for production... transforming (21) src/deep/deep/deep/deep/deep/deep/module-3.ts\nvite v8.3.6 building for production... transforming (28) src/deep/deep/deep/deep/deep/deep/module-4.ts\nvite v8.3.6 building for production... transforming (35) src/deep/deep/deep/deep/deep/deep/module-5.ts\nvite v8.3.6 building for production... transforming (42) src/deep/deep/deep/deep/deep/deep/module-6.ts\nvite v8.3.6 building for production... transforming (49) src/deep/deep/deep/deep/deep/deep/module-7.ts\nvite v8.3.6 building for production... transforming (56) src/deep/deep/deep/deep/deep/deep/module-8.ts\nvite v8.3.6 building for production... transforming (63) src/deep/deep/deep/deep/deep/deep/module-9.ts\nvite v8.3.6 building for production... transforming (70) src/deep/deep/deep/deep/deep/deep/module-10.ts\nvite v8.3.6 building for production... transforming (77) src/deep/deep/deep/deep/deep/deep/module-11.ts\nvite v8.3.6 building for production... transforming (84) src/deep/deep/deep/deep/deep/deep/module-12.ts\nvite v8.3.6 building for production... transforming (91) src/deep/deep/deep/deep/deep/deep/module-13.ts\nvite v8.3.6 building for production... transforming (98) src/deep/deep/deep/deep/deep/deep/module-14.ts\nvite v8.3.6 building for production... transforming (105) src/deep/deep/deep/deep/deep/deep/module-15.ts\nvite v8.3.6 building for production... transforming (112) src/deep/deep/deep/deep/deep/deep/module-16.ts\nvite v8.3.6 building for production... transforming (119) src/deep/deep/deep/deep/deep/deep/module-17.ts\nvite v8.3.6 building for production... transforming (126) src/deep/deep/deep/deep/deep/deep/module-18.ts\nvite v8.3.6 building for production... transforming (133) src/deep/deep/deep/deep/deep/deep/module-19.ts\nvite v8.3.6 building for production... transforming (140) src/deep/deep/deep/deep/deep/deep/module-20.ts\nvite v8.3.6 building for production... transforming (147) src/deep/deep/deep/deep/deep/deep/module-21.ts\nvite v8.3.6 building for production... transforming (154) src/deep/deep/deep/deep/deep/deep/module-22.ts\nvite v8.3.6 building for production... transforming (161) src/deep/deep/deep/deep/deep/deep/module-23.ts\nvite v8.3.6 building for production... transforming (168) src/deep/deep/deep/deep/deep/deep/module-24.ts\nvite v8.3.6 building for production... transforming (175) src/deep/deep/deep/deep/deep/deep/module-25.ts\nvite v8.3.6 building for production... transforming (182) src/deep/deep/deep/deep/deep/deep/module-26.ts\nvite v8.3.6 building for production... transforming (189) src/deep/deep/deep/deep/deep/deep/module-27.ts\nvite v8.3.6 building for production... transforming (196) src/deep/deep/deep/deep/deep/deep/module-28.ts\nvite v8.3.6 building for production... transforming (203) src/deep/deep/deep/deep/deep/deep/module-29.ts\nvite v8.3.6 building for production... transforming (210) src/deep/deep/deep/deep/deep/deep/module-30.ts\nvite v8.3.6 building for production... transforming (217) src/deep/deep/deep/deep/deep/deep/module-31.ts\nvite v8.3.6 building for production... transforming (224) src/deep/deep/deep/deep/deep/deep/module-32.ts\nvite v8.3.6 building for production... transforming (231) src/deep/deep/deep/deep/deep/deep/module-33.ts\nvite v8.3.6 building for production... transforming (238) src/deep/deep/deep/deep/deep/deep/module-34.ts\nvite v8.3.6 building for production... transforming (245) src/deep/deep/deep/deep/deep/deep/module-35.ts\nvite v8.3.6 building for production... transforming (252) src/deep/deep/deep/deep/deep/deep/module-36.ts\nvite v8.3.6 building for production... transforming (259) src/deep/deep/deep/deep/deep/deep/module-37.ts\nvite v8.3.6 building for production... transforming (266) src/deep/deep/deep/deep/deep/deep/module-38.ts\nvite v8.3.6 building for production... transforming (273) src/deep/deep/deep/deep/deep/deep/module-39.ts\n✓ built in 1.24s\n"
+    },
+    "cargo": {
+      "check": {
+        "command": "cd board/web && npm ci && npm run build && npm test -- --run",
+        "outcome": "failed",
+        "exit": 2,
+        "seconds": 38.0,
+        "at": 1793998500
+      },
+      "claims": [],
+      "review": {
+        "verdict": "defects",
+        "summary": null,
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "P2",
+            "title": "task_removed для неизвестного slug возвращает новый объект",
+            "file": "board/web/src/store/reduce.ts",
+            "line": 57
+          },
+          {
+            "id": "F2",
+            "severity": "P2",
+            "title": "Нет видимого фокуса у карточек",
+            "file": "board/web/src/components/TaskCard.vue",
+            "line": null
+          }
+        ],
+        "reviews": 1
+      },
+      "stop": null,
+      "ci": null,
+      "base": null,
+      "remaining": [],
+      "questions": [],
+      "decisions": {
+        "fixed": 0,
+        "rejected": 0
+      }
     }
   },
   "budget-overrun": {
@@ -51,6 +91,64 @@
     "files": {
       "brief": "Перепиши цикл обучения на новый загрузчик.",
       "check": "FAILED tests/test_train.py::test_smoke - AssertionError: loss is nan\n1 failed, 41 passed in 12.3s\n"
+    },
+    "cargo": {
+      "check": {
+        "command": "pytest -q tests/test_train.py",
+        "outcome": "failed",
+        "exit": 1,
+        "seconds": 12.3,
+        "at": 1793998600
+      },
+      "claims": [
+        {
+          "command": "pytest -q tests/test_train.py",
+          "outcome": "failed",
+          "details": "1 упал: test_smoke, loss is nan"
+        }
+      ],
+      "review": {
+        "verdict": "defects",
+        "summary": "Новый загрузчик теряет перемешивание",
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "P1",
+            "title": "Загрузчик не перемешивает данные между эпохами",
+            "file": "train/loader.py",
+            "line": 88
+          }
+        ],
+        "reviews": 3
+      },
+      "stop": "budget_exhausted",
+      "ci": {
+        "outcome": "failed",
+        "passed": 4,
+        "failed": 2,
+        "total": 6,
+        "failing": [
+          "train-smoke",
+          "lint"
+        ],
+        "seconds": 1260,
+        "rounds": 1,
+        "reason": "failed"
+      },
+      "base": {
+        "base": "origin/main",
+        "outcome": "passed",
+        "files": []
+      },
+      "remaining": [
+        "Перевести валидацию на новый загрузчик",
+        "Убрать старый DataLoaderV1"
+      ],
+      "questions": [],
+      "decisions": {
+        "fixed": 3,
+        "rejected": 0
+      }
     }
   },
   "local_3f2a9c1e-7b4d-4e8a-9c21-5d6e7f8a9b0c": {
@@ -91,5 +189,201 @@
       }
     ],
     "files": {}
+  },
+  "cdp-screenshot-tool": {
+    "timeline": [],
+    "files": {},
+    "cargo": {
+      "check": {
+        "command": "cd board/web && npm ci && npm run build && npx vitest run",
+        "outcome": "passed",
+        "exit": 0,
+        "seconds": 44.2,
+        "at": 1793998980
+      },
+      "claims": [
+        {
+          "command": "npm run build",
+          "outcome": "passed",
+          "details": "vue-tsc и vite без ошибок"
+        },
+        {
+          "command": "node scripts/cdp-shot.mjs --themes",
+          "outcome": "passed",
+          "details": "6 снимков: светлая и тёмная темы, 3 ширины"
+        }
+      ],
+      "review": {
+        "verdict": "clean",
+        "summary": "Скрипт снимков и проверка тем без замечаний",
+        "findings": [],
+        "reviews": 2
+      },
+      "stop": "clean",
+      "ci": {
+        "outcome": "passed",
+        "passed": 5,
+        "failed": 0,
+        "total": 5,
+        "failing": [],
+        "seconds": 540,
+        "rounds": 0,
+        "reason": "passed"
+      },
+      "base": {
+        "base": "origin/main",
+        "outcome": "passed",
+        "files": []
+      },
+      "remaining": [],
+      "questions": [],
+      "decisions": {
+        "fixed": 1,
+        "rejected": 0
+      }
+    }
+  },
+  "accounts-json-schema": {
+    "timeline": [],
+    "files": {},
+    "cargo": {
+      "check": {
+        "command": "python3 -I tests/test_rotation.py",
+        "outcome": "passed",
+        "exit": 0,
+        "seconds": 92.4,
+        "at": 1793997400
+      },
+      "claims": [
+        {
+          "command": "python3 -I tests/test_rotation.py",
+          "outcome": "passed",
+          "details": "412 тестов, 0 упало"
+        },
+        {
+          "command": "teamster accounts --json | python3 -m json.tool",
+          "outcome": "passed",
+          "details": "схема совпадает с references/accounts.md"
+        }
+      ],
+      "review": {
+        "verdict": "defects",
+        "summary": "Схема описана; остались мелочи в документации",
+        "findings": [
+          {
+            "id": "F2",
+            "severity": "P3",
+            "title": "В примере пропущено поле seven_day.resets_at",
+            "file": "references/accounts.md",
+            "line": 48
+          },
+          {
+            "id": "F4",
+            "severity": "P3",
+            "title": "Тест на пустые окна не проверяет порядок аккаунтов",
+            "file": null,
+            "line": null
+          }
+        ],
+        "reviews": 2
+      },
+      "stop": "only P3",
+      "ci": null,
+      "base": {
+        "base": "origin/main",
+        "outcome": "passed",
+        "files": []
+      },
+      "remaining": [
+        "Обновить пример в README под новую схему"
+      ],
+      "questions": [
+        "Оставить поле five_hour для аккаунтов Codex пустым или убрать?"
+      ],
+      "decisions": {
+        "fixed": 2,
+        "rejected": 1
+      }
+    }
+  },
+  "merge-conflict-fix": {
+    "timeline": [],
+    "files": {},
+    "cargo": {
+      "check": {
+        "command": "npm test",
+        "outcome": "passed",
+        "exit": 0,
+        "seconds": 31.0,
+        "at": 1793996000
+      },
+      "claims": [],
+      "review": null,
+      "stop": "base conflict",
+      "ci": {
+        "outcome": "timeout",
+        "passed": 3,
+        "failed": 0,
+        "total": 4,
+        "failing": [],
+        "seconds": 1800,
+        "rounds": 0,
+        "reason": "timeout"
+      },
+      "base": {
+        "base": "origin/main",
+        "outcome": "conflict",
+        "files": [
+          "vault/sync.ts",
+          "vault/sync.test.ts"
+        ]
+      },
+      "remaining": [],
+      "questions": [],
+      "decisions": {
+        "fixed": 0,
+        "rejected": 0
+      }
+    }
+  },
+  "demo-tunnel-land": {
+    "timeline": [],
+    "files": {},
+    "cargo": {
+      "check": {
+        "command": "cargo test",
+        "outcome": "passed",
+        "exit": 0,
+        "seconds": 63.5,
+        "at": 1793994800
+      },
+      "claims": [],
+      "review": {
+        "verdict": "clean",
+        "summary": null,
+        "findings": [],
+        "reviews": 1
+      },
+      "stop": "result needs_decision",
+      "ci": {
+        "outcome": "passed",
+        "passed": 3,
+        "failed": 0,
+        "total": 3,
+        "failing": [],
+        "seconds": 420,
+        "rounds": 0,
+        "reason": "passed"
+      },
+      "base": null,
+      "remaining": [],
+      "questions": [
+        "Сливать через скрипт слияния или ждать ручного ревью?"
+      ],
+      "decisions": {
+        "fixed": 0,
+        "rejected": 0
+      }
+    }
   }
 }

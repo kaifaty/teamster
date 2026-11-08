@@ -6,7 +6,7 @@ const task = (extra: Partial<TaskSummary>): TaskSummary => ({
   slug: "t", kind: "work", title: null, link: null, repo: "r", branch: null, task_type: null, executor: "codex", account: null,
   reviewer: null, model: null, effort: null, column: "closed", phase: "idle", phase_started_at: null,
   alive: false, turn: 1, fix_round: 0, outcome: null, result_status: null, summary: null, pr: null,
-  ci: null, sleeping_until: null, created: null, updated_at: 0, activity: null, ...extra,
+  ci: null, sleeping_until: null, created: null, updated_at: 0, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0, ...extra,
 });
 
 describe("problemLabel", () => {
@@ -90,5 +90,20 @@ describe("shipLine", () => {
     expect(shipLine(quiet, true, 1300, false)).toBe("нет активности");
     expect(shipLine(quiet, true, 1300, true)).toBe("Прошёл полигон · 5 мин назад");
     expect(shipLine({ ...quiet, summary: null }, true, 1300, true)).toBe("нет активности");
+  });
+
+  it("marks a ship on the roadstead with the first sign of its cargo", () => {
+    const done = (extra: Partial<TaskSummary>) => shipLine(task({ column: "review_me", pr: "https://github.com/o/r/pull/7", ...extra }), false, 0, false);
+    expect(done({})).toBe("готово · PR #7");
+    expect(shipLine(task({ column: "review_me", review: "clean" }), false, 0, false)).toBe("готово · чисто");
+    const all = { stop: "base conflict", check: "failed", ci: "failed", findings_left: 2, left: 1, review: "defects" } as const;
+    expect(done(all)).toBe("готово · PR #7 · конфликт с базой");
+    expect(done({ ...all, stop: "clean" })).toBe("готово · PR #7 · проверка упала");
+    expect(done({ ...all, stop: null, check: "timeout" })).toBe("готово · PR #7 · проверка упала");
+    expect(done({ ...all, stop: null, check: "passed" })).toBe("готово · PR #7 · CI упал");
+    expect(done({ ...all, stop: null, check: null, ci: "timeout" })).toBe("готово · PR #7 · CI упал");
+    expect(done({ ...all, stop: null, check: null, ci: "passed" })).toBe("готово · PR #7 · 2 замеч.");
+    expect(done({ left: 1, review: "clean" })).toBe("готово · PR #7 · осталось 1");
+    expect(done({ review: "clean" })).toBe("готово · PR #7 · чисто");
   });
 });

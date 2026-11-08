@@ -15,7 +15,7 @@ export function formatDuration(seconds: number): string {
 }
 
 /** A coarse span for ages and countdowns: "12 с", "5 мин", "2 ч 10 мин", "3 д". */
-function coarseSpan(seconds: number): string {
+export function coarseSpan(seconds: number): string {
   const total = Math.floor(seconds);
   if (total < 60) return `${total} с`;
   const minutes = Math.floor(total / 60);

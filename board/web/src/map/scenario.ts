@@ -166,6 +166,11 @@ function build(index: number, stageIndex: number, changedAt: number, start: numb
       stage.alive && stage.activity
         ? { at: changedAt - (stage.activity.age ?? 0), kind: stage.activity.kind, text: stage.activity.text }
         : null,
+    check: null,
+    review: null,
+    findings_left: 0,
+    stop: null,
+    left: 0,
   };
 }
 
@@ -227,6 +232,11 @@ export function scenarioFleet(start: number, now: number = start): TaskSummary[]
       sleeping_until: null,
       created: start - 7200 + index * 60,
       account: null,
+      check: null,
+      review: null,
+      findings_left: 0,
+      stop: null,
+      left: 0,
       ...ship,
       updated_at: start - 300 - index * 40,
       activity: alive && ship.activity ? { ...ship.activity, at: now - 2 } : null,
@@ -377,10 +387,10 @@ export function scenarioSource(): BoardSource {
     },
     async fetchDetail(slug) {
       const index = tasks.findIndex((task) => task.slug === slug);
-      if (index >= 0) return { ...tasks[index]!, timeline: timeline(index, step, start), files: ["brief"] } satisfies TaskDetail;
+      if (index >= 0) return { ...tasks[index]!, timeline: timeline(index, step, start), files: ["brief"], cargo: null } satisfies TaskDetail;
       const ship = scenarioFleet(start, Date.now() / 1000).find((task) => task.slug === slug);
       if (!ship) return null;
-      return { ...ship, timeline: [{ at: ship.created!, text: "демо-корабль на месте" }], files: ["brief"] } satisfies TaskDetail;
+      return { ...ship, timeline: [{ at: ship.created!, text: "демо-корабль на месте" }], files: ["brief"], cargo: null } satisfies TaskDetail;
     },
     async fetchFile(slug, name) {
       const known = tasks.some((task) => task.slug === slug) || STANDING.some((ship) => ship.slug === slug);

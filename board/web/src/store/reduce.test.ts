@@ -6,7 +6,7 @@ const task = (slug: string, extra: Partial<TaskSummary> = {}): TaskSummary => ({
   slug, kind: "work", title: null, link: null, repo: "repo", branch: null, task_type: "fix", executor: "codex", account: "a",
   reviewer: null, model: null, effort: null, column: "running", phase: "turn", phase_started_at: 100,
   alive: true, turn: 1, fix_round: 0, outcome: "running", result_status: null, summary: null, pr: null,
-  ci: null, sleeping_until: null, created: 90, updated_at: 100, activity: null, ...extra,
+  ci: null, sleeping_until: null, created: 90, updated_at: 100, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0, ...extra,
 });
 const accounts: Accounts = { fetched_at: 50, error: null, data: { codex: [] } };
 const snapshot = (tasks: TaskSummary[]): Snapshot => ({ generated_at: 200, tasks, accounts });

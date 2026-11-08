@@ -158,6 +158,12 @@ export function replayFleet(events: readonly LogEvent[], t: number, live: readon
       created: first.started ?? first.at,
       updated_at: moment.since,
       activity: moment.fresh ? { at: t, ...ACTIVITY_OF[moment.phase] } : null,
+      // The journal does not carry the cargo.
+      check: null,
+      review: null,
+      findings_left: 0,
+      stop: null,
+      left: 0,
     });
   }
   return fleet;
