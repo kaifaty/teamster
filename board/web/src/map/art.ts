@@ -1,8 +1,10 @@
 // The map's pictures, made by art/prepare.py. Vite turns the imports into URLs of hashed files.
 
-import depot from "./art/depot.png";
+import admiral from "./art/admiral.png";
 import escort from "./art/escort.png";
 import flagship from "./art/flagship.png";
+import fuelCell from "./art/fuel-cell.png";
+import fuelTank from "./art/fuel-tank.png";
 import gate from "./art/gate.png";
 import nebula from "./art/nebula.jpg";
 import planetCryo from "./art/planet-cryo.png";
@@ -22,12 +24,13 @@ import stationPower from "./art/station-power.png";
 import stationResearch from "./art/station-research.png";
 import stationYard from "./art/station-yard.png";
 import sun from "./art/sun.png";
-import tanker from "./art/tanker.png";
 
 export const ART = {
-  depot,
+  admiral,
   escort,
   flagship,
+  fuelCell,
+  fuelTank,
   gate,
   nebula,
   planetCryo,
@@ -47,7 +50,6 @@ export const ART = {
   stationResearch,
   stationYard,
   sun,
-  tanker,
 };
 
 export type ArtName = keyof typeof ART;

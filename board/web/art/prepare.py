@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Turn generated art into the files the map loads: python3 art/prepare.py SOURCE_DIR.
 
-Standard library only. Sprites on magenta lose their background, balls on black are cropped to the ball and
-lose the black around it, and macOS `sips` scales the results into src/map/art. Files named backdrop-*.png
-become the skies of the star systems.
+Standard library only. Sprites on magenta lose their background, and "trim" sprites are also cropped to what is left of
+them, so that the map can size them by what shows; balls on black are cropped to the ball and lose the black around it,
+and macOS `sips` scales the results into src/map/art. Files named backdrop-*.png become the skies of the star systems.
 
 With --only NAME ... it prepares only those sprites, so that one new picture needs no other sources.
 With --project TARGET_DIR it prepares the art of one repository instead: sky.png, planet.png and emblem.png,
@@ -29,14 +29,15 @@ SPRITES = {
     "ship-blue-cruiser": ("key", 288),
     "ship-copper-frigate": ("key", 224),
     "ship-copper-cruiser": ("key", 288),
-    "tanker": ("key", 160),
     "escort": ("key", 96),
     "station-command": ("key", 384),
     "station-yard": ("key", 384),
     "station-research": ("key", 384),
     "station-power": ("key", 256),
     "gate": ("key", 320),
-    "depot": ("key", 224),
+    "fuel-tank": ("trim", 256),
+    "fuel-cell": ("trim", 96),
+    "admiral": ("trim", 160),
     "planet-yard": ("ball", 448),
     "planet-range": ("ball", 320),
     "planet-inspection": ("ball", 448),
@@ -124,6 +125,16 @@ def key_magenta(width, height, channels, rows):
     return width, height, result
 
 
+def trim(width, height, rows, margin=2):
+    """Crops keyed rows to the box of their visible pixels, with a margin of `margin` pixels."""
+    seen = [(x, y) for y, row in enumerate(rows) for x in range(width) if row[x * 4 + 3] > 24]
+    x0 = max(0, min(x for x, _ in seen) - margin)
+    x1 = min(width, max(x for x, _ in seen) + 1 + margin)
+    y0 = max(0, min(y for _, y in seen) - margin)
+    y1 = min(height, max(y for _, y in seen) + 1 + margin)
+    return x1 - x0, y1 - y0, [bytes(row[x0 * 4:x1 * 4]) for row in rows[y0:y1]]
+
+
 def ball_radius(width, height, channels, rows, level):
     """Half the width of the bright part of the middle row."""
     row = rows[height // 2]
@@ -162,6 +173,8 @@ def prepare_sprite(source, target, kind, longest, temp):
     image = read_png(source)
     if kind == "key":
         width, height, rows = key_magenta(*image)
+    elif kind == "trim":
+        width, height, rows = trim(*key_magenta(*image))
     elif kind == "ball":
         width, height, rows = cut_ball(*image, level=40, margin=1.04, gain=2.2)
     else:

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../types";
-import { MAX_PATCHES, depotEmpty, depotPositions, depots, hullOf, patchSpots, refuelText, stars, supplyLines } from "./fleet";
+import { DAY_LAMPS, MAX_PATCHES, daysLeft, hullOf, patchSpots, stars, tankEmpty, tanks, untilText } from "./fleet";
 
 const NOW = 1_800_000_000;
 
@@ -42,52 +42,75 @@ describe("stars", () => {
   });
 });
 
-describe("depots", () => {
+describe("tanks", () => {
   it("turns the weekly limit into fuel and marks accounts that give nothing", () => {
-    const list = depots(ACCOUNTS, NOW);
-    expect(list.map((depot) => [depot.key, depot.fuel, depot.bad])).toEqual([
+    const list = tanks(ACCOUNTS, NOW);
+    expect(list.map((tank) => [tank.key, tank.fuel, tank.bad])).toEqual([
       ["codex:personal", 59, false],
       ["codex:spent", 0, true],
       ["codex:spare", null, true],
       ["claude:pool-1", 42, false],
       ["claude:pool-2", 10, true],
     ]);
-    expect(list.map(depotEmpty)).toEqual([false, true, true, false, true]);
+    expect(list.map(tankEmpty)).toEqual([false, true, true, false, true]);
   });
 
-  it("refuels at the end of the limit that ran out, a low depot at the weekly reset, a broken one never", () => {
-    const list = depots(ACCOUNTS, NOW);
-    expect(list.find((depot) => depot.key === "claude:pool-2")!.refuelAt).toBe(NOW + 1500);
-    expect(list.find((depot) => depot.key === "codex:personal")!.refuelAt).toBeNull();
-    expect(depots({ claude: [{ name: "p", seven_day: { used_percent: 99, resets_at: NOW + 60 } }] }, NOW)[0]!.refuelAt).toBe(NOW + 60);
+  it("refills at the end of the limit that ran out, at the weekly reset otherwise, and never without a login or a token", () => {
+    const list = tanks(ACCOUNTS, NOW);
+    expect(list.find((tank) => tank.key === "claude:pool-2")!.refillAt).toBe(NOW + 1500);
+    expect(list.find((tank) => tank.key === "codex:personal")!.refillAt).toBeNull();
+    expect(tanks({ claude: [{ name: "p", seven_day: { used_percent: 9, resets_at: NOW + 60 } }] }, NOW)[0]!.refillAt).toBe(NOW + 60);
     const exhausted = {
       name: "x", status: "exhausted",
       primary: { used_percent: 100, window_minutes: 300, resets_at: NOW + 3600 },
       secondary: { used_percent: 50, window_minutes: 10080, resets_at: NOW + 5 * 86400 },
     };
-    expect(depots({ codex: [exhausted] }, NOW)[0]!.refuelAt).toBe(NOW + 3600);
+    expect(tanks({ codex: [exhausted] }, NOW)[0]!.refillAt).toBe(NOW + 3600);
     const tokenless = { name: "p", token_unavailable: true, seven_day: { used_percent: 10, resets_at: NOW + 7200 } };
-    expect(depots({ claude: [tokenless] }, NOW)[0]!.refuelAt).toBeNull();
+    expect(tanks({ claude: [tokenless] }, NOW)[0]!.refillAt).toBeNull();
   });
 
-  it("tells when a depot refuels in hours, or in minutes under an hour", () => {
-    expect(refuelText(NOW + 1500, NOW)).toBe("заправка через 25 мин");
-    expect(refuelText(NOW + 20, NOW)).toBe("заправка через 1 мин");
-    expect(refuelText(NOW + 3600, NOW)).toBe("заправка через 1 ч");
-    expect(refuelText(NOW + 5 * 3600 + 600, NOW)).toBe("заправка через 5 ч");
-    expect(refuelText(NOW - 10, NOW)).toBeNull();
-    expect(refuelText(null, NOW)).toBeNull();
+  it("carries the free resets, the five-hour window and the admiral", () => {
+    const data = {
+      codex: [{
+        name: "main", status: "available",
+        primary: { used_percent: 30, window_minutes: 300, resets_at: NOW + 3600 },
+        secondary: { used_percent: 10, window_minutes: 10080, resets_at: NOW + 3 * 86400 },
+        reset_credits: { available_count: 2, expires_at: [new Date((NOW + 2 * 86400) * 1000).toISOString(), NOW + 86400] },
+      }],
+      claude: [{ name: "pool", five_hour: { used_percent: 12.5, resets_at: NOW + 600 } }],
+      duty: { account: "pool", family: "claude" },
+    };
+    const [main, pool] = tanks(data, NOW);
+    expect(main!.resets).toEqual({ count: 2, expires: [NOW + 86400, NOW + 2 * 86400] });
+    expect(main!.burst).toEqual({ percent: 30, resetsAt: NOW + 3600 });
+    expect(main!.admiral).toBe(false);
+    expect(pool!.resets).toBeNull();
+    expect(pool!.burst).toEqual({ percent: 12.5, resetsAt: NOW + 600 });
+    expect(pool!.admiral).toBe(true);
+  });
+
+  it("tells how long until a refill in minutes, hours or days", () => {
+    expect(untilText(NOW + 1500, NOW)).toBe("25 мин");
+    expect(untilText(NOW + 20, NOW)).toBe("1 мин");
+    expect(untilText(NOW + 3600, NOW)).toBe("1 ч");
+    expect(untilText(NOW + 30 * 3600, NOW)).toBe("30 ч");
+    expect(untilText(NOW + 4 * 86400 + 3600, NOW)).toBe("4 д");
+    expect(untilText(NOW - 10, NOW)).toBeNull();
+    expect(untilText(null, NOW)).toBeNull();
+  });
+
+  it("lights a lamp for every day left until the refill, up to a week", () => {
+    expect(daysLeft(NOW + 3600, NOW)).toBe(1);
+    expect(daysLeft(NOW + 86400 + 1, NOW)).toBe(2);
+    expect(daysLeft(NOW + 30 * 86400, NOW)).toBe(DAY_LAMPS);
+    expect(daysLeft(NOW - 1, NOW)).toBe(0);
+    expect(daysLeft(null, NOW)).toBe(0);
   });
 
   it("is empty without account data", () => {
-    expect(depots(null, NOW)).toEqual([]);
-    expect(depots("nonsense", NOW)).toEqual([]);
-  });
-
-  it("puts Codex on the top edge and Claude on the bottom one", () => {
-    const places = depotPositions(depots(ACCOUNTS, NOW), { width: 1600, height: 1000 });
-    expect(places.get("codex:personal")!.y).toBeLessThan(places.get("claude:pool-1")!.y);
-    expect(places.get("codex:personal")!.x).toBeLessThan(places.get("codex:spent")!.x);
+    expect(tanks(null, NOW)).toEqual([]);
+    expect(tanks("nonsense", NOW)).toEqual([]);
   });
 });
 
@@ -109,32 +132,5 @@ describe("ships", () => {
     expect(patchSpots("a", 3).slice(0, 2)).toEqual(patchSpots("a", 2));
     const spots = patchSpots("a", 3).map(({ x, y }) => `${x},${y}`);
     expect(new Set(spots).size).toBe(3);
-  });
-});
-
-describe("supply lines", () => {
-  const known = depots(ACCOUNTS, NOW);
-
-  it("joins an account and a repository once and says whether a ship is working there", () => {
-    const lines = supplyLines(
-      [
-        task({ slug: "a", alive: false, column: "attention" }),
-        task({ slug: "b" }),
-        task({ slug: "c", repo: "other", alive: false, column: "review_me" }),
-      ],
-      known,
-    );
-    expect(lines).toEqual([
-      { depot: "codex:personal", repo: "repo", active: true },
-      { depot: "codex:personal", repo: "other", active: false },
-    ]);
-  });
-
-  it("skips closed tasks, sessions without an account and unknown accounts", () => {
-    const lines = supplyLines(
-      [task({ slug: "a", column: "closed" }), task({ slug: "b", account: null }), task({ slug: "c", account: "gone" })],
-      known,
-    );
-    expect(lines).toEqual([]);
   });
 });

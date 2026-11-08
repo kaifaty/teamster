@@ -2,18 +2,24 @@
 // resolution of the screen. Labels are HTML in MapView; the scene draws, moves the camera and reports what the
 // pointer does.
 
-import { Application, Assets, ColorMatrixFilter, Container, Graphics, Sprite, Texture, type ColorMatrix } from "pixi.js";
+import { AlphaFilter, Application, Assets, ColorMatrixFilter, Container, Graphics, Sprite, Texture, type ColorMatrix } from "pixi.js";
 import type { ArtIndex, MachineStatus, TaskSummary } from "../types";
 import { ART, BACKDROPS, type ArtName } from "./art";
-import type { Depot, Family, Hull, Star, SupplyLine } from "./fleet";
-import { HULL_SIZE, depotEmpty, depotPositions, hullOf, patchSpots } from "./fleet";
+import type { Constellation } from "./constellations";
+import type { Family, Hull, Star } from "./fleet";
+import { DAY_LAMPS, HULL_SIZE, hullOf, patchSpots } from "./fleet";
 import {
+  BADGE_RISE,
+  LAMP_GAP,
+  LAMP_WIDTH,
   NO_INSETS,
   ROUTE,
   STATIONS,
   SUN_CLEARANCE,
   SUN_RADIUS,
   RESEARCH_SIZE,
+  TANK_ASPECT,
+  TANK_GLASS,
   clampCamera,
   fitCamera,
   freeView,
@@ -34,6 +40,7 @@ import {
   worldSize,
   zoomCamera,
   type Camera,
+  type FuelColumn,
   type Galaxy,
   type Insets,
   type MachineColumn,
@@ -67,12 +74,33 @@ export interface MachineMark {
   status: MachineStatus;
 }
 
+/** A subscription's fuel tank, as the scene draws it. */
+export interface TankMark {
+  key: string;
+  executor: Family;
+  /** Weekly limit left in percent, the height of the fuel in the glass; null when unknown. */
+  fuel: number | null;
+  /** Little or nothing left: the fuel runs red and a warning light blinks. */
+  low: boolean;
+  /** Exhausted, limited or logged out: the tank turns grey. */
+  bad: boolean;
+  /** The account kept for the orchestrator: the admiral's badge crowns it. */
+  admiral: boolean;
+  /** Lamps that burn beside the tank, one per day left until it refills: 0 to DAY_LAMPS. */
+  lamps: number;
+  /** It refills within a day: its one lamp blinks. */
+  soon: boolean;
+}
+
 export interface GalaxyModel {
   stars: Star[];
   /** Where the stars stand and how large they are drawn: see galaxyLayout. */
   layout: Galaxy;
-  depots: Depot[];
-  lines: SupplyLine[];
+  tanks: TankMark[];
+  /** Where the tanks stand: see fuelPositions; null without subscriptions. */
+  fuel: FuelColumn | null;
+  /** Stars drawn together under a faint cloud of their own colour. */
+  constellations: Constellation[];
   /** null: no station, the server tells nothing about research. */
   research: ResearchMarks | null;
   machines: MachineMark[];
@@ -128,16 +156,12 @@ const MAX_SPEED = 300;
 /** A working ship hovers this far around its berth, in world units, this fast. */
 const HOVER = 3;
 const HOVER_SPEED = 1.3;
-const DEPOT_SIZE = 116;
 /** The glow of a machine's station by its status: its halo and its heart; an overloaded one pulses up to these. */
 const MACHINE_GLOW: Partial<Record<MachineStatus, { halo: number; core: number }>> = {
   free: { halo: 0.5, core: 0.55 },
   busy: { halo: 0.8, core: 0.85 },
   overloaded: { halo: 1, core: 1 },
 };
-const TANKER_SIZE = 40;
-/** World units a tanker covers in a second. */
-const TANKER_SPEED = 46;
 const ESCORT_SIZE = 30;
 const PROBE_SIZE = 40;
 /** World units a probe covers in a second. */
@@ -203,6 +227,21 @@ function softDisc(): HTMLCanvasElement {
   const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
   gradient.addColorStop(0, "rgba(255,255,255,1)");
   gradient.addColorStop(0.35, "rgba(255,255,255,0.45)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 128, 128);
+  return canvas;
+}
+
+/** A wide soft disc, nearly even to half its radius: overlapping, these run together into one cloud. */
+function softCloud(): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 128;
+  const context = canvas.getContext("2d")!;
+  const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.5, "rgba(255,255,255,0.8)");
+  gradient.addColorStop(0.8, "rgba(255,255,255,0.25)");
   gradient.addColorStop(1, "rgba(255,255,255,0)");
   context.fillStyle = gradient;
   context.fillRect(0, 0, 128, 128);
@@ -363,6 +402,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const loaded = (await Assets.load(Object.values(ART))) as Record<string, Texture>;
   const art = (name: ArtName): Texture => loaded[ART[name]]!;
   const glowTexture = Texture.from(softDisc(), true);
+  const cloudTexture = Texture.from(softCloud(), true);
   const stormTexture = Texture.from(stormCloud(), true);
   const greyFilter = new ColorMatrixFilter();
   greyFilter.desaturate();
@@ -406,17 +446,16 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const dust = new Graphics();
 
   const galaxy = new Container();
-  const lanes = new Graphics();
-  const depotLayer = new Container();
+  const cloudLayer = new Container();
+  const fuelLayer = new Container();
   const machineLayer = new Container();
-  const tankerLayer = new Container();
   const starLayer = new Container();
   const stormLayer = new Container();
   const galaxyFx = new Graphics();
   const watchFx = new Graphics();
   const researchLayer = new Container();
   const probeLayer = new Container();
-  galaxy.addChild(lanes, watchFx, depotLayer, machineLayer, tankerLayer, researchLayer, starLayer, stormLayer, probeLayer, galaxyFx);
+  galaxy.addChild(cloudLayer, watchFx, fuelLayer, machineLayer, researchLayer, starLayer, stormLayer, probeLayer, galaxyFx);
 
   const system = new Container();
   /** The repository's own planet, its home world, behind everything else at the system's left edge. */
@@ -464,15 +503,15 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   let frame: SystemFrame = systemFrame(systemWorld);
   let model: GalaxyModel = {
     stars: [],
-    layout: { places: new Map(), spacing: 200, scale: 1, labelZoom: 0.75, world: worldSize(viewport), crowded: 0 },
-    depots: [],
-    lines: [],
+    layout: { places: new Map(), spacing: 200, scale: 1, labelZoom: 0.75, world: worldSize(viewport), crowded: 0, groups: "" },
+    tanks: [],
+    fuel: null,
+    constellations: [],
     research: null,
     machines: [],
     machineColumn: null,
   };
   let stars = new Map<string, Point>();
-  let depotPoints = new Map<string, Point>();
   let repo: string | null = null;
   let focus: string | null = null;
   let flight = 0;
@@ -493,9 +532,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   /** Counts the times a system was dressed, so that a late picture does not land on the next one. */
   let dressing = 0;
   const ships = new Map<string, Ship>();
-  const tankers = new Map<string, { sprite: Sprite; line: SupplyLine; seed: number }>();
+  /** The warning lights of empty tanks, and the lamps of tanks that refill within a day: they blink. */
   let blinks: Sprite[] = [];
-  /** The glows of overloaded machines: they pulse like the light of an empty depot. */
+  let lampBlinks: Sprite[] = [];
+  /** The glows of overloaded machines: they pulse like the light of an empty tank. */
   let alarms: Sprite[] = [];
   let machineSelected: string | null = null;
   let station: { body: Sprite; halo: Sprite; beacon: Sprite } | null = null;
@@ -550,36 +590,82 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     });
   }
 
-  function drawDepots() {
-    depotLayer.removeChildren().forEach((child) => child.destroy());
+  /**
+   * A fuel tank for every subscription. The fuel stands in its glass as high as the week's limit left, in its family's
+   * colour, red when little is left, and a warning light blinks beside an empty tank; a blocked one turns grey. The lamps
+   * beside it burn one per day left until it refills, and the admiral's badge crowns the account kept for the
+   * orchestrator, which new tasks skip.
+   */
+  function drawFuel() {
+    fuelLayer.removeChildren().forEach((child) => child.destroy());
     blinks = [];
-    for (const depot of model.depots) {
-      const point = depotPoints.get(depot.key);
+    lampBlinks = [];
+    const column = model.fuel;
+    if (!column) return;
+    const size = column.size;
+    const width = size * TANK_ASPECT;
+    for (const tank of model.tanks) {
+      const point = column.places.get(tank.key);
       if (!point) continue;
-      const body = sprite(art("depot"), DEPOT_SIZE);
-      body.position.set(point.x, point.y);
-      body.rotation = (hashName(depot.key) % 6) * 1.047;
-      if (depot.bad) body.tint = SPACE.dead;
-      const gauge = new Graphics();
-      const width = 112;
       const left = point.x - width / 2;
-      const top = point.y + DEPOT_SIZE / 2 + 4;
-      gauge.roundRect(left, top, width, 9, 3).fill(SPACE.gauge);
-      const low = depotEmpty(depot);
-      if (depot.fuel) gauge.roundRect(left + 1, top + 1, ((width - 2) * depot.fuel) / 100, 7, 2).fill(low ? SPACE.alarm : FLEET[depot.executor].hull);
-      depotLayer.addChild(body, gauge);
-      if (low) {
-        // An empty depot blinks a dim warning light.
-        const light = glow(SPACE.empty, DEPOT_SIZE * 1.15);
+      const top = point.y - size / 2;
+      if (tank.admiral) {
+        const halo = glow(SPACE.gold, size * 1.3);
+        halo.alpha = 0.3;
+        halo.position.set(point.x, point.y);
+        fuelLayer.addChild(halo);
+      }
+      if (tank.low) {
+        const light = glow(SPACE.empty, size * 1.25);
         light.position.set(point.x, point.y);
         light.alpha = 0.16;
-        depotLayer.addChild(light);
+        fuelLayer.addChild(light);
         blinks.push(light);
       }
-      if (depot.duty) {
-        const mark = glow(SPACE.gold, 46);
-        mark.position.set(point.x, point.y);
-        depotLayer.addChild(mark);
+      const body = sprite(art("fuelTank"), size);
+      body.position.set(point.x, point.y);
+      if (tank.bad) body.filters = [greyFilter];
+      fuelLayer.addChild(body);
+      const glass = {
+        x0: left + width * TANK_GLASS.x0,
+        x1: left + width * TANK_GLASS.x1,
+        y0: top + size * TANK_GLASS.y0,
+        y1: top + size * TANK_GLASS.y1,
+      };
+      if (tank.fuel) {
+        // The fuel from the bottom of the glass up, a bright line on its surface and a glow through the glass.
+        const color = tank.low ? SPACE.alarm : FLEET[tank.executor].hull;
+        const level = glass.y1 - ((glass.y1 - glass.y0) * Math.min(100, tank.fuel)) / 100;
+        const liquid = new Graphics();
+        const across = glass.x1 - glass.x0;
+        liquid.roundRect(glass.x0, level, across, glass.y1 - level, Math.min(across * 0.3, (glass.y1 - level) / 2)).fill({ color, alpha: 0.82 });
+        liquid.rect(glass.x0 + across * 0.12, level, across * 0.76, Math.max(1, size * 0.012)).fill({ color: "#ffffff", alpha: 0.6 });
+        const shine = glow(color, Math.max(across * 2.2, (glass.y1 - level) * 1.1));
+        shine.scale.x *= 0.55;
+        shine.alpha = 0.45;
+        shine.position.set((glass.x0 + glass.x1) / 2, (level + glass.y1) / 2);
+        fuelLayer.addChild(liquid, shine);
+      }
+      // The day lamps, from the bottom up.
+      const lamps = new Graphics();
+      const lampX = left + width + size * LAMP_GAP + (size * LAMP_WIDTH) / 2;
+      const radius = size * LAMP_WIDTH * 0.36;
+      for (let day = 0; day < DAY_LAMPS; day++) {
+        const y = glass.y1 - ((glass.y1 - glass.y0) * (day + 0.5)) / DAY_LAMPS;
+        const lit = day < tank.lamps;
+        lamps.circle(lampX, y, radius).fill(lit ? SPACE.gold : SPACE.gauge).stroke({ width: Math.max(0.6, radius * 0.35), color: "#000000", alpha: 0.6 });
+        if (!lit) continue;
+        const light = glow(SPACE.gold, radius * 5);
+        light.position.set(lampX, y);
+        light.alpha = 0.6;
+        fuelLayer.addChild(light);
+        if (tank.soon) lampBlinks.push(light);
+      }
+      fuelLayer.addChild(lamps);
+      if (tank.admiral) {
+        const badge = sprite(art("admiral"), size * 0.66);
+        badge.position.set(point.x, top + size * (0.14 - BADGE_RISE));
+        fuelLayer.addChild(badge);
       }
     }
   }
@@ -633,17 +719,30 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
   }
 
-  function drawLanes() {
-    lanes.clear();
-    for (const line of model.lines) {
-      const from = depotPoints.get(line.depot);
-      const to = stars.get(line.repo);
-      if (!from || !to) continue;
-      const length = Math.hypot(to.x - from.x, to.y - from.y);
-      for (let d = DEPOT_SIZE / 2; d < length - 30; d += 11) {
-        lanes.circle(from.x + ((to.x - from.x) * d) / length, from.y + ((to.y - from.y) * d) / length, 1.5);
+  /**
+   * A haze of the constellation's colour under its stars: a wide soft cloud around each of them, which run together where
+   * the stars stand close, so that the haze takes the constellation's shape; and a faint glow over it.
+   */
+  function drawClouds() {
+    cloudLayer.removeChildren().forEach((child) => child.destroy());
+    const { spacing } = model.layout;
+    for (const constellation of model.constellations) {
+      // Drawn whole and then made faint, so that the clouds run together instead of piling up where they overlap.
+      const haze = new Container();
+      haze.filters = [new AlphaFilter({ alpha: 0.32 })];
+      for (const name of constellation.repos) {
+        const point = stars.get(name);
+        if (!point) continue;
+        const cloud = sprite(cloudTexture, spacing * 2.1);
+        cloud.tint = constellation.color;
+        cloud.position.set(point.x, point.y);
+        const light = glow(constellation.color, spacing * 1.6);
+        light.alpha = 0.35;
+        light.position.set(point.x, point.y);
+        haze.addChild(cloud);
+        cloudLayer.addChild(light);
       }
-      lanes.fill({ color: SPACE.lane, alpha: line.active ? 0.8 : 0.35 });
+      cloudLayer.addChildAt(haze, 0);
     }
   }
 
@@ -689,32 +788,12 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
   }
 
-  /** One tanker on every active supply line; a line that stays keeps its tanker. */
-  function syncTankers() {
-    const wanted = new Map(model.lines.filter((line) => line.active).map((line) => [`${line.depot}|${line.repo}`, line]));
-    for (const [key, tanker] of tankers) {
-      if (wanted.has(key)) continue;
-      tanker.sprite.destroy();
-      tankers.delete(key);
-    }
-    for (const [key, line] of wanted) {
-      const known = tankers.get(key);
-      if (known) {
-        known.line = line;
-        continue;
-      }
-      const body = sprite(art("tanker"), TANKER_SIZE);
-      tankerLayer.addChild(body);
-      tankers.set(key, { sprite: body, line, seed: (hashName(key) % 100) / 100 });
-    }
-  }
-
   /** The research station in the middle of the galaxy: a teal glow, and a gold light while lessons wait. */
   function drawResearch() {
     researchLayer.removeChildren().forEach((child) => child.destroy());
     station = null;
     if (!model.research) return;
-    const point = researchPosition(world, model.machineColumn);
+    const point = researchPosition(world, model.machineColumn, model.fuel);
     const halo = glow(SPACE.research, RESEARCH_SIZE * 2.6);
     const body = sprite(art("stationResearch"), RESEARCH_SIZE);
     const beacon = glow(SPACE.gold, RESEARCH_SIZE * 0.9);
@@ -745,12 +824,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   function drawGalaxy() {
     stars = model.layout.places;
-    depotPoints = depotPositions(model.depots, world);
-    drawLanes();
-    drawDepots();
+    drawClouds();
+    drawFuel();
     drawMachines();
     drawStars();
-    syncTankers();
     drawResearch();
     syncProbes();
   }
@@ -1260,25 +1337,12 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   function frameGalaxy() {
     galaxyFx.clear();
-    for (const { sprite: body, line, seed } of tankers.values()) {
-      const from = depotPoints.get(line.depot);
-      const to = stars.get(line.repo);
-      body.visible = !!from && !!to;
-      if (!from || !to) continue;
-      // From the depot's edge to the star's, nose ahead; it fades in on leaving and out on arrival.
-      const length = Math.hypot(to.x - from.x, to.y - from.y);
-      const start = DEPOT_SIZE / 2;
-      const span = Math.max(1, length - start - 40);
-      const u = still ? 0.5 : (seed + (time * TANKER_SPEED) / span) % 1;
-      const d = start + span * u;
-      body.position.set(from.x + ((to.x - from.x) * d) / length, from.y + ((to.y - from.y) * d) / length);
-      body.rotation = Math.atan2(to.y - from.y, to.x - from.x) + Math.PI / 2;
-      body.alpha = Math.min(1, u * 10, (1 - u) * 8);
-    }
     blinks.forEach((light, index) => {
       light.alpha = still ? 0.16 : 0.04 + 0.22 * Math.max(0, Math.sin(time * 2.2 + index * 1.3)) ** 2;
     });
-    // The same beat as an empty depot's light, brighter: halo and heart in pairs.
+    lampBlinks.forEach((light) => {
+      light.alpha = still ? 0.6 : 0.15 + 0.6 * Math.max(0, Math.sin(time * 3)) ** 2;
+    });
     // An overloaded machine pulses in the same beat, from plain to bright, and never fades out: halo and heart in pairs.
     alarms.forEach((light, index) => {
       const peak = index % 2 ? MACHINE_GLOW.overloaded!.core : MACHINE_GLOW.overloaded!.halo;
@@ -1316,7 +1380,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     watchFx.clear();
     const marks = model.research;
     if (!marks || !station) return;
-    const center = researchPosition(world, model.machineColumn);
+    const center = researchPosition(world, model.machineColumn, model.fuel);
     const { body, halo, beacon } = station;
     if (marks.running && !still) body.rotation = time * 0.12;
     halo.alpha = marks.running ? (still ? 0.5 : 0.38 + 0.18 * Math.sin(time * 2.4)) : 0.16;
@@ -1507,7 +1571,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   function researchAt(point: Point): boolean {
     if (!model.research) return false;
-    const center = researchPosition(world, model.machineColumn);
+    const center = researchPosition(world, model.machineColumn, model.fuel);
     return Math.hypot(center.x - point.x, center.y - point.y) < RESEARCH_SIZE * 0.5;
   }
 
@@ -1882,6 +1946,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       glowTexture.destroy(true);
       stormTexture.destroy(true);
       greyFilter.destroy();
+      cloudTexture.destroy(true);
     },
   };
 }
