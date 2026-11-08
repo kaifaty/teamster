@@ -22,6 +22,8 @@
       teamster docs [<name>]                         list documents or print one
       teamster path                                  print the package directory
       teamster migrate-home [--apply]                print or apply the move of legacy data out of ~/.codex
+      teamster upgrade [--source URL|PATH] [--ref REF] [--yes]  preview/install a version side by side
+      teamster versions [--prune]                    list installed versions; move unused ones to trash
       teamster duty tick | status [--json] | clear | plist [--minutes N]  elect, show, clear or schedule the duty account
 
 All commands accept -h/--help.
@@ -45,7 +47,7 @@ import math
 import re
 import sys
 
-from . import commands, config, executors, home_migration, prompts, reviewers, supervisor, telemetry_log, wait_view
+from . import commands, config, executors, home_migration, installs, prompts, reviewers, supervisor, telemetry_log, wait_view
 
 
 HELP_TEXT = __doc__
@@ -289,12 +291,14 @@ COMMAND_HANDLERS = {
     "docs": commands.cmd_docs,
     "path": commands.cmd_path,
     "migrate-home": home_migration.cmd_migrate_home,
+    "upgrade": installs.cmd_upgrade,
+    "versions": installs.cmd_versions,
     "_run": supervisor.cmd__run,
 }
 # Commands that write task records, journals or cached limits hold the settings
 # lock shared, so migrate-home cannot move the data home under them.
 HOME_LOCKED_COMMANDS = ("start", "scout", "say", "review", "clean", "verdict", "accounts", "reset-credit",
-                        "claude-probe")
+                        "claude-probe", "upgrade", "versions")
 
 
 def main():
@@ -367,6 +371,12 @@ def main():
     s.add_argument("name")
     s = sub.add_parser("migrate-home", help="print or apply the move of legacy data out of the Codex home")
     s.add_argument("--apply", action="store_true", help="move the data (default: print the plan only)")
+    s = sub.add_parser("upgrade", help="preview or install a version beside the others and make it current")
+    s.add_argument("--source", metavar="URL|PATH", help="repository URL or local clone (default: the project repository)")
+    s.add_argument("--ref", metavar="REF", help="revision to install (default: origin/main)")
+    s.add_argument("--yes", action="store_true", help="install and switch (default: print the plan only)")
+    s = sub.add_parser("versions", help="list installed versions and the supervisors that use them")
+    s.add_argument("--prune", action="store_true", help="move unused, non-current versions to versions/.trash")
     s = sub.add_parser("duty", help="elect, show, clear or schedule the duty account")
     duty_commands = s.add_subparsers(dest="duty_command", required=True)
     duty_commands.add_parser("tick", help="refresh stale limits and re-elect the duty account")
