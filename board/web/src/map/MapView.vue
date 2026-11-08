@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import type { ArtIndex, TaskSummary } from "../types";
+import type { ArtIndex, LogEvent, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
 import { formatAge, formatDuration, formatUntil } from "../lib/format";
 import { ACTIVITY, EXECUTORS, PHASES, prLabel, problemLabel, taskTitle } from "../lib/labels";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
+import DaySummary from "./DaySummary.vue";
+import ShipLog from "./ShipLog.vue";
 import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines } from "./fleet";
 import { cardPlace, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
@@ -226,6 +228,35 @@ function onKey(event: KeyboardEvent) {
   if (event.key === "Escape" && props.active && repo.value && !selected.value) leave();
 }
 
+// Ship's log and the day's summary -----------------------------------------------------------------
+
+const events = computed(() => source.value.events.value);
+const systemNames = computed(() => new Set(starList.value.map((star) => star.repo)));
+const eventsError = computed(() => source.value.eventsError.value);
+// The last day's history loads whenever the map opens; live events join it without duplicates.
+watch(
+  [source, () => props.active],
+  ([board, active]) => {
+    if (active) void board.loadEvents();
+  },
+  { immediate: true },
+);
+
+/** To the event's system, with its ship selected while the ship is still on the map. */
+function goTo(event: LogEvent) {
+  if (!event.repo) return;
+  repo.value = event.repo;
+  const ship = event.slug ? systemTasks(tasks.value, event.repo).shown.find((task) => task.slug === event.slug) : undefined;
+  selected.value = ship ? ship.slug : null;
+}
+
+const summaryOpen = ref(false);
+const summaryButton = ref<HTMLButtonElement | null>(null);
+function closeSummary() {
+  summaryOpen.value = false;
+  void nextTick(() => summaryButton.value?.focus());
+}
+
 // Scene -------------------------------------------------------------------------------------------
 
 const host = ref<HTMLElement | null>(null);
@@ -307,7 +338,10 @@ watch(
       void loadArt();
     }
     scene?.setActive(active);
-    if (!active) selected.value = null;
+    if (!active) {
+      selected.value = null;
+      summaryOpen.value = false;
+    }
   },
 );
 onMounted(() => {
@@ -340,6 +374,7 @@ onBeforeUnmount(() => {
         <button type="button" class="btn" :aria-pressed="sourceKind === 'board'" @click="sourceKind = 'board'">Доска</button>
         <button type="button" class="btn" :aria-pressed="sourceKind === 'scenario'" @click="sourceKind = 'scenario'">Сценарий</button>
       </div>
+      <button ref="summaryButton" type="button" class="btn" :aria-expanded="summaryOpen" @click="summaryOpen = true">Сводка дня</button>
       <span class="legend" aria-hidden="true">
         <span class="codex">◆ Codex</span>
         <span class="claude">✳ Claude</span>
@@ -410,6 +445,7 @@ onBeforeUnmount(() => {
           <span v-if="system.hidden.length" class="hidden-count" :title="hiddenTitle">не показано {{ system.hidden.length }}</span>
         </template>
       </div>
+      <ShipLog :events="events" :error="eventsError" :repo="repo" :frame="frameLight" :systems="systemNames" :emblem-of="emblemOf" @go="goTo" />
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
       <p v-else-if="!starList.length" class="status">Пока ни одной задачи: галактика пуста.</p>
       <p v-else-if="repo && !entries.length" class="status">В этой системе сейчас никого: все задачи закрыты.</p>
@@ -423,6 +459,7 @@ onBeforeUnmount(() => {
       :now="now"
       @close="close"
     />
+    <DaySummary v-if="summaryOpen && active" :source="source.source" :events="events" :frame="frameLight" @close="closeSummary" />
   </section>
 </template>
 

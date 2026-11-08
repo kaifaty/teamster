@@ -3,6 +3,7 @@
 // without real tasks. A standing fleet keeps the rest in view: every hull of both families, a damaged ship with
 // patches, a ship under review with its escort, and a second system in trouble.
 
+import { demoEvents, demoReport, logEvent, type DemoEvent } from "../fixtures/events";
 import type { BoardSource } from "../lib/source";
 import type { Activity, Column, Phase, TaskDetail, TaskSummary } from "../types";
 
@@ -275,14 +276,55 @@ function accounts(start: number) {
   };
 }
 
+const R = SCENARIO_REPO;
+const O = SCENARIO_OUTPOST;
+
+/** The demo systems' last day in the ship's log. */
+const HISTORY: readonly DemoEvent[] = [
+  { ago: 15 * 3600, kind: "verdict", slug: "old-hull-refit", repo: R, verdict: "accepted" },
+  { ago: 11 * 3600, kind: "scout", slug: "outpost-survey", repo: O, phase: "scout", outcome: "completed" },
+  { ago: 7 * 3600, kind: "work", slug: "outpost-migration", repo: O, phase: "work", turn: 1, outcome: "failed" },
+  { ago: 3 * 3600, kind: "work", slug: "ci-burns-after-fixes", repo: R, phase: "turn", turn: 1, outcome: "completed", ci: "failed" },
+  { ago: 2.5 * 3600, kind: "work", slug: "ci-burns-after-fixes", repo: R, phase: "fix", turn: 2, round: 1, outcome: "completed" },
+  { ago: 2 * 3600, kind: "verdict", slug: "gate-retune", repo: R, verdict: "redone" },
+  { ago: 90 * 60, kind: "review", slug: "inspector-escort", repo: R, phase: "review", turn: 1, outcome: "completed", findings: 4 },
+  { ago: 40 * 60, kind: "work", slug: "outpost-patrol", repo: O, phase: "work", turn: 1, outcome: "budget_exhausted" },
+  { ago: 20 * 60, kind: "work", slug: "heavy-range-check", repo: R, phase: "check", turn: 1, outcome: "timeout" },
+  { ago: 8 * 60, kind: "verdict", slug: "beacon-colours", repo: R, verdict: "dropped" },
+];
+
+/** One of these joins the log at every step of the scenario. */
+const LIVE: readonly Omit<DemoEvent, "ago">[] = [
+  { kind: "work", slug: "fleet-scene", repo: R, phase: "work", turn: 1, outcome: "completed" },
+  { kind: "work", slug: "fleet-scene", repo: R, phase: "check", turn: 1, outcome: "passed" },
+  { kind: "review", slug: "label-overlap-fix", repo: R, phase: "review", turn: 1, outcome: "completed", findings: 2 },
+  { kind: "work", slug: "label-overlap-fix", repo: R, phase: "fix", turn: 2, round: 1, outcome: "completed" },
+  { kind: "review", slug: "review-pr-118", repo: R, phase: "review", turn: 1, outcome: "completed", findings: 0 },
+  { kind: "work", slug: "light-through-gate", repo: R, phase: "turn", turn: 1, outcome: "completed", ci: "passed" },
+  { kind: "work", slug: "label-overlap-fix", repo: R, phase: "check", turn: 2, outcome: "failed" },
+  { kind: "verdict", slug: "fleet-scene", repo: R, verdict: "revised", note: "подвинул подписи" },
+  { kind: "work", slug: "outpost-patrol", repo: O, phase: "work", turn: 2, outcome: "stuck" },
+];
+
 /** A source that plays the scenario, for the map's demo mode. */
 export function scenarioSource(): BoardSource {
   let start = Date.now() / 1000;
   let step = 0;
   let tasks: TaskSummary[] = [];
+  const origin = Date.now() / 1000;
   return {
     label: "сценарий",
     fetchArt: async () => ({}),
+    fetchEvents: async (since, until) => demoEvents(HISTORY, origin, since, until),
+    fetchReport: async () =>
+      demoReport(Date.now() / 1000, [
+        { slug: "ci-burns-after-fixes", repo: R, minutes: 128, turns: 3 },
+        { slug: "outpost-migration", repo: O, minutes: 64, turns: 1 },
+        { slug: "inspector-escort", repo: R, minutes: 47, turns: 2 },
+        { slug: "fleet-scene", repo: R, minutes: 31, turns: 1 },
+        { slug: "heavy-range-check", repo: R, minutes: 22, turns: 1 },
+        { slug: "outpost-patrol", repo: O, minutes: 15, turns: 2 },
+      ]),
     connect(onMessage, onState) {
       start = Date.now() / 1000;
       step = 0;
@@ -305,6 +347,7 @@ export function scenarioSource(): BoardSource {
           if (!previous || previous.updated_at !== task.updated_at) onMessage({ type: "task", task });
         }
         tasks = next;
+        onMessage({ type: "event", event: logEvent(LIVE[(step - 1) % LIVE.length]!, Date.now() / 1000) });
         for (const ship of scenarioFleet(start, Date.now() / 1000)) {
           if (ship.activity) onMessage({ type: "activity", slug: ship.slug, activity: ship.activity });
         }

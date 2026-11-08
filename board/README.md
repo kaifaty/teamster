@@ -36,8 +36,13 @@ A repository may look like itself: `<data home>/board-art/<repo>/` can hold its 
 this public repository. The sky replaces the system's shared sky, the planet its shipyard, and the emblem stands next to the star's
 label and in the system's toolbar; whatever is missing stays shared art. The server serves these files read-only through `GET /api/art`.
 Generation is manual: see "The art of one project" in [PROMPTS.md](web/art/PROMPTS.md).
+The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
+live `event` messages) in the map's words, newest first; in a system it shows only that system. A line leads to its
+system and selects the ship while it is still there. «Сводка дня» shows today's `teamster report --by executor` and
+the day's verdicts. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
+(`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them.
 `npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
-every station.
+every station; both fixture sources include log events and a day's report.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
