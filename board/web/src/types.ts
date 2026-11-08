@@ -51,7 +51,7 @@ export interface Report {
 
 export interface TaskSummary {
   slug: string;
-  kind: "work" | "review" | "scout" | "session";
+  kind: "work" | "review" | "scout" | "reflect" | "session";
   title: string | null; // desktop session title; null for tasks
   link: string | null; // claude://claude.ai/epitaxy/<sessionId>; null for tasks
   repo: string; // repository basename; see the session mapping in the contract
@@ -107,7 +107,7 @@ export interface Constellations {
 
 // Research: what the reflection learned from finished tasks (GET /api/research).
 
-export type LessonStatus = "proposed" | "applied" | "declined" | "other";
+export type LessonStatus = "proposed" | "accepted" | "applied" | "declined" | "other";
 export type Signal =
   | "blocked"
   | "refused"
@@ -147,8 +147,50 @@ export interface PendingRecord {
   signals: Signal[];
 }
 
+export interface StudyQuestion {
+  text: string;
+  options: string[];
+}
+
+/** An order, an analyst's report, or a lead's reply in a reflection task. */
+export interface StudyMessage {
+  at: number;
+  from: "lead" | "analyst";
+  text: string | null; // lead text is at most 4000 characters
+  status: "done" | "needs_decision" | null;
+  questions: StudyQuestion[];
+  lessons: {
+    id: string;
+    cue: string;
+    entry: string;
+    scope: "invariant" | "domain" | null;
+    lesson: string | null; // at most 600 characters
+    proposal: string | null; // at most 600 characters
+  }[];
+  file: string | null;
+}
+
+/** A live or recently archived reflection task, newest first in ResearchView.studies. */
+export interface Study {
+  slug: string; // the task slug, without an archive timestamp
+  archived: boolean;
+  mode: "batch" | "study";
+  alive: boolean;
+  outcome: string | null;
+  error: string | null; // at most 300 characters
+  executor: string;
+  account: string | null;
+  created: number;
+  updated_at: number;
+  records: number;
+  file: string | null;
+  waiting: boolean; // not alive and the last message is an analyst asking for a decision
+  messages: StudyMessage[]; // the order first, then reports and replies by at
+}
+
 export interface ResearchView {
   lessons: Lesson[];
+  studies: Study[];
   batch: ResearchBatch | null;
   /** Archived records after the newest batch: the next batch's material. */
   pending: { records: number; signals: number; repos: Record<string, number>; items: PendingRecord[] };

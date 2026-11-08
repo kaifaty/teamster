@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sayCommand, shellQuote, takesWords, taskCommands, verdictCommand } from "./commands";
+import { answerText, lessonCommand, reflectCommand, reflectSlug, sayCommand, shellQuote, takesWords, taskCommands, transmission, verdictCommand } from "./commands";
 
 describe("task commands", () => {
   it("offers every command for a task, and none for a desktop session", () => {
@@ -32,5 +32,51 @@ describe("task commands", () => {
     expect(sayCommand("fix-login", text)).toBe(`teamster say fix-login ${quoted}`);
     expect(verdictCommand("fix-login", "revised", `  ${text} `)).toBe(`teamster verdict fix-login revised --note ${quoted}`);
     expect(verdictCommand("fix-login", "dropped", "  ")).toBe("teamster verdict fix-login dropped");
+  });
+
+  it("names a reflection by UTC month, day, hour and minute", () => {
+    expect(reflectSlug(new Date("2026-01-02T01:04:59+03:00"))).toBe("reflect-0101-2204");
+    expect(reflectSlug(new Date("2026-11-09T05:07:00Z"))).toBe("reflect-1109-0507");
+  });
+
+  it("builds reflection selections and quotes their arguments", () => {
+    expect(reflectCommand({ slug: "reflect-1109-0507" })).toBe("teamster reflect reflect-1109-0507");
+    expect(reflectCommand({ slug: "study's name", tasks: ["fix-api", "a $(date)"], order: "Check analyst's $HOME" })).toBe(
+      "teamster reflect 'study'\\''s name' --task fix-api --task 'a $(date)' 'Check analyst'\\''s $HOME'",
+    );
+    expect(reflectCommand({ slug: "reflect-1109-0507", since: "2026-11-01 12:00", repos: ["demo-game", "/tmp/demo's vault"], order: "  " })).toBe(
+      "teamster reflect reflect-1109-0507 --since '2026-11-01 12:00' --repo demo-game --repo '/tmp/demo'\\''s vault'",
+    );
+    expect(() => reflectCommand({ slug: "study", tasks: ["fix-api"], since: "2026-11-01" })).toThrow();
+    expect(() => reflectCommand({ slug: "study", tasks: ["fix-api"], repos: ["demo-game"] })).toThrow();
+  });
+
+  it("quotes a lesson entry and optional note", () => {
+    expect(lessonCommand("batch-2026-11-09.md L1", "accepted")).toBe("teamster lesson 'batch-2026-11-09.md L1' accepted");
+    expect(lessonCommand("study's report.md L2", "declined", "  Don't change $HOME  ")).toBe(
+      "teamster lesson 'study'\\''s report.md L2' declined --note 'Don'\\''t change $HOME'",
+    );
+    expect(lessonCommand("report.md L1", "applied", "  ")).toBe("teamster lesson 'report.md L1' applied");
+  });
+
+  it("joins nonempty station commands in order", () => {
+    expect(transmission(["", "teamster lesson 'report.md L1' accepted", "  ", "teamster say study 'Proceed'"])).toBe(
+      "teamster lesson 'report.md L1' accepted && teamster say study 'Proceed'",
+    );
+    expect(transmission(["", " "])).toBe("");
+  });
+
+  it("numbers answered questions and shortens their text", () => {
+    const long = "x".repeat(90);
+    const questions = [
+      { text: "  Which\nrepository?  ", options: ["demo-game", "demo-vault"] },
+      { text: "Which approach?", options: [] },
+      { text: long, options: [] },
+      { text: "Continue?", options: [] },
+    ];
+    expect(answerText(questions, [" demo-game ", "  ", "Proceed\nwith study"])).toBe(
+      `1. Which repository?: demo-game\n3. ${long.slice(0, 80)}: Proceed with study`,
+    );
+    expect(answerText(questions, [])).toBe("");
   });
 });

@@ -57,8 +57,8 @@ stops or changes work, and never writes under either source's home.
 - Constellations: `board-constellations.json` in the task home, written by hand and read on each request, for the same
   reason kept outside the repository: `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse"]}]}`.
 - Reflection: `tasks/.archive/INDEX.md` (the lesson table), `tasks/.archive/batch-<YYYY-MM-DD>[suffix].md`
-  (batch reviews, each with a `through: <stamp>` line) and the archived records' `state.json`, read for
-  `GET /api/research` as described below.
+  (batch reviews, each with a `through: <stamp>` line), archived records' `state.json`, and live and archived
+  reflect tasks' `state.json` and `messages.jsonl`, read for `GET /api/research` as described below.
 - The server never reads `auth.json`, credentials or account homes.
 
 Missing directories are skipped. Malformed metadata or live-state files preserve their last valid
@@ -113,7 +113,7 @@ interface Events {
 
 interface TaskSummary {
   slug: string;
-  kind: "work" | "review" | "scout" | "session";
+  kind: "work" | "review" | "scout" | "reflect" | "session";
   title: string | null;       // desktop session title; null for tasks
   link: string | null;        // claude://claude.ai/epitaxy/<sessionId>; null for tasks
   repo: string;               // repository basename; see session mapping below
@@ -265,7 +265,7 @@ interface Snapshot {
   machines: Machines;
 }
 
-type LessonStatus = "proposed" | "applied" | "declined" | "other";
+type LessonStatus = "proposed" | "accepted" | "applied" | "declined" | "other";
 type Signal = "blocked" | "refused" | "needs_decision" | "escalate" | "round_cap"
   | "fix_rounds" | "check_failed" | "ci_repair" | "budget_exhausted";
 
@@ -276,7 +276,7 @@ interface Lesson {             // one row of INDEX.md, in file order
   scope_text: string;          // the scope column as written
   repos: string[];             // for domain: the names after "domain", split on commas and spaces; otherwise []
   cue: string;
-  status: LessonStatus;        // from the first word of the status column: proposed / applied / declined, else other
+  status: LessonStatus;        // first word: proposed / accepted / applied / declined, else other
   status_text: string;         // the status column as written
 }
 
@@ -290,8 +290,45 @@ interface ResearchBatch {      // the batch file with the greatest `through:` st
 
 interface PendingRecord { slug: string; repo: string; stamp: string; signals: Signal[]; }
 
+interface StudyQuestion { text: string; options: string[]; }
+
+interface StudyMessage {
+  at: number;
+  from: "lead" | "analyst";
+  text: string | null;        // lead: order or say, ≤ 4000 chars; analyst: summary
+  status: "done" | "needs_decision" | null; // analyst only
+  questions: StudyQuestion[]; // analyst only; options[i] belongs to questions[i]
+  lessons: {
+    id: string;
+    cue: string;
+    entry: string;            // "<file> <id>", as in INDEX.md
+    scope: "invariant" | "domain" | null;
+    lesson: string | null;    // as written, ≤ 600 chars
+    proposal: string | null;  // as written, ≤ 600 chars
+  }[];
+  file: string | null;        // analyst only
+}
+
+interface Study {
+  slug: string;              // teamster slug: no archive timestamp suffix
+  archived: boolean;
+  mode: "batch" | "study";
+  alive: boolean;            // supervisor PID is alive
+  outcome: string | null;
+  error: string | null;      // ≤ 300 chars
+  executor: string;
+  account: string | null;
+  created: number;
+  updated_at: number;
+  records: number;           // length of reflect_records
+  file: string | null;
+  waiting: boolean;          // not alive and last message is analyst needs_decision
+  messages: StudyMessage[];  // initial order first, then lead say and analyst turns in ascending at
+}
+
 interface ResearchView {
   lessons: Lesson[];
+  studies: Study[];           // live and recent archived reflect tasks, newest created first, at most 20
   batch: ResearchBatch | null;
   pending: {
     records: number;           // archived records with stamp > batch.through (all records when batch is null)
@@ -458,17 +495,19 @@ The additional fields are additive; existing clients may ignore `title` and `lin
 
 ### Research
 
-`ResearchView` describes what reflection (`src/teamster/docs/reflection.md`) has learned and what waits for
-the next batch. The data lives in `tasks/.archive/`:
+`ResearchView` describes reflection conversations (`src/teamster/docs/reflection.md`), what they learned and
+what waits for the next batch. Material and lessons live in `tasks/.archive/`:
 
 - `lessons`: the rows of the markdown table in `INDEX.md`, skipping the header and separator rows. A row needs
   at least five cells; cells after the fourth (a `|` inside the text) are joined back into `status_text`.
   Shorter or empty rows are skipped.
+  `accepted` means the lead agreed with a lesson but has not applied it yet.
 - `batch`: among the `batch-*.md` files, the one with the greatest stamp on its first `through:` line; a file
   without one ranks lowest. Its `records` are the archived records whose stamp is greater than the next lower
   batch's `through` and at most its own.
 - Records are directories `<slug>-<stamp>` with `stamp` like `20261107T051647Z`. A record's repository is the
-  last path component of `state.json`'s `repo`, or `"(unknown)"`. Only `state.json` is used for signals:
+  last path component of `state.json`'s `repo`, or `"(unknown)"`. Records with `kind: "reflect"` are studies,
+  excluded from `batch.records`, `batch.repos`, `pending` and all material signals. Only `state.json` is used for signals:
   - `blocked`, `needs_decision`: `result.status`; `refused`: `result.status` or `outcome` is `refused`;
   - `escalate`: `auto_fix_stop` is `escalate`; `round_cap`: `auto_fix_stop` is `rounds_exhausted`,
     `check <outcome>` or `base conflict` (the round cap reached while the check failed or the base branch
@@ -478,10 +517,37 @@ the next batch. The data lives in `tasks/.archive/`:
   - `ci_repair`: `ci.rounds` is greater than 0;
   - `budget_exhausted`: `outcome` or an entry of `turn_stops` has the outcome `budget_exhausted`.
 
-Only the `state.json` files of records newer than the previous batch's `through` are read, and each again only
-when its mtime or size changes. The view is rebuilt at most once per `BOARD_RESEARCH_SECONDS` (default 30).
-Malformed rows, files and JSON are skipped. When `tasks/` or `.archive/` is a symbolic link or missing, the
-view is empty; linked record directories, `state.json`, `INDEX.md` and batch files are skipped.
+`studies` reads `kind: "reflect"` tasks from `tasks/<slug>/` and archive directories stamped within the last
+30 days (UTC archive stamp, regardless of state mtime). It retains at most 20 studies, ordered by newest
+`created` first. Archived study slugs omit the `-<stamp>` suffix. `mode`, `records` and `file` come from
+`reflect_mode`, the length of `reflect_records` and `reflect_file`; the account is `claude_account` for
+the Claude executor and `account` otherwise. `alive` checks the supervisor PID.
+
+Every conversation starts with a lead message at `created`, containing `reflect_order` or `null`.
+Each object in `reflect_turns` contributes an analyst message: `summary`, `status`, `file`, paired
+`questions` and `options`, and lessons with `id`, `cue` and `entry` built as `"<file> <id>"`.
+Lessons also retain `scope` (`"invariant"` or `"domain"`), `lesson` and `proposal` from the turn.
+The latter two preserve their text, truncated to 600 characters each. Missing or invalid fields are `null`.
+Only `source: "lead"` rows from the neighboring `messages.jsonl` contribute replies. After the initial
+order, all messages are sorted by `at`. Lead messages have `status: null`, empty questions and lessons,
+and `file: null`. A study waits only while its supervisor is not alive and its last message is an analyst
+message with `status: "needs_decision"`; a later lead reply clears `waiting` immediately.
+
+Material reads records newer than the previous batch's `through`; detecting recent archived studies also
+reads records within the 30-day window. Each `state.json` and `messages.jsonl` is reread only when its mtime
+or size changes. The view is rebuilt at most once per `BOARD_RESEARCH_SECONDS` (default 30). Invalid text,
+numbers, lists and rows are skipped or treated as missing under the existing field rules; malformed JSON
+states are skipped. Symbolic links are never followed, including task/archive directories and study message
+files. A missing archive leaves material empty and still permits live studies.
+
+The web model treats reflect tasks and legacy sessions matching `reflection_task` as research, excluding
+them from the fleet. `Research.studies` holds the conversations, `waiting` counts studies waiting for a
+reply, and `running` includes both alive studies and legacy sessions. Probes use an alive study's known
+batch repositories when its file matches the current batch; otherwise they retain the pending-then-batch
+fallback. The board only copies commands: `reflectSlug` uses UTC, `reflectCommand` builds orders with
+either repeated `--task` or `--since`/`--repo`, `lessonCommand` builds lesson decisions, `answerText` numbers
+nonempty answers with question text shortened to 80 characters for `sayCommand`, and `transmission` joins
+nonempty commands with ` && `. These helpers never execute commands or write task data.
 
 ## REST
 

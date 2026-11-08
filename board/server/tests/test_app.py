@@ -675,7 +675,7 @@ def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeyp
     assert client.get("/api/research").json() == {
         "lessons": [], "batch": None,
         "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
-        "reflection_task": "codex-batch-reflection"}
+        "studies": [], "reflection_task": "codex-batch-reflection"}
     assert client.post("/api/research").status_code == 405
     assert client.delete("/api/research").status_code == 405
     assert client.get("/api/research", headers={"Host": "evil.example"}).status_code == 403
