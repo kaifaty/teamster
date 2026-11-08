@@ -402,6 +402,36 @@ class AccountAuthTests(RotationTestCase):
         saved = json.loads((self.home / "codex-worker.json").read_text())
         self.assertEqual([account["name"] for account in saved["accounts"]], ["main", "second"])
 
+        # Another login adds an account while this sign-in waits; the report must still see it.
+        gate = self.root / "second-login-gate"
+        (self.other / "login.json").write_text(json.dumps({"gate": str(gate)}))
+        self.account(self.other, "B", self.reset + 3600)
+        third = self.root / ".codex-accounts" / "third"
+        third.mkdir(parents=True)
+        (third / "login.json").write_text(json.dumps({"fixture": self.account(third, "B", self.reset + 3600)}))
+        before = len(self.telemetry_journal())
+        waiting = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "login", "second"], cwd=self.root, env=self.env,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True)
+        try:
+            self.until(lambda: sum(event["command"] == "login" and event["home"] == str(self.other)
+                                   for event in self.trace()) == 4, timeout=30)
+            result = subprocess.run([PYTHON, "-I", str(SCRIPT), "login", "third"], cwd=self.root, env=self.env,
+                                    stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            gate.touch()
+            stdout, stderr = waiting.communicate(timeout=15)
+        finally:
+            gate.touch()
+            if waiting.poll() is None:
+                waiting.kill()
+                waiting.communicate()
+        self.assertEqual(waiting.returncode, 1, stderr)
+        self.assertEqual(stdout.splitlines()[-1], "second — тот же аккаунт ChatGPT, что и third; "
+                         "войди заново другим аккаунтом: teamster login second")
+        self.assertEqual([(row["account"], row["status"]) for row in self.telemetry_journal()[before:]],
+                         [("third", "duplicate"), ("second", "duplicate")])
+
     def test_claude_login_probes_after_saving_and_preserves_account_on_probe_failure(self):
         token, fixture, trace = self.claude_probe_fixture()
         worker = self.worker()

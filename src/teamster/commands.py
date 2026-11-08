@@ -739,8 +739,12 @@ def cmd_login(a):
         raise SystemExit(code if code > 0 else 128 - code)
     # Like `accounts`, read the homes under the shared lock so migrate-home cannot move them meanwhile.
     with config.home_lock():
+        # Re-read the settings: another login may have added an account during this sign-in.
+        cfg = config.accounts_config()
         infos = accounts.snapshots(cfg)
-        info = next(item for item in infos if item["name"] == a.name)
+        info = next((item for item in infos if item["name"] == a.name), None)
+        if info is None:
+            procs.die(f"account {a.name!r} was removed from the settings during the sign-in")
         # Snapshots mark the later of two accounts with one ChatGPT identity as the duplicate.
         others = [item for item in infos if item.get("duplicate") == a.name]
         other = info.get("duplicate") or (others[0]["name"] if others else None)

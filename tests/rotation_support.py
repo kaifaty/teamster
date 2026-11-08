@@ -492,6 +492,9 @@ elif command == "login":
     # login.json in the account home scripts the sign-in: its exit code and the account it yields.
     login_path = home / "login.json"
     login = json.loads(login_path.read_text()) if login_path.exists() else {}
+    deadline = time.monotonic() + 30
+    while "gate" in login and not Path(login["gate"]).exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
     if "fixture" in login:
         fixture_path.write_text(json.dumps(login["fixture"]))
     sys.exit(login.get("exit", 0))
