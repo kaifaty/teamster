@@ -251,22 +251,32 @@ class VersionInstallTests(unittest.TestCase):
 
         # Once its version is in the trash, a start from it refuses instead of running a missing file.
         self.assertIn("moved 9.0.0 to", self.cli("versions", "--prune"))
-        (worker.config.TASKS / "late").mkdir()
-        with mock.patch.object(worker.supervisor.subprocess, "Popen") as popen, \
-                self.assertRaises(SystemExit) as refused:
-            worker.supervisor.spawn({"slug": "late", "worktree": str(self.root), "rotations": []}, "Do the work.")
-        self.assertIn("no longer exists: its version was pruned", str(refused.exception.code))
-        popen.assert_not_called()
+        late = worker.config.TASKS / "late"
+        late.mkdir()
+        state = {"slug": "late", "worktree": str(self.root), "rotations": [], "result": {"status": "done"}}
+        for name, text in (("last.md", "last result\n"), ("review.md", "last review\n"),
+                           ("state.json", json.dumps(state))):
+            (late / name).write_text(text)
+
+        def refused_start(worker, reason):
+            """The start refuses before it touches the task: files, state.json and st stay as they were."""
+            files = {name: (late / name).read_text() for name in ("last.md", "review.md", "state.json")}
+            st = json.loads(json.dumps(state))
+            with mock.patch.object(worker.supervisor.subprocess, "Popen") as popen, \
+                    self.assertRaises(SystemExit) as refused:
+                worker.supervisor.spawn(st, "Do the work.")
+            self.assertIn(reason, str(refused.exception.code))
+            popen.assert_not_called()
+            self.assertEqual({name: (late / name).read_text() for name in files}, files)
+            self.assertEqual(st, state)
+
+        refused_start(worker, "no longer exists: its version was pruned")
 
         # A start from 9.1.0 after current moved to data layout 2 refuses instead of running layout 1 beside it.
         worker = load_worker({"TEAMSTER_HOME": str(self.data)}, name="versions_stale_worker",
                              script=self.data / "versions/9.1.0/src/teamster/__main__.py")
         self.assertIn("current is now 9.2.0", self.upgrade("--yes"))
-        with mock.patch.object(worker.supervisor.subprocess, "Popen") as popen, \
-                self.assertRaises(SystemExit) as refused:
-            worker.supervisor.spawn({"slug": "late", "worktree": str(self.root), "rotations": []}, "Do the work.")
-        self.assertIn("with data layout 2, this command has layout 1", str(refused.exception.code))
-        popen.assert_not_called()
+        refused_start(worker, "with data layout 2, this command has layout 1")
 
     def test_launchers_use_the_base_interpreter_of_a_virtual_environment(self):
         cellar = self.root / "cellar/python3"
