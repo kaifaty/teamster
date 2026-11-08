@@ -37,10 +37,15 @@ reset, or the end of the limit that ran out. The admiral's badge crowns the duty
 orchestrator and new tasks skip. The label on the right tells the name, the share left and the time to the refill
 («83% · ↻ 5 д»), with a spare cell for every free reset of a Codex account; its title has the five-hour window, the
 reset times and when the free resets expire.
-Every machine of the machines strip stands as a power station in a column on the right edge of the galaxy
-(`machinePositions`), with a short label on its left: the name and the status, the name alone on a phone. A halo
-around the station tells its status — green free, amber busy, pulsing red overloaded; a grey station has no connection or
-no data — and a click on the station or its label opens the same machine card as on «Доска»; like the tanks, the stations stay live during a replay. The map
+Every machine of the machines strip stands as a reactor in a column on the right edge of the galaxy
+(`machinePositions`), in three rings, outside in: CPU, memory and the GPU — its video memory where it has its own, else
+its load (`machineRings` in `board/web/src/lib/machines.ts`). A ring's arc is the share in use and its dark rest what is
+free: calm in its own colour, gold when busy and pulsing red when overloaded, by the machines strip's thresholds; a thin
+outer ring shows the fullest disk while it runs low. The core's glow tells the status — green free, amber busy, pulsing
+red overloaded — and it turns faster the busier the CPU; a grey reactor has no connection or no data. The label on its
+left tells the name and what is free, each figure after a dot of its ring's colour («● 22 ядра ● 22 ГБ ● 9,7 ГБ»), the
+status instead when the machine is offline, and the name alone on a phone. A click on the reactor or its label opens the
+same machine card as on «Доска»; like the tanks, the reactors stay live during a replay. The map
 tab has no machines strip: there the machines live in the galaxy, as the accounts do.
 A busy star's label is one line: its name, its ships and badges for alarms, ships waiting for you and sleeping ones.
 Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,

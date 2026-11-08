@@ -5,7 +5,7 @@ import {
   COUNT_ROOM, MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, clampCamera, defaultCovered, fitCamera, freeView, parkingOf, parkingOrder,
   homeWorld, plateAt, plateRoom, skyChoices, stationOf, systemWorldSize, toolbarBand, columnSpan,
   TANK_ASPECT, TANK_MIN_SIZE, TANK_SIZE, BADGE_RISE, fuelColumnRect, fuelPositions, fuelRoom, tankGear, tankLabelSize, type TankShape,
-  RESEARCH_SIZE, LABEL_MAX_WIDTH, MACHINE_MIN_SIZE, MACHINE_SIZE, machineColumnRect, machineLabelAnchor, machinePositions, machineRoom, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
+  RESEARCH_SIZE, LABEL_MAX_WIDTH, MACHINE_LABEL_WIDTH_PX, MACHINE_MIN_SIZE, MACHINE_SIZE, machineColumnRect, machineLabelAnchor, machinePositions, machineRoom, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
   starRadius, starSize, stationAt, systemFrame, worldSize, zoomCamera, LABEL_ZOOM as LABEL_ZOOM_FULL, type Rect, type StarShape,
 } from "./layout";
 
@@ -410,8 +410,8 @@ describe("machines", () => {
   /** The full view's zoom of a 1400×900 window and of a 390×844 phone, and others around them. */
   const ZOOMS = new Map([[WIDE, [0.75, 0.855, 0.9]], [TALL, [0.39, 0.5]]]);
   const hit = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
-  /** The sprite alone: the art is about two thirds as tall as it is wide. */
-  const body = (at: { x: number; y: number }, size: number): Rect => ({ x0: at.x - size / 2, y0: at.y - size / 3, x1: at.x + size / 2, y1: at.y + size / 3 });
+  /** The reactor with its rings: as tall as it is wide. */
+  const body = (at: { x: number; y: number }, size: number): Rect => ({ x0: at.x - size / 2, y0: at.y - size / 2, x1: at.x + size / 2, y1: at.y + size / 2 });
 
   it("is the same every time, keeps the order and stands in one column along the right edge", () => {
     for (const world of SIZES) {
@@ -435,7 +435,7 @@ describe("machines", () => {
     expect(machinePositions(FIXTURE, TALL, 0.39).size * 0.39).toBeGreaterThanOrEqual(48);
   });
 
-  it("puts the name and the status on the left of a station in a wide world, the name alone in a tall one", () => {
+  it("puts the name and what is free on the left of a reactor in a wide world, the name alone in a tall one", () => {
     for (const world of SIZES) {
       const column = machinePositions(FIXTURE, world);
       expect(column.status).toBe(world === WIDE);
@@ -444,11 +444,11 @@ describe("machines", () => {
         const at = column.places.get(machine.id)!;
         expect(anchor.y).toBe(at.y);
         expect(anchor.x).toBeLessThan(at.x - column.size / 2);
-        expect(column.labels.get(machine.id)!.width).toBeLessThanOrEqual(150);
+        expect(column.labels.get(machine.id)!.width).toBeLessThanOrEqual(MACHINE_LABEL_WIDTH_PX);
       }
     }
     const long = { id: "x", name: "x", status: "перегружена: процессор, память, GPU, видеопамять, диск /data" };
-    expect(machinePositions([long], WIDE).labels.get("x")!.width).toBe(150);
+    expect(machinePositions([long], WIDE).labels.get("x")!.width).toBe(MACHINE_LABEL_WIDTH_PX);
   });
 
   it("keeps the stations with their labels inside the world, apart from each other and clear of the toolbar and the log", () => {
