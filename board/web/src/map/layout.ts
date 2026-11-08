@@ -216,13 +216,44 @@ export function cardPlace(place: Place, frame: SystemFrame): Point & { side: boo
 
 // Galaxy ------------------------------------------------------------------------------------------
 
-/** The research station watches every system, so it stands in the middle of the galaxy. */
-export function researchPosition(size: Size): Point {
-  return { x: size.width * 0.5, y: size.height * 0.49 };
+/** The research station's label in pixels: on a wide window, and on a narrow one, where its font is smaller. */
+const RESEARCH_LABEL_PX = { wide: { width: 200, height: 40 }, tall: { width: 176, height: 36 } } as const;
+/** World units from the research station's centre down to its label: see MapView. */
+export const RESEARCH_LABEL_DROP = 93;
+
+/**
+ * The research station watches every system, so it stands in the middle of the galaxy. When a machine's label would
+ * meet the station or its label there, as it can on a narrow window, it moves left just far enough to keep clear.
+ */
+export function researchPosition(size: Size, machines: MachineColumn | null = null): Point {
+  const middle = { x: size.width * 0.5, y: size.height * 0.49 };
+  if (!machines?.places.size) return middle;
+  const zoom = machines.labelZoom;
+  const label = RESEARCH_LABEL_PX[size.width >= size.height ? "wide" : "tall"];
+  // The station and its label, each as a half width and a band from the station's centre.
+  const parts = [
+    { half: RESEARCH_SIZE / 2, y0: middle.y - RESEARCH_SIZE / 2, y1: middle.y + RESEARCH_SIZE / 2 },
+    { half: label.width / zoom / 2, y0: middle.y + RESEARCH_LABEL_DROP, y1: middle.y + RESEARCH_LABEL_DROP + label.height / zoom },
+  ];
+  let x = middle.x;
+  for (const id of machines.places.keys()) {
+    const room = machineRoom(id, machines);
+    for (const part of parts) {
+      if (room.y0 < part.y1 && part.y0 < room.y1) x = Math.min(x, room.x0 - part.half - MACHINE_GAP * 2);
+    }
+  }
+  return { x: Math.max(Math.max(...parts.map((part) => part.half)), x), y: middle.y };
 }
 
 /** The station's size in world units. */
 export const RESEARCH_SIZE = 150;
+
+/**
+ * A machine's power station: the long side of its sprite in world units, as large as a depot in a wide world and larger
+ * in a tall one, which a phone shows at a smaller zoom; and the least it shrinks to in a long column.
+ */
+export const MACHINE_SIZE = { wide: 116, tall: 150 } as const;
+export const MACHINE_MIN_SIZE = 72;
 
 /** A rectangle in world units. */
 export interface Rect {
@@ -257,7 +288,7 @@ export interface Galaxy {
 }
 
 /** The zoom of the full view on a laptop: the labels' room is reserved at it until the map knows its window. */
-const LABEL_ZOOM = 0.75;
+export const LABEL_ZOOM = 0.75;
 /** Two steps of the lattice differ by this ratio, so that a galaxy that gains or loses a star usually keeps its lattice. */
 const SPACING_LADDER = 1.08;
 /** The stars share the free part of the galaxy with a quarter more room than they take, so that it fills evenly. */
@@ -296,11 +327,11 @@ export function stormRadius(live: number, lattice: Lattice): number {
 }
 
 /**
- * The parts of the galaxy where no star stands: the research station and the depots with their labels, and the parts
- * `covered` by the map's own panels.
+ * The parts of the galaxy where no star stands: the research station, the depots and the machines' power stations with
+ * their labels, and the parts `covered` by the map's own panels.
  */
-export function galaxyKeepOuts(size: Size, depots: readonly Point[], covered: readonly Rect[]): Rect[] {
-  const station = researchPosition(size);
+export function galaxyKeepOuts(size: Size, depots: readonly Point[], covered: readonly Rect[], machines: MachineColumn | null = null): Rect[] {
+  const station = researchPosition(size, machines);
   const result: Rect[] = [
     { x0: station.x - 150, y0: station.y - RESEARCH_SIZE / 2 - 40, x1: station.x + 150, y1: station.y + RESEARCH_SIZE / 2 + 85 },
   ];
@@ -310,6 +341,11 @@ export function galaxyKeepOuts(size: Size, depots: readonly Point[], covered: re
       top ? { x0: depot.x - 120, y0: 0, x1: depot.x + 120, y1: depot.y + 165 } : { x0: depot.x - 120, y0: depot.y - 170, x1: depot.x + 120, y1: size.height },
     );
   }
+  // The whole column, the gaps between its rows too: a star there could never show its label, see MapView.
+  const column = machines ? machineColumnRect(machines) : null;
+  if (column) result.push(column);
+  const note = machines ? machineNoteRoom(machines) : null;
+  if (note) result.push(note);
   return [...result, ...covered];
 }
 
@@ -491,4 +527,151 @@ export function depotPosition(index: number, count: number, row: "top" | "bottom
     x: start + ((size.width - start) * (index + 0.5)) / Math.max(1, count),
     y: row === "top" ? 125 : size.height - 90,
   };
+}
+
+// Machines ------------------------------------------------------------------------------------------
+
+/** World units from a depot's centre to its label, below the top row and above the bottom one: see MapView. */
+export const DEPOT_LABEL_DROP = { top: 76, bottom: 66 } as const;
+/** A depot's label at its tallest, in pixels: its name, its fuel and when it refuels. */
+const DEPOT_LABEL_PX = 46;
+/** The widest machine label, in pixels; MapView's CSS keeps it to this. */
+export const MACHINE_LABEL_WIDTH_PX = 150;
+/** A machine label's height in pixels: its name and its status in a wide world, its name alone in a tall one. */
+const MACHINE_LABEL_HEIGHT_PX = { wide: 34, tall: 20 } as const;
+/** The line over the column that tells the machines' config could not be read, in pixels. */
+export const MACHINE_NOTE_PX = { width: 280, height: 20 } as const;
+/** The power station's art is wider than tall by this ratio. */
+const MACHINE_ASPECT = 170 / 256;
+/** World units between the column's right side and the world's edge, between a station and its label, and between rows. */
+const MACHINE_EDGE = 20;
+const MACHINE_GAP = 6;
+const MACHINE_ROW_GAP = 10;
+
+/** What the column knows of a machine: its id, and the name and status its label shows. */
+export interface MachineShape {
+  id: string;
+  name: string;
+  status: string;
+}
+
+/**
+ * A machine's label in pixels, from its text: the name, and in a wide world the status under it, at most
+ * MACHINE_LABEL_WIDTH_PX wide, where a long status ends with an ellipsis.
+ */
+export function machineLabelSize(machine: MachineShape, withStatus: boolean): Size {
+  const text = Math.max(machine.name.length * 7.4, withStatus ? machine.status.length * 6.4 : 0);
+  return {
+    width: Math.min(MACHINE_LABEL_WIDTH_PX, Math.round(text + 16)),
+    height: MACHINE_LABEL_HEIGHT_PX[withStatus ? "wide" : "tall"],
+  };
+}
+
+/** The power stations of the machines: one column along the right edge of the galaxy. */
+export interface MachineColumn {
+  places: Map<string, Point>;
+  /** Each label's size in pixels: see machineLabelSize. */
+  labels: Map<string, Size>;
+  /** The labels show the status: in a wide world. In a tall one the glow tells it, the title and the card the rest. */
+  status: boolean;
+  /** The long side of every station's sprite, in world units. */
+  size: number;
+  /** The zoom the labels' room was reserved at: see Galaxy.labelZoom. */
+  labelZoom: number;
+  /** The right side of the column, where the stations end. */
+  right: number;
+  /** Where the line about a broken config stands, its right end: null without one. */
+  note: Point | null;
+}
+
+/**
+ * The part of the right edge the column may use, top to bottom: below the top row of depots with their labels and
+ * above the bottom row with theirs, and on a tall window above the ship's log, which spans the whole width there.
+ */
+export function machineSpan(size: Size, labelZoom = LABEL_ZOOM): { top: number; bottom: number } {
+  const depotLabel = DEPOT_LABEL_PX / labelZoom;
+  const top = depotPosition(0, 1, "top", size).y + DEPOT_LABEL_DROP.top + depotLabel + MACHINE_GAP * 2;
+  let bottom = depotPosition(0, 1, "bottom", size).y - DEPOT_LABEL_DROP.bottom - depotLabel - MACHINE_GAP * 2;
+  const log = logCorner(size);
+  if (log.x1 >= size.width) bottom = Math.min(bottom, log.y0 - MACHINE_GAP * 2);
+  return { top, bottom };
+}
+
+/**
+ * Puts a power station for each machine, in the order given, in one column along the right edge of the world, evenly
+ * between the rows of depots, each with its label on its left at the height of its centre. A row is as tall as the
+ * station or its label, whichever is taller. A long column draws its stations smaller, down to MACHINE_MIN_SIZE, and
+ * then stays as it is: that is its limit. `note` reserves a line over the column for a broken config. The labels' room
+ * is reserved at `labelZoom`, the zoom of the full view.
+ */
+export function machinePositions(machines: readonly MachineShape[], size: Size, labelZoom = LABEL_ZOOM, note = false): MachineColumn {
+  const wide = size.width >= size.height;
+  const span = machineSpan(size, labelZoom);
+  const right = size.width - MACHINE_EDGE;
+  const noteAt = note ? { x: right, y: span.top } : null;
+  const top = note ? span.top + MACHINE_NOTE_PX.height / labelZoom + MACHINE_GAP : span.top;
+  const label = MACHINE_LABEL_HEIGHT_PX[wide ? "wide" : "tall"] / labelZoom;
+  const count = Math.max(1, machines.length);
+  const step = (span.bottom - top) / count;
+  const largest = MACHINE_SIZE[wide ? "wide" : "tall"];
+  const stationSize = Math.max(MACHINE_MIN_SIZE, Math.min(largest, (step - MACHINE_ROW_GAP) / MACHINE_ASPECT));
+  const row = Math.max(stationSize * MACHINE_ASPECT, label) + MACHINE_ROW_GAP;
+  // Each row stands in the middle of its share of the column. Past the column's limit the rows close up instead, the
+  // first at its top and the last at its bottom, so that the column stays between the depots.
+  const crowded = step < row && count > 1;
+  const pitch = crowded ? (span.bottom - top - row) / (count - 1) : step;
+  const first = top + (crowded ? row : step) / 2;
+  const places = new Map<string, Point>();
+  const labels = new Map<string, Size>();
+  machines.forEach((machine, index) => {
+    places.set(machine.id, { x: right - stationSize / 2, y: first + pitch * index });
+    labels.set(machine.id, machineLabelSize(machine, wide));
+  });
+  return { places, labels, status: wide, size: stationSize, labelZoom, right, note: noteAt };
+}
+
+/** Where a station's label ends on the right, at the height of the station's centre. */
+export function machineLabelAnchor(id: string, column: MachineColumn): Point | null {
+  const at = column.places.get(id);
+  return at ? { x: at.x - column.size / 2 - MACHINE_GAP, y: at.y } : null;
+}
+
+/** The room of a station's row: the station and its label on its left, as tall as the taller of them. */
+export function machineRoom(id: string, column: MachineColumn): Rect {
+  const at = column.places.get(id)!;
+  const label = column.labels.get(id) ?? { width: MACHINE_LABEL_WIDTH_PX, height: MACHINE_LABEL_HEIGHT_PX.wide };
+  const half = Math.max(column.size * MACHINE_ASPECT, label.height / column.labelZoom) / 2;
+  const left = at.x - column.size / 2 - MACHINE_GAP - label.width / column.labelZoom;
+  return { x0: left, y0: at.y - half, x1: column.right, y1: at.y + half };
+}
+
+/**
+ * The whole column as one rect, in world units: from the top of the first row to the bottom of the last, and from the
+ * left side of the widest label's room to the column's right side, gaps between the rows included. The line about a
+ * broken config is not part of it. Null without machines.
+ */
+export function machineColumnRect(column: MachineColumn): Rect | null {
+  const rooms = [...column.places.keys()].map((id) => machineRoom(id, column));
+  if (!rooms.length) return null;
+  return {
+    x0: Math.min(...rooms.map((room) => room.x0)),
+    y0: Math.min(...rooms.map((room) => room.y0)),
+    x1: Math.max(...rooms.map((room) => room.x1)),
+    y1: Math.max(...rooms.map((room) => room.y1)),
+  };
+}
+
+/** The room of the line over the column about a broken config: null without one. */
+export function machineNoteRoom(column: MachineColumn): Rect | null {
+  if (!column.note) return null;
+  const { x, y } = column.note;
+  return { x0: x - MACHINE_NOTE_PX.width / column.labelZoom, y0: y, x1: x, y1: y + MACHINE_NOTE_PX.height / column.labelZoom };
+}
+
+/** The rooms of every station and of the line over the column. */
+export function machineRooms(column: MachineColumn): Rect[] {
+  const rooms = [...column.places.keys()].map((id) => machineRoom(id, column));
+  const note = machineNoteRoom(column);
+  if (note) rooms.push(note);
+  return rooms;
 }
