@@ -52,13 +52,17 @@ def integer(value):
     return value if type(value) is int else None
 
 
+def last(value):
+    """The last item of a list when it is an object, else None."""
+    item = value[-1] if isinstance(value, list) and value else None
+    return item if isinstance(item, dict) else None
+
+
 def turn_check(state):
     """The latest check entry of the current turn: checks[check_start:], else None."""
     checks = state.get("checks")
-    if not isinstance(checks, list):
-        return None
-    checks = objects(checks[max(integer(state.get("check_start")) or 0, 0):])
-    return checks[-1] if checks else None
+    start = max(integer(state.get("check_start")) or 0, 0)
+    return last(checks[start:]) if isinstance(checks, list) else None
 
 
 def review_verdict(review):
@@ -86,7 +90,7 @@ def cargo(state):
     result = mapping(state.get("result"))
     review = state.get("review_result")
     ci = state.get("ci")
-    base = objects(state.get("base_merges"))
+    base = last(state.get("base_merges"))
     if isinstance(ci, dict):
         ci_checks = objects(ci.get("checks"))
         failing = [item for item in ci_checks if item.get("bucket") in ("fail", "cancel")]
@@ -135,9 +139,9 @@ def cargo(state):
         "stop": line(state.get("auto_fix_stop")),
         "ci": ci,
         "base": {
-            "base": line(base[-1].get("base")) or "",
-            "outcome": line(base[-1].get("outcome")) or "",
-            "files": lines(base[-1].get("files"))[:20],
+            "base": line(base.get("base")) or "",
+            "outcome": line(base.get("outcome")) or "",
+            "files": lines(base.get("files"))[:20],
         } if base else None,
         "remaining": lines(result.get("remaining"))[:20],
         "questions": lines(result.get("questions"))[:20],
@@ -205,12 +209,13 @@ def phase(state, is_alive):
     if ci.get("outcome") == "pending":
         return "ci", None
     if state.get("kind") == "review":
-        reviews = state.get("reviews", [])[state.get("review_start", 0):]
-        latest = reviews[-1] if reviews else {}
+        reviews = state.get("reviews")
+        start = max(integer(state.get("review_start")) or 0, 0)
+        latest = (last(reviews[start:]) if isinstance(reviews, list) else None) or {}
         started = number(latest.get("started")) if latest.get("finished") is None else None
         return "review", started
     if state.get("outcome") == "running" or state.get("codex_pid") or state.get("claude_pid"):
-        if state.get("rounds") or (ci.get("outcome") == "failed" and ci.get("rounds", 0) > 0):
+        if state.get("rounds") or (ci.get("outcome") == "failed" and (integer(ci.get("rounds")) or 0) > 0):
             return "fix", None
         return "turn", number(state.get("turn_started"))
     return "idle", number(state.get("turn_finished"))

@@ -393,7 +393,7 @@ recomputed with the summary on every `state.json` change; `TaskDetail.cargo` is 
 `GET /api/tasks/{slug}`. The fields are additive: older records give `null`, `0` and empty lists, and older
 clients ignore them.
 
-- Current check: the last object entry of `checks[check_start:]`. A missing or non-integer `check_start`
+- Current check: the last entry of `checks[check_start:]`; one that is not an object means no check. A missing or non-integer `check_start`
   counts as 0, so a record without it uses the last of all checks; a `check_start` beyond the list means the
   turn has no check (`null`). `summary.check` is its `outcome`; `cargo.check` carries its `cmd` as `command`,
   `outcome`, integer `exit`, and numeric `seconds` and `at`.
@@ -406,7 +406,7 @@ clients ignore them.
   `review unknown`, `review refused`, `rounds_exhausted` or `stopped`; other values pass through.
 - CI: `ci`, with its `checks` counted by `bucket`: `pass` is passed, `fail` and `cancel` are failed, and
   `failing` lists the first 10 failed names. `rounds` is 0 when absent.
-- `base`: the last object entry of `base_merges`, with its first 20 `files`.
+- `base`: the last entry of `base_merges` (`null` when it is not an object), with its first 20 `files`.
 - Open work: `result.remaining` and `result.questions`, at most 20 each in `cargo`; `summary.left` counts all
   of them. `decisions` counts the `result.findings` entries whose `decision` is `fixed` or `rejected`.
 

@@ -46,6 +46,9 @@ def test_each_phase(state, expected):
 
 
 def test_phase_priorities_and_ci_repair():
+    assert phase({"kind": "review", "reviews": 5}, True) == ("review", None)
+    assert phase({"kind": "review", "reviews": [{"started": 1}, None]}, True) == ("review", None)
+    assert phase({"outcome": "running", "ci": {"outcome": "failed", "rounds": "1"}}, True)[0] == "turn"
     assert phase({"outcome": "running", "ci": {"outcome": "failed", "rounds": 1}}, True)[0] == "fix"
     assert phase({"outcome": "running", "kind": "review", "rounds": [{}]}, True)[0] == "review"
     assert phase({"outcome": "completed", "kind": "review", "check_pid": 1}, True)[0] == "check"
@@ -199,6 +202,8 @@ def test_cargo_summary_and_detail(tmp_path):
     write_state(tmp_path, "old")
     write_state(tmp_path, "all", checks=FULL_CARGO["checks"][::-1])
     write_state(tmp_path, "past", checks=FULL_CARGO["checks"], check_start=2)
+    write_state(tmp_path, "bad-last", checks=[{"outcome": "passed"}, None],
+                base_merges=[{"base": "origin/main", "outcome": "merged"}, None])
     write_state(tmp_path, "limits", review_result={"findings": [{"id": str(i)} for i in range(40)]},
                 auto_fix_stop="x" * 500, result={"remaining": [f"r{i}" for i in range(25)]})
     write_state(tmp_path, "wrong", check_start="1", checks=["passed"], review_result=5, ci=5,
@@ -216,6 +221,8 @@ def test_cargo_summary_and_detail(tmp_path):
             "check": None, "review": None, "findings_left": 0, "stop": None, "left": 0}, slug
     assert rows["all"]["check"] == "failed"
     assert rows["past"]["check"] is None
+    assert rows["bad-last"]["check"] is None
+    assert store.detail("bad-last")["cargo"]["check"] is store.detail("bad-last")["cargo"]["base"] is None
     assert store.detail("full")["cargo"] == {
         "check": {"command": "make test fast", "outcome": "passed", "exit": 0, "seconds": 5.1,
                   "at": 1794116947.6},
