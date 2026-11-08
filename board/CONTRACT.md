@@ -132,11 +132,50 @@ interface TaskSummary {
   updated_at: number;         // task state mtime, or session lastActivityAt / 1000
   activity: Activity | null;  // latest activity, only while alive
   scheduled: string | null;   // session scheduledTaskId; null for tasks
+  // Cargo fields (see "Task cargo" below); null and 0 for sessions.
+  check: string | null;       // outcome of the current turn's latest check ("passed" | "failed" | "timeout" | …)
+  review: "clean" | "defects" | null; // review_result.verdict
+  findings_left: number;      // object entries of review_result.findings
+  stop: string | null;        // auto_fix_stop: why the automatic cycle stopped, one line ≤ 200 chars
+  left: number;               // result.remaining lines plus result.questions lines
 }
 
 interface TaskDetail extends TaskSummary {
   timeline: { at: number; text: string }[];   // task events (≤ 200), or session creation and last activity
   files: ("brief" | "last" | "review" | "check")[];   // which files exist
+  cargo: Cargo | null;        // always an object for tasks, possibly empty; null for sessions
+}
+
+interface Cargo {             // every string is one line, ≤ 200 chars
+  check: {                    // the same entry as summary.check
+    command: string;          // "cmd"
+    outcome: string;
+    exit: number | null;
+    seconds: number | null;
+    at: number | null;
+  } | null;
+  claims: { command: string; outcome: string; details: string }[]; // result.checks, the executor's own report, ≤ 10
+  review: {
+    verdict: "clean" | "defects" | null;
+    summary: string | null;
+    findings: { id: string; severity: string; title: string; file: string | null; line: number | null }[]; // ≤ 30
+    reviews: number;          // len(reviews)
+  } | null;
+  stop: string | null;        // as summary.stop
+  ci: {
+    outcome: string | null;
+    passed: number;           // checks with bucket "pass"
+    failed: number;           // checks with bucket "fail" or "cancel"
+    total: number;            // all checks
+    failing: string[];        // names of the failed checks, ≤ 10
+    seconds: number | null;
+    rounds: number;           // CI repair rounds, 0 when absent
+    reason: string | null;
+  } | null;
+  base: { base: string; outcome: string; files: string[] } | null; // last base merge; files ≤ 20
+  remaining: string[];        // result.remaining, ≤ 20
+  questions: string[];        // result.questions, ≤ 20
+  decisions: { fixed: number; rejected: number }; // result.findings by decision
 }
 
 interface Accounts {
@@ -345,14 +384,44 @@ capped at 100 when the percentage is unknown, so every history value is between 
   at most 50 closed records across archive and live task folders together, ranked by newest `updated_at`.
   Closed classification takes precedence over the other columns.
 
+### Task cargo
+
+What a task brought back and whether it can be accepted. Everything comes from the task's `state.json`, which
+the supervisor writes; `check_start`, `auto_fix_stop`, `review_result`, `ci` and `base_merges` describe the
+current turn (the first is set and the rest are cleared when a turn starts). The five `TaskSummary` fields are
+recomputed with the summary on every `state.json` change; `TaskDetail.cargo` is built only for
+`GET /api/tasks/{slug}`. The fields are additive: older records give `null`, `0` and empty lists, and older
+clients ignore them.
+
+- Current check: the last entry of `checks[check_start:]`; one that is not an object means no check. A missing or non-integer `check_start`
+  counts as 0, so a record without it uses the last of all checks; a `check_start` beyond the list means the
+  turn has no check (`null`). `summary.check` is its `outcome`; `cargo.check` carries its `cmd` as `command`,
+  `outcome`, integer `exit`, and numeric `seconds` and `at`.
+- `claims`: the first 10 entries of `result.checks` — the executor's own report, not a check the supervisor ran.
+- Review: `review_result`. `verdict` is kept only when it is `clean` or `defects`. `summary.findings_left`
+  counts all object entries of its `findings`; `cargo.review.findings` keeps the first 30 in recorded order with
+  `id`, `severity`, `title`, `file` and integer `line`. `reviews` is the length of `state.reviews`.
+- `stop`: `auto_fix_stop`, such as `clean`, `only P3`, `check failed`, `check timeout`, `base conflict`,
+  `escalate`, `budget`, `budget_exhausted`, `result partial`, `result blocked`, `result needs_decision`,
+  `review unknown`, `review refused`, `rounds_exhausted` or `stopped`; other values pass through.
+- CI: `ci`, with its `checks` counted by `bucket`: `pass` is passed, `fail` and `cancel` are failed, and
+  `failing` lists the first 10 failed names. `rounds` is 0 when absent.
+- `base`: the last entry of `base_merges` (`null` when it is not an object), with its first 20 `files`.
+- Open work: `result.remaining` and `result.questions`, at most 20 each in `cargo`; `summary.left` counts all
+  of them. `decisions` counts the `result.findings` entries whose `decision` is `fixed` or `rejected`.
+
+Strings are collapsed to one line and cut to 200 characters; required strings are `""` when missing, optional
+ones `null`. A field of the wrong type — a string instead of a list, a number instead of an object, a list item
+that is not an object, a non-string where a string is expected — counts as missing and never raises.
+
 ### Desktop session mapping
 
 Sessions use the same `TaskSummary`, with these values:
 
 - `slug` is `sessionId` (`local_<uuid>`); `kind` is `session`, `executor` is `claude`.
 - `title` comes from metadata; `link` is `claude://claude.ai/epitaxy/<sessionId>`.
-- `reviewer`, `task_type`, `account`, `ci`, `outcome`, `result_status`, `summary`, and `sleeping_until`
-  are `null`; `fix_round` is 0. `model` and `effort` come from metadata; `turn` is `completedTurns`.
+- `reviewer`, `task_type`, `account`, `ci`, `outcome`, `result_status`, `summary`, `sleeping_until`, `check`,
+  `review` and `stop` are `null`; `fix_round`, `findings_left` and `left` are 0; the detail's `cargo` is `null`. `model` and `effort` come from metadata; `turn` is `completedTurns`.
 - `repo` comes from `originCwd`, falling back to `cwd`: for a path containing `/.claude/worktrees/`,
   use the directory name immediately before that segment; otherwise use the last directory name.
   An application service directory inside `BOARD_CLAUDE_DESKTOP_DIR` gives `"(no folder)"`.
@@ -424,7 +493,8 @@ view is empty; linked record directories, `state.json`, `INDEX.md` and batch fil
   arguments get 422 and never reach a process. Only these validated values are passed as arguments;
   the report runs on demand and is cached per argument pair as described above.
 - `GET /api/tasks/{slug}` → `TaskDetail`; 404 for an unknown slug. Archived tasks are addressed by their
-  archive folder name. Sessions have an empty `files` array and creation/last-activity timeline entries.
+  archive folder name. Sessions have an empty `files` array, creation/last-activity timeline entries and
+  `cargo: null`.
   Session paths come only from scanned records, never from a requested slug; path-like slugs return 404.
 - `GET /api/tasks/{slug}/files/{name}` with `name` in `brief`, `last`, `review`, `check` → `text/plain;
   charset=utf-8`, at most the last 256 KiB; 404 when missing or for a session. No other names, no paths.

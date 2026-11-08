@@ -31,6 +31,124 @@ def one_line(value):
     return " ".join(str(value).split())[:200]
 
 
+def mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def objects(value):
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def line(value):
+    """A nonempty task string as one line of at most 200 characters, else None."""
+    return one_line(value) or None if isinstance(value, str) else None
+
+
+def lines(value):
+    return [item for item in map(line, value) if item] if isinstance(value, list) else []
+
+
+def integer(value):
+    return value if type(value) is int else None
+
+
+def last(value):
+    """The last item of a list when it is an object, else None."""
+    item = value[-1] if isinstance(value, list) and value else None
+    return item if isinstance(item, dict) else None
+
+
+def turn_check(state):
+    """The latest check entry of the current turn: checks[check_start:], else None."""
+    checks = state.get("checks")
+    start = max(integer(state.get("check_start")) or 0, 0)
+    return last(checks[start:]) if isinstance(checks, list) else None
+
+
+def review_verdict(review):
+    verdict = review.get("verdict")
+    return verdict if verdict in ("clean", "defects") else None
+
+
+def cargo_summary(state):
+    """The TaskSummary fields describing what the task's last turn brought."""
+    check = turn_check(state)
+    review = mapping(state.get("review_result"))
+    result = mapping(state.get("result"))
+    return {
+        "check": line(check.get("outcome")) if check else None,
+        "review": review_verdict(review),
+        "findings_left": len(objects(review.get("findings"))),
+        "stop": line(state.get("auto_fix_stop")),
+        "left": len(lines(result.get("remaining"))) + len(lines(result.get("questions"))),
+    }
+
+
+def cargo(state):
+    """TaskDetail.cargo: the verification, review, CI, base merge and open work of the task."""
+    check = turn_check(state)
+    result = mapping(state.get("result"))
+    review = state.get("review_result")
+    ci = state.get("ci")
+    base = last(state.get("base_merges"))
+    if isinstance(ci, dict):
+        ci_checks = objects(ci.get("checks"))
+        failing = [item for item in ci_checks if item.get("bucket") in ("fail", "cancel")]
+        ci = {
+            "outcome": line(ci.get("outcome")),
+            "passed": sum(item.get("bucket") == "pass" for item in ci_checks),
+            "failed": len(failing),
+            "total": len(ci_checks),
+            "failing": [name for name in (line(item.get("name")) for item in failing) if name][:10],
+            "seconds": number(ci.get("seconds")),
+            "rounds": integer(ci.get("rounds")) or 0,
+            "reason": line(ci.get("reason")),
+        }
+    else:
+        ci = None
+    if isinstance(review, dict):
+        review = {
+            "verdict": review_verdict(review),
+            "summary": line(review.get("summary")),
+            "findings": [{
+                "id": line(item.get("id")) or "",
+                "severity": line(item.get("severity")) or "",
+                "title": line(item.get("title")) or "",
+                "file": line(item.get("file")),
+                "line": integer(item.get("line")),
+            } for item in objects(review.get("findings"))[:30]],
+            "reviews": len(state.get("reviews")) if isinstance(state.get("reviews"), list) else 0,
+        }
+    else:
+        review = None
+    decisions = [item.get("decision") for item in objects(result.get("findings"))]
+    return {
+        "check": {
+            "command": line(check.get("cmd")) or "",
+            "outcome": line(check.get("outcome")) or "",
+            "exit": integer(check.get("exit")),
+            "seconds": number(check.get("seconds")),
+            "at": number(check.get("at")),
+        } if check else None,
+        "claims": [{
+            "command": line(item.get("command")) or "",
+            "outcome": line(item.get("outcome")) or "",
+            "details": line(item.get("details")) or "",
+        } for item in objects(result.get("checks"))[:10]],
+        "review": review,
+        "stop": line(state.get("auto_fix_stop")),
+        "ci": ci,
+        "base": {
+            "base": line(base.get("base")) or "",
+            "outcome": line(base.get("outcome")) or "",
+            "files": lines(base.get("files"))[:20],
+        } if base else None,
+        "remaining": lines(result.get("remaining"))[:20],
+        "questions": lines(result.get("questions"))[:20],
+        "decisions": {"fixed": decisions.count("fixed"), "rejected": decisions.count("rejected")},
+    }
+
+
 def log_event(row):
     if not isinstance(row, dict) or row.get("kind") not in ("work", "review", "scout", "verdict"):
         return None
@@ -87,16 +205,17 @@ def phase(state, is_alive):
         return "sleeping", number(sleeps[-1].get("at")) if sleeps else None
     if state.get("check_pid"):
         return "check", None
-    ci = state.get("ci") or {}
+    ci = mapping(state.get("ci"))
     if ci.get("outcome") == "pending":
         return "ci", None
     if state.get("kind") == "review":
-        reviews = state.get("reviews", [])[state.get("review_start", 0):]
-        latest = reviews[-1] if reviews else {}
+        reviews = state.get("reviews")
+        start = max(integer(state.get("review_start")) or 0, 0)
+        latest = (last(reviews[start:]) if isinstance(reviews, list) else None) or {}
         started = number(latest.get("started")) if latest.get("finished") is None else None
         return "review", started
     if state.get("outcome") == "running" or state.get("codex_pid") or state.get("claude_pid"):
-        if state.get("rounds") or (ci.get("outcome") == "failed" and ci.get("rounds", 0) > 0):
+        if state.get("rounds") or (ci.get("outcome") == "failed" and (integer(ci.get("rounds")) or 0) > 0):
             return "fix", None
         return "turn", number(state.get("turn_started"))
     return "idle", number(state.get("turn_finished"))
@@ -115,9 +234,9 @@ def timeline(state):
     add(state.get("turn_finished"), f"Turn {state.get('turns', 0)} {state.get('outcome', 'finished')}")
     for item in state.get("threads", []):
         add(item.get("started"), f"Turn on {item.get('account', '?')}")
-    for item in state.get("checks", []):
+    for item in objects(state.get("checks")):
         add(item.get("at"), f"Check {item.get('outcome', '?')}: {item.get('cmd', '')}")
-    for item in state.get("reviews", []):
+    for item in objects(state.get("reviews")):
         label = f"Review {item.get('angle', 'correctness')} by {item.get('reviewer', 'codex')}/{item.get('account', '?')}"
         add(item.get("started"), label + " started")
         add(item.get("finished"), label + " " + str(item.get("outcome") or "finished"))
@@ -126,7 +245,7 @@ def timeline(state):
         label = (f"{event}: {item.get('account') or ''} {item.get('reason') or ''}" if event else
                  f"Rotated {item.get('from', '?')} to {item.get('to', '?')}: {item.get('reason', '')}")
         add(item.get("at"), label)
-    ci = state.get("ci") or {}
+    ci = mapping(state.get("ci"))
     if ci:
         # CI has no own wall-clock timestamp; state mtime is its durable observation.
         add(state.get("_updated_at"), f"CI {ci.get('outcome', '?')}: {ci.get('reason', '')}")
@@ -218,7 +337,7 @@ class Store:
         state = record.state
         now = time.time()
         is_alive = alive(state.get("pid"))
-        result = state.get("result") or {}
+        result = mapping(state.get("result"))
         status = text(result.get("status"))
         outcome = text(state.get("outcome"))
         if record.archived or (not is_alive and (
@@ -237,7 +356,7 @@ class Store:
             started_at = record.phase_started_at
         executor = state.get("executor", "codex")
         summary = text(result.get("summary"))
-        ci = state.get("ci") or {}
+        ci = mapping(state.get("ci"))
         return {
             "slug": slug,
             "kind": state.get("kind", "work"),
@@ -256,7 +375,7 @@ class Store:
             "phase_started_at": started_at,
             "alive": is_alive,
             "turn": state.get("turns", 0),
-            "fix_round": len(state.get("rounds", [])) + ci.get("rounds", 0),
+            "fix_round": len(state.get("rounds", [])) + (integer(ci.get("rounds")) or 0),
             "outcome": outcome,
             "result_status": status,
             "summary": one_line(summary.splitlines()[0]) if summary else None,
@@ -267,6 +386,7 @@ class Store:
             "updated_at": record.updated_at,
             "activity": record.activity if is_alive else None,
             "scheduled": None,
+            **cargo_summary(state),
         }
 
     def poll(self):
@@ -626,6 +746,7 @@ class Store:
             "created": number(state.get("createdAt")) / 1000,
             "updated_at": updated_at, "activity": record.activity if is_alive else None,
             "scheduled": state.get("scheduledTaskId"),
+            "check": None, "review": None, "findings_left": 0, "stop": None, "left": 0,
         }
 
     def _poll_sessions(self):
@@ -676,14 +797,15 @@ class Store:
                                               ("updated_at", "Last activity"))
                            if session.summary[key] is not None]
                 return dict(session.summary, timeline=sorted(entries, key=lambda item: item["at"]),
-                            files=[])
+                            files=[], cargo=None)
             record = self._record(slug)
             if record is None:
                 return None
             state = dict(record.state, _updated_at=record.updated_at)
             return dict(record.summary, timeline=timeline(state),
                         files=[name for name, filename in FILES.items()
-                               if self._file(record.path, filename) is not None])
+                               if self._file(record.path, filename) is not None],
+                        cargo=cargo(record.state))
 
     def file_path(self, slug, name):
         with self.lock:
