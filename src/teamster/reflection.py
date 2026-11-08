@@ -17,7 +17,8 @@ RECORD_NAME = re.compile(r"(.+)-([0-9]{8}T[0-9]{6}Z)")
 BATCH_NAME = re.compile(r"batch-([0-9]{4}-[0-9]{2}-[0-9]{2})?.*\.md", re.S)
 STUDY_NAME = re.compile(r"study-([0-9]{4}-[0-9]{2}-[0-9]{2})[b-z]?-.+\.md", re.S)
 THROUGH_STAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z")
-LESSON_STATUSES = ("proposed", "accepted", "applied", "declined")
+TURN_LESSON_KEYS = ("id", "cue", "scope", "lesson", "proposal")
+TURN_LESSON_LIMIT = 600
 ROOM_FILE_LIMIT = 2 * 1024 * 1024
 ROOM_FILE_TAIL = 256 * 1024
 INDEX_HEADER = ("# Reflection index\n\n| date | entry | scope | cue | status |\n"
@@ -177,7 +178,7 @@ def replace_archive_file(path, text):
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=str(path.parent))
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
             stream.write(text)
         os.chmod(temporary, mode)
         os.replace(temporary, path)
@@ -261,7 +262,8 @@ def record_turn(st, stopped, choose_name, pattern, render):
         st.setdefault("reflect_turns", []).append({
             "at": clock.CLOCK.time(), "status": result["status"], "summary": result["summary"],
             "questions": result["questions"], "options": result["options"],
-            "lessons": [{"id": lesson["id"], "cue": lesson["cue"]} for lesson in result["lessons"]],
+            "lessons": [{key: lesson[key][:TURN_LESSON_LIMIT] for key in TURN_LESSON_KEYS}
+                        for lesson in result["lessons"]],
             "file": name})
 
 
@@ -299,7 +301,9 @@ def set_lesson_status(archive, entry, status, note=None):
     note = index_cell(note or "")
     cell = status if status == "proposed" else f"{status} {today()}" + (f": {note}" if note else "")
     with index_lock(archive):
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        # Read without newline translation: only the status cell of one row changes.
+        with path.open(encoding="utf-8", newline="") as stream:
+            lines = stream.read().splitlines(keepends=True)
         found = []
         for number, line in enumerate(lines):
             cells = index_row_cells(line)

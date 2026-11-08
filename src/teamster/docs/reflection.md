@@ -155,8 +155,9 @@ and the next `reflect` without options takes the records it would have taken wit
 A reflect task's `state.json` keeps the conversation for readers such as the board:
 `reflect_mode` (`batch` or `study`), `reflect_records`, `reflect_through` (`null` for a study),
 `reflect_order` (the order text or `null`), `reflect_file`, and `reflect_turns`. Each recorded turn
-appends `{"at", "status", "summary", "questions", "options", "lessons": [{"id", "cue"}], "file"}` to
-`reflect_turns`; a failed, stopped or invalid turn appends nothing. The lead's answers are in
+appends `{"at", "status", "summary", "questions", "options", "lessons", "file"}` to `reflect_turns`,
+where each lesson keeps `id`, `cue`, `scope`, `lesson` and `proposal` from the answer, each cut to 600
+characters; a failed, stopped or invalid turn appends nothing. The lead's answers are in
 `messages.jsonl`.
 
 ## Measuring a harness change

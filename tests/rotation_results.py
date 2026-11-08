@@ -686,7 +686,8 @@ class ResultScoutConfigTests(RotationTestCase):
         pending = worker.reflection.pending_records(archive)
         today = time.strftime("%Y-%m-%d", time.gmtime())
         name = "study-%s-reflect-study.md" % today
-        first = self.reflect_result("needs_decision", report="First study.", lessons=[self.reflect_lesson("V1", "study cue")],
+        long_lesson = dict(self.reflect_lesson("V1", "study cue"), proposal="P" * 700)
+        first = self.reflect_result("needs_decision", report="First study.", lessons=[long_lesson],
                                     questions=["Apply V1?"], options=[["yes", "no"]])
         second = self.reflect_result(report="Second study.", lessons=[self.reflect_lesson("V1", "study cue")])
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": first}, {"mode": "failed"},
@@ -708,7 +709,9 @@ class ResultScoutConfigTests(RotationTestCase):
         turn, = state["reflect_turns"]
         self.assertEqual(turn, {"at": turn["at"], "status": "needs_decision", "summary": "Reflected on one record.",
                                 "questions": ["Apply V1?"], "options": [["yes", "no"]],
-                                "lessons": [{"id": "V1", "cue": "study cue"}], "file": name})
+                                "lessons": [{"id": "V1", "cue": "study cue", "scope": "invariant",
+                                             "lesson": "Do it differently.", "proposal": "P" * 600}],
+                                "file": name})
         self.cli("say", "reflect-study", "1. yes")
         self.cli("wait", "reflect-study", "--timeout", "60", timeout=75)
         state = self.state("reflect-study")
@@ -757,6 +760,16 @@ class ResultScoutConfigTests(RotationTestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(error, result.stderr)
                 self.assertEqual(index.read_text().splitlines(keepends=True), before)
+        crlf = (b"| date | entry | scope | cue | status |\r\n|---|---|---|---|---|\r\n"
+                b"| 2026-11-03 | study-2026-11-03-a.md V1 | invariant | first | proposed |\r\n"
+                b"| 2026-11-03 | study-2026-11-03-a.md V2 | invariant | second | proposed |\r\n")
+        index.write_bytes(crlf)
+        result = lesson("study-2026-11-03-a.md V1", "declined")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        written = index.read_bytes()
+        self.assertEqual(written.split(b"\r\n")[3], crlf.split(b"\r\n")[3])
+        self.assertEqual(written.count(b"\r\n"), 4)
+        self.assertEqual(written.replace(b"declined " + today.encode(), b"proposed"), crlf)
 
     def test_teamster_environment_overrides_legacy_names(self):
         overrides = {
