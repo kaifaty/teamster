@@ -26,7 +26,8 @@ stops or changes work, and never writes under either source's home.
   repository's `src/teamster/__main__.py`. When the journal tail reads a new row with
   `"event": "account_login"` and a finite `at`, the next accounts call runs at once, ignoring that
   interval, and its result goes out as the usual `accounts` message. Such forced calls start at most once
-  per 5 seconds; rows read during that pause or during a running call share one call after it. Rows
+  per 5 seconds; rows read during that pause or during a running call share one call after it, unless a
+  periodic call that starts after they were read comes first. The pause never delays periodic calls. Rows
   present when the server starts, or re-read after the journal is replaced, force none. These rows are
   not `LogEvent`s.
 - Reports: `python3 -I <script> report --json --since <date> [--by <dimensions>]`, using the same script
