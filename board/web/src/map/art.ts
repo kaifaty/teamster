@@ -20,6 +20,7 @@ import shipScout from "./art/ship-scout.png";
 import stationCommand from "./art/station-command.png";
 import stationPower from "./art/station-power.png";
 import stationResearch from "./art/station-research.png";
+import stationYard from "./art/station-yard.png";
 import sun from "./art/sun.png";
 import tanker from "./art/tanker.png";
 
@@ -44,6 +45,7 @@ export const ART = {
   stationCommand,
   stationPower,
   stationResearch,
+  stationYard,
   sun,
   tanker,
 };

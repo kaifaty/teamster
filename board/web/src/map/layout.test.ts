@@ -3,7 +3,7 @@ import { HULL_SIZE } from "./fleet";
 import { PLACES } from "./placement";
 import {
   COUNT_ROOM, MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, clampCamera, depotPosition, fitCamera, freeView, parkingOf, parkingOrder,
-  plateAt, plateRoom, skyChoices, stationOf, systemWorldSize,
+  homeWorld, plateAt, plateRoom, skyChoices, stationOf, systemWorldSize,
   RESEARCH_SIZE, LABEL_MAX_WIDTH, DEPOT_LABEL_DROP, MACHINE_MIN_SIZE, MACHINE_SIZE, machineColumnRect, machineLabelAnchor, machinePositions, machineRoom, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
   starRadius, starSize, stationAt, systemFrame, worldSize, zoomCamera, type Rect, type StarShape,
 } from "./layout";
@@ -208,6 +208,28 @@ describe("system", () => {
     }
   });
 
+  it("puts the home world at the left edge, its limb behind the yard's dock, clear of the other stations and their ships", () => {
+    for (const { size, frame } of frames) {
+      const home = homeWorld(frame);
+      const yard = stationAt("yard", frame);
+      const dock = stationOf("yard", frame).radius;
+      expect(home.x, `${size.width}x${size.height}`).toBeLessThan(0);
+      expect(home.x + home.radius).toBeGreaterThan(yard.x - dock);
+      expect(home.x + home.radius).toBeLessThan(yard.x + dock);
+      for (const place of PLACES.filter((name) => name !== "yard")) {
+        const station = stationAt(place, frame);
+        const radius = stationOf(place, frame).radius;
+        expect(Math.hypot(station.x - home.x, station.y - home.y), place).toBeGreaterThan(home.radius + radius);
+        const sizes = Array.from({ length: 20 }, () => HULL_SIZE.cruiser);
+        const { berths, count } = parkingOf(place, sizes, frame);
+        for (const berth of [...berths, count!.at]) {
+          const ship = { x: station.x + berth.x, y: station.y + berth.y };
+          expect(Math.hypot(ship.x - home.x, ship.y - home.y), `${place} ship`).toBeGreaterThan(home.radius + HULL_SIZE.cruiser * 0.4);
+        }
+      }
+    }
+  });
+
   it("gives every ship a berth while they fit, and the last berth to the count of the rest", () => {
     const frame = systemFrame(SYSTEM_SIZES[1]!);
     const { berths } = STATIONS.yard;
@@ -217,8 +239,8 @@ describe("system", () => {
     const crowded = parkingOf("yard", Array.from({ length: berths + 4 }, () => HULL_SIZE.light), frame);
     expect(crowded.berths).toHaveLength(berths - 1);
     expect(crowded.count!.ships).toBe(5);
-    // The count stands at the far end, away from the station's name below it.
-    expect(crowded.count!.at.y).toBeLessThan(Math.min(...crowded.berths.map((berth) => berth.y)) + 1);
+    // The arc runs from the station's name below it to the count at its far end.
+    expect(crowded.count!.at.y).toBeLessThan(crowded.berths[0]!.y);
     expect(parkingOf("yard", [], frame)).toEqual({ berths: [], count: null });
   });
 

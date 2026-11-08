@@ -161,7 +161,7 @@ export type PlateSide = "below" | "above" | "left";
  * them, `plate`. `berths` is how many ships it shows; the rest wait behind a count.
  */
 export const STATIONS: Record<Place, { orbit: number; angle: number; radius: number; side: number; plate: PlateSide; berths: number }> = {
-  yard: { orbit: 0.9, angle: 180, radius: 140, side: 0, plate: "below", berths: 10 },
+  yard: { orbit: 0.9, angle: 180, radius: 120, side: 0, plate: "below", berths: 10 },
   range: { orbit: 0.74, angle: 238, radius: 84, side: 270, plate: "below", berths: 6 },
   inspection: { orbit: 0.64, angle: 320, radius: 116, side: 270, plate: "below", berths: 6 },
   gate: { orbit: 0.46, angle: 62, radius: 70, side: 0, plate: "below", berths: 5 },
@@ -187,6 +187,16 @@ export function stationOf(place: Place, frame: SystemFrame): (typeof STATIONS)[P
   const station = STATIONS[place];
   if (!frame.tall) return station;
   return { ...station, radius: Math.round(station.radius * TALL_SCALE), ...TALL[place] };
+}
+
+/**
+ * The system's home world: the repository's own planet, large, at the left edge of the system, its sunlit side
+ * turned to the sun. The shipyard hangs in orbit over its limb, and new ships fly in from it.
+ */
+export function homeWorld(frame: SystemFrame): Point & { radius: number } {
+  const yard = stationAt("yard", frame);
+  const radius = frame.tall ? 240 : 380;
+  return { x: yard.x - radius, y: yard.y, radius };
 }
 
 /** The way a task goes, towards the sun. */

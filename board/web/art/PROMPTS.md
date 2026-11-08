@@ -41,6 +41,10 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 10. station-power (landscape, 1536x1024): One orbital power station seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A hexagonal reactor hub with one round glass dome in the middle over a bright pale white reactor core, and four long straight radiator wings made of dark ribbed panels reaching out in a cross, joined to the hub by thick copper power conduits. Dark steel and brass plating, small amber lamps along the wings. Pre-rendered look with metallic highlights. No shadow on the background.
 
+11. station-yard (square, 1024x1024): One large orbital shipyard seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A massive square dry dock made of an open girder framework: a thick armoured backbone along its left side with three long parallel slipways reaching out to the right, open at their right ends. Two slipways hold half-built ship hulls with bare ribs and patches of copper plating; the third slipway is empty. Two heavy gantry cranes bridge the slipways. Bright white welding sparks and amber floodlights shine on the hulls, and small warm lamps line the girders. Dark steel and copper plating; the open spaces between the girders show the flat magenta background. Pre-rendered look with metallic highlights. No shadow on the background.
+
+The shipyard is a dock over the limb of the system's home world; `planet-yard` is that home world for a repository without its own planet. A single new picture is prepared alone: `python3 art/prepare.py SOURCE_DIR --only station-yard`.
+
 ## Ship classes and convoys
 
 Same STYLE as the first list. Frigates and cruisers carry tasks with more reasoning effort; the escort flies with a ship under review, the tanker along a supply line.
@@ -83,7 +87,7 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 ## The art of one project
 
-A repository may have its own sky, home planet and emblem. They live in `board-art/<repo>/` in the data home (`~/.teamster/board-art/<repo>/` by default), never in this repository: a project's name and theme can be private. Nothing here is generated automatically, and a project without art keeps the shared pictures.
+A repository may have its own sky, home planet and emblem. The home planet is the system's home world, drawn large at its left edge under the shipyard's dock. They live in `board-art/<repo>/` in the data home (`~/.teamster/board-art/<repo>/` by default), never in this repository: a project's name and theme can be private. Nothing here is generated automatically, and a project without art keeps the shared pictures.
 
 1. Read the project's README and write its theme in one short sentence: what the project is like, as an image. The prompts carry only that theme, never code, file names, or text taken from the project.
 2. Fill the three prompts below, each after its style line: the sky after the STYLE of the skies above, the planet and the emblem after the first STYLE of this file.

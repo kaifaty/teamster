@@ -18,6 +18,7 @@ import {
   fitCamera,
   freeView,
   hashName,
+  homeWorld,
   limitZoom,
   parkingOf,
   parkingOrder,
@@ -418,6 +419,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   galaxy.addChild(lanes, watchFx, depotLayer, machineLayer, tankerLayer, researchLayer, starLayer, stormLayer, probeLayer, galaxyFx);
 
   const system = new Container();
+  /** The repository's own planet, its home world, behind everything else at the system's left edge. */
+  const homeBody = new Sprite(Texture.EMPTY);
+  homeBody.anchor.set(0.5);
   const charts = new Graphics();
   const corona = glow("#ff9a3c", SUN_RADIUS * 7);
   const sun = sprite(art("sun"), SUN_RADIUS * 2 * SUN_MARGIN);
@@ -429,7 +433,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const smokeLayer = new Container();
   const escortLayer = new Container();
   const systemFx = new Graphics();
-  system.addChild(charts, corona, sun, stationLayer, gateGlow, gate, beams, shipLayer, smokeLayer, escortLayer, systemFx);
+  system.addChild(homeBody, charts, corona, sun, stationLayer, gateGlow, gate, beams, shipLayer, smokeLayer, escortLayer, systemFx);
   const puffs: Puff[] = Array.from({ length: SMOKE_PUFFS }, () => {
     const made = sprite(glowTexture, 10);
     made.tint = SPACE.smoke;
@@ -484,7 +488,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   let pausedUntil = 0;
   let disposed = false;
   let repoArt: ArtIndex = {};
-  /** The focused system's own planet, in place of the shipyard's. */
+  /** The focused system's own planet, its home world in place of the shared one. */
   let home: Texture | null = null;
   /** Counts the times a system was dressed, so that a late picture does not land on the next one. */
   let dressing = 0;
@@ -753,14 +757,14 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   function stationSprite(place: Exclude<Place, "gate">): Sprite {
     const name: Record<typeof place, ArtName> = {
-      yard: "planetYard",
+      yard: "stationYard",
       range: "planetRange",
       inspection: "planetInspection",
       roadstead: "planetRoadstead",
       cryo: "planetCryo",
       command: "stationCommand",
     };
-    return sprite(place === "yard" && home ? home : art(name[place]), stationOf(place, frame).radius * 2 * BALL_MARGIN);
+    return sprite(art(name[place]), stationOf(place, frame).radius * 2 * BALL_MARGIN);
   }
 
   function drawStations() {
@@ -769,13 +773,26 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       const body = stationSprite(place);
       const point = stationAt(place, frame);
       body.position.set(point.x, point.y);
-      // The art is lit from the upper left: mirror each planet so that its bright side faces the sun.
-      if (place !== "command") {
+      if (place === "yard") {
+        // The dock's slipways open towards its ships.
+        if (Math.cos((stationOf(place, frame).side * Math.PI) / 180) < 0) body.scale.x *= -1;
+      } else if (place !== "command") {
+        // The art is lit from the upper left: mirror each planet so that its bright side faces the sun.
         if (point.x < frame.cx) body.scale.x *= -1;
         if (point.y < frame.cy) body.scale.y *= -1;
       }
       stationLayer.addChild(body);
     }
+    drawHome();
+  }
+
+  /** The home world, mirrored so that its bright side faces the sun. */
+  function drawHome() {
+    const planet = homeWorld(frame);
+    homeBody.texture = home ?? art("planetYard");
+    homeBody.scale.set((planet.radius * 2 * BALL_MARGIN) / Math.max(homeBody.texture.width, homeBody.texture.height));
+    homeBody.scale.x *= -1;
+    homeBody.position.set(planet.x, planet.y);
   }
 
   function drawCharts() {
