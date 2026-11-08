@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../types";
-import { FLASH_MS, ciChip, claudeLink, isFlashing, matchesKind, problemLabel, tabTitle, taskTitle } from "./labels";
+import { FLASH_MS, ciChip, claudeLink, isFlashing, matchesKind, problemLabel, shipLine, tabTitle, taskTitle } from "./labels";
 
 const task = (extra: Partial<TaskSummary>): TaskSummary => ({
   slug: "t", kind: "work", title: null, link: null, repo: "r", branch: null, task_type: null, executor: "codex", account: null,
@@ -81,5 +81,14 @@ describe("tabTitle", () => {
   it("puts the count of alarms first and leaves the title alone without them", () => {
     expect(tabTitle("Доска задач teamster", 3)).toBe("(3) Доска задач teamster");
     expect(tabTitle("Доска задач teamster", 0)).toBe("Доска задач teamster");
+  });
+});
+
+describe("shipLine", () => {
+  it("says a live task has no activity, and gives a replayed record its summary and age", () => {
+    const quiet = task({ column: "running", alive: true, summary: "Прошёл полигон", updated_at: 1000 });
+    expect(shipLine(quiet, true, 1300, false)).toBe("нет активности");
+    expect(shipLine(quiet, true, 1300, true)).toBe("Прошёл полигон · 5 мин назад");
+    expect(shipLine({ ...quiet, summary: null }, true, 1300, true)).toBe("нет активности");
   });
 });

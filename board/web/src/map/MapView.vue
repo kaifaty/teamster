@@ -2,16 +2,19 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { ArtIndex, LogEvent, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
-import { formatAge, formatDuration, formatUntil } from "../lib/format";
-import { ACTIVITY, EXECUTORS, PHASES, prLabel, problemLabel, taskTitle } from "../lib/labels";
+import { formatDuration, formatUntil } from "../lib/format";
+import { EXECUTORS, PHASES, problemLabel, shipLine, taskTitle } from "../lib/labels";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
 import DaySummary from "./DaySummary.vue";
+import ReplayBar from "./ReplayBar.vue";
 import ShipLog from "./ShipLog.vue";
-import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines } from "./fleet";
+import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines, type Star } from "./fleet";
 import { cardPlace, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
+import { replayExits, replayFleet } from "./replay";
 import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type ShipEntry } from "./scene";
+import { useReplay } from "./useReplay";
 
 const props = defineProps<{ board: Board; active: boolean }>();
 const emit = defineEmits<{ board: [] }>();
@@ -40,14 +43,48 @@ watch(sourceKind, async (kind) => {
   }
 });
 const source = computed(() => (sourceKind.value === "scenario" && scenario.value ? scenario.value : props.board));
-const tasks = computed(() => source.value.tasks.value);
+const liveTasks = computed(() => source.value.tasks.value);
 const loaded = computed(() => source.value.state.value.loaded);
+
+// Replay: the fleet of a past moment, rebuilt from the ship's log. Live updates keep coming into the board
+// meanwhile; they reach the map again when it goes back on air.
+const replay = useReplay(source, now);
+/** The moment the map shows: the replay's, or now. */
+const mapNow = computed(() => replay.at ?? now.value);
+const tasks = computed(() => (replay.at !== null ? replayFleet(replay.events, replay.at, liveTasks.value) : liveTasks.value));
+/** Whether the scene's ships were last the replay's: going back on air, the ships the live fleet lacks fade. */
+let replayedShips = false;
+function setShips(next: ShipEntry[]) {
+  if (!scene) return;
+  scene.setShips(next, replayExits(replay.at, replayedShips, replay.events));
+  replayedShips = replay.at !== null;
+}
 
 // Galaxy: one star per repository, one depot per account. Null means the whole galaxy is shown.
 const repo = ref<string | null>(null);
-const starList = computed(() => stars(tasks.value));
+// The same list while nothing changes, so that a playing replay does not redraw the galaxy at every step.
+let lastStars: Star[] = [];
+const starList = computed(() => {
+  const next = galaxyStars();
+  if (JSON.stringify(next) === JSON.stringify(lastStars)) return lastStars;
+  lastStars = next;
+  return next;
+});
+function galaxyStars(): Star[] {
+  if (replay.at === null) return stars(tasks.value);
+  // Every system of the board and of the day keeps its star, so that the galaxy does not rearrange as it plays.
+  const list = stars([...tasks.value, ...liveTasks.value.map((task) => ({ ...task, column: "closed" as const }))]);
+  const known = new Set(list.map((star) => star.repo));
+  for (const event of replay.events) {
+    if (!event.repo || !event.slug || known.has(event.repo)) continue;
+    known.add(event.repo);
+    list.push({ repo: event.repo, live: 0, attention: 0, ready: 0, sleeping: 0, dots: [] });
+  }
+  return list.sort((a, b) => a.repo.localeCompare(b.repo));
+}
+// Tankers and depots stay live: the accounts' past is not recorded.
 const depotList = computed(() => depots(source.value.state.value.accounts?.data ?? null, now.value));
-const lines = computed(() => supplyLines(tasks.value, depotList.value));
+const lines = computed(() => supplyLines(liveTasks.value, depotList.value));
 const repoModel = computed({
   get: () => repo.value ?? "",
   set: (value: string) => {
@@ -74,7 +111,7 @@ const hideImage = (event: Event) => {
 
 const system = computed(() => (repo.value ? systemTasks(tasks.value, repo.value) : { shown: [], hidden: [] }));
 const entries = computed<ShipEntry[]>(() =>
-  system.value.shown.map((task) => ({ task, placement: placement(task, now.value, system.value.shown)! })),
+  system.value.shown.map((task) => ({ task, placement: placement(task, mapNow.value, system.value.shown)! })),
 );
 
 // Labels ------------------------------------------------------------------------------------------
@@ -85,27 +122,20 @@ const glyph = (task: TaskSummary) => (task.executor === "codex" ? "◆" : "✳")
 function phaseText(task: TaskSummary): string {
   switch (task.column) {
     case "sleeping":
-      return task.sleeping_until !== null ? `сон ${formatUntil(task.sleeping_until, now.value)}` : PHASES.sleeping;
+      return task.sleeping_until !== null ? `сон ${formatUntil(task.sleeping_until, mapNow.value)}` : PHASES.sleeping;
     case "review_me":
       return "ждёт тебя";
     case "attention":
       return problemLabel(task) ?? "нужно внимание";
     default: {
       const ticking = task.alive && task.phase_started_at !== null;
-      return ticking ? `${PHASES[task.phase]} · ${formatDuration(now.value - task.phase_started_at!)}` : PHASES[task.phase];
+      return ticking ? `${PHASES[task.phase]} · ${formatDuration(mapNow.value - task.phase_started_at!)}` : PHASES[task.phase];
     }
   }
 }
 
 /** The ship's line: its latest activity and how old it is, or why it no longer works. */
-function activityLine(task: TaskSummary, where: Placement): string {
-  if (task.column === "review_me") return task.pr ? `готово · ${prLabel(task.pr)}` : "готово";
-  if (!task.alive) return `${task.summary ?? problemLabel(task) ?? "надзиратель не запущен"} · ${formatAge(task.updated_at, now.value)}`;
-  const activity = task.activity;
-  if (!activity) return "нет активности";
-  const age = where.stale && activity.at !== null ? ` · ${formatAge(activity.at, now.value)}` : "";
-  return `${ACTIVITY[activity.kind].icon} ${activity.text}${age}`;
-}
+const activityLine = (task: TaskSummary, where: Placement) => shipLine(task, where.stale, mapNow.value, replay.at !== null);
 
 const STATION_TEXT: Record<Place, { name: string; note: string }> = {
   command: { name: "Штаб", note: "твои сессии" },
@@ -231,6 +261,14 @@ function onKey(event: KeyboardEvent) {
 // Ship's log and the day's summary -----------------------------------------------------------------
 
 const events = computed(() => source.value.events.value);
+/** The log's lines: the replayed day's while the map replays, else the live last day. */
+const logEvents = computed(() => {
+  if (replay.at === null) return events.value;
+  const { since, until } = replay.window;
+  return replay.events.filter((event) => event.at >= since && event.at <= until);
+});
+const replayClock = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
+const replayTime = computed(() => (replay.at === null ? null : replayClock.format(new Date(replay.at * 1000))));
 const systemNames = computed(() => new Set(starList.value.map((star) => star.repo)));
 const eventsError = computed(() => source.value.eventsError.value);
 // The last day's history loads whenever the map opens; live events join it without duplicates.
@@ -248,6 +286,12 @@ function goTo(event: LogEvent) {
   repo.value = event.repo;
   const ship = event.slug ? systemTasks(tasks.value, event.repo).shown.find((task) => task.slug === event.slug) : undefined;
   selected.value = ship ? ship.slug : null;
+}
+
+/** A line of the log in replay: the scale moves to its time, and the map to its system. */
+function seekTo(event: LogEvent) {
+  replay.seek(event.at);
+  if (event.repo && systemNames.value.has(event.repo)) repo.value = event.repo;
 }
 
 const summaryOpen = ref(false);
@@ -270,7 +314,7 @@ function feed() {
   scene.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value });
   scene.setArt(repoArt.value);
   scene.setView(repo.value);
-  scene.setShips(entries.value);
+  setShips(entries.value);
   scene.setSelected(selected.value);
   scene.setHovered(hovered.value);
   scene.setActive(props.active);
@@ -327,7 +371,7 @@ function retry() {
 watch([starList, depotList, lines], () => scene?.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value }));
 watch(repoArt, (art) => scene?.setArt(art));
 watch(repo, (name) => scene?.setView(name), { flush: "sync" });
-watch(entries, (next) => scene?.setShips(next));
+watch(entries, setShips);
 watch(selected, (slug) => scene?.setSelected(slug));
 watch(hovered, (slug) => scene?.setHovered(slug));
 watch(
@@ -339,6 +383,7 @@ watch(
     }
     scene?.setActive(active);
     if (!active) {
+      replay.pause();
       selected.value = null;
       summaryOpen.value = false;
     }
@@ -445,10 +490,27 @@ onBeforeUnmount(() => {
           <span v-if="system.hidden.length" class="hidden-count" :title="hiddenTitle">не показано {{ system.hidden.length }}</span>
         </template>
       </div>
-      <ShipLog :events="events" :error="eventsError" :repo="repo" :frame="frameLight" :systems="systemNames" :emblem-of="emblemOf" @go="goTo" />
+      <div class="dock">
+        <p v-if="replayTime" class="plate in-dock num" aria-hidden="true">Перемотка · {{ replayTime }}</p>
+        <ReplayBar :replay="replay" :frame="frameLight" :now="now" />
+        <ShipLog
+          :events="logEvents"
+          :error="replay.at === null ? eventsError : replay.error"
+          :repo="repo"
+          :frame="frameLight"
+          :systems="systemNames"
+          :emblem-of="emblemOf"
+          :at="replay.at"
+          @go="goTo"
+          @seek="seekTo"
+        />
+      </div>
+      <p v-if="replayTime" class="plate on-sky num" role="status">Перемотка · {{ replayTime }}</p>
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
       <p v-else-if="!starList.length" class="status">Пока ни одной задачи: галактика пуста.</p>
-      <p v-else-if="repo && !entries.length" class="status">В этой системе сейчас никого: все задачи закрыты.</p>
+      <p v-else-if="repo && !entries.length" class="status">
+        {{ replay.at === null ? "В этой системе сейчас никого: все задачи закрыты." : "В этот момент в системе никого." }}
+      </p>
     </div>
 
     <TaskPanel
@@ -568,6 +630,57 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--surface) 80%, transparent);
   color: var(--muted);
   font-size: 11.5px;
+}
+
+/* The ship's log and, over it, the replay's scale. */
+.dock {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-sizing: border-box;
+  width: min(540px, calc(100% - 20px));
+  max-height: 62%;
+}
+
+.dock > :deep(.log) {
+  flex: 0 1 auto;
+}
+
+.dock > :deep(.replay) {
+  flex: none;
+}
+
+/* Over the map while it replays; the sky's own labels stay clear under it. */
+.plate {
+  margin: 0;
+  padding: 3px 12px;
+  border: 1px solid rgba(243, 198, 78, 0.6);
+  border-radius: 3px;
+  background: rgba(8, 10, 15, 0.86);
+  color: #f3c64e;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.plate.on-sky {
+  position: absolute;
+  left: 50%;
+  top: 46px;
+  z-index: 2;
+  transform: translateX(-50%);
+}
+
+/* On a phone the toolbar takes the top of the map: the plate stands over the scale instead. */
+.plate.in-dock {
+  display: none;
+  align-self: center;
 }
 
 .status,
@@ -843,6 +956,20 @@ onBeforeUnmount(() => {
 @media (max-width: 760px) {
   .hint {
     display: none;
+  }
+
+  .dock {
+    left: 4px;
+    bottom: 4px;
+    width: calc(100% - 8px);
+  }
+
+  .plate.on-sky {
+    display: none;
+  }
+
+  .plate.in-dock {
+    display: block;
   }
 
   .picker select {

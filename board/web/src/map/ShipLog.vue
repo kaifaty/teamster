@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // The ship's log at the bottom of the map: the fleet's completed phases and the lead's verdicts, newest first.
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import type { LogEvent } from "../types";
 import { describeEvent, eventKey } from "../lib/events";
 import { formatFullTime } from "../lib/format";
@@ -17,8 +17,13 @@ const props = defineProps<{
   /** Systems the map can open; a line about any other one, or without a repository, leads nowhere. */
   systems: ReadonlySet<string>;
   emblemOf: (repo: string | null) => string | null;
+  /** The replay's moment: the rows up to it are marked and scrolled to, and every row moves the replay. */
+  at?: number | null;
 }>();
-const emit = defineEmits<{ go: [event: LogEvent] }>();
+const emit = defineEmits<{ go: [event: LogEvent]; seek: [event: LogEvent] }>();
+
+/** In replay, this many rows after the moment stay above it. */
+const AHEAD = 50;
 
 /** The log never draws more rows than this; older ones stay in memory. */
 const SHOWN = 300;
@@ -33,25 +38,63 @@ const sunColour = (repo: string) => SUN_KINDS[hashName(repo) % SUN_KINDS.length]
 
 const rows = computed(() => {
   const list = props.repo ? props.events.filter((event) => event.repo === props.repo) : props.events;
+  const at = props.at ?? null;
+  // In replay the rows shown are those around the moment, not only the newest ones.
+  let top = list.length - 1;
+  if (at !== null) {
+    let past = list.length - 1;
+    while (past >= 0 && list[past]!.at > at) past--;
+    top = Math.min(list.length - 1, past + AHEAD);
+  }
   const rows = [];
-  for (let i = list.length - 1; i >= 0 && rows.length < SHOWN; i--) {
+  let current = true;
+  for (let i = top; i >= 0 && rows.length < SHOWN; i--) {
     const event = list[i]!;
     const line = describeEvent(event);
+    const past = at !== null && event.at <= at;
     rows.push({
+      past,
+      future: at !== null && !past,
+      current: past && current,
       key: eventKey(event),
       event,
       time: clock.format(new Date(event.at * 1000)),
       full: formatFullTime(event.at),
       text: line.text,
       tone: line.tone,
-      go: event.repo !== null && props.systems.has(event.repo),
+      go: at !== null || (event.repo !== null && props.systems.has(event.repo)),
       emblem: props.emblemOf(event.repo),
       colour: event.repo ? sunColour(event.repo) : "#6f6a60",
       title: [formatFullTime(event.at), event.repo, line.text, event.note].filter(Boolean).join("\n"),
     });
+    if (past) current = false;
   }
   return rows;
 });
+
+// In replay the latest row up to the moment stays in view, moved only within the log.
+const list = ref<HTMLElement | null>(null);
+watch(
+  () => rows.value.find((row) => row.current)?.key,
+  (key) => {
+    if (key === undefined) return;
+    void nextTick(() => {
+      const box = list.value;
+      const row = box?.querySelector<HTMLElement>(".l-row.current");
+      if (!box || !row) return;
+      const top = row.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+      if (top < box.scrollTop || top + row.offsetHeight > box.scrollTop + box.clientHeight) {
+        box.scrollTop = Math.max(0, top - box.clientHeight / 2);
+      }
+    });
+  },
+);
+
+function pick(row: { go: boolean; event: LogEvent }) {
+  if (!row.go) return;
+  if (props.at !== null && props.at !== undefined) emit("seek", row.event);
+  else emit("go", row.event);
+}
 
 const hideImage = (event: Event) => {
   (event.target as HTMLElement).hidden = true;
@@ -66,7 +109,7 @@ const hideImage = (event: Event) => {
         {{ expanded ? "свернуть ▾" : "развернуть ▴" }}
       </button>
     </header>
-    <ol class="l-rows" aria-live="polite" aria-relevant="additions">
+    <ol ref="list" class="l-rows" :aria-live="at == null ? 'polite' : 'off'" aria-relevant="additions">
       <li v-if="error" class="l-note bad" :title="error">Журнал не загрузился: {{ error }}</li>
       <li v-else-if="!rows.length" class="l-note">{{ repo ? "В этой системе за сутки тихо." : "За сутки в журнале ни строчки." }}</li>
       <li v-for="row in rows" :key="row.key">
@@ -74,9 +117,10 @@ const hideImage = (event: Event) => {
           :is="row.go ? 'button' : 'div'"
           :type="row.go ? 'button' : undefined"
           class="l-row"
-          :class="[row.tone, { go: row.go }]"
+          :class="[row.tone, { go: row.go, past: row.past, future: row.future, current: row.current }]"
           :title="row.title"
-          @click="row.go && emit('go', row.event)"
+          :aria-current="row.current ? 'time' : undefined"
+          @click="pick(row)"
         >
           <time class="num" :datetime="new Date(row.event.at * 1000).toISOString()" :title="row.full">{{ row.time }}</time>
           <img v-if="row.emblem" :key="row.emblem" class="l-mark" :src="row.emblem" alt="" @error="hideImage" />
@@ -92,15 +136,13 @@ const hideImage = (event: Event) => {
 /* Stands on the dark sky in both of the board's themes, like the map's other labels. */
 .log {
   --row: 20px;
-  position: absolute;
-  left: 10px;
-  bottom: 8px;
-  z-index: 2;
+  /* Placed by the map, at the bottom under the replay's scale. */
+  position: relative;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  width: min(540px, calc(100% - 20px));
-  max-height: 50%;
+  width: 100%;
+  min-height: 0;
   padding: 2px 4px 4px;
   border: 10px solid transparent;
   border-image: var(--frame) 30 / 10px / 0 stretch;
@@ -235,6 +277,20 @@ const hideImage = (event: Event) => {
   color: #ffb3a3;
 }
 
+/* Replay: the rows still ahead are dim, the ones behind the moment carry a mark on the left. */
+.l-row.future {
+  opacity: 0.45;
+}
+
+.l-row.past {
+  box-shadow: inset 2px 0 0 rgba(214, 170, 96, 0.45);
+}
+
+.l-row.current {
+  background: rgba(243, 198, 78, 0.16);
+  box-shadow: inset 2px 0 0 #f3c64e;
+}
+
 .l-note {
   padding: 2px 3px;
   overflow: hidden;
@@ -250,9 +306,6 @@ const hideImage = (event: Event) => {
 @media (max-width: 760px) {
   .log {
     --row: 22px;
-    left: 4px;
-    bottom: 4px;
-    width: calc(100% - 8px);
   }
 }
 </style>

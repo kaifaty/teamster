@@ -279,18 +279,38 @@ function accounts(start: number) {
 const R = SCENARIO_REPO;
 const O = SCENARIO_OUTPOST;
 
-/** The demo systems' last day in the ship's log. */
-const HISTORY: readonly DemoEvent[] = [
-  { ago: 15 * 3600, kind: "verdict", slug: "old-hull-refit", repo: R, verdict: "accepted" },
-  { ago: 11 * 3600, kind: "scout", slug: "outpost-survey", repo: O, phase: "scout", outcome: "completed" },
-  { ago: 7 * 3600, kind: "work", slug: "outpost-migration", repo: O, phase: "work", turn: 1, outcome: "failed" },
-  { ago: 3 * 3600, kind: "work", slug: "ci-burns-after-fixes", repo: R, phase: "turn", turn: 1, outcome: "completed", ci: "failed" },
-  { ago: 2.5 * 3600, kind: "work", slug: "ci-burns-after-fixes", repo: R, phase: "fix", turn: 2, round: 1, outcome: "completed" },
-  { ago: 2 * 3600, kind: "verdict", slug: "gate-retune", repo: R, verdict: "redone" },
-  { ago: 90 * 60, kind: "review", slug: "inspector-escort", repo: R, phase: "review", turn: 1, outcome: "completed", findings: 4 },
-  { ago: 40 * 60, kind: "work", slug: "outpost-patrol", repo: O, phase: "work", turn: 1, outcome: "budget_exhausted" },
-  { ago: 20 * 60, kind: "work", slug: "heavy-range-check", repo: R, phase: "check", turn: 1, outcome: "timeout" },
-  { ago: 8 * 60, kind: "verdict", slug: "beacon-colours", repo: R, verdict: "dropped" },
+const H = 3600;
+const M = 60;
+
+/**
+ * The demo systems' last day in the ship's log. For the replay, old-hull-refit goes all the way from the yard
+ * into the sun, ci-burns-after-fixes fails at the gate and goes back to the yard, and outpost-migration ends
+ * its turn blocked.
+ */
+export const SCENARIO_HISTORY: readonly DemoEvent[] = [
+  { ago: 17 * H, took: 45 * M, kind: "work", slug: "old-hull-refit", repo: R, provider: "codex", account: "codex-team-1", phase: "work", turn: 1, outcome: "completed" },
+  { ago: 16.6 * H, took: 15 * M, kind: "work", slug: "old-hull-refit", repo: R, provider: "codex", phase: "check", turn: 1, outcome: "passed" },
+  { ago: 16.2 * H, took: 18 * M, kind: "review", slug: "old-hull-refit", repo: R, provider: "claude", reviewer: "claude", phase: "review", turn: 1, outcome: "completed", findings: 0 },
+  { ago: 15.9 * H, took: 1.85 * H, kind: "work", slug: "old-hull-refit", repo: R, provider: "codex", phase: "turn", turn: 1, outcome: "done", result_status: "done", ci: "passed" },
+  { ago: 15 * H, kind: "verdict", slug: "old-hull-refit", repo: R, verdict: "accepted" },
+  { ago: 11 * H, took: 20 * M, kind: "scout", slug: "outpost-survey", repo: O, provider: "claude", phase: "scout", outcome: "completed" },
+  { ago: 7.6 * H, took: 30 * M, kind: "work", slug: "outpost-migration", repo: O, provider: "codex", phase: "work", turn: 1, outcome: "completed" },
+  { ago: 7.3 * H, took: 10 * M, kind: "work", slug: "outpost-migration", repo: O, provider: "codex", phase: "check", turn: 1, outcome: "failed" },
+  { ago: 7 * H, took: 15 * M, kind: "work", slug: "outpost-migration", repo: O, provider: "codex", phase: "fix", turn: 1, round: 1, outcome: "failed" },
+  { ago: 6.95 * H, took: 1.2 * H, kind: "work", slug: "outpost-migration", repo: O, provider: "codex", phase: "turn", turn: 1, outcome: "done", result_status: "blocked" },
+  { ago: 4 * H, took: 35 * M, kind: "work", slug: "ci-burns-after-fixes", repo: R, provider: "claude", account: "claude-pool-1", phase: "work", turn: 1, outcome: "completed" },
+  { ago: 3.6 * H, took: 10 * M, kind: "work", slug: "ci-burns-after-fixes", repo: R, provider: "claude", phase: "check", turn: 1, outcome: "passed" },
+  { ago: 3.3 * H, took: 15 * M, kind: "review", slug: "ci-burns-after-fixes", repo: R, provider: "codex", reviewer: "codex", phase: "review", turn: 1, outcome: "completed", findings: 1 },
+  { ago: 3 * H, took: 1.6 * H, kind: "work", slug: "ci-burns-after-fixes", repo: R, provider: "claude", phase: "turn", turn: 1, outcome: "done", result_status: "done", ci: "failed" },
+  // The next turn starts as the gate turns it back: the ship goes straight back to the yard.
+  { ago: 2.5 * H, took: 0.5 * H, kind: "work", slug: "ci-burns-after-fixes", repo: R, provider: "claude", phase: "fix", turn: 2, round: 1, outcome: "completed" },
+  { ago: 2.3 * H, took: 10 * M, kind: "work", slug: "ci-burns-after-fixes", repo: R, provider: "claude", phase: "check", turn: 2, round: 1, outcome: "passed" },
+  { ago: 2 * H, kind: "verdict", slug: "gate-retune", repo: R, verdict: "redone" },
+  { ago: 90 * M, took: 25 * M, kind: "review", slug: "inspector-escort", repo: R, provider: "codex", reviewer: "codex", phase: "review", turn: 1, outcome: "completed", findings: 4 },
+  { ago: 70 * M, took: 30 * M, kind: "work", slug: "ci-burns-after-fixes", repo: R, provider: "claude", phase: "fix", turn: 2, round: 2, outcome: "completed" },
+  { ago: 40 * M, took: 20 * M, kind: "work", slug: "outpost-patrol", repo: O, provider: "claude", phase: "work", turn: 1, outcome: "budget_exhausted" },
+  { ago: 20 * M, took: 8 * M, kind: "work", slug: "heavy-range-check", repo: R, provider: "codex", phase: "check", turn: 1, outcome: "timeout" },
+  { ago: 8 * M, kind: "verdict", slug: "beacon-colours", repo: R, verdict: "dropped" },
 ];
 
 /** One of these joins the log at every step of the scenario. */
@@ -315,7 +335,7 @@ export function scenarioSource(): BoardSource {
   return {
     label: "сценарий",
     fetchArt: async () => ({}),
-    fetchEvents: async (since, until) => demoEvents(HISTORY, origin, since, until),
+    fetchEvents: async (since, until) => demoEvents(SCENARIO_HISTORY, origin, since, until),
     fetchReport: async () =>
       demoReport(Date.now() / 1000, [
         { slug: "ci-burns-after-fixes", repo: R, minutes: 128, turns: 3 },

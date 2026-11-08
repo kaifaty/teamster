@@ -39,10 +39,15 @@ Generation is manual: see "The art of one project" in [PROMPTS.md](web/art/PROMP
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
 live `event` messages) in the map's words, newest first; in a system it shows only that system. A line leads to its
 system and selects the ship while it is still there. «Сводка дня» shows today's `teamster report --by executor` and
-the day's verdicts. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
+the day's verdicts. The scale over the log replays a day — the last 24 hours, or any of the 31 days before
+today: a slider, play and pause at ×60, ×600 or ×3600, marks at verdicts and CI failures, and «В эфир» back to the
+live fleet. `board/web/src/map/replay.ts` rebuilds the fleet at each moment from the log's events alone (with two
+hours before the day for ships already under way), shaped like live tasks, so ships, stars and storms show the past
+while live updates wait; depots and tankers stay live, since the accounts' past is not recorded. In replay the log
+marks the lines up to the moment, and a click on a line moves the scale to it. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
 (`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them.
 `npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
-every station; both fixture sources include log events and a day's report.
+every station; both fixture sources include a day of log events, with a ship that reaches the sun, one turned back at the gate and one in trouble, and a day's report.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
