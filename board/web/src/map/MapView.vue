@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import type { ArtIndex, LogEvent, ResearchView, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
 import { formatDuration, formatUntil } from "../lib/format";
+import { loadJson, saveJson } from "../lib/storage";
 import { EXECUTORS, PHASES, problemLabel, shipLine, taskTitle } from "../lib/labels";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
@@ -461,7 +462,7 @@ function placeStarLabels() {
 watch([starLabels, repo], () => void nextTick(measureLabels), { flush: "post" });
 watch(hoveredStar, scheduleLabels);
 
-// The dock on a narrow window -----------------------------------------------------------------------
+// The dock ------------------------------------------------------------------------------------------
 
 /** A phone-sized window, as the `@media (max-width: 760px)` rules see it: the dock folds there to one line. */
 const narrowQuery = matchMedia("(max-width: 760px)");
@@ -469,10 +470,28 @@ const narrow = ref(narrowQuery.matches);
 const onNarrow = (event: MediaQueryListEvent) => {
   narrow.value = event.matches;
 };
+/** On a wide window the replay's scale shows or hides as the viewer last chose. */
+const REPLAY_KEY = "codex-board.replay-shown.v1";
+const replayShown = ref(loadJson(REPLAY_KEY, true, (v): v is boolean => typeof v === "boolean"));
+watch(replayShown, (value) => saveJson(REPLAY_KEY, value));
 /** On a narrow window, the replay's scale and the whole log open over the map on demand. */
 const replayOpen = ref(false);
 const logOpen = ref(false);
+const replayVisible = computed(() => (narrow.value ? replayOpen.value : replayShown.value));
+function toggleReplay() {
+  if (narrow.value) replayOpen.value = !replayOpen.value;
+  else replayShown.value = !replayShown.value;
+}
 const dockFolded = computed(() => !narrow.value || (!replayOpen.value && !logOpen.value));
+// On a wide window the scale is part of the dock's shape: hidden, it leaves its corner to the stars.
+watch(replayShown, () => {
+  if (narrow.value) return;
+  coveredFor = "";
+  void nextTick(() => {
+    measureCovered();
+    scheduleLabels();
+  });
+});
 // Across the breakpoint the dock changes its shape: it folds and is measured again.
 watch(narrow, () => {
   replayOpen.value = false;
@@ -754,7 +773,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="dock">
         <p v-if="replayTime" class="plate in-dock num" aria-hidden="true">Перемотка · {{ replayTime }}</p>
-        <ReplayBar v-show="!narrow || replayOpen" id="replay-scale" :replay="replay" :frame="frameLight" :now="now" />
+        <ReplayBar v-show="replayVisible" id="replay-scale" :replay="replay" :frame="frameLight" :now="now" />
         <ShipLog
           v-model:open="logOpen"
           :events="logEvents"
@@ -768,16 +787,16 @@ onBeforeUnmount(() => {
           @go="goTo"
           @seek="seekTo"
         >
-          <template v-if="narrow" #head>
+          <template #head>
             <button
               type="button"
               class="dock-replay"
               :class="{ on: replay.active }"
               aria-controls="replay-scale"
-              :aria-expanded="replayOpen"
+              :aria-expanded="replayVisible"
               aria-label="Перемотка дня"
-              title="Перемотка дня"
-              @click="replayOpen = !replayOpen"
+              :title="replayVisible ? 'Скрыть перемотку дня' : 'Показать перемотку дня'"
+              @click="toggleReplay"
             >
               <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" />
@@ -785,6 +804,8 @@ onBeforeUnmount(() => {
                 <path d="M8 5v3.2l2.2 1.4" />
               </svg>
             </button>
+            <!-- The way back to the live map while the scale with its own button is hidden. -->
+            <button v-if="replay.active && !replayVisible" type="button" class="dock-live" @click="replay.live()">В эфир</button>
           </template>
         </ShipLog>
       </div>
@@ -938,20 +959,31 @@ onBeforeUnmount(() => {
   flex: none;
 }
 
-/* On a narrow window, the button at the head of the folded log that opens the replay's scale. */
-.dock-replay {
-  display: inline-grid;
+/* At the head of the log: the button that shows or hides the replay's scale, and the way back to the live map. */
+.dock-replay,
+.dock-live {
   flex: none;
-  place-items: center;
-  width: 32px;
-  height: 32px;
+  align-self: center;
+  box-sizing: border-box;
+  height: 22px;
   margin: 0;
-  padding: 0;
   border: 1px solid rgba(214, 170, 96, 0.35);
   border-radius: 2px;
   background: rgba(20, 22, 28, 0.9);
   color: #b8ad98;
   cursor: pointer;
+}
+
+.dock-replay {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  padding: 0;
+}
+
+.dock-replay:hover,
+.dock-live:hover {
+  border-color: rgba(243, 198, 78, 0.8);
 }
 
 .dock-replay.on {
@@ -964,7 +996,16 @@ onBeforeUnmount(() => {
   color: #f3c64e;
 }
 
-.dock-replay:focus-visible {
+.dock-live {
+  padding: 0 6px;
+  border-color: rgba(255, 141, 122, 0.7);
+  color: #ffb3a3;
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.dock-replay:focus-visible,
+.dock-live:focus-visible {
   outline: 2px solid #f3c64e;
   outline-offset: 1px;
 }
@@ -1395,6 +1436,15 @@ onBeforeUnmount(() => {
 
   .plate.in-dock {
     display: block;
+  }
+
+  .dock-replay,
+  .dock-live {
+    height: 32px;
+  }
+
+  .dock-replay {
+    width: 32px;
   }
 
   .picker select {
