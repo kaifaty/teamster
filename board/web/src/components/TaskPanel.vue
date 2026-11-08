@@ -220,7 +220,7 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
         <dd class="num" :title="formatFullTime(shown.updated_at)">{{ formatAge(shown.updated_at, now) }}</dd>
       </dl>
 
-      <TaskCommands v-if="shown && !session" :task="shown" />
+      <TaskCommands v-if="shown && !session" :task="shown" :now="now" />
 
       <section v-if="detail && detail.timeline.length" class="timeline" aria-labelledby="timeline-title">
         <h3 id="timeline-title">Хронология</h3>

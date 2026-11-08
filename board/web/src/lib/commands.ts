@@ -20,7 +20,7 @@ export function shellQuote(text: string): string {
 }
 
 /** A name as a shell word: bare when it is plainly safe, otherwise quoted. */
-const shellWord = (text: string) => (/^[A-Za-z0-9_.@%+=,-]+$/.test(text) ? text : shellQuote(text));
+export const shellWord = (text: string) => (/^[A-Za-z0-9_.@%+=,-]+$/.test(text) ? text : shellQuote(text));
 
 /** The name teamster knows the task by: an archived record's folder ends in `-YYYYMMDDTHHMMSSZ`. */
 export function commandSlug(slug: string): string {

@@ -1,16 +1,26 @@
 <script setup lang="ts">
 // teamster commands for the task, copied to the clipboard: the board never runs anything itself.
+// The order the task's state calls for comes first; the other commands fold under "Все команды".
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { TaskSummary } from "../types";
 import { VERDICTS, sayCommand, takesWords, taskCommands, verdictCommand, type Verdict } from "../lib/commands";
+import { recommendedOrder } from "../lib/orders";
 
-const props = defineProps<{ task: Pick<TaskSummary, "slug" | "kind"> }>();
+const props = defineProps<{ task: TaskSummary; now: number }>();
 
 const plain = computed(() => taskCommands(props.task));
 const words = computed(() => takesWords(props.task));
-const verdict = ref<Verdict>("accepted");
+const order = computed(() => recommendedOrder(props.task, props.now));
+/** The order copies its own command with the main button, unless the human has to write or pick something. */
+const button = computed(() => {
+  const value = order.value;
+  return value && value.action !== "say" && value.action !== "verdict" && value.command !== null ? { label: value.label, command: value.command } : null;
+});
+/** The plain commands under "Все команды": every one but the order's own. */
+const rest = computed(() => plain.value.filter((item) => item.command !== order.value?.command));
+const verdict = ref<Verdict>(order.value?.verdict ?? "accepted");
 const note = ref("");
-const message = ref("");
+const message = ref(order.value?.text ?? "");
 
 /** The last command and where it came from; the field shows it, selected when the clipboard refused it. */
 const last = ref<{ from: string; command: string; copied: boolean } | null>(null);
@@ -18,11 +28,18 @@ const field = ref<HTMLInputElement | null>(null);
 let timer: ReturnType<typeof setTimeout> | undefined;
 
 watch(
-  () => props.task.slug,
-  () => {
-    last.value = null;
-    note.value = "";
-    message.value = "";
+  [() => props.task.slug, () => order.value?.text, () => order.value?.verdict] as const,
+  ([slug, text, chosen], [oldSlug, oldText, oldChosen]) => {
+    if (slug !== oldSlug) {
+      last.value = null;
+      note.value = "";
+      message.value = text ?? "";
+      verdict.value = chosen ?? "accepted";
+      return;
+    }
+    // The same task got a new order: follow it only where the human has not touched the field.
+    if (!message.value || message.value === (oldText ?? "")) message.value = text ?? "";
+    if (verdict.value === (oldChosen ?? "accepted")) verdict.value = chosen ?? "accepted";
   },
 );
 
@@ -55,36 +72,64 @@ onBeforeUnmount(() => clearTimeout(timer));
 <template>
   <section v-if="plain.length" class="commands" aria-labelledby="commands-title">
     <h3 id="commands-title">Команды</h3>
-    <div class="row">
-      <button
-        v-for="item in plain"
-        :key="item.id"
-        type="button"
-        class="btn cmd"
-        :title="`${item.label}: ${item.command}`"
-        @click="copy(item.id, item.command)"
-      >
-        <span class="mono">{{ flash(item.id) ? "скопировано" : item.id }}</span>
-      </button>
-    </div>
 
-    <template v-if="words">
-      <div class="row">
+    <div v-if="order" :class="['order', order.tone]">
+      <p class="reason">{{ order.reason }}</p>
+      <div v-if="button" class="row">
+        <button type="button" class="btn cmd main" :title="button.command" @click="copy('order', button.command)">
+          <span class="mono">{{ flash("order") ? "скопировано" : button.label }}</span>
+        </button>
+      </div>
+      <div v-else-if="order.action === 'verdict' && words" class="row">
         <select v-model="verdict" class="btn" aria-label="Вердикт">
           <option v-for="option in VERDICTS" :key="option" :value="option">{{ option }}</option>
         </select>
         <input v-model="note" class="field grow" type="text" maxlength="200" placeholder="заметка, необязательно" aria-label="Заметка к вердикту" />
-        <button type="button" class="btn cmd" @click="copy('verdict', verdictCommand(task.slug, verdict, note))">
-          <span class="mono">{{ flash("verdict") ? "скопировано" : "verdict" }}</span>
+        <button type="button" class="btn cmd main" @click="copy('verdict', verdictCommand(task.slug, verdict, note))">
+          <span class="mono">{{ flash("verdict") ? "скопировано" : `verdict ${verdict}` }}</span>
         </button>
       </div>
-      <div class="row">
-        <textarea v-model="message" class="field grow" rows="2" placeholder="Что сказать задаче" aria-label="Текст для teamster say"></textarea>
-        <button type="button" class="btn cmd" :disabled="!message.trim()" @click="copy('say', sayCommand(task.slug, message))">
+      <div v-else-if="order.action === 'say' && words" class="row">
+        <textarea v-model="message" class="field grow" rows="2" placeholder="Твой ответ задаче" aria-label="Текст для teamster say"></textarea>
+        <button type="button" class="btn cmd main" :disabled="!message.trim()" @click="copy('say', sayCommand(task.slug, message))">
           <span class="mono">{{ flash("say") ? "скопировано" : "say" }}</span>
         </button>
       </div>
-    </template>
+    </div>
+
+    <component :is="order ? 'details' : 'div'" :key="task.slug" :class="{ all: order }">
+      <summary v-if="order">Все команды</summary>
+      <div class="row">
+        <button
+          v-for="item in order ? rest : plain"
+          :key="item.id"
+          type="button"
+          class="btn cmd"
+          :title="`${item.label}: ${item.command}`"
+          @click="copy(item.id, item.command)"
+        >
+          <span class="mono">{{ flash(item.id) ? "скопировано" : item.id }}</span>
+        </button>
+      </div>
+
+      <template v-if="words">
+        <div v-if="order?.action !== 'verdict'" class="row">
+          <select v-model="verdict" class="btn" aria-label="Вердикт">
+            <option v-for="option in VERDICTS" :key="option" :value="option">{{ option }}</option>
+          </select>
+          <input v-model="note" class="field grow" type="text" maxlength="200" placeholder="заметка, необязательно" aria-label="Заметка к вердикту" />
+          <button type="button" class="btn cmd" @click="copy('verdict', verdictCommand(task.slug, verdict, note))">
+            <span class="mono">{{ flash("verdict") ? "скопировано" : "verdict" }}</span>
+          </button>
+        </div>
+        <div v-if="order?.action !== 'say'" class="row">
+          <textarea v-model="message" class="field grow" rows="2" placeholder="Что сказать задаче" aria-label="Текст для teamster say"></textarea>
+          <button type="button" class="btn cmd" :disabled="!message.trim()" @click="copy('say', sayCommand(task.slug, message))">
+            <span class="mono">{{ flash("say") ? "скопировано" : "say" }}</span>
+          </button>
+        </div>
+      </template>
+    </component>
 
     <p v-if="last && !last.copied" class="manual">Буфер обмена недоступен — скопируй вручную:</p>
     <input
@@ -154,6 +199,83 @@ textarea.field {
   display: block;
   width: 100%;
   font-size: 11.5px;
+}
+
+.order {
+  --tone: var(--muted);
+  --tone-soft: var(--surface-3);
+  --tone-edge: var(--border);
+  margin-bottom: 8px;
+  padding: 6px 8px 2px;
+  border: 1px solid var(--tone-edge);
+  border-left: 3px solid var(--tone);
+  border-radius: var(--radius);
+  background: var(--tone-soft);
+}
+
+.order.ok {
+  --tone: var(--ok);
+  --tone-soft: var(--ok-soft);
+  --tone-edge: var(--ok-soft);
+}
+
+.order.warn {
+  --tone: var(--warn);
+  --tone-soft: var(--warn-soft);
+  --tone-edge: var(--warn-soft);
+}
+
+.order.bad {
+  --tone: var(--bad);
+  --tone-soft: var(--bad-soft);
+  --tone-edge: var(--bad-soft);
+}
+
+.order.muted {
+  --tone: var(--border-strong);
+}
+
+.reason {
+  margin: 0 0 6px;
+  color: var(--tone);
+  font-weight: 600;
+}
+
+.order.muted .reason {
+  color: var(--muted);
+}
+
+.main {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--surface);
+  font-weight: 600;
+}
+
+.main:hover {
+  border-color: var(--text);
+  opacity: 0.88;
+}
+
+.main:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.all {
+  margin-bottom: 6px;
+}
+
+.all > summary {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.all:not([open]) > summary {
+  margin-bottom: 0;
 }
 
 .manual {
