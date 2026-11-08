@@ -22,6 +22,7 @@ import {
   labelDrop,
   logCorner,
   RESEARCH_LABEL_DROP,
+  machineColumnRect,
   machineLabelAnchor,
   machinePositions,
   type MachineShape,
@@ -505,13 +506,17 @@ function placeStarLabels() {
   const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .dock, .overlay .station, .overlay .depot, .overlay .machine, .overlay .machine-note")]
     .filter((el) => el.offsetParent !== null)
     .map((el) => relative(el.getBoundingClientRect()));
-  // The machines' stations are drawn on the canvas: their sprites keep the labels off too.
+  // The machines' stations are drawn on the canvas: the whole column keeps the labels off, the gaps between its rows
+  // too, so that no star's label stands across a station's wings.
   const column = machineColumn.value;
-  for (const point of column?.places.values() ?? []) {
-    const half = { x: (column!.size / 2) * camera.zoom, y: ((column!.size * 170) / 256 / 2) * camera.zoom };
-    const x = camera.tx + point.x * camera.zoom;
-    const y = camera.ty + point.y * camera.zoom;
-    obstacles.push({ x0: x - half.x, y0: y - half.y, x1: x + half.x, y1: y + half.y });
+  const rect = column ? machineColumnRect(column) : null;
+  if (rect) {
+    obstacles.push({
+      x0: camera.tx + rect.x0 * camera.zoom,
+      y0: camera.ty + rect.y0 * camera.zoom,
+      x1: camera.tx + rect.x1 * camera.zoom,
+      y1: camera.ty + rect.y1 * camera.zoom,
+    });
   }
   const layout = galaxy.value;
   const names = layout.spacing * camera.zoom >= QUIET_NAMES_PX;

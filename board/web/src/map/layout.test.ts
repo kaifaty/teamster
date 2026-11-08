@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PLACES } from "./placement";
 import {
   MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, LIGHT_SHIP, ringOf, ringPoint, ringsOf, skyChoices,
-  RESEARCH_SIZE, LABEL_MAX_WIDTH, DEPOT_LABEL_DROP, MACHINE_MIN_SIZE, MACHINE_SIZE, machineLabelAnchor, machinePositions, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
+  RESEARCH_SIZE, LABEL_MAX_WIDTH, DEPOT_LABEL_DROP, MACHINE_MIN_SIZE, MACHINE_SIZE, machineColumnRect, machineLabelAnchor, machinePositions, machineRoom, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
   starRadius, starSize, stationAt, systemFrame, worldSize, zoomCamera, type Rect, type StarShape,
 } from "./layout";
 
@@ -394,6 +394,33 @@ describe("machines", () => {
             }
           }
         }
+      }
+    }
+  });
+
+  it("covers the whole column with one rect, the gaps between its rows included, and not the config's line", () => {
+    expect(machineColumnRect(machinePositions([], WIDE))).toBeNull();
+    for (const world of SIZES) {
+      for (const list of [machines(1), FIXTURE, machines(12)]) {
+        const column = machinePositions(list, world, ZOOMS.get(world)![0], true);
+        const rect = machineColumnRect(column)!;
+        const ids = [...column.places.keys()];
+        const rooms = ids.map((id) => machineRoom(id, column));
+        for (const room of rooms) {
+          expect(rect.x0).toBeLessThanOrEqual(room.x0);
+          expect(rect.x1).toBeGreaterThanOrEqual(room.x1);
+          expect(rect.y0).toBeLessThanOrEqual(room.y0);
+          expect(rect.y1).toBeGreaterThanOrEqual(room.y1);
+        }
+        // Each gap between two rows, as wide as the widest label's room.
+        rooms.slice(1).forEach((room, i) => {
+          const gap = { x0: Math.min(...rooms.map((r) => r.x0)), y0: rooms[i]!.y1, x1: column.right, y1: room.y0 };
+          expect(rect.x0).toBeLessThanOrEqual(gap.x0);
+          expect(rect.y0).toBeLessThanOrEqual(gap.y0);
+          expect(rect.y1).toBeGreaterThanOrEqual(gap.y1);
+        });
+        expect(rect.x1).toBe(column.right);
+        expect(rect.y0).toBeGreaterThan(column.note!.y);
       }
     }
   });

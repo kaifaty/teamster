@@ -641,6 +641,22 @@ export function machineRoom(id: string, column: MachineColumn): Rect {
   return { x0: left, y0: at.y - half, x1: column.right, y1: at.y + half };
 }
 
+/**
+ * The whole column as one rect, in world units: from the top of the first row to the bottom of the last, and from the
+ * left side of the widest label's room to the column's right side, gaps between the rows included. The line about a
+ * broken config is not part of it. Null without machines.
+ */
+export function machineColumnRect(column: MachineColumn): Rect | null {
+  const rooms = [...column.places.keys()].map((id) => machineRoom(id, column));
+  if (!rooms.length) return null;
+  return {
+    x0: Math.min(...rooms.map((room) => room.x0)),
+    y0: Math.min(...rooms.map((room) => room.y0)),
+    x1: Math.max(...rooms.map((room) => room.x1)),
+    y1: Math.max(...rooms.map((room) => room.y1)),
+  };
+}
+
 /** The rooms of every station and of the line over the column. */
 export function machineRooms(column: MachineColumn): Rect[] {
   const rooms = [...column.places.keys()].map((id) => machineRoom(id, column));
