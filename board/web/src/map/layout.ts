@@ -341,7 +341,11 @@ export function galaxyKeepOuts(size: Size, depots: readonly Point[], covered: re
       top ? { x0: depot.x - 120, y0: 0, x1: depot.x + 120, y1: depot.y + 165 } : { x0: depot.x - 120, y0: depot.y - 170, x1: depot.x + 120, y1: size.height },
     );
   }
-  if (machines) result.push(...machineRooms(machines));
+  // The whole column, the gaps between its rows too: a star there could never show its label, see MapView.
+  const column = machines ? machineColumnRect(machines) : null;
+  if (column) result.push(column);
+  const note = machines ? machineNoteRoom(machines) : null;
+  if (note) result.push(note);
   return [...result, ...covered];
 }
 
@@ -657,12 +661,17 @@ export function machineColumnRect(column: MachineColumn): Rect | null {
   };
 }
 
+/** The room of the line over the column about a broken config: null without one. */
+export function machineNoteRoom(column: MachineColumn): Rect | null {
+  if (!column.note) return null;
+  const { x, y } = column.note;
+  return { x0: x - MACHINE_NOTE_PX.width / column.labelZoom, y0: y, x1: x, y1: y + MACHINE_NOTE_PX.height / column.labelZoom };
+}
+
 /** The rooms of every station and of the line over the column. */
 export function machineRooms(column: MachineColumn): Rect[] {
   const rooms = [...column.places.keys()].map((id) => machineRoom(id, column));
-  if (column.note) {
-    const { x, y } = column.note;
-    rooms.push({ x0: x - MACHINE_NOTE_PX.width / column.labelZoom, y0: y, x1: x, y1: y + MACHINE_NOTE_PX.height / column.labelZoom });
-  }
+  const note = machineNoteRoom(column);
+  if (note) rooms.push(note);
   return rooms;
 }

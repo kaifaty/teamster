@@ -444,19 +444,20 @@ describe("machines", () => {
     }
   });
 
-  it("lets no star stand on a station or its label", () => {
-    for (const world of SIZES) {
-      const column = machinePositions(FIXTURE, world);
+  it("lets no star stand in the machines' column, the gaps between its rows included", () => {
+    const inside = (at: { x: number; y: number }, r: Rect) => at.x >= r.x0 && at.x <= r.x1 && at.y >= r.y0 && at.y <= r.y1;
+    for (const [world, zoom] of [[WIDE, 0.855], [TALL, 0.39]] as const) {
       const depots = [0, 1].flatMap((i) => [depotPosition(i, 2, "top", world), depotPosition(i, 2, "bottom", world)]);
-      const blocked = galaxyKeepOuts(world, depots, [logCorner(world)], column);
-      for (const count of [6, 34, 100]) {
-        const stars = Array.from({ length: count }, (_, i) => ({ repo: `repo-${i}`, live: i % 3 ? 0 : 1 + (i % 7), attention: 0, ready: 0, sleeping: 0 }));
-        const galaxy = galaxyLayout(stars, world, blocked);
-        for (const star of stars) {
-          const at = galaxy.places.get(star.repo)!;
-          const glow = starSize(star.live, galaxy) * 1.15 + 4;
-          const core = { x0: at.x - glow, y0: at.y - glow, x1: at.x + glow, y1: at.y + glow };
-          for (const room of machineRooms(column)) expect(hit(core, room), `${count} stars`).toBe(false);
+      for (const machineCount of [1, 2, 4, 5, 12]) {
+        const list = machineCount === 5 ? FIXTURE : machines(machineCount);
+        const column = machinePositions(list, world, zoom);
+        const rect = machineColumnRect(column)!;
+        const blocked = galaxyKeepOuts(world, depots, [logCorner(world)], column);
+        for (const count of [6, 34, 150]) {
+          const stars = Array.from({ length: count }, (_, i) => ({ repo: `repo-${i}`, live: i % 3 ? 0 : 1 + (i % 7), attention: 0, ready: 0, sleeping: 0 }));
+          const galaxy = galaxyLayout(stars, world, blocked, null, zoom);
+          const what = `${machineCount} machines, ${count} stars in ${world.width}x${world.height}`;
+          for (const at of galaxy.places.values()) expect(inside(at, rect), what).toBe(false);
         }
       }
     }
