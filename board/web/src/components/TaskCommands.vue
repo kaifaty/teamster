@@ -97,7 +97,7 @@ onBeforeUnmount(() => clearTimeout(timer));
       </div>
     </div>
 
-    <component :is="order ? 'details' : 'div'" :class="{ all: order }">
+    <component :is="order ? 'details' : 'div'" :key="task.slug" :class="{ all: order }">
       <summary v-if="order">Все команды</summary>
       <div class="row">
         <button
