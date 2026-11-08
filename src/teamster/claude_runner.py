@@ -209,8 +209,10 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                     response["outcome"] = "budget_exhausted"
                     break
                 if eof and proc.poll() is not None:
+                    # A reflect answer found invalid is terminated here; its exit status is ours.
                     if (not reviewing and proc.wait() != 0 and response["reason"] in
-                            (None, "invalid structured output", "invalid JSON output", failure)):
+                            ((None, failure) if reflecting else
+                             (None, "invalid structured output", "invalid JSON output", failure))):
                         response["reason"] = failure
                     if response["reason"] is None:
                         if proc.wait() != 0:
