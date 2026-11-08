@@ -63,6 +63,8 @@ def test_index_rows_scopes_statuses_and_extra_cells(tmp_path):
 
 
 def test_batch_selection_counts_pending_and_bounded_reads(tmp_path, monkeypatch):
+    now = datetime(2026, 11, 9, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(research_module.time, "time", lambda: now)
     archive = tmp_path / ".archive"
     archive.mkdir()
     (archive / "batch-2026-11-01.md").write_text("through: 20261101T000000Z\n")
@@ -73,6 +75,7 @@ def test_batch_selection_counts_pending_and_bounded_reads(tmp_path, monkeypatch)
     outside = tmp_path / "outside.md"
     outside.write_text("through: 20991231T000000Z\n")
     (archive / "batch-2026-12-01.md").symlink_to(outside)
+    write_record(archive, "ancient-20261001T000000Z", {"repo": "/r/ancient"})
     write_record(archive, "old-20261104T000000Z", {"repo": "/r/old", "result": {"status": "blocked"}})
     write_record(archive, "one-20261106T000000Z", {"repo": "/r/alpha"})
     write_record(archive, "two-20261107T051647Z", {"repo": "/r/alpha", "result": {"status": "blocked"}})
@@ -105,6 +108,7 @@ def test_batch_selection_counts_pending_and_bounded_reads(tmp_path, monkeypatch)
         ],
     }
     # Recent records before the material floor may be read to discover studies.
+    assert "ancient-20261001T000000Z" not in reads
     assert len(reads) == len(set(reads))
     assert not {name for name in reads if "link" in name}
 
