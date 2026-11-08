@@ -21,6 +21,8 @@ from .store import LOG_RETENTION_SECONDS, Store, number
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 PING_SECONDS = 20
+# A new sign-in row in the journal refreshes accounts at once, at most this often.
+LOGIN_REFRESH_SECONDS = 5
 FILE_LIMIT = 256 * 1024
 LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", re.I)
 # The board's files in the worker's data home, by layout. The board never imports the worker.
@@ -147,6 +149,11 @@ class Board:
                                  settings.ssh_command)
         self.lock = asyncio.Lock()
         self.clients = set()
+        # A sign-in read from the journal wakes the accounts loop; _login_at is when the latest
+        # sign-in no refresh has covered yet was read.
+        self.login_seen = asyncio.Event()
+        self._login_at = None
+        self._forced_at = float("-inf")
 
     def publish(self, message):
         for queue in self.clients:
@@ -157,6 +164,9 @@ class Board:
             messages = await asyncio.to_thread(self.store.poll)
             for message in messages:
                 self.publish(message)
+            if self.store.take_logins():
+                self._login_at = time.monotonic()
+                self.login_seen.set()
 
     async def snapshot(self):
         async with self.lock:
@@ -169,12 +179,35 @@ class Board:
             await self.poll()
 
     async def poll_accounts(self):
+        due = time.monotonic()
         while True:
+            await self._wait_for_refresh(due)
             started = time.monotonic()
-            value = await self.accounts.refresh()
+            if started < due:
+                self._forced_at = started
+            # A refresh covers every sign-in read before it started, a periodic one included.
+            if self._login_at is not None and self._login_at <= started:
+                self._login_at = None
+            # This loop schedules the refreshes itself, so it bypasses the throttle in Accounts.
+            value = await self.accounts.refresh(force=True)
             if value is not None:
                 self.publish({"type": "accounts", "accounts": value})
-            await asyncio.sleep(max(0, self.settings.accounts_seconds - (time.monotonic() - started)))
+            due = started + self.settings.accounts_seconds
+
+    async def _wait_for_refresh(self, due):
+        """Wait for the periodic deadline, or for a pending sign-in once the forced window is over."""
+        while True:
+            deadline = due
+            if self._login_at is not None:
+                deadline = min(deadline, self._forced_at + LOGIN_REFRESH_SECONDS)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self.login_seen.clear()
+            try:
+                await asyncio.wait_for(self.login_seen.wait(), remaining)
+            except asyncio.TimeoutError:
+                pass
 
     async def poll_machines(self):
         while True:

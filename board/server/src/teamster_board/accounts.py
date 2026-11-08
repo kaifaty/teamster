@@ -86,9 +86,9 @@ class Accounts:
         self._last_started = float("-inf")
         self._lock = asyncio.Lock()
 
-    async def refresh(self):
+    async def refresh(self, force=False):
         async with self._lock:
-            if time.monotonic() - self._last_started < self.seconds:
+            if not force and time.monotonic() - self._last_started < self.seconds:
                 return None
             self._last_started = time.monotonic()
             self.value = await _snapshot(self.script, "accounts", (), self.value["data"])
