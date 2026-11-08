@@ -1,4 +1,5 @@
 import type { Activity, Column, Phase, TaskFile, TaskSummary } from "../types";
+import { formatAge } from "./format";
 
 export const COLUMNS: { id: Column; title: string }[] = [
   { id: "running", title: "Работает" },
@@ -137,4 +138,17 @@ export function isFlashing(changedAt: number | undefined, nowMs: number): boolea
 /** The browser tab's title: the count of tasks that need attention goes first while there are any. */
 export function tabTitle(base: string, alarms: number): string {
   return alarms > 0 ? `(${alarms}) ${base}` : base;
+}
+
+/**
+ * A ship's line on the map at `now`: its latest activity and how old it is (when `stale`), or why it no longer
+ * works. `replayed` marks a record rebuilt by the replay, whose summary stands in for activity it does not have.
+ */
+export function shipLine(task: TaskSummary, stale: boolean, now: number, replayed: boolean): string {
+  if (task.column === "review_me") return task.pr ? `готово · ${prLabel(task.pr)}` : "готово";
+  if (!task.alive) return `${task.summary ?? problemLabel(task) ?? "надзиратель не запущен"} · ${formatAge(task.updated_at, now)}`;
+  const activity = task.activity;
+  if (!activity) return replayed && task.summary ? `${task.summary} · ${formatAge(task.updated_at, now)}` : "нет активности";
+  const age = stale && activity.at !== null ? ` · ${formatAge(activity.at, now)}` : "";
+  return `${ACTIVITY[activity.kind].icon} ${activity.text}${age}`;
 }

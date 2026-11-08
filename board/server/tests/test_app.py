@@ -5,9 +5,10 @@ import os
 import subprocess
 from pathlib import Path
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
-from starlette.testclient import WebSocketDenialResponse
+from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 
 from teamster_board import app as board_app
 from teamster_board.app import Settings, create_app
@@ -21,6 +22,17 @@ SUMMARY_FIELDS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def websocket_receive_timeout(monkeypatch):
+    def receive(socket):
+        async def read():
+            with anyio.fail_after(5):
+                return await socket._send_rx.receive()
+        return socket.portal.call(read)
+
+    monkeypatch.setattr(WebSocketTestSession, "receive", receive)
+
+
 @pytest.fixture
 def board(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
@@ -31,7 +43,7 @@ def board(tmp_path, monkeypatch):
         "assert sys.argv[1:] == ['accounts', '--json']\nprint('{\"accounts\": []}')\n"
     )
     settings = Settings(tmp_path, fake, poll_seconds=0.01, web_dist=tmp_path / "dist")
-    with subprocess.Popen(["sleep", "30"]) as process:
+    with subprocess.Popen(["sleep", "30"], stdin=subprocess.DEVNULL) as process:
         directory = tmp_path / "claude-tasks" / "demo"
         directory.mkdir(parents=True)
         state = {
@@ -106,6 +118,71 @@ def test_rest_contract_files_and_unknown_paths(board):
         "/api/tasks/%2e%2e%2fstate.json", "/api/tasks/demo/files/brief/other",
     ):
         assert client.get(path).status_code == 404, path
+
+
+def test_events_window_limit_and_websocket(board):
+    client, application, _, _, settings = board
+    now = board_app.time.time()
+    since = now - 10000
+    rows = [{"at": since + index, "kind": "work", "slug": f"task-{index}", "phase": "turn",
+             "tokens": {"total": 123}, "usage": [{"thread": "private"}], "thread": "private"}
+            for index in range(5002)]
+    rows += [{"at": since - 1, "kind": "work"}, {"at": now + 60, "kind": "scout"}]
+    path = settings.path("telemetry")
+    # Input order must not determine which events survive the response limit.
+    path.write_text("".join(json.dumps(row) + "\n" for row in reversed(rows)))
+    client.portal.call(application.state.board.poll)
+    result = client.get("/api/events", params={"since": since, "until": since + 5001}).json()
+    assert set(result) == {"since", "until", "events", "truncated"}
+    assert (result["since"], result["until"], result["truncated"]) == (since, since + 5001, True)
+    assert [event["at"] for event in result["events"]] == [since + index for index in range(2, 5002)]
+    assert all(not {"tokens", "usage", "thread"} & event.keys() for event in result["events"])
+    window = client.get("/api/events", params={"since": since, "until": since + 1}).json()
+    assert [event["at"] for event in window["events"]] == [since, since + 1]
+    assert "truncated" not in window
+    default = client.get("/api/events").json()
+    assert default["until"] >= now
+    assert default["until"] - default["since"] == 24 * 3600
+    assert client.get("/api/events", params={"until": now}).json()["since"] == now - 24 * 3600
+    assert client.get("/api/events", params={"since": now - 31 * 86400, "until": now}).status_code == 200
+    for params in ({"since": "bad"}, {"since": "nan"}, {"until": "inf"},
+                   {"since": now, "until": now - 1}, {"since": now - 31 * 86400 - 1, "until": now}):
+        assert client.get("/api/events", params=params).status_code == 422
+    with client.websocket_connect("/ws") as socket:
+        assert socket.receive_json()["type"] == "snapshot"
+        with path.open("a") as stream:
+            stream.write(json.dumps({"at": now, "kind": "verdict", "slug": "demo",
+                                     "verdict": "accepted", "note": "Ready\nfor review"}) + "\n")
+        message = receive_until(socket, "event")
+        assert set(message) == {"type", "event"}
+        assert message["event"]["at"] == now
+        assert message["event"]["slug"] == "demo"
+        assert message["event"]["note"] == "Ready for review"
+
+
+def test_report_arguments_and_cached_envelope(board, tmp_path):
+    client, _, _, _, settings = board
+    marker = tmp_path / "report-calls"
+    settings.teamster.write_text(
+        "import sys, json\nfrom pathlib import Path\nassert sys.flags.isolated\n"
+        "if sys.argv[1] == 'accounts':\n    print('{}')\nelse:\n"
+        "    assert sys.argv[1:] == ['report', '--json', '--since', '2026-11-01', '--by', 'model,executor']\n"
+        f"    Path({str(marker)!r}).open('a').write('call\\n')\n"
+        "    print(json.dumps({'tasks': 3}))\n"
+    )
+    params = {"since": "2026-11-01", "by": "model,executor"}
+    response = client.get("/api/report", params=params)
+    assert response.status_code == 200
+    result = response.json()
+    assert set(result) == {"fetched_at", "error", "data"}
+    assert isinstance(result["fetched_at"], float)
+    assert result["error"] is None
+    assert result["data"] == {"tasks": 3}
+    assert client.get("/api/report", params=params).json() == result
+    for invalid in ({}, {"since": "2026-11-01;echo unsafe"},
+                    {"since": "2026-11-01", "by": "model,--refresh"}):
+        assert client.get("/api/report", params=invalid).status_code == 422
+    assert marker.read_text().splitlines() == ["call"]
 
 
 @pytest.mark.parametrize("host", ["localhost", "127.0.0.1:4321", "[::1]:8787"])
@@ -256,9 +333,12 @@ def test_machine_environment_and_websocket(tmp_path, monkeypatch):
             assert "machines" in first["snapshot"]
             # A config error changes the payload even if the first probe already completed.
             config.write_text('{"machines": [')
-            message = receive_until(socket, "machines")
-            while message["machines"]["config_error"] is None:
+            for _ in range(50):
                 message = receive_until(socket, "machines")
+                if message["machines"]["config_error"] is not None:
+                    break
+            else:
+                pytest.fail("No machine config error received")
             item = message["machines"]["items"][0]
             assert item["error"] == "unreachable"
             assert item["status"] == "offline"
@@ -369,8 +449,13 @@ def test_data_home_layouts(tmp_path, monkeypatch, layout):
     assert (settings.task_home, settings.layout) == (data, "legacy" if layout == "legacy" else "new")
     board = create_app(settings).state.board
     assert board.machines.path == data / "board-machines.json"
+    log = data / ("codex-worker-log.jsonl" if layout == "legacy" else "log.jsonl")
+    assert board.store.telemetry_path == log
+    now = board_app.time.time()
+    log.write_text(json.dumps({"at": now, "kind": "work", "slug": "demo", "phase": "turn"}) + "\n")
     board.store.poll()
     assert [task["slug"] for task in board.store.summaries()] == ["demo"]
+    assert board.store.events(now, now)["events"][0]["slug"] == "demo"
 
 
 def write_art(settings, repo="alpha", pictures=None):

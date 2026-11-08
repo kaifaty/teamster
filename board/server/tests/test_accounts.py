@@ -2,9 +2,15 @@
 
 import asyncio
 import json
+import os
+import signal
+import time
+from types import SimpleNamespace
+
+import pytest
 
 from teamster_board import accounts as accounts_module
-from teamster_board.accounts import Accounts
+from teamster_board.accounts import Accounts, Reports
 
 
 def write_script(path, body):
@@ -58,5 +64,106 @@ def test_accounts_error_and_timeout_keep_previous_data(tmp_path, monkeypatch):
         assert "timed out" in timed_out["error"]
         assert "0.2" in timed_out["error"]
         assert timed_out["data"] == first["data"]
+
+        child_pid = tmp_path / "child-pid"
+        script.write_text(
+            "import subprocess\nfrom pathlib import Path\n"
+            "child = subprocess.Popen(['sleep', '6'])\n"
+            f"Path({str(child_pid)!r}).write_text(str(child.pid))\nprint('{{}}')\n"
+        )
+        monkeypatch.setattr(accounts_module, "ACCOUNTS_TIMEOUT", 0.5)
+        reports = Reports(script)
+        for request in (accounts.refresh, lambda: reports.get("2026-11-08")):
+            started = time.monotonic()
+            try:
+                timed_out = await asyncio.wait_for(request(), timeout=3)
+                assert time.monotonic() - started < 3
+                assert "timed out after 0.5 seconds" in timed_out["error"]
+            finally:
+                if child_pid.exists():
+                    try:
+                        os.kill(int(child_pid.read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    child_pid.unlink()
+
+        write_script(script, "print('{}')\n")
+        gather = asyncio.gather
+
+        def cancel_when_output_finishes(*awaitables, **options):
+            output = gather(*awaitables, **options)
+            if len(awaitables) == 3 and not options.get("return_exceptions"):
+                owner = asyncio.current_task()
+                output.add_done_callback(lambda _: owner.cancel())
+            return output
+
+        # Python 3.10 wait_for can swallow cancellation when its input has just finished.
+        monkeypatch.setattr(accounts_module.asyncio, "gather", cancel_when_output_finishes)
+        pending = asyncio.create_task(accounts.refresh())
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, timeout=5)
+
+    asyncio.run(check())
+
+
+def test_reports_arguments_and_cache_per_pair(tmp_path, monkeypatch):
+    script, marker = tmp_path / "report.py", tmp_path / "calls"
+    script.write_text(
+        "import json, sys\nfrom pathlib import Path\nassert sys.flags.isolated\n"
+        "assert sys.stdin.read() == ''\n"
+        "assert sys.argv[1:3] == ['report', '--json']\n"
+        f"Path({str(marker)!r}).open('a').write(json.dumps(sys.argv[3:]) + '\\n')\n"
+        "print(json.dumps({'args': sys.argv[3:]}))\n"
+    )
+    clock = [100.0]
+    monkeypatch.setattr(accounts_module, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], time=lambda: 1000.0 + clock[0],
+    ))
+
+    async def check():
+        reports = Reports(script)
+        first = await reports.get("2026-11-08")
+        assert first == {"fetched_at": 1100.0, "error": None,
+                         "data": {"args": ["--since", "2026-11-08"]}}
+        assert await reports.get("2026-11-08") is first
+        grouped = await reports.get("2026-11-08", "task-type,effort,model,executor,reviewer")
+        assert grouped["data"]["args"] == [
+            "--since", "2026-11-08", "--by", "task-type,effort,model,executor,reviewer",
+        ]
+        await reports.get("2026-11-07")
+        assert len(marker.read_text().splitlines()) == 3
+        clock[0] = 159.9
+        assert await reports.get("2026-11-08") is first
+        clock[0] = 160.0
+        assert (await reports.get("2026-11-08"))["fetched_at"] == 1160.0
+        assert len(marker.read_text().splitlines()) == 4
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("since,by", [
+    ("2026-1-01", None), ("2026-11-08;touch marker", None),
+    ("2026-11-08", "model,unknown"), ("2026-11-08", "model,"),
+])
+def test_reports_reject_invalid_arguments_before_start(tmp_path, since, by):
+    # Even a missing executable must not be reached for invalid arguments.
+    with pytest.raises(ValueError):
+        asyncio.run(Reports(tmp_path / "missing.py").get(since, by))
+
+
+def test_reports_bound_stdout_and_keep_stderr_in_logs(tmp_path, caplog):
+    script = tmp_path / "report.py"
+    script.write_text("import sys\nprint('private diagnostic', file=sys.stderr)\nsys.exit(7)\n")
+
+    async def check():
+        failed = await Reports(script).get("2026-11-08")
+        assert failed["error"] == "report exited with status 7"
+        assert failed["data"] is None
+        assert "private diagnostic" not in json.dumps(failed)
+        assert "private diagnostic" in caplog.text
+        script.write_text("import sys\nsys.stdout.write('x' * (2 * 1024 * 1024))\n")
+        oversized = await asyncio.wait_for(Reports(script).get("2026-11-08"), timeout=10)
+        assert oversized["error"] == "output exceeds 1 MiB"
+        assert oversized["data"] is None
 
     asyncio.run(check())
