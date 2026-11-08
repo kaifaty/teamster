@@ -9,10 +9,11 @@ LIMIT_REASONS = ("usage limit", "authentication failed", "token unavailable")
 
 
 def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
-    """Run read-only research, retrying review accounts without waiting or falling back."""
+    """Run read-only research or reflection, retrying review accounts without waiting or falling back."""
     last = config.TASKS / st["slug"] / "last.md"
     last.unlink(missing_ok=True)
-    minutes = cfg["max_review_minutes"]
+    reflecting = st.get("kind") == "reflect"
+    minutes = st["max_turn_minutes"] if reflecting else cfg["max_review_minutes"]
     deadline = clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
     settings = cfg["claude"]
     attempted = set()
@@ -56,13 +57,15 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
             response = claude_runner.run_claude(
                 account, st["worktree"], prompt, stopped, deadline,
                 st.get("task_model") or settings.get("model"), effort or settings.get("effort"),
-                settings["max_turns"], role="scout", session_id=st.get("session_id") or None,
+                settings["max_turns"], role="reflect" if reflecting else "scout",
+                session_id=st.get("session_id") or None,
                 started=started, progress=progress)
         finally:
             st.pop("claude_pid", None)
             task_state.save(st)
         if launched and claude_review.worktree_snapshot(snapshot_state) != before:
-            response.update(outcome="failed", result=None, reason="scout modified the directory", raw_message="")
+            response.update(outcome="failed", result=None, raw_message="",
+                            reason="reflect modified the reading room" if reflecting else "scout modified the directory")
         telemetry = response["telemetry"]
         progress(telemetry)
         phase = telemetry_log.telemetry_phase(st)
@@ -70,7 +73,12 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
             phase.add_claude_usage(telemetry, account=name)
         st["outcome"] = task_state.stop_outcome(st, stopped) or response["outcome"]
         reason = response.get("reason")
-        if st["outcome"] == "completed":
+        if st["outcome"] == "completed" and reflecting:
+            st["result"] = response["result"]
+            message = json.dumps(response["result"], ensure_ascii=False)
+            last.write_text(message, encoding="utf-8")
+            threads.record_claude_message(st, message)
+        elif st["outcome"] == "completed":
             last.write_text(response["result"], encoding="utf-8")
             threads.record_claude_message(st, response["result"])
         elif reason:
@@ -85,7 +93,8 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
                                                task_type=st.get("task_type"))
     st["outcome"] = task_state.stop_outcome(st, stopped) or "unavailable"
     if st["outcome"] == "unavailable":
-        st["error"] = "No available Claude account for scout" + (f": {st['error']}" if st.get("error") else "")
+        st["error"] = (f"No available Claude account for {'reflect' if reflecting else 'scout'}"
+                       + (f": {st['error']}" if st.get("error") else ""))
     task_state.save(st)
 
 
@@ -268,7 +277,7 @@ def _wrapup_turn(st, cfg, account, effort, stopped, reason, review_entry=None):
     executor = executors.for_turn(st)
     thread = ((review_entry or {}).get("thread") if st.get("kind") == "review"
               else executor.cursor(st))
-    if not thread or stopped():
+    if not thread or stopped() or st.get("kind") == "reflect":
         return
     if st.get("kind") not in ("review", "scout"):
         st["result"] = None
@@ -297,8 +306,21 @@ def run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=
     phase = "fix" if kind == "work" and st.get("rounds") else kind
     with telemetry_log.record_phase(st, phase, stopped):
         st.pop("refusal", None)
+        if kind == "reflect":
+            return reflect_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=new_turn)
         return executors.for_turn(st).call("scout" if kind == "scout" else "turn", st, cfg, prompt, effort, current_message,
                                            stopped, sleep, new_turn=new_turn)
+
+
+def reflect_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
+    """A read-only scout turn in the reading room that must end with a valid reflect result."""
+    before = claude_review.worktree_snapshot(st)
+    executors.for_turn(st).call("scout", st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=new_turn)
+    if claude_review.worktree_snapshot(st) != before:
+        st.update(outcome="failed", result=None, error="reflect modified the reading room")
+    elif st.get("outcome") == "completed" and st.get("result") is None:
+        st.update(outcome="failed", error="invalid reflect result")
+    task_state.save(st)
 
 
 def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
@@ -579,7 +601,7 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
 
 
 def work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, work_paths=None, **turn_options):
-    if work_paths is None and st.get("kind") != "scout":
+    if work_paths is None and st.get("kind") not in ("scout", "reflect"):
         work_paths = checking.check_paths(st)
     run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, **turn_options)
     publishing.publish_work(st, stopped)

@@ -139,6 +139,9 @@ export function fixtureSource(): BoardSource {
     async fetchArt() {
       return { "demo-game": { sky: BACKDROPS[0], planet: ART.planetRoadstead, emblem: ART.gate } };
     },
+    async fetchConstellations() {
+      return { constellations: [{ name: "Demo Wallet", repos: ["demo-wallet*", "demo-vault", "demo-shop"] }], error: null };
+    },
     async fetchResearch() {
       return RESEARCH;
     },

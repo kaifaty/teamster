@@ -1,8 +1,10 @@
 // The map's pictures, made by art/prepare.py. Vite turns the imports into URLs of hashed files.
 
-import depot from "./art/depot.png";
+import admiral from "./art/admiral.png";
 import escort from "./art/escort.png";
 import flagship from "./art/flagship.png";
+import fuelCell from "./art/fuel-cell.png";
+import fuelTank from "./art/fuel-tank.png";
 import gate from "./art/gate.png";
 import nebula from "./art/nebula.jpg";
 import planetCryo from "./art/planet-cryo.png";
@@ -10,6 +12,7 @@ import planetInspection from "./art/planet-inspection.png";
 import planetRange from "./art/planet-range.png";
 import planetRoadstead from "./art/planet-roadstead.png";
 import planetYard from "./art/planet-yard.png";
+import reactorCore from "./art/reactor-core.png";
 import shipBlue from "./art/ship-blue.png";
 import shipBlueCruiser from "./art/ship-blue-cruiser.png";
 import shipBlueFrigate from "./art/ship-blue-frigate.png";
@@ -18,16 +21,16 @@ import shipCopperCruiser from "./art/ship-copper-cruiser.png";
 import shipCopperFrigate from "./art/ship-copper-frigate.png";
 import shipScout from "./art/ship-scout.png";
 import stationCommand from "./art/station-command.png";
-import stationPower from "./art/station-power.png";
 import stationResearch from "./art/station-research.png";
 import stationYard from "./art/station-yard.png";
 import sun from "./art/sun.png";
-import tanker from "./art/tanker.png";
 
 export const ART = {
-  depot,
+  admiral,
   escort,
   flagship,
+  fuelCell,
+  fuelTank,
   gate,
   nebula,
   planetCryo,
@@ -35,6 +38,7 @@ export const ART = {
   planetRange,
   planetRoadstead,
   planetYard,
+  reactorCore,
   shipBlue,
   shipBlueCruiser,
   shipBlueFrigate,
@@ -43,11 +47,9 @@ export const ART = {
   shipCopperFrigate,
   shipScout,
   stationCommand,
-  stationPower,
   stationResearch,
   stationYard,
   sun,
-  tanker,
 };
 
 export type ArtName = keyof typeof ART;

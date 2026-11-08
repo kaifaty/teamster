@@ -688,3 +688,13 @@ def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeyp
     research = create_app(Settings.from_env()).state.board.research
     assert (research.seconds, research.reflection_task) == (5, "weekly-review")
     assert research.tasks_path == tmp_path / "claude-tasks"
+
+
+def test_constellations_come_from_the_data_home(board):
+    client, _, _, _, settings = board
+    assert client.get("/api/constellations").json() == {"constellations": [], "error": None}
+    (settings.task_home / "board-constellations.json").write_text(
+        json.dumps({"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*"]}]}))
+    assert client.get("/api/constellations").json() == {
+        "constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*"]}], "error": None}
+    assert client.put("/api/constellations", content=b"{}").status_code == 405

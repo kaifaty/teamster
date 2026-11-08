@@ -259,7 +259,7 @@ def handoff(st, current_message=False, cfg=None):
     """Continuation brief for a new Codex thread or Claude session on another account."""
     cfg = config.accounts_config() if cfg is None else cfg
     ru = cfg.get("language", "en") == "ru"
-    scouting = st.get("kind") == "scout"
+    scouting = st.get("kind") in ("scout", "reflect")
     d = config.TASKS / st["slug"]
     prompt = (d / "brief.md").read_text().rstrip() + ("\n\n## Продолжение\n\n" if ru else "\n\n## Continuation\n\n")
     executor = executors.for_turn(st)

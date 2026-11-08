@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { HistoryPoint, Machine } from "../types";
+import type { HistoryPoint, Machine, Metrics } from "../types";
 import {
   CHART_WINDOW,
   chart,
   chartPath,
+  coresText,
   cpuLevel,
   cpuLoadLevel,
   cpuLoadText,
@@ -12,9 +13,11 @@ import {
   dataAge,
   diskLevel,
   formatBytes,
+  freeItems,
   freeOf,
   fullestDisk,
   gpuLevel,
+  machineRings,
   memoryLevel,
   reasonLabel,
   statusText,
@@ -192,5 +195,55 @@ describe("data age", () => {
     expect(dataAge(machine({ sampled_at: 990 }), 1000)).toBeNull();
     expect(dataAge(machine({ sampled_at: 990, error: "timeout" }), 1000)).toBe("данные 10 с назад");
     expect(dataAge(machine({ sampled_at: 1000 - 120 }), 1000)).toBe("данные 2 мин назад");
+  });
+});
+
+describe("rings and free resources on the map", () => {
+  const metrics = (overrides: Partial<Metrics> = {}): Metrics => ({
+    os: "linux",
+    cpu: { cores: 32, load1: 5, load5: 5, percent: 4, average_percent: 10 },
+    memory: { total_bytes: 32 * G, available_bytes: 24 * G },
+    gpus: [{ name: "RTX", utilization_percent: 15, memory_used_bytes: 2 * G, memory_total_bytes: 10 * G, processes: [] }],
+    disks: [{ mount: "/", total_bytes: 100 * G, free_bytes: 60 * G }],
+    ...overrides,
+  });
+
+  it("gives CPU, memory and video memory their shares, and the disk only while it runs low", () => {
+    const rings = machineRings(metrics());
+    expect(rings.cpu).toEqual({ percent: 10, level: "ok" });
+    expect(rings.memory).toEqual({ percent: 25, level: "ok" });
+    expect(rings.gpu).toEqual({ percent: 20, level: "ok" });
+    expect(rings.disk).toBeNull();
+    const full = machineRings(metrics({ disks: [{ mount: "/data", total_bytes: 100 * G, free_bytes: 3 * G }] }));
+    expect(full.disk).toEqual({ percent: 97, level: "bad" });
+  });
+
+  it("falls back to the GPU's load without video memory of its own, and to the load average without a busy share", () => {
+    const apple = metrics({
+      cpu: { cores: 10, load1: 25, load5: 20, percent: null, average_percent: null },
+      gpus: [{ name: "Apple M1 Pro", utilization_percent: 72, memory_used_bytes: null, memory_total_bytes: null, processes: [] }],
+    });
+    const rings = machineRings(apple);
+    expect(rings.gpu).toEqual({ percent: 72, level: "warn" });
+    expect(rings.cpu).toEqual({ percent: 100, level: "bad" });
+    expect(freeItems(apple)).toEqual([
+      { key: "cpu", text: "0 ядер" },
+      { key: "memory", text: "24 ГБ" },
+      { key: "gpu", text: "28 %" },
+    ]);
+  });
+
+  it("counts free cores, memory and video memory", () => {
+    expect(freeItems(metrics())).toEqual([
+      { key: "cpu", text: "28 ядер" },
+      { key: "memory", text: "24 ГБ" },
+      { key: "gpu", text: "8 ГБ" },
+    ]);
+    expect(freeItems(null)).toEqual([]);
+    expect(machineRings(null)).toEqual({ cpu: null, memory: null, gpu: null, disk: null });
+  });
+
+  it("names cores in the right form", () => {
+    expect([1, 2, 5, 11, 21, 22, 24, 112].map(coresText)).toEqual(["1 ядро", "2 ядра", "5 ядер", "11 ядер", "21 ядро", "22 ядра", "24 ядра", "112 ядер"]);
   });
 });

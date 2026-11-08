@@ -1,30 +1,35 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import type { ArtIndex, LogEvent, Machine, ResearchView, TaskSummary } from "../types";
+import type { ArtIndex, Constellations, LogEvent, Machine, ResearchView, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
-import { formatDuration, formatUntil } from "../lib/format";
+import { ADMIRAL_NOTE } from "../lib/accounts";
+import { formatClock, formatDuration, formatUntil } from "../lib/format";
 import { loadJson, saveJson } from "../lib/storage";
 import { EXECUTORS, PHASES, problemLabel, shipLine, taskTitle } from "../lib/labels";
-import { dataAge, errorLabel, statusLevel, statusText } from "../lib/machines";
+import { dataAge, errorLabel, freeItems, machineRings, statusLevel, statusText, type FreeItem, type Rings } from "../lib/machines";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
+import fuelCell from "./art/fuel-cell.png";
 import DaySummary from "./DaySummary.vue";
 import FleetPanel, { type FleetGroup } from "./FleetPanel.vue";
 import ReplayBar from "./ReplayBar.vue";
 import ShipLog from "./ShipLog.vue";
-import { HULL_SIZE, depotEmpty, depots, depotPositions, hullOf, refuelText, stars, supplyLines, type Star } from "./fleet";
+import { HULL_SIZE, daysLeft, hullOf, stars, tankEmpty, tanks, untilText, type Star, type Tank } from "./fleet";
+import { constellationsOf } from "./constellations";
 import { placeLabels, type StarLabel } from "./declutter";
 import {
-  DEPOT_LABEL_DROP,
+  defaultCovered,
   fitCamera,
+  fuelColumnRect,
+  fuelPositions,
   galaxyKeepOuts,
   galaxyLayout,
   labelDrop,
-  logCorner,
   parkingOf,
   parkingOrder,
   plateAt,
   RESEARCH_LABEL_DROP,
+  RESEARCH_SIZE,
   machineColumnRect,
   machineLabelAnchor,
   machinePositions,
@@ -40,18 +45,20 @@ import {
   type Insets,
   type Rect,
   type Size,
+  type TankShape,
 } from "./layout";
 import ResearchPanel from "./ResearchPanel.vue";
 import { isReflection, research, shortDate } from "./research";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
 import { replayExits, replayFleet } from "./replay";
-import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type ShipEntry } from "./scene";
+import { RINGS } from "./palette";
+import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type MachineMark, type ShipEntry, type TankMark } from "./scene";
 import { useReplay } from "./useReplay";
 
 /** `machine`: the machine whose card is open over the map, or null. */
 const props = defineProps<{ board: Board; active: boolean; machine?: string | null }>();
 /**
- * `machine`: a machine's power station was clicked, with the label to give the focus back to; `panel`: the map opened a
+ * `machine`: a machine's reactor was clicked, with the label to give the focus back to; `panel`: the map opened a
  * task's card or the research station's panel, which replace the machine's card.
  */
 const emit = defineEmits<{ board: []; machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
@@ -108,7 +115,7 @@ function setShips(next: ShipEntry[]) {
   replayedShips = replay.at !== null;
 }
 
-// Galaxy: one star per repository, one depot per account. Null means the whole galaxy is shown.
+// Galaxy: one star per repository, one fuel tank per subscription. Null means the whole galaxy is shown.
 const repo = ref<string | null>(null);
 // The same list while nothing changes, so that a playing replay does not redraw the galaxy at every step.
 let lastStars: Star[] = [];
@@ -130,9 +137,40 @@ function galaxyStars(): Star[] {
   }
   return list.sort((a, b) => a.repo.localeCompare(b.repo));
 }
-// Tankers and depots stay live: the accounts' past is not recorded.
-const depotList = computed(() => depots(source.value.state.value.accounts?.data ?? null, now.value));
-const lines = computed(() => supplyLines(liveTasks.value, depotList.value));
+/** The same value while it does not change, so that the galaxy is not redrawn at every tick of the clock. */
+function steady<T>(read: () => T): () => T {
+  let last: T | undefined;
+  let text = "";
+  return () => {
+    const next = read();
+    const json = JSON.stringify(next);
+    if (last !== undefined && json === text) return last;
+    last = next;
+    text = json;
+    return next;
+  };
+}
+// The tanks stay live in a replay: the accounts' past is not recorded.
+const tankList = computed(steady(() => tanks(source.value.state.value.accounts?.data ?? null, now.value)));
+/** A tank's second line: what is left, or why nothing is, and in how long it refills. */
+function tankInfo(tank: Tank): string {
+  const left = tank.bad ? (tank.status ?? "пусто") : tank.fuel !== null ? `${tank.fuel}%` : (tank.status ?? "нет данных");
+  const until = untilText(tank.refillAt, now.value);
+  return until ? `${left} · ↻ ${until}` : left;
+}
+const tankShapes = computed(
+  steady<TankShape[]>(() =>
+    tankList.value.map((tank) => ({ key: tank.key, executor: tank.executor, name: tank.name, info: tankInfo(tank), resets: Math.min(tank.resets?.count ?? 0, MAX_CELLS) })),
+  ),
+);
+const tankMarks = computed(
+  steady<TankMark[]>(() =>
+    tankList.value.map((tank) => {
+      const lamps = daysLeft(tank.refillAt, now.value);
+      return { key: tank.key, executor: tank.executor, fuel: tank.fuel, low: tankEmpty(tank), bad: tank.bad, admiral: tank.admiral, lamps, soon: lamps === 1 };
+    }),
+  ),
+);
 const repoModel = computed({
   get: () => repo.value ?? "",
   set: (value: string) => {
@@ -156,15 +194,41 @@ watch(source, () => {
   researchView.value = null;
   void loadResearch();
 }, { immediate: true });
+// Constellations: repositories the galaxy draws together, from a file the server reads. Looked up again whenever the map
+// comes back, like the art.
+const constellationData = shallowRef<Constellations | null>(null);
+async function loadConstellations() {
+  const from = source.value.source;
+  const data = await from.fetchConstellations().catch(() => constellationData.value);
+  if (from === source.value.source && JSON.stringify(data) !== JSON.stringify(constellationData.value)) constellationData.value = data;
+}
+watch(source, loadConstellations, { immediate: true });
+const constellationList = computed(steady(() => constellationsOf(constellationData.value, starList.value.map((star) => star.repo))));
+/** Which constellation each repository is in. */
+const memberOf = computed(() => new Map(constellationList.value.flatMap((item) => item.repos.map((name) => [name, item.name] as const))));
+/** The system picker's choices, a group for each constellation and the rest after them. */
+const pickerGroups = computed(() => {
+  const byRepo = new Map(starList.value.map((star) => [star.repo, star]));
+  const grouped = constellationList.value.map((item) => ({ name: item.name, stars: item.repos.flatMap((name) => byRepo.get(name) ?? []) }));
+  const rest = starList.value.filter((star) => !memberOf.value.has(star.repo));
+  return { grouped, rest };
+});
 const emblemOf = (name: string | null) => (name ? (repoArt.value[name]?.emblem ?? null) : null);
 const hideImage = (event: Event) => {
   (event.target as HTMLElement).hidden = true;
 };
 
 const station = computed(() => research(researchView.value, allTasks.value, starList.value.map((star) => star.repo)));
+// The beams to the systems with records for the next reflection show only while its panel is open: the galaxy itself
+// keeps to its stars.
 const researchMarks = computed(() =>
   station.value
-    ? { running: station.value.running, proposed: station.value.proposed.length, watched: station.value.watched, probes: station.value.probes }
+    ? {
+        running: station.value.running,
+        proposed: station.value.proposed.length,
+        watched: researchOpen.value ? station.value.watched : [],
+        probes: station.value.probes,
+      }
     : null,
 );
 // A finished run has written its report: read it at once rather than at the next refresh.
@@ -215,21 +279,25 @@ const STATION_TEXT: Record<Place, { name: string; note: string }> = {
 /** Where a label stands in the world; the camera's --tx, --ty and --zoom on the overlay turn it into pixels. */
 const at = (x: number, y: number) => ({ "--x": Math.round(x), "--y": Math.round(y) });
 
-// Machines stand as power stations along the right edge. They are the board's own and stay live in a replay and a
+// Machines stand as reactors along the right edge. They are the board's own and stay live in a replay and a
 // scenario: the machines' past is not recorded.
 const machinesData = computed(() => props.board.state.value.machines ?? null);
-let lastMachines: { id: string; status: Machine["status"] }[] = [];
-const machineMarks = computed(() => {
-  const next = (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, status: machine.status }));
-  if (JSON.stringify(next) === JSON.stringify(lastMachines)) return lastMachines;
-  lastMachines = next;
-  return next;
-});
+const machineMarks = computed(
+  steady<MachineMark[]>(() => (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, status: machine.status, rings: machineRings(machine.metrics) }))),
+);
+/** What a machine's label tells under its name: what is free, ring by ring; why nothing is known when it is offline. */
+function freeOf(machine: Machine): FreeItem[] {
+  return machine.status === "offline" || machine.status === "unknown" ? [] : freeItems(machine.metrics);
+}
 const machineNote = computed(() => machinesData.value?.config_error || null);
 // What the labels show, so that the column knows their sizes; the same list while it does not change.
 let lastShapes: MachineShape[] = [];
 const machineShapes = computed(() => {
-  const next = (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, name: machine.name, status: statusText(machine) }));
+  const next = (machinesData.value?.items ?? []).map((machine) => {
+    const free = freeOf(machine);
+    // A dot before each free resource counts as one character of the line.
+    return { id: machine.id, name: machine.name, status: free.length ? free.map((item) => `● ${item.text}`).join(" ") : statusText(machine) };
+  });
   if (JSON.stringify(next) === JSON.stringify(lastShapes)) return lastShapes;
   lastShapes = next;
   return next;
@@ -239,17 +307,21 @@ const machineShapes = computed(() => {
 const covered = shallowRef<Rect[] | null>(null);
 /** The zoom of the full view in this window, at which the labels' room is reserved. */
 const fullZoom = ref<number | undefined>(undefined);
+const coveredNow = computed(() => covered.value ?? defaultCovered(world.value));
+/** The subscriptions' tanks: a column on the left, a row on top of a phone's galaxy; null without subscriptions. */
+const fuelColumn = computed(() => (tankShapes.value.length ? fuelPositions(tankShapes.value, world.value, fullZoom.value, coveredNow.value) : null));
 /** The machines' column; null without machines and without a broken config, and then it takes no room. */
 const machineColumn = computed(() => {
   if (!machineShapes.value.length && !machineNote.value) return null;
-  return machinePositions(machineShapes.value, world.value, fullZoom.value, !!machineNote.value);
+  // On a phone the tanks' row runs along the top, under the toolbar: the column starts below it, as below the toolbar.
+  const fuel = fuelColumn.value?.row ? fuelColumnRect(fuelColumn.value) : null;
+  return machinePositions(machineShapes.value, world.value, fullZoom.value, !!machineNote.value, fuel ? [...coveredNow.value, { ...fuel, y0: 0 }] : coveredNow.value);
 });
 let previousGalaxy: Galaxy | null = null;
 const galaxy = computed(() => {
-  const depotsAt = [...depotPositions(depotList.value, world.value).values()];
-  const blocked = galaxyKeepOuts(world.value, depotsAt, covered.value ?? [logCorner(world.value)], machineColumn.value);
+  const blocked = galaxyKeepOuts(world.value, coveredNow.value, machineColumn.value, fuelColumn.value);
   // The stars keep their places from the last layout while they fit there.
-  const next = galaxyLayout(starList.value, world.value, blocked, previousGalaxy, fullZoom.value);
+  const next = galaxyLayout(starList.value, world.value, blocked, previousGalaxy, fullZoom.value, memberOf.value);
   previousGalaxy = next;
   return next;
 });
@@ -268,10 +340,50 @@ const starLabels = computed(() => {
   });
 });
 
+/**
+ * A constellation's name beside its stars, centred on them: above them, or else below, left or right of them, on the
+ * first side where it meets neither the research station nor the columns and panels, nor leaves the world.
+ */
+const constellationLabels = computed(() => {
+  const layout = galaxy.value;
+  const station = researchPosition(world.value, machineColumn.value, fuelColumn.value);
+  const keepOuts = [
+    { x0: station.x - RESEARCH_SIZE / 2 - 20, y0: station.y - RESEARCH_SIZE / 2 - 20, x1: station.x + RESEARCH_SIZE / 2 + 20, y1: station.y + RESEARCH_SIZE / 2 + RESEARCH_LABEL_DROP + 50 },
+    ...coveredNow.value,
+    ...[machineColumn.value ? machineColumnRect(machineColumn.value) : null, fuelColumn.value ? fuelColumnRect(fuelColumn.value) : null].filter((rect): rect is Rect => !!rect),
+  ];
+  return constellationList.value.flatMap((item) => {
+    const points = item.repos.flatMap((name) => layout.places.get(name) ?? []);
+    if (!points.length) return [];
+    const width = (item.name.length * 12 + 8) / layout.labelZoom;
+    const height = 18 / layout.labelZoom;
+    const x0 = Math.min(...points.map((point) => point.x));
+    const x1 = Math.max(...points.map((point) => point.x));
+    const y0 = Math.min(...points.map((point) => point.y));
+    const y1 = Math.max(...points.map((point) => point.y));
+    const middle = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+    const gap = layout.spacing * 0.6;
+    // The label's middle on each side, and its box there.
+    const sides = [
+      { side: "above", x: middle.x, y: y0 - gap - height / 2 },
+      { side: "below", x: middle.x, y: y1 + gap + height / 2 + 20 / layout.labelZoom },
+      { side: "left", x: x0 - gap - width / 2, y: middle.y },
+      { side: "right", x: x1 + gap + width / 2, y: middle.y },
+    ] as const;
+    const open = (spot: { x: number; y: number }) => {
+      const box = { x0: spot.x - width / 2, y0: spot.y - height / 2, x1: spot.x + width / 2, y1: spot.y + height / 2 };
+      const inside = box.x0 >= 0 && box.y0 >= 0 && box.x1 <= world.value.width && box.y1 <= world.value.height;
+      return inside && !keepOuts.some((rect) => box.x0 < rect.x1 && rect.x0 < box.x1 && box.y0 < rect.y1 && rect.y0 < box.y1);
+    };
+    const spot = sides.find(open) ?? sides[0];
+    return [{ name: item.name, style: { ...at(spot.x, spot.y), color: item.color } }];
+  });
+});
+
 const stationLabel = computed(() => {
   const marks = station.value;
   if (!marks) return null;
-  const point = researchPosition(world.value, machineColumn.value);
+  const point = researchPosition(world.value, machineColumn.value, fuelColumn.value);
   const last = marks.batch ? `разбор ${shortDate(marks.batch.date)}` : "разборов не было";
   const proposed = marks.proposed.length;
   // One note under the name, the most pressing one; the panel has the rest.
@@ -280,19 +392,43 @@ const stationLabel = computed(() => {
   return { style: at(point.x, point.y + RESEARCH_LABEL_DROP), note, title, running: marks.running, waiting: !marks.running && proposed > 0 };
 });
 
-const depotLabels = computed(() => {
-  const places = depotPositions(depotList.value, world.value);
-  return depotList.value.map((depot) => {
-    const point = places.get(depot.key)!;
-    const top = depot.executor === "codex";
-    return {
-      depot,
-      top,
-      style: at(point.x, point.y + (top ? DEPOT_LABEL_DROP.top : -DEPOT_LABEL_DROP.bottom)),
-      fuel: depot.status ?? (depot.fuel === null ? "нет данных" : `${depot.fuel}%`),
-      low: depotEmpty(depot),
-      refuel: depotEmpty(depot) ? refuelText(depot.refuelAt, now.value) : null,
-    };
+/** A label shows at most this many spare cells, one per free reset; the title has the count. */
+const MAX_CELLS = 4;
+/** Everything a tank knows, for its label's title. */
+function tankTitle(tank: Tank): string {
+  const at = (time: number) => `${formatClock(time, now.value)} (${formatUntil(time, now.value)})`;
+  const resets = tank.resets;
+  return [
+    `${tank.name} · ${tank.executor === "codex" ? "Codex" : "Claude"}`,
+    tank.admiral ? ADMIRAL_NOTE : null,
+    tank.fuel !== null ? `Неделя: осталось ${tank.fuel}%` : "Неделя: нет данных",
+    tank.status ? `Состояние: ${tank.status}` : null,
+    tank.refillAt !== null ? `${tank.bad ? "Заправка" : "Сброс недели"}: ${at(tank.refillAt)}` : null,
+    tank.burst ? `5 часов: занято ${Math.round(tank.burst.percent)}%${tank.burst.resetsAt !== null ? `, сброс ${formatClock(tank.burst.resetsAt, now.value)}` : ""}` : null,
+    resets ? `Бесплатных сбросов: ${resets.count}${resets.expires.length ? ` · сгорают ${resets.expires.map((time) => formatClock(time, now.value)).join(", ")}` : ""}` : null,
+    "Лампы у бака: дни до сброса",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** A tank's label, on the right of its tank or under it in a row: its name, what is left and when it refills. */
+const tankLabels = computed(() => {
+  const column = fuelColumn.value;
+  if (!column) return [];
+  return tankList.value.flatMap((tank) => {
+    const anchor = column.anchors.get(tank.key);
+    const size = column.labels.get(tank.key);
+    if (!anchor || !size) return [];
+    return [{
+      tank,
+      info: tankInfo(tank),
+      cells: Math.min(tank.resets?.count ?? 0, MAX_CELLS),
+      low: tankEmpty(tank),
+      row: column.row,
+      title: tankTitle(tank),
+      style: { ...at(anchor.x, anchor.y), maxWidth: `${size.width}px` },
+    }];
   });
 });
 
@@ -306,16 +442,36 @@ const machineLabels = computed(() => {
     // A failed probe that has not yet made the machine offline, and data that is not fresh: in the title, as the card has them.
     const mark = machine.error && machine.status !== "offline" ? `⚠ ${errorLabel(machine.error)}` : null;
     const extra = [mark, dataAge(machine, now.value)].filter(Boolean).join(" · ") || null;
+    const rings = machineRings(machine.metrics);
+    const free = freeOf(machine).map((item) => ({ ...item, color: RINGS[item.key], level: ringLevel(rings, item.key) }));
     return [{
       machine,
       status,
+      free,
       level: statusLevel(machine.status) ?? "muted",
       showStatus: column.status,
-      title: [machine.role ? `${machine.name} · ${machine.role}` : machine.name, status, extra].filter(Boolean).join("\n"),
+      title: [machine.role ? `${machine.name} · ${machine.role}` : machine.name, status, freeTitle(free), RING_NOTE, extra].filter(Boolean).join("\n"),
       style: at(anchor.x, anchor.y),
     }];
   });
 });
+/** How pressing the ring of a free resource is, for the colour of its figure: none when calm. */
+function ringLevel(rings: Rings, key: FreeItem["key"]): "warn" | "bad" | null {
+  const level = rings[key]?.level;
+  return level === "warn" || level === "bad" ? level : null;
+}
+/** "Свободно: 28 ядер, памяти 24 ГБ, видеопамяти 8 ГБ" for a label's title. */
+function freeTitle(free: readonly FreeItem[]): string | null {
+  if (!free.length) return null;
+  const words: Record<FreeItem["key"], (text: string) => string> = {
+    cpu: (text) => text,
+    memory: (text) => `памяти ${text}`,
+    gpu: (text) => (text.endsWith("%") ? `GPU ${text}` : `видеопамяти ${text}`),
+  };
+  return `Свободно: ${free.map((item) => words[item.key](item.text)).join(", ")}`;
+}
+const RING_NOTE = "Кольца снаружи внутрь: CPU, память, GPU; дуга — занято";
+
 const machineNoteStyle = computed(() => {
   const note = machineColumn.value?.note;
   return note ? at(note.x, note.y) : null;
@@ -516,14 +672,15 @@ function placeStarLabels() {
   const frame = box.getBoundingClientRect();
   const relative = (rect: DOMRect): Rect => ({ x0: rect.left - frame.left, y0: rect.top - frame.top, x1: rect.right - frame.left, y1: rect.bottom - frame.top });
   const root = box.closest(".map") ?? box;
-  const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .dock, .overlay .station, .overlay .depot, .overlay .machine, .overlay .machine-note")]
+  const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .dock, .overlay .station, .overlay .tank, .overlay .machine, .overlay .machine-note, .overlay .constellation")]
     .filter((el) => el.offsetParent !== null)
     .map((el) => relative(el.getBoundingClientRect()));
-  // The machines' stations are drawn on the canvas: the whole column keeps the labels off, the gaps between its rows
-  // too, so that no star's label stands across a station's wings.
+  // The machines' stations and the tanks are drawn on the canvas: each whole column keeps the labels off, the gaps between
+  // its rows too, so that no star's label stands across a station's wings or a tank's lamps.
   const column = machineColumn.value;
-  const rect = column ? machineColumnRect(column) : null;
-  if (rect) {
+  const fuel = fuelColumn.value;
+  for (const rect of [column ? machineColumnRect(column) : null, fuel ? fuelColumnRect(fuel) : null]) {
+    if (!rect) continue;
     obstacles.push({
       x0: camera.tx + rect.x0 * camera.zoom,
       y0: camera.ty + rect.y0 * camera.zoom,
@@ -567,8 +724,8 @@ function placeStarLabels() {
 }
 
 watch([starLabels, repo], () => void nextTick(measureLabels), { flush: "post" });
-// The machines' labels are obstacles for the stars' ones.
-watch([machineLabels, machineNoteStyle], () => void nextTick(scheduleLabels), { flush: "post" });
+// The machines', the tanks' and the constellations' labels are obstacles for the stars' ones.
+watch([machineLabels, machineNoteStyle, tankLabels, constellationLabels], () => void nextTick(scheduleLabels), { flush: "post" });
 watch(hoveredStar, scheduleLabels);
 
 // The dock ------------------------------------------------------------------------------------------
@@ -685,8 +842,9 @@ function measureCovered() {
   if (!dockFolded.value || repo.value) return;
   const stage = host.value?.getBoundingClientRect();
   const dock = host.value?.querySelector<HTMLElement>(".dock")?.getBoundingClientRect();
+  const toolbar = host.value?.closest(".map")?.querySelector<HTMLElement>(".toolbar")?.getBoundingClientRect();
   if (!stage || !dock || !stage.width || !stage.height) return;
-  const key = `${Math.round(stage.width)}x${Math.round(stage.height)}/${world.value.width}`;
+  const key = `${Math.round(stage.width)}x${Math.round(stage.height)}/${world.value.width}/${Math.round(toolbar?.bottom ?? 0)}`;
   if (key === coveredFor) return;
   coveredFor = key;
   const fit = fitCamera(world.value, { width: stage.width, height: stage.height });
@@ -694,7 +852,10 @@ function measureCovered() {
   const toWorld = (x: number, y: number) => ({ x: (x - stage.left - fit.tx) / fit.zoom, y: (y - stage.top - fit.ty) / fit.zoom });
   const from = toWorld(dock.left - margin, dock.top - margin);
   const to = toWorld(dock.right + margin, dock.bottom + margin);
-  covered.value = [{ x0: from.x, y0: from.y, x1: to.x, y1: to.y }];
+  const parts: Rect[] = [{ x0: from.x, y0: from.y, x1: to.x, y1: Math.max(to.y, world.value.height) }];
+  // The toolbar runs along the top: the columns at the edges start under it.
+  if (toolbar) parts.push({ x0: 0, y0: 0, x1: world.value.width, y1: Math.max(0, toWorld(0, toolbar.bottom + margin).y) });
+  covered.value = parts;
   fullZoom.value = fit.zoom;
 }
 watch(world, () => void nextTick(measureCovered));
@@ -782,14 +943,15 @@ function galaxyModel() {
   return {
     stars: starList.value,
     layout: galaxy.value,
-    depots: depotList.value,
-    lines: lines.value,
+    tanks: tankMarks.value,
+    fuel: fuelColumn.value,
+    constellations: constellationList.value,
     research: researchMarks.value,
     machines: machineMarks.value,
     machineColumn: machineColumn.value,
   };
 }
-watch([starList, galaxy, depotList, lines, researchMarks, machineMarks, machineColumn], () => scene?.setGalaxy(galaxyModel()));
+watch([starList, galaxy, tankMarks, fuelColumn, constellationList, researchMarks, machineMarks, machineColumn], () => scene?.setGalaxy(galaxyModel()));
 watch(() => props.machine, (id) => scene?.setMachine(id ?? null));
 watch(repoArt, (art) => scene?.setArt(art));
 watch(repo, (name) => scene?.setView(name), { flush: "sync" });
@@ -802,6 +964,7 @@ watch(
     if (active) {
       now.value = Date.now() / 1000;
       void loadArt();
+      void loadConstellations();
       void loadResearch();
     }
     scene?.setActive(active);
@@ -857,7 +1020,10 @@ onBeforeUnmount(() => {
         <span>Система</span>
         <select v-model="repoModel" class="btn" :disabled="!starList.length">
           <option value="">вся галактика</option>
-          <option v-for="star in starList" :key="star.repo" :value="star.repo">{{ star.repo }} · {{ star.live }}</option>
+          <optgroup v-for="group in pickerGroups.grouped" :key="group.name" :label="group.name">
+            <option v-for="star in group.stars" :key="star.repo" :value="star.repo">{{ star.repo }} · {{ star.live }}</option>
+          </optgroup>
+          <option v-for="star in pickerGroups.rest" :key="star.repo" :value="star.repo">{{ star.repo }} · {{ star.live }}</option>
         </select>
       </label>
       <div v-if="demo" class="seg" role="group" aria-label="Источник карты">
@@ -950,24 +1116,32 @@ onBeforeUnmount(() => {
               @click="openMachine(label.machine.id, $event.currentTarget as HTMLElement)"
             >
               <span class="m-name">{{ label.machine.name }}</span>
-              <span v-if="label.showStatus" class="m-status" :class="label.level">{{ label.status }}</span>
+              <span v-if="label.showStatus && label.free.length" class="m-free num">
+                <span v-for="item in label.free" :key="item.key" class="m-item" :class="item.level"><i class="m-dot" :style="{ background: item.color }" aria-hidden="true" />{{ item.text }}</span>
+              </span>
+              <span v-else-if="label.showStatus" class="m-status" :class="label.level">{{ label.status }}</span>
             </button>
           </div>
           <p v-if="machineNoteStyle" class="machine-note" :style="machineNoteStyle" :title="machineNote ?? ''">
             Конфиг машин не прочитан: {{ machineNote }}
           </p>
-          <span
-            v-for="label in depotLabels"
-            :key="label.depot.key"
-            class="depot"
-            :class="{ up: !label.top, low: label.low }"
+          <span v-for="label in constellationLabels" :key="label.name" class="constellation" :style="label.style" aria-hidden="true">{{ label.name }}</span>
+          <div
+            v-for="label in tankLabels"
+            :key="label.tank.key"
+            class="tank"
+            :class="[label.tank.executor, { row: label.row, low: label.low, admiral: label.tank.admiral }]"
             :style="label.style"
-            :title="label.depot.name"
+            :title="label.title"
           >
-            <span class="d-name">{{ label.depot.name }}</span>
-            <span class="num">{{ label.fuel }}{{ label.depot.duty ? " · дежурный" : "" }}</span>
-            <span v-if="label.refuel" class="num d-refuel">{{ label.refuel }}</span>
-          </span>
+            <span class="t-name"><span class="glyph" aria-hidden="true">{{ label.tank.executor === "codex" ? "◆" : "✳" }}</span>{{ label.tank.name }}</span>
+            <span class="t-info num">
+              <span class="t-text">{{ label.info }}</span>
+              <img v-for="cell in label.cells" :key="cell" class="cell" :src="fuelCell" alt="" />
+              <span v-if="label.cells" class="visually-hidden">, бесплатных сбросов {{ label.cells }}</span>
+              <span v-if="label.tank.admiral" class="visually-hidden">, адмирал</span>
+            </span>
+          </div>
         </template>
         <template v-else>
           <template v-for="plate in plates" :key="plate.place">
@@ -1319,7 +1493,8 @@ onBeforeUnmount(() => {
 
 .star,
 .station,
-.depot,
+.constellation,
+.tank,
 .machine,
 .machine-note,
 .plate-st,
@@ -1521,7 +1696,7 @@ onBeforeUnmount(() => {
 }
 
 /*
- * A machine's label on the left of its power station, at the height of its centre. The status takes the board's level
+ * A machine's label on the left of its reactor, at the height of its centre. The status takes the board's level
  * colours at their dark values: the sky is dark in both themes. The line about a broken config stands over the column.
  */
 .machine,
@@ -1542,7 +1717,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: flex-end;
   box-sizing: border-box;
-  max-width: 150px;
+  max-width: 180px;
   margin: 0;
   padding: 1px 7px;
   border: 1px solid rgba(214, 170, 96, 0.28);
@@ -1610,6 +1785,37 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 
+/* What is free on the machine, each figure after a dot of its ring's colour; gold or red while its ring is pressed. */
+.m-free {
+  display: flex;
+  gap: 7px;
+  max-width: 100%;
+  overflow: hidden;
+  color: #c9c1b0;
+}
+
+.m-item {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.m-item.warn {
+  color: var(--warn);
+}
+
+.m-item.bad {
+  color: var(--bad);
+}
+
+.m-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
 .machine-note {
   max-width: 280px;
   margin: 0;
@@ -1625,32 +1831,103 @@ onBeforeUnmount(() => {
   pointer-events: auto;
 }
 
-.depot {
+/* A constellation's name over its stars, in the colour of its cloud: quiet, under the stars' labels. */
+.constellation {
+  transform: translate(-50%, -50%);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  line-height: 16px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0.8;
+  text-shadow:
+    0 0 4px #05070d,
+    0 0 2px #05070d;
+}
+
+/*
+ * A tank's label on the right of its tank, at the height of its centre; under it in a row on a phone. The admiral's is
+ * gold, like the badge on its tank; an empty tank's second line is red.
+ */
+.tank {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  max-width: 170px;
-  color: #b8ad98;
+  box-sizing: border-box;
+  max-width: 150px;
+  padding: 1px 7px;
+  border: 1px solid rgba(214, 170, 96, 0.28);
+  border-radius: 3px;
+  background: rgba(8, 11, 18, 0.8);
   font-size: 11.5px;
-  line-height: 15px;
+  line-height: 14px;
   white-space: nowrap;
+  transform: translateY(-50%);
+  pointer-events: auto;
+  cursor: help;
 }
 
-.depot.up {
-  transform: translate(-50%, -100%);
+.tank.row {
+  align-items: center;
+  transform: translateX(-50%);
 }
 
-.depot.low .num {
-  color: #ff8d7a;
-}
-.depot.low .d-refuel {
-  color: #d9c08a;
+.tank.admiral {
+  border-color: rgba(243, 198, 78, 0.75);
 }
 
-.d-name {
-  max-width: 100%;
+.t-name,
+.t-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.t-name {
+  max-width: 100%;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 15px;
+}
+
+.tank.admiral .t-name {
+  color: #f3c64e;
+}
+
+.tank .glyph {
+  display: inline-block;
+  width: 12px;
+}
+
+.tank.codex .glyph {
+  color: #7ea6f5;
+}
+
+.tank.claude .glyph {
+  color: #e59472;
+}
+
+.t-info {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  color: #b8ad98;
+}
+
+.tank.low .t-text {
+  color: #ff8d7a;
+}
+
+/* A free reset: a spare cell of fuel. */
+.cell {
+  flex: none;
+  width: 8px;
+  height: 12px;
+  margin-left: 3px;
+}
+
+.cell + .cell {
+  margin-left: 2px;
 }
 
 /* A station's name next to it, away from its ships: under it, over it or left of it. */

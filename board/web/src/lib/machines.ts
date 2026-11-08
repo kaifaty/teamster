@@ -261,6 +261,76 @@ export function tileMeters(metrics: Metrics | null): Meter[] {
   return meters.filter((meter): meter is Meter => meter !== null);
 }
 
+/** What a ring around a machine's reactor on the map shows: the share in use and how pressing it is. */
+export interface Ring {
+  percent: number;
+  level: Level;
+}
+
+/**
+ * The rings of a machine's reactor on the map, outside in: CPU, memory and the GPU — its video memory where it has its
+ * own, else its load — and the fullest disk, only while it runs low. A missing ring is null: no such resource, or no data.
+ */
+export interface Rings {
+  cpu: Ring | null;
+  memory: Ring | null;
+  gpu: Ring | null;
+  disk: Ring | null;
+}
+
+const ringOf = (meter: Meter | null): Ring | null => (meter ? { percent: meter.percent, level: meter.level } : null);
+
+export function machineRings(metrics: Metrics | null): Rings {
+  if (!metrics) return { cpu: null, memory: null, gpu: null, disk: null };
+  const vram = fullestVram(metrics.gpus);
+  const busiest = busiestGpu(metrics.gpus);
+  const disk = fullestDisk(metrics.disks);
+  const diskRing = disk ? ringOf(diskMeter(disk)) : null;
+  return {
+    cpu: metrics.cpu ? ringOf(cpuMeter(metrics.cpu)) : null,
+    memory: metrics.memory ? ringOf(memoryMeter(metrics.memory)) : null,
+    gpu: ringOf(vram ? vramMeter(vram) : busiest ? gpuMeter(busiest) : null),
+    disk: diskRing && diskRing.level !== "ok" ? diskRing : null,
+  };
+}
+
+/** "1 ядро", "3 ядра", "27 ядер". */
+export function coresText(count: number): string {
+  const tens = count % 100;
+  const ones = count % 10;
+  const word = tens >= 11 && tens <= 14 ? "ядер" : ones === 1 ? "ядро" : ones >= 2 && ones <= 4 ? "ядра" : "ядер";
+  return `${count} ${word}`;
+}
+
+/** One free resource of a machine, for the label under its rings: which ring it belongs to, and how much is free. */
+export interface FreeItem {
+  key: "cpu" | "memory" | "gpu";
+  text: string;
+}
+
+/**
+ * What is still free on a machine, ring by ring: whole cores — by the busy share when the probe reports it, else by the
+ * load — memory, and the GPU's video memory, or the share of its load left where it has none of its own.
+ */
+export function freeItems(metrics: Metrics | null): FreeItem[] {
+  if (!metrics) return [];
+  const items: FreeItem[] = [];
+  const { cpu, memory } = metrics;
+  if (cpu && cpu.cores > 0) {
+    const busy = cpu.percent === null ? null : (cpu.average_percent ?? cpu.percent);
+    const free = busy === null ? cpu.cores - cpu.load1 : cpu.cores * (1 - busy / 100);
+    items.push({ key: "cpu", text: coresText(Math.max(0, Math.min(cpu.cores, Math.floor(free)))) });
+  }
+  if (memory) items.push({ key: "memory", text: formatBytes(memory.available_bytes) });
+  const vram = fullestVram(metrics.gpus);
+  const busiest = busiestGpu(metrics.gpus);
+  if (vram) items.push({ key: "gpu", text: formatBytes(Math.max(0, vram.memory_total_bytes! - vram.memory_used_bytes!)) });
+  else if (busiest?.utilization_percent !== null && busiest?.utilization_percent !== undefined) {
+    items.push({ key: "gpu", text: `${Math.round(100 - busiest.utilization_percent)} %` });
+  }
+  return items;
+}
+
 /** Older than this, the data says how old it is even when nothing failed. */
 export const STALE_AFTER = 90;
 

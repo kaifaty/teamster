@@ -1,0 +1,68 @@
+{
+  "slug": "scout",
+  "kind": "scout",
+  "repo": "/teamster-fixture/repo",
+  "worktree": "/teamster-fixture/repo",
+  "branch": "",
+  "executor": "codex",
+  "effort": null,
+  "account": "main",
+  "thread": "fa196249-3f2f-4b4c-bdcc-24f28ed0886c",
+  "threads": [
+    {
+      "account": "main",
+      "thread": "fa196249-3f2f-4b4c-bdcc-24f28ed0886c",
+      "started": 1794169341.2459352
+    }
+  ],
+  "rotations": [],
+  "reviews": [],
+  "checks": [],
+  "created": 1794169340.718548,
+  "turns": 1,
+  "work_completed": false,
+  "review_start": 0,
+  "turn_started": 1794169340.719265,
+  "check_start": 0,
+  "rotation_start": 0,
+  "event_start": 0,
+  "exhausted": null,
+  "outcome": "completed",
+  "reset_wait_seconds": 0,
+  "capacity_start": 0,
+  "fix_rounds": 0,
+  "rounds": [],
+  "model": "fake-model",
+  "reasoning_effort": null,
+  "runtime": {
+    "version": "1.57.1",
+    "script": "/private/tmp/teamster-main-63el/wt/src/teamster/__main__.py"
+  },
+  "result": null,
+  "pid": null,
+  "turn_stops": [],
+  "guards": [],
+  "base_check": false,
+  "sandbox": "off",
+  "writable_dirs": [],
+  "reviewer": "codex",
+  "auth_excluded": [],
+  "auth_excluded_ids": [],
+  "auth_transitions": 0,
+  "auth_failures": {
+    "main": 0
+  },
+  "account_ids": {
+    "main": "A",
+    "second": "B"
+  },
+  "weekly_marks": {
+    "main": {
+      "reset": 1794176537,
+      "used": 10
+    }
+  },
+  "exec_event_start": 0,
+  "weekly_used_percent": 0,
+  "turn_finished": 1794169341.311612
+}

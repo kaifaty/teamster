@@ -1073,6 +1073,34 @@ class RotationTestCase(unittest.TestCase):
         return {"verdict": "defects" if defects else "clean", "findings": findings if defects else [],
                 "summary": "Found two defects." if defects else "No defects found."}
 
+    def reflect_archive(self):
+        """An archive with a batch review, a record it counted, a later record and a reflect record."""
+        archive = self.home / "claude-tasks" / ".archive"
+        for name, kind in (("old-task-20260101T000000Z", "work"), ("new-task-20260103T000000Z", "work"),
+                           ("past-reflect-20260104T000000Z", "reflect")):
+            (archive / name).mkdir(parents=True)
+            (archive / name / "state.json").write_text(json.dumps({"slug": name[:-17], "kind": kind}))
+            (archive / name / "brief.md").write_text("Brief of " + name + "\n")
+        (archive / "batch-2026-01-02.md").write_text(
+            "# Batch reflection 2026-01-02\n\nthrough: 20260102T000000Z\n\nOld review.\n")
+        (archive / "INDEX.md").write_text(
+            "# Reflection index\n\n| date | entry | scope | cue | status |\n|---|---|---|---|---|\n"
+            "| 2026-01-02 | batch-2026-01-02.md L1 | invariant | old cue | applied rules (PR #1) |\n")
+        return archive
+
+    def archive_contents(self):
+        archive = self.home / "claude-tasks" / ".archive"
+        return {path.relative_to(archive): path.read_bytes() for path in archive.rglob("*") if path.is_file()}
+
+    def reflect_lesson(self, lesson_id, cue, scope="invariant", repos=()):
+        return {"id": lesson_id, "cue": cue, "lesson": "Do it differently.", "evidence": "new-task round 1 F1",
+                "scope": scope, "repos": list(repos), "earlier": [], "caveats": "", "proposal": "A check."}
+
+    def reflect_result(self, status="done", lessons=(), questions=(), options=None, report="Records: 1."):
+        return {"status": status, "summary": "Reflected on one record.", "report": report,
+                "lessons": list(lessons), "questions": list(questions),
+                "options": [[] for _ in questions] if options is None else options}
+
     def assert_output_schema(self, invocation, slug, review=False):
         filename = "review-schema.json" if review else "result-schema.json"
         expected = self.home / "claude-tasks" / slug / filename

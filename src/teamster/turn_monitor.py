@@ -175,7 +175,7 @@ def monitor_command(st, cfg, prompt, effort, reviewing, review_fallback, wrapup,
         args += ["resume", thread, "--json", "-o", str(last)]
     else:
         args += ["--json", "-C", st["worktree"], "-o", str(last)]
-    if st.get("kind") == "scout":
+    if st.get("kind") in ("scout", "reflect"):
         args += ["-c", 'sandbox_mode="read-only"']
     else:
         args += sandboxing.sandbox_args(st)
@@ -183,7 +183,11 @@ def monitor_command(st, cfg, prompt, effort, reviewing, review_fallback, wrapup,
             rules = sandboxing.sandbox_rules(cfg, reviewing=reviewing, no_push=st.get("no_push", False))
             if not prompt.endswith(rules):
                 prompt += "\n\n" + rules
-    if st.get("kind") != "scout":
+    if st.get("kind") == "reflect":
+        schema = last.parent / "reflect-schema.json"
+        schema.write_text(json.dumps(result_schema.REFLECT_SCHEMA, indent=2), encoding="utf-8")
+        args += ["--output-schema", str(schema)]
+    elif st.get("kind") != "scout":
         schema = last.parent / ("review-schema.json" if reviewing else "result-schema.json")
         schema.write_text(json.dumps(result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA, indent=2), encoding="utf-8")
         args += ["--output-schema", str(schema)]
@@ -395,7 +399,8 @@ def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
         if stream.refusal:
             stream.review_entry.update(outcome="refused", refusal=stream.refusal)
     elif not reviewing and st.get("kind") != "scout":
-        st["result"] = None if stream.refusal else result_schema.parse_result(message)
+        st["result"] = None if stream.refusal else result_schema.parse_result(
+            message, reflecting=st.get("kind") == "reflect")
     settings = {"model": stream.model, "reasoning_effort": stream.reasoning_effort}
     final_path = usage.path
     try:

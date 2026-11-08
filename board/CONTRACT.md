@@ -54,6 +54,8 @@ stops or changes work, and never writes under either source's home.
   path. Assistant events may carry ISO `timestamp` values.
 - Map art: `board-art/<repo>/` in the task home, holding any of `sky.jpg`, `planet.png` and `emblem.png`. It stays
   outside the repository because project names and themes can be private, and is written by hand.
+- Constellations: `board-constellations.json` in the task home, written by hand and read on each request, for the same
+  reason kept outside the repository: `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse"]}]}`.
 - Reflection: `tasks/.archive/INDEX.md` (the lesson table), `tasks/.archive/batch-<YYYY-MM-DD>[suffix].md`
   (batch reviews, each with a `through: <stamp>` line) and the archived records' `state.json`, read for
   `GET /api/research` as described below.
@@ -505,6 +507,12 @@ view is empty; linked record directories, `state.json`, `INDEX.md` and batch fil
 - `GET /api/tasks/{slug}/files/{name}` with `name` in `brief`, `last`, `review`, `check` → `text/plain;
   charset=utf-8`, at most the last 256 KiB; 404 when missing or for a session. No other names, no paths.
 - `GET /api/research` → `ResearchView`; other methods get 405.
+- `GET /api/constellations` → `{"constellations": [{"name": string, "repos": string[]}], "error": string | null}`.
+  At most 32 constellations; a name is 1 to 60 characters and unique; `repos` lists 1 to 64 repository names or
+  patterns, each at most 100 characters without slashes, where `*` stands for any run of characters. Names and
+  patterns are trimmed and repeated patterns dropped. A missing file gives an empty list and no error; a symbolic link,
+  a file over 64 KiB, invalid JSON or any other shape gives an empty list and the reason. The map matches the patterns
+  against repository basenames; a repository that two constellations claim belongs to the first.
 - `GET /api/art` → `ArtIndex`, empty when `board-art/` is missing. URLs carry the file's mtime as `?v=`, so a
   replaced picture gets a new URL.
 - `GET /api/art/{repo}/{file}` with `file` in `sky.jpg` (`image/jpeg`), `planet.png`, `emblem.png` (`image/png`) →

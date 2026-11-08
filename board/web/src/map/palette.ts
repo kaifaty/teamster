@@ -8,7 +8,6 @@ export const SPACE = {
   star: "#e9eefc",
   orbit: "#a0bedc",
   route: "#c8d7f0",
-  lane: "#7a8cb8",
   fix: "#ebaa46",
   gold: "#f3c64e",
   alarm: "#ff5a4a",
@@ -29,13 +28,17 @@ export const SPACE = {
   storm: "#17121f",
   stormEdge: "#3a2d4a",
   lightning: "#e6dcff",
-  /** A depot or a machine's station that gives nothing: no connection, or no data. */
-  dead: "#8a8a94",
-  /** The dim warning light of an empty depot. */
+  /** The dim warning light of an empty fuel tank. */
   empty: "#ff7a50",
   /** The research station's glow, its watch beams and probes. */
   research: "#5fd6c8",
 } as const;
+
+/**
+ * The rings around a machine's reactor while they are calm, outside in; a busy ring turns gold and an overloaded one
+ * red. The label's dots before the free resources take the same colours.
+ */
+export const RINGS = { cpu: "#9fd0ff", memory: "#5fd6c8", gpu: "#c39bff" } as const;
 
 /** `escort` tints the reviewer's drone: the family's hue, light enough that the art's paint still shows. */
 export const FLEET: Record<Family, { hull: string; engine: string; escort: string }> = {
