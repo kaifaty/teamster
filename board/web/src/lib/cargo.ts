@@ -2,7 +2,7 @@
 
 import type { Cargo, CargoFinding } from "../types";
 import { coarseSpan, formatDuration } from "./format";
-import { CI, findingsLabel, stopLabel, type Tone } from "./labels";
+import { findingsLabel, stopLabel, type Tone } from "./labels";
 
 export interface CargoRow {
   key: "check" | "review" | "stop" | "ci" | "base";
@@ -21,6 +21,9 @@ export function hasCargo(cargo: Cargo | null | undefined): cargo is Cargo {
       cargo.questions?.length || cargo.decisions?.fixed || cargo.decisions?.rejected,
   );
 }
+
+/** A CI outcome without failed checks, in the row labelled "CI", so without the word itself. */
+const CI_OUTCOMES: Record<string, string> = { pending: "идёт", skipped: "пропущен", timeout: "таймаут", none: "нет проверок", failed: "упал" };
 
 const failed = (outcome: string | null | undefined) => outcome === "failed" || outcome === "timeout";
 
@@ -73,7 +76,7 @@ export function cargoRows(cargo: Cargo): CargoRow[] {
       text = `${ci.passed} из ${ci.total} прошли${time}`;
       tone = "ok";
     } else {
-      const outcome = ci.outcome ? (CI[ci.outcome]?.label ?? `CI: ${ci.outcome}`) : "без итога";
+      const outcome = ci.outcome ? (CI_OUTCOMES[ci.outcome] ?? ci.outcome) : "без итога";
       text = ci.total > 0 ? `${outcome} · ${ci.passed} из ${ci.total} прошли${time}` : outcome;
       tone = failed(ci.outcome) ? "bad" : "muted";
     }

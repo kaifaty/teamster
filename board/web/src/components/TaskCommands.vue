@@ -30,8 +30,9 @@ const shownAction = computed(() => (roadstead.value ? (choice.value ?? order.val
 const returned = computed(() => returnText(props.cargo));
 /** Lines in the say field: a long text takes the order block's full width. */
 const lines = computed(() => message.value.split("\n").length);
-/** The plain commands under "Все команды": every one but the order's own. */
-const rest = computed(() => plain.value.filter((item) => item.command !== order.value?.command));
+/** The plain commands under "Все команды": every one but the order's own, which comes back here once the human
+ * chose to accept or return the task and the order's button is hidden. */
+const rest = computed(() => plain.value.filter((item) => choice.value !== null || item.command !== order.value?.command));
 const verdict = ref<Verdict>(order.value?.verdict ?? "accepted");
 const note = ref("");
 const message = ref(order.value?.text ?? "");
