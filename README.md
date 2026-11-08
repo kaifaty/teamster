@@ -88,7 +88,9 @@ files, which an upgrade replaces.
 
 1. Update the uv tool install to 1.55.0 or newer: wait until no tasks are running, then `uv tool upgrade teamster`.
 2. Run the upgrade with the Python you want the launchers to use, not the tool's own environment:
-   `python3 -I "$(teamster path)/__main__.py" upgrade --yes`.
+   `python3 -I "$(teamster path)/__main__.py" upgrade --yes`. Run from a virtual environment, as
+   `teamster upgrade --yes` from the uv tool install is, the upgrade itself picks that environment's
+   base interpreter, so the launchers keep working after the tool is uninstalled.
 3. Add `~/.teamster/bin` to `PATH` ahead of `~/.local/bin`, open a new shell, and check that
    `command -v teamster` prints `~/.teamster/bin/teamster`.
 4. Wait until no tasks are running, then `uv tool uninstall teamster`.

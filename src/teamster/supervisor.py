@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 
-from . import budgets, checking, ci_runs, clock, config, notifications, prompts, review_cycle, task_state, telemetry_log, turns
+from . import budgets, checking, ci_runs, clock, config, installs, notifications, procs, prompts, review_cycle, task_state, telemetry_log, turns
 
 
 def spawn(st, prompt, effort=None, current_message=False, kind="work", review_after=False, fix_rounds=0):
@@ -34,12 +34,17 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
         environment["TEAMSTER_CODEX_HOME"] = str(config.CODEX_HOME)
     if config.HOME_VARIABLES["CODEX_TASK_HOME"]:
         environment["CODEX_TASK_HOME"] = str(config.CODEX_HOME)
-    with (d / "stderr.log").open("a") as errors:
-        proc = subprocess.Popen([sys.executable, "-I", str(config.SCRIPT_RESOLVED), "_run", st["slug"]],
-                                cwd=st["worktree"], env=environment, stdin=subprocess.DEVNULL,
-                                stdout=errors, stderr=errors, start_new_session=True)
-    st["pid"] = proc.pid
-    task_state.save(st)
+    # Until the pid is saved, prune and data layout upgrades wait; a pruned version is not started.
+    with installs.spawn_lock():
+        if not config.SCRIPT_RESOLVED.is_file():
+            procs.die(f"{config.SCRIPT_RESOLVED} no longer exists: its version was pruned; "
+                      f"run {config.COMMAND} again from the current version")
+        with (d / "stderr.log").open("a") as errors:
+            proc = subprocess.Popen([sys.executable, "-I", str(config.SCRIPT_RESOLVED), "_run", st["slug"]],
+                                    cwd=st["worktree"], env=environment, stdin=subprocess.DEVNULL,
+                                    stdout=errors, stderr=errors, start_new_session=True)
+        st["pid"] = proc.pid
+        task_state.save(st)
     return proc
 
 

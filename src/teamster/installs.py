@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from . import config, procs, task_state
@@ -64,13 +64,27 @@ def running_from_versions():
 
 
 @contextmanager
-def versions_lock():
-    """One upgrade or prune at a time per data home."""
+def locked(name, mode):
     directory = versions_dir()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with (directory / ".lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with (directory / name).open("a") as lock:
+        fcntl.flock(lock, mode)
         yield
+
+
+def upgrade_lock():
+    """One upgrade or prune at a time, cache clone fetch included."""
+    return locked(".upgrade.lock", fcntl.LOCK_EX)
+
+
+def versions_lock():
+    """Exclusive against supervisor starts: prune and data layout changes check supervisors under it."""
+    return locked(".lock", fcntl.LOCK_EX)
+
+
+def spawn_lock():
+    """Held shared while a supervisor starts; without versions/ (a uv tool install) nothing to hold."""
+    return locked(".lock", fcntl.LOCK_SH) if versions_dir().is_dir() else nullcontext()
 
 
 def process_command(pid):
@@ -140,19 +154,39 @@ def source_repo(source):
     return cache
 
 
-def release_info(repo, commit):
-    """(__version__, REQUIRES_DRAIN) from the revision's src/teamster/__init__.py."""
-    text = git(repo, "show", f"{commit}:src/teamster/__init__.py")
+def init_values(text):
     values = {}
     for node in ast.parse(text).body:
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     values[target.id] = node.value.value
+    return values
+
+
+def layout_value(values):
+    layout = values.get("DATA_LAYOUT", 1)
+    return layout if isinstance(layout, int) and not isinstance(layout, bool) else 1
+
+
+def version_layout(version):
+    """DATA_LAYOUT from an installed version's __init__.py; outside versions/, this process's."""
+    if version is None:
+        return config.data_layout()
+    try:
+        text = (versions_dir() / version / "src/teamster/__init__.py").read_text(encoding="utf-8")
+    except OSError:
+        return 1
+    return layout_value(init_values(text))
+
+
+def release_info(repo, commit):
+    """(__version__, DATA_LAYOUT) from the revision's src/teamster/__init__.py."""
+    values = init_values(git(repo, "show", f"{commit}:src/teamster/__init__.py"))
     version = values.get("__version__")
     if not isinstance(version, str) or not VERSION_NAME.fullmatch(version):
         procs.die(f"{commit} has no usable __version__ in src/teamster/__init__.py")
-    return version, values.get("REQUIRES_DRAIN") is True
+    return version, layout_value(values)
 
 
 def extract(repo, commit, destination):
@@ -206,7 +240,22 @@ def tree_files(root):
 
 
 def python():
-    return os.path.abspath(sys.executable)
+    """The launchers' Python: the base interpreter when upgrade runs inside a virtual environment.
+
+    Symbolic links stay unresolved, so a path such as a package manager's stable link survives its updates.
+    """
+    if sys.prefix == sys.base_prefix:
+        return os.path.abspath(sys.executable)
+    environment = os.path.abspath(sys.prefix) + os.sep
+    release = "python%d.%d" % sys.version_info[:2]
+    candidates = [getattr(sys, "_base_executable", None)]
+    candidates += [os.path.join(sys.base_prefix, "bin", name) for name in (release, "python3")]
+    for candidate in candidates:
+        if (candidate and os.path.isabs(candidate) and not os.path.abspath(candidate).startswith(environment)
+                and os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+            return os.path.abspath(candidate)
+    procs.die("upgrade: this Python runs in a virtual environment and its base interpreter was not found; "
+              f"run the upgrade with the system Python: python3 -I \"$({config.COMMAND} path)/__main__.py\" upgrade")
 
 
 def launcher_text():
@@ -267,38 +316,53 @@ def install(repo, commit, version):
             shutil.rmtree(staging)
 
 
+def drain_blockers(supervisors, layout):
+    return [slug for slug, version in supervisors if version_layout(version) != layout]
+
+
+def drain_message(version, layout, blockers):
+    return (f"version {version} has data layout {layout}; stop or finish "
+            f"{', '.join(blockers)} first, which run another layout")
+
+
 def cmd_upgrade(a):
     source = a.source or DEFAULT_SOURCE
-    ref = a.ref or DEFAULT_REF
+    local = Path(source).expanduser().is_dir()
+    # A preview from a local clone only reads; anything that fetches or installs runs one at a time.
+    with upgrade_lock() if a.yes or not local else nullcontext():
+        upgrade(a, source, a.ref or DEFAULT_REF)
+
+
+def upgrade(a, source, ref):
     repo = source_repo(source)
     resolved = subprocess.run(config.GIT + ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
                               cwd=str(repo), capture_output=True, text=True)
     if resolved.returncode != 0:
         procs.die(f"upgrade: revision {ref!r} was not found in {repo}")
     commit = resolved.stdout.strip()
-    version, requires_drain = release_info(repo, commit)
+    version, layout = release_info(repo, commit)
     before = current_version()
+    changes_layout = layout != version_layout(before)
     supervisors = live_supervisors()
+    blockers = drain_blockers(supervisors, layout)
     print(f"source: {source} {ref} ({commit[:12]})")
-    print(f"current: {before or 'none'} -> {version}" + ("  (requires drained tasks)" if requires_drain else ""))
+    print(f"current: {before or 'none'} -> {version}  (data layout {version_layout(before)} -> {layout})")
     print(f"install: {versions_dir() / version}" + ("  (present)" if (versions_dir() / version).exists() else ""))
-    print(f"launchers: {', '.join(str(bin_dir() / name) for name in LAUNCHERS)}")
+    print(f"launchers: {', '.join(str(bin_dir() / name) for name in LAUNCHERS)} with {python()}")
     print("\n".join(supervisor_lines(supervisors)))
-    if requires_drain and supervisors:
-        message = (f"version {version} requires drained tasks; stop or finish "
-                   f"{', '.join(slug for slug, _ in supervisors)} first")
+    if blockers:
         if a.yes:
-            procs.die("upgrade: " + message)
-        print(message)
+            procs.die("upgrade: " + drain_message(version, layout, blockers))
+        print(drain_message(version, layout, blockers))
     if not a.yes:
         print(f"nothing changed; run {config.COMMAND} upgrade --yes to install")
         return
-    with versions_lock():
-        if requires_drain:
-            running = task_state.running_tasks(scouts=True)
-            if running:
-                procs.die(f"upgrade: version {version} requires drained tasks; stop or finish "
-                          f"{', '.join(sorted(running))} first")
+    # A data layout change keeps supervisors from starting until current points at the new layout.
+    with versions_lock() if changes_layout else nullcontext():
+        if changes_layout:
+            blockers = drain_blockers(live_supervisors(), layout)
+            if blockers:
+                procs.die("upgrade: " + drain_message(version, layout, blockers))
         installed = install(repo, commit, version)
         written = write_launchers()
         switched = switch_current(version)
@@ -336,7 +400,7 @@ def cmd_versions(a):
         print(f"outside {versions_dir()}: {', '.join(outside)}")
     if not a.prune:
         return
-    with versions_lock():
+    with upgrade_lock(), versions_lock():
         supervisors = live_supervisors()
         current = current_version()
         busy = {version for _, version in supervisors}

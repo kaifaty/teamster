@@ -63,6 +63,6 @@ The executors and reviewers registries share the register, get and names API.
 """
 
 __version__ = "1.55.0"
-# A release that cannot run beside supervisors of older versions sets this to True;
-# upgrade --yes then refuses while any supervisor is alive.
-REQUIRES_DRAIN = False
+# Raised by a release whose supervisors cannot run beside those of a different value;
+# upgrade --yes then refuses while a supervisor of another data layout is alive.
+DATA_LAYOUT = 1

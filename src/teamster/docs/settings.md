@@ -233,7 +233,10 @@ in the data home:
 - `versions/current` is a symbolic link to one of them.
 - `bin/teamster` and `bin/codex-worker` are launchers: a short `sh` script that runs
   `versions/current/src/teamster/__main__.py` with `-I` and the absolute path of the Python that ran
-  the upgrade. Run the upgrade again with another Python to rewrite them.
+  the upgrade. Inside a virtual environment, such as a uv tool install, the upgrade uses its base
+  interpreter instead (`sys._base_executable`, else `python3` in `sys.base_prefix`), without resolving
+  its symbolic links, and refuses when it finds none. Run the upgrade again with another Python to
+  rewrite them.
 
 The default source is the project repository at `origin/main`, through a cache clone in
 `versions/.source` that the command fetches. `--source PATH` uses a local clone as it is and
@@ -250,17 +253,30 @@ clone. With `--yes` it:
 4. writes the launchers when they are missing or differ;
 5. points `current` at the version by renaming a new link over it.
 
-A supervisor runs from the resolved path of `__main__.py`, so a task started through `current` keeps
-its own version directory, standing rules included, when `current` moves. A release whose
-`__init__.py` sets `REQUIRES_DRAIN = True` refuses `--yes` while any supervisor, scouts included, is
-alive and names them; other releases install while tasks run.
+`__main__.py` puts its resolved package directory on the import path, and a supervisor runs from the
+resolved path of `__main__.py`. A command or task started through `current` therefore keeps its own
+version directory, documents and standing rules included, when `current` moves.
+
+`DATA_LAYOUT` in `__init__.py` is an integer (now `1`) that a release raises when its supervisors
+cannot run beside those of the previous value. `--yes` refuses, and names them, while any live
+supervisor, scouts included, runs a version whose `DATA_LAYOUT` differs from the target's. Each
+supervisor's value is read from `__init__.py` in its version directory, so an upgrade that skips the
+release which changed the layout still waits. A supervisor outside `versions/` counts with the value
+of the process that runs the upgrade (`1` when it has none). Releases with the same layout install
+while tasks run.
 
 `teamster versions` lists the installed versions, marks the current one with `*`, and names for each
 the live supervisors whose command line runs a `__main__.py` in it (read with `ps`).
 `teamster versions --prune` moves every version that is not current and that no live supervisor
-uses to `versions/.trash/<version>-<time>`; it never deletes anything. Upgrades and prunes take
-`versions/.lock`, one at a time. When the command runs from `versions/`, `duty plist` puts
-`bin/teamster` in `ProgramArguments`.
+uses to `versions/.trash/<version>-<time>`; it never deletes anything.
+
+Locks: upgrades and prunes run one at a time under `versions/.upgrade.lock`, which also covers the clone
+and fetch of the cache clone. A supervisor start holds `versions/.lock` shared until its pid is saved;
+a prune and an upgrade that changes `DATA_LAYOUT` against the current version hold it exclusively and
+read the live supervisors under it. A start whose `__main__.py` was moved to the trash meanwhile
+refuses. Without `versions/` (a uv tool install) a start takes no lock and creates nothing.
+
+When the command runs from `versions/`, `duty plist` puts `bin/teamster` in `ProgramArguments`.
 
 ## Repository trust
 
