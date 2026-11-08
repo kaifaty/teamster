@@ -18,7 +18,7 @@ SUMMARY_FIELDS = {
     "slug", "kind", "repo", "branch", "task_type", "executor", "account", "reviewer",
     "model", "effort", "column", "phase", "phase_started_at", "alive", "turn", "fix_round",
     "outcome", "result_status", "summary", "pr", "ci", "sleeping_until", "created", "updated_at",
-    "activity", "title", "link", "scheduled",
+    "activity", "title", "link", "scheduled", "check", "review", "findings_left", "stop", "left",
 }
 
 
@@ -106,7 +106,7 @@ def test_rest_contract_files_and_unknown_paths(board):
         assert response.headers["content-type"] == "text/plain; charset=utf-8"
         assert response.content == b"x" * (256 * 1024)
     detail = client.get("/api/tasks/demo").json()
-    assert set(detail) == SUMMARY_FIELDS | {"timeline", "files"}
+    assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo"}
     assert set(detail["files"]) == {"brief", "last", "review", "check"}
     assert detail["scheduled"] is None
     assert len(detail["timeline"]) <= 200
@@ -382,7 +382,7 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
         assert task["kind"] == "session"
         assert task["alive"] is False
         detail = client.get("/api/tasks/local_example").json()
-        assert set(detail) == SUMMARY_FIELDS | {"timeline", "files"}
+        assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo"}
         assert detail["files"] == []
         assert len(detail["timeline"]) == 2
         assert "secret" not in json.dumps(detail)

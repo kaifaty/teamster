@@ -172,6 +172,80 @@ def test_details_and_file_allowlist(tmp_path):
     assert store.file_path("task", "brief") == directory / "brief.md"
 
 
+FULL_CARGO = {
+    "checks": [{"cmd": "old", "exit": 1, "seconds": 2, "at": 5, "outcome": "failed"},
+               {"cmd": "make test\nfast", "exit": 0, "seconds": 5.1, "at": 1794116947.6, "outcome": "passed"}],
+    "check_start": 1,
+    "review_result": {"verdict": "defects", "summary": "Three defects", "findings": [
+        {"id": "F1", "severity": "P1", "title": "Crash", "file": "a.ts", "line": 12, "detail": "d", "verify": "v"},
+        {"id": "F2", "severity": "P3", "title": "Name", "file": "b.ts", "line": 3},
+        {"id": "F3", "severity": "P3", "title": "Doc"}]},
+    "reviews": [{}, {}],
+    "auto_fix_stop": "rounds_exhausted",
+    "ci": {"sha": "abc", "outcome": "failed", "seconds": 540, "rounds": 1, "reason": "build failed",
+           "checks": [{"name": "build", "bucket": "fail"}, {"name": "lint", "bucket": "pass"},
+                      {"name": "test", "bucket": "pass"}]},
+    "base_merges": [{"base": "origin/old", "outcome": "merged", "files": []},
+                    {"base": "origin/main", "outcome": "conflict", "files": ["docs/e2e.md", "a.ts"]}],
+    "result": {"status": "done", "remaining": ["one", "two"], "questions": ["why?"],
+               "checks": [{"command": "pytest", "outcome": "passed", "details": "12 passed\n0 failed"}],
+               "findings": [{"id": "F1", "decision": "fixed"}, {"id": "F2", "decision": "rejected"}]},
+}
+CARGO_SUMMARY = ("check", "review", "findings_left", "stop", "left")
+
+
+def test_cargo_summary_and_detail(tmp_path):
+    write_state(tmp_path, "full", **FULL_CARGO)
+    write_state(tmp_path, "old")
+    write_state(tmp_path, "all", checks=FULL_CARGO["checks"][::-1])
+    write_state(tmp_path, "past", checks=FULL_CARGO["checks"], check_start=2)
+    write_state(tmp_path, "limits", review_result={"findings": [{"id": str(i)} for i in range(40)]},
+                auto_fix_stop="x" * 500, result={"remaining": [f"r{i}" for i in range(25)]})
+    write_state(tmp_path, "wrong", check_start="1", checks=["passed"], review_result=5, ci=5,
+                base_merges="origin/main", reviews="x", auto_fix_stop=3,
+                result={"remaining": "one", "questions": [1, None], "checks": ["x"], "findings": "F1"})
+    write_state(tmp_path, "wrong-nested", review_result={"verdict": "ok", "findings": "F1"},
+                ci={"checks": "build", "rounds": "1"}, base_merges=[{"base": 1, "files": "a.ts"}], result=[])
+    store = Store(tmp_path)
+    store.poll()
+    rows = {row["slug"]: row for row in store.summaries()}
+    assert {key: rows["full"][key] for key in CARGO_SUMMARY} == {
+        "check": "passed", "review": "defects", "findings_left": 3, "stop": "rounds_exhausted", "left": 3}
+    for slug in ("old", "wrong", "wrong-nested"):
+        assert {key: rows[slug][key] for key in CARGO_SUMMARY} == {
+            "check": None, "review": None, "findings_left": 0, "stop": None, "left": 0}, slug
+    assert rows["all"]["check"] == "failed"
+    assert rows["past"]["check"] is None
+    assert store.detail("full")["cargo"] == {
+        "check": {"command": "make test fast", "outcome": "passed", "exit": 0, "seconds": 5.1,
+                  "at": 1794116947.6},
+        "claims": [{"command": "pytest", "outcome": "passed", "details": "12 passed 0 failed"}],
+        "review": {"verdict": "defects", "summary": "Three defects", "reviews": 2, "findings": [
+            {"id": "F1", "severity": "P1", "title": "Crash", "file": "a.ts", "line": 12},
+            {"id": "F2", "severity": "P3", "title": "Name", "file": "b.ts", "line": 3},
+            {"id": "F3", "severity": "P3", "title": "Doc", "file": None, "line": None}]},
+        "stop": "rounds_exhausted",
+        "ci": {"outcome": "failed", "passed": 2, "failed": 1, "total": 3, "failing": ["build"],
+               "seconds": 540.0, "rounds": 1, "reason": "build failed"},
+        "base": {"base": "origin/main", "outcome": "conflict", "files": ["docs/e2e.md", "a.ts"]},
+        "remaining": ["one", "two"],
+        "questions": ["why?"],
+        "decisions": {"fixed": 1, "rejected": 1},
+    }
+    empty = {"check": None, "claims": [], "review": None, "stop": None, "ci": None, "base": None,
+             "remaining": [], "questions": [], "decisions": {"fixed": 0, "rejected": 0}}
+    assert store.detail("old")["cargo"] == store.detail("wrong")["cargo"] == empty
+    assert store.detail("wrong-nested")["cargo"] == dict(
+        empty, review={"verdict": None, "summary": None, "findings": [], "reviews": 0},
+        ci={"outcome": None, "passed": 0, "failed": 0, "total": 0, "failing": [], "seconds": None,
+            "rounds": 0, "reason": None},
+        base={"base": "", "outcome": "", "files": []})
+    limits = store.detail("limits")
+    assert limits["findings_left"] == 40 and len(limits["cargo"]["review"]["findings"]) == 30
+    assert limits["left"] == 25 and limits["cargo"]["remaining"] == [f"r{i}" for i in range(20)]
+    assert limits["stop"] == limits["cargo"]["stop"] == "x" * 200
+
+
 def test_finished_scouts_are_closed_for_success_failure_and_abandoned_work(tmp_path, pids):
     live, dead = pids
     for outcome in ("completed", "failed", "running", "sleeping"):
@@ -400,6 +474,8 @@ def test_session_repo_and_allowlisted_summary(tmp_path, cwd, origin, expected):
     assert detail["updated_at"] == detail["phase_started_at"] == 2.0
     assert all(detail[key] is None for key in (
         "reviewer", "account", "task_type", "ci", "outcome", "result_status", "summary", "sleeping_until"))
+    assert {key: detail[key] for key in ("check", "review", "findings_left", "stop", "left", "cargo")} == {
+        "check": None, "review": None, "findings_left": 0, "stop": None, "left": 0, "cargo": None}
     assert detail["files"] == []
     assert detail["timeline"] == [{"at": 1.0, "text": "Session created"},
                                     {"at": 2.0, "text": "Last activity"}]
