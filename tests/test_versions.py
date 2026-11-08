@@ -317,21 +317,32 @@ class VersionInstallTests(unittest.TestCase):
         self.assertIn("run the upgrade with the system Python", str(refused.exception.code))
 
 
+# Appended to 9.0.0: a re-run (TEAMSTER_PINNED set) waits right after exec until PIN_TEST_GATE exists.
+PAUSE_AFTER_RERUN = """
+import os as _os
+import time as _time
+if _os.environ.get("TEAMSTER_PINNED") and _os.environ.get("PIN_TEST_GATE"):
+    open(_os.environ["PIN_TEST_GATE"] + ".paused", "w").close()
+    while not _os.path.exists(_os.environ["PIN_TEST_GATE"]):
+        _time.sleep(0.02)
+"""
+
+
 class PinnedTaskTests(RotationTestCase):
     """Two installed versions of this tree; the fake Codex runs the turns."""
     def setUp(self):
         super().setUp()
         self.source = self.root / "source"
         make_source(self.source, self.env)
-        for version in ("9.0.0", "9.1.0"):
-            self.install(version)
+        self.install("9.0.0", extra=PAUSE_AFTER_RERUN)
+        self.install("9.1.0")
         self.gate = self.root / "turn-gate"
         self.gate.touch()
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "delay_gate": str(self.gate), "reply": self.work_result()}])
 
-    def install(self, version, layout=1):
-        release(self.source, self.env, version, layout)
+    def install(self, version, layout=1, extra=""):
+        release(self.source, self.env, version, layout, extra)
         self.cli("upgrade", "--source", str(self.source), "--ref", "main", "--yes", timeout=120)
 
     def main(self, version):
@@ -391,6 +402,47 @@ class PinnedTaskTests(RotationTestCase):
         self.assertEqual(self.state("pin")["runtime"], self.runtime("9.1.0"))
         self.assertEqual(self.say(), [])
         self.assertEqual(self.state("pin")["runtime"], self.runtime("9.1.0"))
+
+    def test_a_re_run_holds_off_prune_and_stops_after_an_upgrade(self):
+        self.run_version("9.0.0", "start", "pin", "--brief", str(self.brief), "--repo", str(self.repo))
+        self.wait("pin")
+        gate = self.root / "rerun-gate"
+        paused = Path(str(gate) + ".paused")
+
+        def paused_say():
+            """say through the launcher, paused in its re-run into 9.0.0."""
+            if paused.exists():
+                paused.unlink()
+            say = subprocess.Popen([str(self.home / "bin/teamster"), "say", "pin", "Continue the task."],
+                                   cwd=self.repo, env=dict(self.env, PIN_TEST_GATE=str(gate)),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.until(paused.exists, timeout=30)
+            return say
+
+        # A say --upgrade that finishes while the re-run waits is not undone by it.
+        say = paused_say()
+        self.assertEqual(self.say("--upgrade"), ["task pin moves from 9.0.0 to 9.1.0"])
+        gate.touch()
+        stdout, stderr = say.communicate(timeout=60)
+        self.assertEqual(say.returncode, 1, stdout + stderr)
+        self.assertIn("task pin moved to 9.1.0 while this command started; run it again", stderr)
+        self.assertEqual((self.state("pin")["runtime"], self.state("pin")["turns"]), (self.runtime("9.1.0"), 2))
+
+        # Prune waits until the re-run into 9.0.0 has ended instead of moving the version under it.
+        gate.unlink()
+        self.edit_state(runtime=self.runtime("9.0.0"))
+        say = paused_say()
+        prune = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "versions", "--prune"], cwd=self.repo, env=self.env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        time.sleep(1)
+        self.assertIsNone(prune.poll())
+        gate.touch()
+        stdout, stderr = say.communicate(timeout=60)
+        self.assertEqual((say.returncode, stderr), (0, ""), stdout)
+        self.assertEqual(prune.wait(timeout=60), 0, prune.stdout.read())
+        prune.stdout.close()
+        self.wait("pin")
+        self.assertEqual((self.state("pin")["runtime"], self.state("pin")["turns"]), (self.runtime("9.0.0"), 3))
 
     def test_say_moves_when_the_pinned_version_cannot_run(self):
         self.run_version("9.0.0", "start", "pin", "--brief", str(self.brief), "--repo", str(self.repo))

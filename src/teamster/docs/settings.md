@@ -271,8 +271,11 @@ runs). The task's pinned version is `runtime.version`, else `plugin_version` for
 `runtime`. Before `say` or `review` changes the state, it compares that version with its own; when they
 differ, `versions/<pinned>/src/teamster/__main__.py` exists, and that version's `DATA_LAYOUT` equals
 the one of `current`, the command re-runs itself there with `os.execv`: the same Python and arguments,
-with `TEAMSTER_PINNED=<pinned>` in the environment. A command that already has `TEAMSTER_PINNED` never
-re-runs again, and removes the variable before it starts a supervisor. Otherwise the turn runs on the
+with `TEAMSTER_PINNED=<pinned>` in the environment. From the check until the re-run exits it holds
+`versions/.lock` shared, so `versions --prune` waits instead of moving that version away. A command
+that already has `TEAMSTER_PINNED` never re-runs again, and removes the variable before it starts a
+supervisor; when the task is pinned to another version by then, because a `say --upgrade` finished in
+between, it stops and asks to run the command again. Otherwise the turn runs on the
 command's own version and the command prints one line, `task <slug> moves from <old> to <new>` (`<old>`
 is `unknown` for a record without a version): the pinned version was pruned, never was in `versions/`
 (a uv tool install or a task from before 1.55), or has another `DATA_LAYOUT`. `say --upgrade` skips the

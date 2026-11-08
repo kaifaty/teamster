@@ -71,7 +71,7 @@ def locked(name, mode):
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (directory / name).open("a") as lock:
         fcntl.flock(lock, mode)
-        yield
+        yield lock
 
 
 def upgrade_lock():
@@ -332,20 +332,26 @@ def follow_pin(st, upgrade=False):
 
     Otherwise, or with upgrade, the command goes on in this version: return the line that reports
     the move, or None when the task already runs this version. A command that is itself a re-run
-    (PINNED_VARIABLE set) never runs again, so a mismatch cannot loop.
+    (PINNED_VARIABLE set) never runs again, so a mismatch cannot loop; one that finds the task
+    pinned elsewhere by then stops instead of undoing that move.
     """
     rerun = os.environ.pop(PINNED_VARIABLE, None)
     pinned, own = task_version(st), config.plugin_version()
     if pinned == own:
         return None
-    if not upgrade and rerun is None and pinned and VERSION_NAME.fullmatch(pinned):
-        script = versions_dir() / pinned / ENTRYPOINT
-        if script.is_file() and version_layout(pinned) == version_layout(current_version()):
-            os.environ[PINNED_VARIABLE] = pinned
-            sys.stdout.flush()
-            sys.stderr.flush()
-            flags = ["-I"] if sys.flags.isolated else []
-            os.execv(sys.executable, [sys.executable, *flags, str(script), *sys.argv[1:]])
+    if rerun is not None and rerun != pinned:
+        procs.die(f"task {st['slug']} moved to {pinned or 'unknown'} while this command started; run it again")
+    if not upgrade and rerun is None and pinned and VERSION_NAME.fullmatch(pinned) and versions_dir().is_dir():
+        # The re-run inherits the shared lock and holds it until it exits, so prune cannot move its version.
+        with locked(".lock", fcntl.LOCK_SH) as lock:
+            script = versions_dir() / pinned / ENTRYPOINT
+            if script.is_file() and version_layout(pinned) == version_layout(current_version()):
+                os.set_inheritable(lock.fileno(), True)
+                os.environ[PINNED_VARIABLE] = pinned
+                sys.stdout.flush()
+                sys.stderr.flush()
+                flags = ["-I"] if sys.flags.isolated else []
+                os.execv(sys.executable, [sys.executable, *flags, str(script), *sys.argv[1:]])
     return f"task {st['slug']} moves from {pinned or 'unknown'} to {own}"
 
 
