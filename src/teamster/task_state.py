@@ -143,6 +143,11 @@ STATE_FIELDS = {
     "exec_event_start": StateField("attempt", spawn_reset=STATE_DELETE),
     # review_turn marks the account unselected (None) before phase/angle early exits.
     "review_account": StateField("cursor"),
+    # Batch reflection: the record selection of the reading room and the batch file teamster writes.
+    "reflect_mode": StateField("task"),
+    "reflect_through": StateField("task"),
+    "reflect_records": StateField("task"),
+    "reflect_file": StateField("task"),
 }
 
 
@@ -214,7 +219,7 @@ def running_tasks(exclude="", root=None, scouts=False):
     out = []
     for p in (config.TASKS if root is None else root).glob("*/state.json"):
         st = json.loads(p.read_text())
-        if (st["slug"] != exclude and (scouts or st.get("kind") != "scout")
+        if (st["slug"] != exclude and (scouts or st.get("kind") not in ("scout", "reflect"))
                 and procs.alive(st.get("pid"))):
             out.append(st["slug"])
     return out

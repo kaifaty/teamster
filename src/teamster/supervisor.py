@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 
-from . import budgets, checking, ci_runs, clock, config, installs, notifications, procs, prompts, review_cycle, task_state, telemetry_log, turns
+from . import budgets, checking, ci_runs, clock, config, installs, notifications, procs, prompts, reflection, review_cycle, task_state, telemetry_log, turns
 
 
 def spawn(st, prompt, effort=None, current_message=False, kind="work", review_after=False, fix_rounds=0):
@@ -125,7 +125,7 @@ def cmd__run(a):
         cfg = config.accounts_config()
         pending = st.pop("pending")
         effort = pending["effort"]
-        working = st.get("kind") not in ("review", "scout")
+        working = st.get("kind") not in ("review", "scout", "reflect")
         if st.get("kind") == "review":
             review_cycle.review_turn(st, cfg, pending["prompt"], effort, stopped, sleep, new_turn=True)
         else:
@@ -133,16 +133,20 @@ def cmd__run(a):
                       stopped, sleep)
             if working:
                 task_state.save(st)
-        work_result = st.get("result") if st.get("kind") not in ("review", "scout") else None
+            if (st.get("kind") == "reflect" and st.get("outcome") == "completed"
+                    and st.get("result") is not None and not stopped()):
+                reflection.record_batch(st, stopped)
+                task_state.save(st)
+        work_result = st.get("result") if working else None
         if (work_result is not None and work_result["status"] != "done"
                 and pending.get("review_after") and st.get("outcome") == "completed"):
             st["review_skipped"] = "result " + work_result["status"]
             task_state.save(st)
-        if (st.get("kind") not in ("review", "scout")
+        if (working
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
             check = checking.saved_check(st, cfg, stopped, pending.get("review_after"))
-        if (st.get("kind") != "scout" and st.get("outcome") == "completed" and pending.get("review_after") and not stopped()
+        if (st.get("kind") not in ("scout", "reflect") and st.get("outcome") == "completed" and pending.get("review_after") and not stopped()
                 and not st.get("review_skipped") and (check is None or check["outcome"] in checking.CHECK_NOT_FAILED)
                 and not budgets.stop_at_weekly_budget(st)):
             st["work_completed"] = True

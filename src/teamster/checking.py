@@ -77,7 +77,7 @@ def diff_base(st):
 
 def guarded_changes(st):
     """Combine diff layers, matching moved skip markers within each layer."""
-    if st.get("kind") == "scout" or sandboxing.workspace_filter_driver(st) is not None:
+    if st.get("kind") in ("scout", "reflect") or sandboxing.workspace_filter_driver(st) is not None:
         return []
     root = st["worktree"]
     paths = check_paths(st)
