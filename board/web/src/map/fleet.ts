@@ -70,8 +70,11 @@ export function hullOf(task: Pick<TaskSummary, "kind" | "effort">): Hull {
   }
 }
 
-/** A hull's size on the map, in world units: a frigate and a cruiser are clearly larger than a light ship. */
-export const HULL_SIZE: Record<Hull, number> = { light: 74, frigate: 92, cruiser: 114, scout: 46, flagship: 150 };
+/**
+ * A hull's size on the map, in world units: a frigate and a cruiser are clearly larger than a light ship, and every
+ * ship is small next to its station, so that a crowded station still reads as a planet with its fleet.
+ */
+export const HULL_SIZE: Record<Hull, number> = { light: 46, frigate: 54, cruiser: 64, scout: 32, flagship: 72 };
 
 /** A ship shows at most this many patches, one per fix round. */
 export const MAX_PATCHES = 3;

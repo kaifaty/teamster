@@ -1,13 +1,24 @@
 import { describe, expect, it } from "vitest";
+import { HULL_SIZE } from "./fleet";
 import { PLACES } from "./placement";
 import {
-  MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, LIGHT_SHIP, ringOf, ringPoint, ringsOf, skyChoices,
+  COUNT_ROOM, MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, clampCamera, depotPosition, fitCamera, freeView, parkingOf, parkingOrder,
+  plateAt, plateRoom, skyChoices, stationOf, systemWorldSize,
   RESEARCH_SIZE, LABEL_MAX_WIDTH, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
   starRadius, starSize, stationAt, systemFrame, worldSize, zoomCamera, type Rect, type StarShape,
 } from "./layout";
 
 const SIZES = [
   { width: 1600, height: 1000 },
+  { width: 1000, height: 1500 },
+];
+
+/** A system's worlds, from a window a little wider than tall to the widest, and a phone's. */
+const SYSTEM_SIZES = [
+  { width: 1500, height: 1000 },
+  { width: 1750, height: 1000 },
+  { width: 2400, height: 1000 },
+  { width: 1000, height: 1250 },
   { width: 1000, height: 1500 },
 ];
 
@@ -94,75 +105,142 @@ describe("camera", () => {
     expect(clampCamera(near, world, view)).toEqual({ zoom: 1, tx: 0, ty: -200 });
     expect(clampCamera({ ...fit, ty: 999 }, world, view).ty).toBe(150);
   });
+
+  it("fits the world into the part of the window no panel covers, and brings every edge of it there", () => {
+    const free = freeView({ width: 1000, height: 800 }, { top: 40, right: 400, bottom: 60, left: 0 });
+    expect(free).toEqual({ x: 0, y: 40, width: 600, height: 700 });
+    const fitted = fitCamera(world, free);
+    expect(fitted.zoom).toBe(600 / 1600);
+    expect(fitted.tx).toBe(0);
+    expect(fitted.ty).toBeCloseTo(40 + (700 - 1000 * fitted.zoom) / 2);
+    // Zoomed in, the world's edges stop at the free part's edges, not under the panels.
+    expect(clampCamera({ zoom: 1, tx: 500, ty: 900 }, world, free)).toEqual({ zoom: 1, tx: 0, ty: 40 });
+    expect(clampCamera({ zoom: 1, tx: -5000, ty: -5000 }, world, free)).toEqual({ zoom: 1, tx: 600 - 1600, ty: 740 - 1000 });
+    expect(clampCamera({ ...fitted, ty: 999 }, world, free)).toEqual(fitted);
+  });
+
+  it("keeps the middle of the free part when a panel opens or closes", () => {
+    const before = freeView({ width: 1000, height: 800 }, { top: 40, right: 0, bottom: 0, left: 0 });
+    const after = freeView({ width: 1000, height: 800 }, { top: 40, right: 300, bottom: 0, left: 0 });
+    const fitBefore = fitCamera(world, before);
+    const fitAfter = fitCamera(world, after);
+    expect(refitCamera(fitBefore, { fit: fitBefore, viewport: before }, fitAfter, after, world)).toEqual(fitAfter);
+    const near = clampCamera(zoomCamera(fitBefore, 3, { x: 450, y: 420 }, fitBefore), world, before);
+    // The middle of the free part: (500, 420) before the list opens, (350, 420) after.
+    const looked = { x: (500 - near.tx) / near.zoom, y: (420 - near.ty) / near.zoom };
+    const moved = refitCamera(near, { fit: fitBefore, viewport: before }, fitAfter, after, world);
+    expect((350 - moved.tx) / moved.zoom).toBeCloseTo(looked.x);
+    expect((420 - moved.ty) / moved.zoom).toBeCloseTo(looked.y);
+  });
+
+  it("shapes a system's world after the free part of the window", () => {
+    expect(systemWorldSize({ width: 1700, height: 1000 })).toEqual({ width: 1700, height: 1000 });
+    expect(systemWorldSize({ width: 900, height: 900 })).toEqual({ width: 1500, height: 1000 });
+    expect(systemWorldSize({ width: 5000, height: 1000 })).toEqual({ width: 2400, height: 1000 });
+    const phone = systemWorldSize({ width: 375, height: 420 });
+    expect(phone.width).toBe(1000);
+    expect(phone.height).toBeGreaterThan(phone.width);
+    expect(systemWorldSize({ width: 300, height: 2000 }).height).toBe(1500);
+  });
 });
 
 describe("system", () => {
-  it("keeps every station inside the picture and apart from the others", () => {
-    for (const size of SIZES) {
-      const frame = systemFrame(size);
-      const points = PLACES.map((place) => stationAt(place, frame));
-      for (const point of points) {
-        expect(point.x).toBeGreaterThan(0);
-        expect(point.x).toBeLessThan(size.width);
-        expect(point.y).toBeGreaterThan(0);
-        expect(point.y).toBeLessThan(size.height);
-      }
-      points.forEach((a, i) => points.slice(i + 1).forEach((b) => expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(120)));
-    }
-  });
+  const frames = SYSTEM_SIZES.map((size) => ({ size, frame: systemFrame(size) }));
+  const plateRect = (place: (typeof PLACES)[number], frame: ReturnType<typeof systemFrame>): Rect => {
+    const plate = plateAt(place, frame);
+    const room = plateRoom(frame);
+    if (plate.side === "left") return { x0: plate.x - room.width, y0: plate.y - room.height / 2, x1: plate.x, y1: plate.y + room.height / 2 };
+    const top = plate.side === "above" ? plate.y - room.height : plate.y;
+    return { x0: plate.x - room.width / 2, y0: top, x1: plate.x + room.width / 2, y1: top + room.height };
+  };
 
-  it("keeps stations clear of the sun on a narrow screen too", () => {
-    for (const size of SIZES) {
-      const frame = systemFrame(size);
-      for (const place of PLACES) {
-        const point = stationAt(place, frame);
-        expect(Math.hypot(point.x - frame.cx, point.y - frame.cy)).toBeGreaterThanOrEqual(SUN_RADIUS + STATIONS[place].radius);
+  it("keeps every station inside the picture, clear of the sun and of the others", () => {
+    for (const { size, frame } of frames) {
+      const discs = PLACES.map((place) => ({ ...stationAt(place, frame), r: stationOf(place, frame).radius }));
+      for (const disc of discs) {
+        expect(disc.x - disc.r).toBeGreaterThan(0);
+        expect(disc.x + disc.r).toBeLessThan(size.width);
+        expect(disc.y - disc.r).toBeGreaterThan(0);
+        expect(disc.y + disc.r).toBeLessThan(size.height);
+        expect(Math.hypot(disc.x - frame.cx, disc.y - frame.cy)).toBeGreaterThanOrEqual(SUN_RADIUS + disc.r);
       }
+      discs.forEach((a, i) => discs.slice(i + 1).forEach((b) => expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(a.r + b.r + 20)));
     }
   });
 
   it("brings the route closer to the sun at every step", () => {
     const orbits = ROUTE.map((place) => STATIONS[place].orbit);
     expect([...orbits].sort((x, y) => y - x)).toEqual(orbits);
-    const frame = systemFrame(SIZES[0]!);
+    const frame = systemFrame(SYSTEM_SIZES[1]!);
     const last = stationAt(ROUTE[ROUTE.length - 1]!, frame);
     expect(Math.hypot(last.x - frame.cx, last.y - frame.cy)).toBeGreaterThan(SUN_RADIUS);
   });
 
-  it("gives every ship of a crowded station its own point", () => {
-    const station = { x: 500, y: 500 };
-    const points = Array.from({ length: 40 }, (_, slot) => {
-      const { radius, angle } = ringOf("yard", slot);
-      return ringPoint(station, radius, angle);
-    });
-    points.forEach((a, i) => points.slice(i + 1).forEach((b) => expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(40)));
-  });
-
-  it("keeps frigates and cruisers apart from each other and from the station", () => {
-    const station = { x: 500, y: 500 };
-    for (const place of PLACES) {
-      const sizes = Array.from({ length: 30 }, (_, slot) => [LIGHT_SHIP, 92, 114][slot % 3]!);
-      const ships = ringsOf(place, sizes).map(({ radius, angle }, slot) => ({ ...ringPoint(station, radius, angle), size: sizes[slot]! }));
-      ships.forEach((a, i) => {
-        expect(Math.hypot(a.x - station.x, (a.y - station.y) / 0.75)).toBeGreaterThan(STATIONS[place].radius + a.size * 0.4);
-        ships.slice(i + 1).forEach((b) => expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(((a.size + b.size) / 2) * 0.8));
-      });
-    }
-  });
-
-  it("keeps a station's card clear of its ships and a long card inside the world", () => {
-    const tallCard = 230;
-    for (const size of SIZES) {
-      const frame = systemFrame(size);
+  it("parks full stations clear of every station, the sun, the names, the world's edge and each other", () => {
+    for (const { size, frame } of frames) {
+      const ships: { x: number; y: number; r: number; place: string }[] = [];
       for (const place of PLACES) {
-        const card = cardPlace(place, frame);
-        const { radius, angle } = ringOf(place, 2);
-        const ship = ringPoint(stationAt(place, frame), radius, angle);
-        if (card.side) expect(card.x).toBeGreaterThan(stationAt(place, frame).x + radius);
-        else expect(card.y).toBeGreaterThan(ship.y);
+        const station = stationAt(place, frame);
+        const hulls = place === "command" ? [HULL_SIZE.flagship] : [HULL_SIZE.cruiser, HULL_SIZE.light, HULL_SIZE.frigate];
+        const sizes = Array.from({ length: 20 }, (_, slot) => hulls[slot % hulls.length]!);
+        const { berths, count } = parkingOf(place, sizes, frame);
+        const items = [...berths.map((berth, slot) => ({ ...berth, size: sizes[slot]! })), { ...count!.at, size: COUNT_ROOM }];
+        for (const item of items) ships.push({ x: station.x + item.x, y: station.y + item.y, r: item.size * 0.4, place });
       }
-      expect(cardPlace("command", frame).y + tallCard).toBeLessThanOrEqual(size.height);
+      const where = (ship: (typeof ships)[number]) => `${size.width}x${size.height} ${ship.place} at ${Math.round(ship.x)},${Math.round(ship.y)}`;
+      for (const ship of ships) {
+        expect(ship.x - ship.r, where(ship)).toBeGreaterThanOrEqual(0);
+        expect(ship.x + ship.r, where(ship)).toBeLessThanOrEqual(size.width);
+        expect(ship.y - ship.r, where(ship)).toBeGreaterThanOrEqual(0);
+        expect(ship.y + ship.r, where(ship)).toBeLessThanOrEqual(size.height);
+        expect(Math.hypot(ship.x - frame.cx, ship.y - frame.cy), where(ship)).toBeGreaterThan(SUN_RADIUS * 1.3 + ship.r);
+        for (const place of PLACES) {
+          const station = stationAt(place, frame);
+          expect(Math.hypot(ship.x - station.x, ship.y - station.y), `${where(ship)} near ${place}`).toBeGreaterThan(stationOf(place, frame).radius + ship.r);
+          const plate = plateRect(place, frame);
+          const covers = ship.x + ship.r > plate.x0 && ship.x - ship.r < plate.x1 && ship.y + ship.r > plate.y0 && ship.y - ship.r < plate.y1;
+          expect(covers, `${where(ship)} over the name of ${place}`).toBe(false);
+        }
+      }
+      ships.forEach((a, i) =>
+        ships.slice(i + 1).forEach((b) => expect(Math.hypot(a.x - b.x, a.y - b.y), `${where(a)} and ${where(b)}`).toBeGreaterThan(a.r + b.r)),
+      );
     }
+  });
+
+  it("gives every ship a berth while they fit, and the last berth to the count of the rest", () => {
+    const frame = systemFrame(SYSTEM_SIZES[1]!);
+    const { berths } = STATIONS.yard;
+    const all = parkingOf("yard", Array.from({ length: berths }, () => HULL_SIZE.light), frame);
+    expect(all.berths).toHaveLength(berths);
+    expect(all.count).toBeNull();
+    const crowded = parkingOf("yard", Array.from({ length: berths + 4 }, () => HULL_SIZE.light), frame);
+    expect(crowded.berths).toHaveLength(berths - 1);
+    expect(crowded.count!.ships).toBe(5);
+    // The count stands at the far end, away from the station's name below it.
+    expect(crowded.count!.at.y).toBeLessThan(Math.min(...crowded.berths.map((berth) => berth.y)) + 1);
+    expect(parkingOf("yard", [], frame)).toEqual({ berths: [], count: null });
+  });
+
+  it("parks the ships in trouble first, then by arrival, and never stows the selected one", () => {
+    const ships = Array.from({ length: 8 }, (_, slot) => ({ slug: `s${slot}`, beacon: slot === 5, slot }));
+    const key = (ship: (typeof ships)[number]) => ship;
+    expect(parkingOrder(ships, key, "range", null).map((ship) => ship.slug)).toEqual(["s5", "s0", "s1", "s2", "s3", "s4", "s6", "s7"]);
+    const berths = STATIONS.range.berths;
+    const order = parkingOrder(ships, key, "range", "s7").map((ship) => ship.slug);
+    expect(order.indexOf("s7")).toBe(berths - 2);
+    expect(order).toHaveLength(ships.length);
+    // A selected ship that already has a berth keeps it.
+    expect(parkingOrder(ships, key, "range", "s1").map((ship) => ship.slug)).toEqual(parkingOrder(ships, key, "range", null).map((ship) => ship.slug));
+  });
+
+  it("draws a phone's stations smaller and parks the yard's ships on its outer side", () => {
+    const wide = systemFrame(SYSTEM_SIZES[1]!);
+    const tall = systemFrame(SYSTEM_SIZES[3]!);
+    expect(stationOf("yard", wide)).toBe(STATIONS.yard);
+    expect(stationOf("yard", tall).radius).toBeLessThan(STATIONS.yard.radius);
+    expect(parkingOf("yard", [HULL_SIZE.light], tall).berths[0]!.x).toBeLessThan(0);
+    expect(parkingOf("yard", [HULL_SIZE.light], wide).berths[0]!.x).toBeGreaterThan(0);
   });
 });
 

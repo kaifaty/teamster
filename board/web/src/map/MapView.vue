@@ -8,24 +8,30 @@ import { EXECUTORS, PHASES, problemLabel, shipLine, taskTitle } from "../lib/lab
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
 import DaySummary from "./DaySummary.vue";
+import FleetPanel, { type FleetGroup } from "./FleetPanel.vue";
 import ReplayBar from "./ReplayBar.vue";
 import ShipLog from "./ShipLog.vue";
-import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines, type Star } from "./fleet";
+import { HULL_SIZE, depotEmpty, depots, depotPositions, hullOf, refuelText, stars, supplyLines, type Star } from "./fleet";
 import { placeLabels, type StarLabel } from "./declutter";
 import {
   RESEARCH_SIZE,
-  cardPlace,
   fitCamera,
   galaxyKeepOuts,
   galaxyLayout,
   labelDrop,
   logCorner,
+  parkingOf,
+  parkingOrder,
+  plateAt,
   researchPosition,
   starSize,
+  stationAt,
   systemFrame,
+  systemWorldSize,
   worldSize,
   type Camera,
   type Galaxy,
+  type Insets,
   type Rect,
   type Size,
 } from "./layout";
@@ -163,8 +169,9 @@ const entries = computed<ShipEntry[]>(() =>
 
 // Labels ------------------------------------------------------------------------------------------
 
+/** The galaxy's world and the open system's, as the scene lays them out for the window. */
 const world = ref<Size>(worldSize({ width: 1600, height: 1000 }));
-const glyph = (task: TaskSummary) => (task.executor === "codex" ? "◆" : "✳");
+const systemWorld = ref<Size>(systemWorldSize({ width: 1600, height: 1000 }));
 
 function phaseText(task: TaskSummary): string {
   switch (task.column) {
@@ -193,13 +200,6 @@ const STATION_TEXT: Record<Place, { name: string; note: string }> = {
   roadstead: { name: "Рейд", note: "ждёт тебя" },
   cryo: { name: "Криополе", note: "сон" },
 };
-
-/** Rows a station card shows before it folds the rest. */
-const CARD_ROWS = 4;
-const unfolded = ref<Place | null>(null);
-watch(repo, () => {
-  unfolded.value = null;
-});
 
 /** Where a label stands in the world; the camera's --tx, --ty and --zoom on the overlay turn it into pixels. */
 const at = (x: number, y: number) => ({ "--x": Math.round(x), "--y": Math.round(y) });
@@ -260,33 +260,46 @@ const depotLabels = computed(() => {
   });
 });
 
-const cards = computed(() => {
-  const frame = systemFrame(world.value);
+/** The open system's ships by station, in the order they park: for the list at the side. */
+const groups = computed<FleetGroup[]>(() =>
+  PLACES.map((place) => {
+    const here = entries.value.filter((entry) => entry.placement.place === place);
+    const ships = parkingOrder(here, (entry) => ({ slug: entry.task.slug, ...entry.placement }), place, null).map(({ task, placement: where }) => ({
+      slug: task.slug,
+      executor: task.executor,
+      name: taskTitle(task),
+      phase: phaseText(task),
+      beacon: where.beacon,
+      title: [taskTitle(task), phaseText(task), `${EXECUTORS[task.executor]}${task.account ? ` · ${task.account}` : ""}`, activityLine(task, where)].join("\n"),
+    }));
+    return { place, ...STATION_TEXT[place], ships };
+  }).filter((group) => group.ships.length),
+);
+
+/**
+ * The stations' names on the map, and the count of the ships each one has no berth for: they park as the scene parks
+ * them, see parkingOf.
+ */
+const plates = computed(() => {
+  const frame = systemFrame(systemWorld.value);
   return PLACES.map((place) => {
-    const ships = entries.value
-      .filter((entry) => entry.placement.place === place)
-      .sort((a, b) => Number(b.placement.beacon) - Number(a.placement.beacon) || a.placement.slot - b.placement.slot)
-      .map(({ task, placement: where }) => ({
-        task,
-        name: taskTitle(task),
-        phase: phaseText(task),
-        beacon: where.beacon,
-        title: [taskTitle(task), phaseText(task), `${EXECUTORS[task.executor]}${task.account ? ` · ${task.account}` : ""}`, activityLine(task, where)].join("\n"),
-      }));
-    const point = cardPlace(place, frame);
-    const open = unfolded.value === place;
-    return {
-      place,
-      text: STATION_TEXT[place],
-      ships: open ? ships : ships.slice(0, CARD_ROWS),
-      folded: open ? 0 : Math.max(0, ships.length - CARD_ROWS),
-      side: point.side,
-      style: at(point.x, point.y),
+    const here = entries.value.filter((entry) => entry.placement.place === place);
+    const order = parkingOrder(here, (entry) => ({ slug: entry.task.slug, ...entry.placement }), place, selected.value);
+    const parking = parkingOf(place, order.map((entry) => HULL_SIZE[hullOf(entry.task)]), frame);
+    const station = stationAt(place, frame);
+    const plate = plateAt(place, frame);
+    const waiting = order.slice(parking.berths.length);
+    const count = parking.count && {
+      ships: parking.count.ships,
+      style: at(station.x + parking.count.at.x, station.y + parking.count.at.y),
+      title: [`Ещё ${parking.count.ships}:`, ...waiting.map((entry) => taskTitle(entry.task))].join("\n"),
+      hovered: waiting.some((entry) => entry.task.slug === hovered.value),
     };
+    return { place, text: STATION_TEXT[place], side: plate.side, style: at(plate.x, plate.y), count };
   });
 });
 
-const hiddenTitle = computed(() => system.value.hidden.map(taskTitle).join("\n"));
+const hidden = computed(() => ({ count: system.value.hidden.length, title: system.value.hidden.map(taskTitle).join("\n") }));
 
 // Panel -------------------------------------------------------------------------------------------
 
@@ -313,7 +326,7 @@ function close() {
   const slug = selected.value;
   selected.value = null;
   void nextTick(() => {
-    const row = slug ? overlay.value?.querySelector<HTMLElement>(`[data-ship="${CSS.escape(slug)}"]`) : null;
+    const row = slug ? host.value?.querySelector<HTMLElement>(`.fleet [data-ship="${CSS.escape(slug)}"]`) : null;
     (row ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus();
   });
 }
@@ -474,47 +487,106 @@ const onNarrow = (event: MediaQueryListEvent) => {
 const REPLAY_KEY = "codex-board.replay-shown.v1";
 const replayShown = ref(loadJson(REPLAY_KEY, true, (v): v is boolean => typeof v === "boolean"));
 watch(replayShown, (value) => saveJson(REPLAY_KEY, value));
-/** On a narrow window, the replay's scale and the whole log open over the map on demand. */
+/**
+ * The dock folds to one line on a narrow window, and in a star system, where the map needs the room: the replay's scale
+ * and the whole log then open over the map on demand.
+ */
+const compactDock = computed(() => narrow.value || repo.value !== null);
 const replayOpen = ref(false);
 const logOpen = ref(false);
-const replayVisible = computed(() => (narrow.value ? replayOpen.value : replayShown.value));
+const replayVisible = computed(() => (compactDock.value ? replayOpen.value : replayShown.value));
 function toggleReplay() {
-  if (narrow.value) replayOpen.value = !replayOpen.value;
+  if (compactDock.value) replayOpen.value = !replayOpen.value;
   else replayShown.value = !replayShown.value;
 }
-const dockFolded = computed(() => !narrow.value || (!replayOpen.value && !logOpen.value));
+const dockFolded = computed(() => !compactDock.value || (!replayOpen.value && !logOpen.value));
 // On a wide window the scale is part of the dock's shape: hidden, it leaves its corner to the stars.
 watch(replayShown, () => {
-  if (narrow.value) return;
+  if (compactDock.value) return;
   coveredFor = "";
   void nextTick(() => {
     measureCovered();
     scheduleLabels();
   });
 });
-// Across the breakpoint the dock changes its shape: it folds and is measured again.
-watch(narrow, () => {
+// The dock changes its shape across the breakpoint and between the galaxy and a system: it folds and is measured again.
+watch(compactDock, () => {
   replayOpen.value = false;
   logOpen.value = false;
+});
+watch([narrow, repo], () => {
   coveredFor = "";
-  void nextTick(measureCovered);
+  void nextTick(() => {
+    measureCovered();
+    measureInsets();
+  });
 });
 // The open dock covers the map. Once it folds, a resize made meanwhile is measured and the star labels come back.
 watch(dockFolded, (folded) => {
   if (!folded) return;
   void nextTick(() => {
     measureCovered();
+    measureInsets();
     scheduleLabels();
   });
 });
 
+// The ships' list -------------------------------------------------------------------------------------
+
+/** On a wide window the list stands at the side of a system as the viewer last chose; on a narrow one it opens over it. */
+const FLEET_KEY = "codex-board.fleet-shown.v1";
+const fleetShown = ref(loadJson(FLEET_KEY, true, (v): v is boolean => typeof v === "boolean"));
+watch(fleetShown, (value) => saveJson(FLEET_KEY, value));
+const fleetOpen = ref(false);
+const fleetVisible = computed(() => repo.value !== null && (narrow.value ? fleetOpen.value : fleetShown.value));
+watch([narrow, repo], () => {
+  fleetOpen.value = false;
+});
+function toggleFleet() {
+  if (narrow.value) fleetOpen.value = !fleetOpen.value;
+  else fleetShown.value = !fleetShown.value;
+}
+const fleetPanel = ref<InstanceType<typeof FleetPanel> | null>(null);
+/** The count at a station was pressed: the list opens at that station. */
+function showStation(place: Place) {
+  if (narrow.value) fleetOpen.value = true;
+  else fleetShown.value = true;
+  void nextTick(() => fleetPanel.value?.reveal(place));
+}
+watch(fleetVisible, () => void nextTick(measureInsets));
+
+/**
+ * Measures the parts of the window the panels cover, for the scene to lay a system out in the rest: the toolbar, the
+ * list at the side and the folded dock. What opens over the map does not move the system.
+ */
+let insets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
+function measureInsets() {
+  const stage = host.value?.getBoundingClientRect();
+  const root = host.value?.closest(".map");
+  if (!stage || !root || !stage.width || !stage.height) return;
+  const toolbar = root.querySelector<HTMLElement>(".toolbar")?.getBoundingClientRect();
+  const top = toolbar ? Math.max(0, Math.round(toolbar.bottom - stage.top + 6)) : 0;
+  host.value!.style.setProperty("--below-toolbar", `${top}px`);
+  if (!repo.value) return;
+  const panel = fleetVisible.value && !narrow.value ? root.querySelector<HTMLElement>(".fleet")?.getBoundingClientRect() : null;
+  const dock = dockFolded.value ? root.querySelector<HTMLElement>(".dock")?.getBoundingClientRect() : null;
+  insets = {
+    top,
+    right: panel ? Math.max(0, Math.round(stage.right - panel.left + 6)) : 0,
+    bottom: dock ? Math.max(0, Math.round(stage.bottom - dock.top + 6)) : insets.bottom,
+    left: 0,
+  };
+  scene?.setInsets(insets);
+}
+
 /**
  * Measures, for the window, the part of the world under the ship's log, where no star stands, and the full view's zoom.
- * A narrow dock is measured folded: what opens over the map does not move the stars.
+ * A narrow dock is measured folded: what opens over the map does not move the stars. The galaxy's dock is measured
+ * only while the galaxy shows: a system folds it.
  */
 let coveredFor = "";
 function measureCovered() {
-  if (!dockFolded.value) return;
+  if (!dockFolded.value || repo.value) return;
   const stage = host.value?.getBoundingClientRect();
   const dock = host.value?.querySelector<HTMLElement>(".dock")?.getBoundingClientRect();
   if (!stage || !dock || !stage.width || !stage.height) return;
@@ -542,6 +614,7 @@ let unmounted = false;
 
 function feed() {
   if (!scene) return;
+  measureInsets();
   scene.setGalaxy(galaxyModel());
   scene.setArt(repoArt.value);
   scene.setView(repo.value);
@@ -576,8 +649,9 @@ async function mount() {
       onHoverStar: (name) => {
         hoveredStar.value = name;
       },
-      onCamera: (next, camera) => {
-        world.value = next;
+      onCamera: (worlds, camera) => {
+        if (worlds.galaxy.width !== world.value.width || worlds.galaxy.height !== world.value.height) world.value = worlds.galaxy;
+        if (worlds.system.width !== systemWorld.value.width || worlds.system.height !== systemWorld.value.height) systemWorld.value = worlds.system;
         applyCamera(camera);
       },
       labels: overlay.value ?? undefined,
@@ -639,8 +713,14 @@ onMounted(() => {
   window.addEventListener("keydown", onKey);
   narrowQuery.addEventListener("change", onNarrow);
   if (host.value) {
-    stageObserver = new ResizeObserver(() => measureCovered());
+    stageObserver = new ResizeObserver(() => {
+      measureCovered();
+      measureInsets();
+    });
     stageObserver.observe(host.value);
+    // The toolbar wraps on a narrower window: the list and a system start below it.
+    const toolbar = host.value.closest(".map")?.querySelector(".toolbar");
+    if (toolbar) stageObserver.observe(toolbar);
   }
   void mount();
   researchTimer = setInterval(() => {
@@ -678,6 +758,17 @@ onBeforeUnmount(() => {
         <button type="button" class="btn" :aria-pressed="sourceKind === 'scenario'" @click="sourceKind = 'scenario'">Сценарий</button>
       </div>
       <button ref="summaryButton" type="button" class="btn" :aria-expanded="summaryOpen" @click="summaryOpen = true">Сводка дня</button>
+      <button
+        v-if="repo"
+        type="button"
+        class="btn"
+        :aria-expanded="fleetVisible"
+        aria-controls="fleet-panel"
+        :title="fleetVisible ? 'Скрыть список кораблей' : 'Показать список кораблей'"
+        @click="toggleFleet"
+      >
+        Корабли · {{ entries.length }}
+      </button>
       <span class="legend" aria-hidden="true">
         <span class="codex">◆ Codex</span>
         <span class="claude">✳ Claude</span>
@@ -749,28 +840,36 @@ onBeforeUnmount(() => {
           </span>
         </template>
         <template v-else>
-          <div v-for="card in cards" :key="card.place" class="card" :class="{ empty: !card.ships.length, side: card.side }" :style="card.style">
-            <div class="c-head">{{ card.text.name }}<span> · {{ card.text.note }}</span></div>
+          <template v-for="plate in plates" :key="plate.place">
+            <span class="plate-st" :class="plate.side" :style="plate.style">{{ plate.text.name }}<span> · {{ plate.text.note }}</span></span>
             <button
-              v-for="ship in card.ships"
-              :key="ship.task.slug"
+              v-if="plate.count"
               type="button"
-              class="ship"
-              :class="[ship.task.executor, { selected: selected === ship.task.slug, hovered: hovered === ship.task.slug, alarm: ship.beacon }]"
-              :data-ship="ship.task.slug"
-              :title="ship.title"
-              @click="open(ship.task.slug)"
-              @pointerenter="hovered = ship.task.slug"
-              @pointerleave="hovered = null"
+              class="count"
+              :class="{ hovered: plate.count.hovered }"
+              :style="plate.count.style"
+              :title="plate.count.title"
+              :aria-label="`${plate.text.name}: ещё ${plate.count.ships}, показать в списке`"
+              @click="showStation(plate.place)"
             >
-              <span class="r-name"><span class="glyph" aria-hidden="true">{{ glyph(ship.task) }}</span>{{ ship.name }}</span>
-              <span class="r-phase num">{{ ship.phase }}</span>
+              +{{ plate.count.ships }}
             </button>
-            <button v-if="card.folded" type="button" class="more" @click="unfolded = card.place">ещё {{ card.folded }}</button>
-          </div>
-          <span v-if="system.hidden.length" class="hidden-count" :title="hiddenTitle">не показано {{ system.hidden.length }}</span>
+          </template>
         </template>
       </div>
+      <FleetPanel
+        v-if="fleetVisible"
+        ref="fleetPanel"
+        :groups="groups"
+        :total="entries.length"
+        :hidden="hidden"
+        :selected="selected"
+        :hovered="hovered"
+        :frame="frameLight"
+        @pick="open"
+        @hover="hovered = $event"
+        @close="toggleFleet"
+      />
       <div class="dock">
         <p v-if="replayTime" class="plate in-dock num" aria-hidden="true">Перемотка · {{ replayTime }}</p>
         <ReplayBar v-show="replayVisible" id="replay-scale" :replay="replay" :frame="frameLight" :now="now" />
@@ -783,7 +882,7 @@ onBeforeUnmount(() => {
           :systems="systemNames"
           :emblem-of="emblemOf"
           :at="replay.at"
-          :compact="narrow"
+          :compact="compactDock"
           @go="goTo"
           @seek="seekTo"
         >
@@ -1091,7 +1190,8 @@ onBeforeUnmount(() => {
 .star,
 .station,
 .depot,
-.card {
+.plate-st,
+.count {
   position: absolute;
   left: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
   top: calc(var(--ty) + var(--y) * var(--zoom) * 1px);
@@ -1138,9 +1238,7 @@ onBeforeUnmount(() => {
   background: rgba(26, 28, 34, 0.92);
 }
 
-.star:focus-visible,
-.ship:focus-visible,
-.more:focus-visible {
+.star:focus-visible {
   outline: 2px solid #f3c64e;
   outline-offset: 1px;
 }
@@ -1318,105 +1416,69 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-.card {
-  box-sizing: border-box;
-  width: 200px;
-  padding: 3px 4px 4px;
-  border: 10px solid transparent;
-  border-image: var(--frame) 30 / 10px / 0 stretch;
-  background: rgba(8, 10, 15, 0.86);
-  background-clip: padding-box;
-}
-
-.card.side {
-  transform: none;
-}
-
-.card.empty {
-  width: auto;
-  padding: 1px 6px;
-  white-space: nowrap;
-}
-
-.c-head {
-  padding: 0 3px;
+/* A station's name next to it, away from its ships: under it, over it or left of it. */
+.plate-st {
+  padding: 0 7px;
+  border: 1px solid rgba(214, 170, 96, 0.3);
+  border-radius: 3px;
+  background: rgba(8, 10, 15, 0.8);
   color: #f3c27a;
   font-weight: 650;
+  line-height: 18px;
   white-space: nowrap;
 }
 
-.c-head span {
+.plate-st.above {
+  transform: translate(-50%, -100%);
+}
+
+.plate-st.left {
+  transform: translate(-100%, -50%);
+}
+
+.plate-st span {
   color: #9b907c;
   font-weight: 400;
 }
 
-.ship,
-.more {
-  display: block;
-  width: 100%;
-  margin: 0;
-  padding: 2px 3px;
-  border: 0;
-  border-radius: 2px;
-  background: none;
-  color: inherit;
+/* The ships a station has no berth for: the count stands where the next of them would park. */
+.count {
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  min-width: 30px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid rgba(243, 198, 78, 0.7);
+  border-radius: 11px;
+  background: rgba(14, 16, 22, 0.92);
+  color: #f3c64e;
   font: inherit;
-  text-align: left;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 20px;
   pointer-events: auto;
   cursor: pointer;
 }
 
-.ship:hover,
-.ship.hovered {
-  background: rgba(214, 170, 96, 0.18);
+.count:hover,
+.count.hovered {
+  border-color: #f3c64e;
+  background: rgba(60, 48, 20, 0.95);
 }
 
-.ship.selected {
-  background: rgba(243, 198, 78, 0.28);
+.count:focus-visible {
+  outline: 2px solid #f3c64e;
+  outline-offset: 1px;
 }
 
-.r-name,
-.r-phase {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.r-name {
-  font-weight: 600;
-}
-
-.r-phase {
-  color: #a89c86;
-  font-size: 11.5px;
-}
-
-.ship.alarm .r-phase {
-  color: #ff8d7a;
-}
-
-.glyph {
-  margin-right: 4px;
-}
-
-.ship.codex .glyph {
-  color: #7ea6f5;
-}
-
-.ship.claude .glyph {
-  color: #e59472;
-}
-
-.more {
-  color: #b8ad98;
-}
-
-.hidden-count {
+/* The open system's ships, at the right side of the map under the toolbar. */
+.stage > .fleet {
   position: absolute;
+  top: var(--below-toolbar, 46px);
   right: 10px;
-  bottom: 8px;
-  color: #b8ad98;
+  z-index: 2;
+  width: 300px;
+  max-height: calc(100% - var(--below-toolbar, 46px) - 8px);
 }
 
 @media (max-width: 760px) {
@@ -1451,19 +1513,21 @@ onBeforeUnmount(() => {
     max-width: 52vw;
   }
 
-  /* There is no room for the rows: the ships are picked on the map. */
-  .ship,
-  .more {
-    display: none;
-  }
-
-  .card {
+  /* The list opens over the map, above the dock's line. */
+  .stage > .fleet {
+    left: 4px;
+    right: 4px;
     width: auto;
-    padding: 0 3px;
-    white-space: nowrap;
+    max-height: calc(100% - var(--below-toolbar, 46px) - 52px);
   }
 
-  .c-head span {
+  .plate-st {
+    padding: 0 4px;
+    font-size: 11.5px;
+    line-height: 15px;
+  }
+
+  .plate-st span {
     display: none;
   }
 

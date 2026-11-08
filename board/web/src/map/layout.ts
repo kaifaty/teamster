@@ -13,9 +13,43 @@ export interface Size {
   height: number;
 }
 
-/** The world is laid out for the shape of the window: wide on a desktop, tall on a phone. */
+/** The galaxy is laid out for the shape of the window: wide on a desktop, tall on a phone. */
 export function worldSize(viewport: Size): Size {
   return viewport.width >= viewport.height ? { width: 1600, height: 1000 } : { width: 1000, height: 1500 };
+}
+
+/** Screen pixels at each edge of the window that the map's own panels cover. */
+export interface Insets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+export const NO_INSETS: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
+
+/** A part of the window in screen pixels; without x and y it starts at the window's corner. */
+export type View = Size & { x?: number; y?: number };
+
+/** The part of the window that no panel covers. */
+export function freeView(viewport: Size, insets: Insets): Required<View> {
+  return {
+    x: insets.left,
+    y: insets.top,
+    width: Math.max(1, viewport.width - insets.left - insets.right),
+    height: Math.max(1, viewport.height - insets.top - insets.bottom),
+  };
+}
+
+/**
+ * A star system is laid out for the free part of the window: its world is as wide as that part on a desktop, between
+ * one and a half and two and a half times as wide as tall, and tall on a phone. So the orbits spread over the screen
+ * instead of leaving its sides empty; a narrower world would bring the yard's ships onto the roadstead.
+ */
+export function systemWorldSize(free: Size): Size {
+  const aspect = free.width / Math.max(1, free.height);
+  if (aspect >= 1) return { width: Math.round(Math.min(2400, Math.max(1500, 1000 * aspect))), height: 1000 };
+  return { width: 1000, height: Math.round(Math.min(1500, Math.max(1250, 1000 / aspect))) };
 }
 
 /** The camera: a world point (x, y) is drawn at (x * zoom + tx, y * zoom + ty). */
@@ -25,10 +59,10 @@ export interface Camera {
   ty: number;
 }
 
-/** The whole world in the window, centred. */
-export function fitCamera(world: Size, viewport: Size): Camera {
-  const zoom = Math.min(viewport.width / world.width, viewport.height / world.height);
-  return { zoom, tx: (viewport.width - world.width * zoom) / 2, ty: (viewport.height - world.height * zoom) / 2 };
+/** The whole world in `view`, centred. */
+export function fitCamera(world: Size, view: View): Camera {
+  const zoom = Math.min(view.width / world.width, view.height / world.height);
+  return { zoom, tx: (view.x ?? 0) + (view.width - world.width * zoom) / 2, ty: (view.y ?? 0) + (view.height - world.height * zoom) / 2 };
 }
 
 /** How far the camera may zoom in, as a multiple of the fitted zoom. */
@@ -52,24 +86,32 @@ export function limitZoom(zoom: number, factor: number, fit: Camera): { zoom: nu
 }
 
 /**
- * `camera` carried over to a window of another size: the same share of the fitted zoom, around the same world point
- * in the middle of the window.
+ * `camera` carried over to a view of another size: the same share of the fitted zoom, around the same world point
+ * in the middle of the view.
  */
-export function refitCamera(camera: Camera, before: { fit: Camera; viewport: Size }, fit: Camera, viewport: Size, world: Size): Camera {
+export function refitCamera(camera: Camera, before: { fit: Camera; viewport: View }, fit: Camera, viewport: View, world: Size): Camera {
   const zoom = fit.zoom * (camera.zoom / before.fit.zoom);
-  const x = (before.viewport.width / 2 - camera.tx) / camera.zoom;
-  const y = (before.viewport.height / 2 - camera.ty) / camera.zoom;
-  return clampCamera({ zoom, tx: viewport.width / 2 - x * zoom, ty: viewport.height / 2 - y * zoom }, world, viewport);
+  const x = ((before.viewport.x ?? 0) + before.viewport.width / 2 - camera.tx) / camera.zoom;
+  const y = ((before.viewport.y ?? 0) + before.viewport.height / 2 - camera.ty) / camera.zoom;
+  const middle = { x: (viewport.x ?? 0) + viewport.width / 2, y: (viewport.y ?? 0) + viewport.height / 2 };
+  return clampCamera({ zoom, tx: middle.x - x * zoom, ty: middle.y - y * zoom }, world, viewport);
 }
 
-/** `camera` kept so that the world covers the window; a world smaller than the window stays centred. */
-export function clampCamera(camera: Camera, world: Size, viewport: Size): Camera {
-  const axis = (offset: number, worldLength: number, viewLength: number) => {
+/**
+ * `camera` kept so that the world covers `view` and every edge of the world can be brought into it; a world smaller
+ * than the view stays centred in it.
+ */
+export function clampCamera(camera: Camera, world: Size, view: View): Camera {
+  const axis = (offset: number, worldLength: number, start: number, viewLength: number) => {
     const length = worldLength * camera.zoom;
-    if (length <= viewLength) return (viewLength - length) / 2;
-    return Math.min(0, Math.max(viewLength - length, offset));
+    if (length <= viewLength) return start + (viewLength - length) / 2;
+    return Math.min(start, Math.max(start + viewLength - length, offset));
   };
-  return { zoom: camera.zoom, tx: axis(camera.tx, world.width, viewport.width), ty: axis(camera.ty, world.height, viewport.height) };
+  return {
+    zoom: camera.zoom,
+    tx: axis(camera.tx, world.width, view.x ?? 0, view.width),
+    ty: axis(camera.ty, world.height, view.y ?? 0, view.height),
+  };
 }
 
 /** Stable, well spread number from a name. */
@@ -95,29 +137,57 @@ export function skyChoices(repo: string, own: string | undefined, backdrops: rea
 
 // System ------------------------------------------------------------------------------------------
 
-/** The ellipse of the outermost orbit. */
+/** The ellipse of the outermost orbit; a tall one, on a phone, is narrow. */
 export interface SystemFrame {
   cx: number;
   cy: number;
   rx: number;
   ry: number;
+  tall: boolean;
 }
 
+/** The system's orbits, in the middle of its world: the panels are outside it. */
 export function systemFrame(size: Size): SystemFrame {
-  const ry = size.height / 2 - 130;
-  return { cx: size.width / 2, cy: size.height / 2 + 24, rx: Math.min(size.width / 2 - 150, ry * 2.6), ry };
+  const ry = size.height / 2 - 120;
+  return { cx: size.width / 2, cy: size.height / 2, rx: Math.min(size.width / 2 - 150, ry * 2.6), ry, tall: size.height > size.width };
 }
 
-/** Stations never move, so the eye learns them: `orbit` is a share of the frame, `angle` is in degrees. */
-export const STATIONS: Record<Place, { orbit: number; angle: number; radius: number }> = {
-  yard: { orbit: 0.9, angle: 180, radius: 110 },
-  range: { orbit: 0.74, angle: 238, radius: 64 },
-  inspection: { orbit: 0.64, angle: 320, radius: 96 },
-  gate: { orbit: 0.46, angle: 62, radius: 58 },
-  roadstead: { orbit: 0.3, angle: 170, radius: 46 },
-  cryo: { orbit: 0.97, angle: 345, radius: 70 },
-  command: { orbit: 0.9, angle: 128, radius: 76 },
+/** Where a station's name stands next to it. */
+export type PlateSide = "below" | "above" | "left";
+
+/**
+ * Stations never move, so the eye learns them: `orbit` is a share of the frame, `angle` is in degrees. A station's
+ * ships park on its `side`, in degrees from its centre (0 is to the right, 90 below), and its name stands apart from
+ * them, `plate`. `berths` is how many ships it shows; the rest wait behind a count.
+ */
+export const STATIONS: Record<Place, { orbit: number; angle: number; radius: number; side: number; plate: PlateSide; berths: number }> = {
+  yard: { orbit: 0.9, angle: 180, radius: 140, side: 0, plate: "below", berths: 10 },
+  range: { orbit: 0.74, angle: 238, radius: 84, side: 270, plate: "below", berths: 6 },
+  inspection: { orbit: 0.64, angle: 320, radius: 116, side: 270, plate: "below", berths: 6 },
+  gate: { orbit: 0.46, angle: 62, radius: 70, side: 0, plate: "below", berths: 5 },
+  roadstead: { orbit: 0.3, angle: 170, radius: 54, side: 120, plate: "above", berths: 5 },
+  cryo: { orbit: 0.97, angle: 345, radius: 88, side: 90, plate: "above", berths: 6 },
+  command: { orbit: 0.9, angle: 128, radius: 92, side: 30, plate: "left", berths: 5 },
 };
+
+/**
+ * A tall system's orbits are narrow, so its stations are smaller and some park their ships elsewhere: the yard on its
+ * outer side, on one arc that stays inside the world; the roadstead fewer and below it, clear of the yard and the sun;
+ * the sleeping field to its right, clear of the inspection.
+ */
+const TALL_SCALE = 0.65;
+const TALL: Partial<Record<Place, { side: number; berths?: number }>> = {
+  yard: { side: 180, berths: 6 },
+  roadstead: { side: 90, berths: 3 },
+  cryo: { side: 0 },
+};
+
+/** A station as `frame` draws it: see STATIONS. */
+export function stationOf(place: Place, frame: SystemFrame): (typeof STATIONS)[Place] {
+  const station = STATIONS[place];
+  if (!frame.tall) return station;
+  return { ...station, radius: Math.round(station.radius * TALL_SCALE), ...TALL[place] };
+}
 
 /** The way a task goes, towards the sun. */
 export const ROUTE: readonly Place[] = ["yard", "range", "inspection", "gate", "roadstead"];
@@ -134,7 +204,7 @@ export const SUN_CLEARANCE = SUN_RADIUS + 44;
 
 /** A station's point. On a narrow screen the inner orbits squeeze, so a station is kept clear of the sun. */
 export function stationAt(place: Place, frame: SystemFrame): Point {
-  const { orbit, angle, radius } = STATIONS[place];
+  const { orbit, angle, radius } = stationOf(place, frame);
   const point = orbitPoint(frame, orbit, angle);
   const distance = Math.hypot(point.x - frame.cx, point.y - frame.cy);
   const least = SUN_RADIUS + radius + 36;
@@ -142,76 +212,123 @@ export function stationAt(place: Place, frame: SystemFrame): Point {
   return { x: frame.cx + ((point.x - frame.cx) / distance) * least, y: frame.cy + ((point.y - frame.cy) / distance) * least };
 }
 
-/** Ships circle this far from a station's edge; further rings follow, each clear of the one inside it. */
-const RING_GAP = 46;
-/** The size of a light ship; a larger ship's ring moves out so that it keeps the same clearance. */
-export const LIGHT_SHIP = 74;
-/** The share of its size a ship's art fills, and the room left between two ships on a ring. */
+/** Ships park this far from a station's edge; a second arc, if any, this far outside the first. */
+const PARK_GAP = 22;
+const ROW_GAP = 10;
+/** The share of its size a ship's art fills, and the room left between two ships on an arc. */
 const FOOTPRINT = 0.8;
-const SHIP_GAP = 12;
+const SHIP_GAP = 10;
+/** The widest arc of parked ships, in radians: they stay on their side of the station. */
+const PARK_SPAN = (170 * Math.PI) / 180;
+/**
+ * The room a station's name takes, in world units: about its pixels at the zoom of a laptop's full view; on a phone
+ * the name is shorter, without its note, and the zoom smaller. Ships keep out of it.
+ */
+export function plateRoom(frame: SystemFrame): Size {
+  return frame.tall ? { width: 170, height: 50 } : { width: 260, height: 36 };
+}
+/** The step, in radians, an arc turns by to clear a station's name. */
+const CLEAR_STEP = (2 * Math.PI) / 180;
+/** The share of a station's radius its art fills to the edge of the ball. */
+const BALL_SHARE = 0.96;
+/** The room the count of the ships that wait takes on the arc, in world units. */
+export const COUNT_ROOM = 40;
+
+/** Where a station's ships park, as offsets from its centre; the count of the rest stands after the last of them. */
+export interface Parking {
+  berths: Point[];
+  /** null when every ship has its berth. */
+  count: { at: Point; ships: number } | null;
+}
 
 /**
- * The rings of a station's ships, `sizes` in slot order: each ship gets the `radius` of its ring from the
- * station's centre and its starting `angle` in radians. A ring takes ships in order while they fit around it
- * with SHIP_GAP between them even where the ring is flattened; a ring of larger ships moves out, so that the
- * ships keep clear of the station and of the ring inside.
+ * The berths of a station's ships, `sizes` in their order: an arc on the station's side, centred on it, with SHIP_GAP
+ * between neighbours. When the arc would pass PARK_SPAN, a second one starts outside it. A station shows `berths`
+ * ships at most; with more, the last berth goes to the count of the rest. An arc starts at its end nearer the station's
+ * name and turns off it until its first ship clears the name's room, so that the ships and the count stay clear of it.
  */
-export function ringsOf(place: Place, sizes: readonly number[]): { radius: number; angle: number }[] {
-  const result: { radius: number; angle: number }[] = [];
+export function parkingOf(place: Place, sizes: readonly number[], frame: SystemFrame): Parking {
+  const { radius, side, berths, plate } = stationOf(place, frame);
+  const crowded = sizes.length > berths;
+  const shown = crowded ? berths - 1 : sizes.length;
+  const items = crowded ? [...sizes.slice(0, shown), COUNT_ROOM] : [...sizes];
   const width = (size: number) => size * FOOTPRINT + SHIP_GAP;
+  // The angle between neighbours a and b on an arc of radius r: their chord is half their widths.
+  const step = (a: number, b: number, r: number) => 2 * Math.asin(Math.min(1, (width(a) + width(b)) / 4 / r));
+  const centre = (side * Math.PI) / 180;
+  /** The direction of the station's name from its centre, and the name's room along it and across it. */
+  const name = { below: Math.PI / 2, above: -Math.PI / 2, left: Math.PI }[plate];
+  const room = plateRoom(frame);
+  const [deep, wide] = plate === "left" ? [room.width, room.height] : [room.height, room.width];
+  const nameFrom = radius * BALL_SHARE + 10;
+  /** Whether a ship of `size` at angle `a` on an arc of radius `r` would cover the name. */
+  const covers = (a: number, size: number, r: number) => {
+    const toward = r * Math.cos(a - name);
+    const across = r * Math.sin(a - name);
+    const half = (size * FOOTPRINT) / 2;
+    return Math.abs(across) < wide / 2 + half && toward + half > nameFrom && toward - half < nameFrom + deep;
+  };
+  const points: Point[] = [];
+  let inner = radius + PARK_GAP;
   let first = 0;
-  let ring = 0;
-  let inner: { radius: number; largest: number } | null = null;
-  const radiusFor = (largest: number) =>
-    inner === null
-      ? STATIONS[place].radius + RING_GAP + Math.max(0, largest - LIGHT_SHIP) / 2
-      : inner.radius + ((inner.largest + largest) / 2) * (FOOTPRINT / RING_FLATTENING);
-  while (first < sizes.length) {
+  while (first < items.length) {
     let last = first + 1;
-    let largest = sizes[first]!;
-    let used = width(largest);
-    while (last < sizes.length) {
-      const next = Math.max(largest, sizes[last]!);
-      if (used + width(sizes[last]!) > Math.PI * 2 * RING_FLATTENING * radiusFor(next)) break;
+    let largest = items[first]!;
+    while (last < items.length) {
+      const next = Math.max(largest, items[last]!);
+      const r = inner + next / 2;
+      let span = 0;
+      for (let index = first + 1; index <= last; index++) span += step(items[index - 1]!, items[index]!, r);
+      if (span > PARK_SPAN) break;
       largest = next;
-      used += width(sizes[last]!);
       last += 1;
     }
-    const radius = radiusFor(largest);
-    // Neighbours stand half their widths apart, measured where the ring is flattened most.
-    let angle = ring * 0.4;
-    for (let index = first; index < last; index++) {
-      if (index > first) angle += (width(sizes[index - 1]!) + width(sizes[index]!)) / 2 / (RING_FLATTENING * radius);
-      result.push({ radius, angle });
-    }
-    inner = { radius, largest };
+    const r = inner + largest / 2;
+    const angles = [0];
+    for (let index = first + 1; index < last; index++) angles.push(angles[angles.length - 1]! + step(items[index - 1]!, items[index]!, r));
+    const half = angles[angles.length - 1]! / 2;
+    // The arc runs from its end nearer the name, clockwise or back, and turns off the name while its first ship covers it.
+    const nearer = (a: number, b: number) => Math.cos(a - name) > Math.cos(b - name) + 1e-6;
+    const turn = nearer(centre + half, centre - half) ? -1 : 1;
+    let start = centre - turn * half;
+    for (let tries = 0; tries < 60 && covers(start, items[first]!, r); tries++) start += turn * CLEAR_STEP;
+    for (const angle of angles) points.push({ x: r * Math.cos(start + turn * angle), y: r * Math.sin(start + turn * angle) });
+    inner = r + largest / 2 + ROW_GAP;
     first = last;
-    ring += 1;
   }
-  return result;
+  return { berths: points.slice(0, shown), count: crowded ? { at: points[shown]!, ships: sizes.length - shown } : null };
 }
-
-/** Light ship `slot` of a station with light ships only: see ringsOf. */
-export function ringOf(place: Place, slot: number): { radius: number; angle: number } {
-  return ringsOf(place, Array.from({ length: slot + 1 }, () => LIGHT_SHIP))[slot]!;
-}
-
-/** A ship's point on its ring; the rings are flattened a little, like the orbits. */
-export function ringPoint(station: Point, radius: number, angle: number): Point {
-  return { x: station.x + radius * Math.cos(angle), y: station.y + radius * RING_FLATTENING * Math.sin(angle) };
-}
-
-const RING_FLATTENING = 0.75;
 
 /**
- * Where a station's card stands: centred under the first ring of its ships. The command station is low on the
- * map, so its card starts beside the ring instead, and a long list still fits.
+ * The order of a station's ships on its berths: a ship in trouble first, then by arrival; the selected ship never
+ * waits behind the count.
  */
-export function cardPlace(place: Place, frame: SystemFrame): Point & { side: boolean } {
+export function parkingOrder<T>(
+  ships: readonly T[],
+  keyOf: (ship: T) => { slug: string; beacon: boolean; slot: number },
+  place: Place,
+  selected: string | null,
+): T[] {
+  const order = [...ships].sort((a, b) => {
+    const [x, y] = [keyOf(a), keyOf(b)];
+    return Number(y.beacon) - Number(x.beacon) || x.slot - y.slot;
+  });
+  const { berths } = STATIONS[place];
+  const index = order.findIndex((ship) => keyOf(ship).slug === selected);
+  if (order.length > berths && index >= berths - 1) order.splice(berths - 2, 0, ...order.splice(index, 1));
+  return order;
+}
+
+/**
+ * Where a station's name stands, away from its ships: the middle of the name's edge that faces the station, under it,
+ * over it or left of it.
+ */
+export function plateAt(place: Place, frame: SystemFrame): Point & { side: PlateSide } {
   const station = stationAt(place, frame);
-  const reach = STATIONS[place].radius + RING_GAP;
-  if (place === "command") return { x: station.x + reach + 30, y: station.y - 18, side: true };
-  return { x: station.x, y: station.y + reach * RING_FLATTENING + 34, side: false };
+  const { radius, plate } = stationOf(place, frame);
+  const off = radius * BALL_SHARE + 10;
+  if (plate === "left") return { x: station.x - off, y: station.y, side: plate };
+  return { x: station.x, y: station.y + (plate === "above" ? -off : off), side: plate };
 }
 
 // Galaxy ------------------------------------------------------------------------------------------

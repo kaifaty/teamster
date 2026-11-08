@@ -11,7 +11,7 @@ export type Place = "yard" | "range" | "inspection" | "gate" | "roadstead" | "cr
 export const PLACES: readonly Place[] = ["command", "yard", "range", "inspection", "gate", "roadstead", "cryo"];
 
 export type Action =
-  | "work" // the ship circles its station: the task is alive and its activity is fresh
+  | "work" // the ship hovers on its berth: the task is alive and its activity is fresh
   | "wait" // waits for the station: a check, a review or CI
   | "idle" // stands still at its station
   | "sleep" // sleeps until its limit resets
@@ -22,7 +22,7 @@ export interface Placement {
   /** The ship's position at its station, distinct among peers, earliest arrival first. */
   slot: number;
   action: Action;
-  /** The ship may circle: the task is alive and its activity is fresh. */
+  /** The ship hovers on its berth, its engine lit: the task is alive and its activity is fresh. */
   working: boolean;
   /** The station works for this task: the range during a check, the gate during CI. */
   placeWorking: boolean;

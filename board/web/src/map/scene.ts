@@ -8,32 +8,37 @@ import { ART, BACKDROPS, type ArtName } from "./art";
 import type { Depot, Family, Hull, Star, SupplyLine } from "./fleet";
 import { HULL_SIZE, depotEmpty, depotPositions, hullOf, patchSpots } from "./fleet";
 import {
+  NO_INSETS,
   ROUTE,
   STATIONS,
   SUN_CLEARANCE,
   SUN_RADIUS,
-  LIGHT_SHIP,
   RESEARCH_SIZE,
   clampCamera,
   fitCamera,
+  freeView,
   hashName,
   limitZoom,
+  parkingOf,
+  parkingOrder,
   refitCamera,
-  ringPoint,
-  ringsOf,
   researchPosition,
   skyChoices,
   starSize,
   stormRadius,
   stationAt,
+  stationOf,
   systemFrame,
+  systemWorldSize,
   worldSize,
   zoomCamera,
   type Camera,
   type Galaxy,
+  type Insets,
   type Point,
   type Size,
   type SystemFrame,
+  type View,
 } from "./layout";
 import { ZOOM_NOTCH, wheelAction, wheelDevice, type WheelDevice } from "./navigation";
 import { FLEET, SPACE, SUN_KINDS } from "./palette";
@@ -74,8 +79,8 @@ export interface SceneOptions {
   onHoverStar?: (repo: string | null) => void;
   /** The research station was clicked. */
   onResearch: () => void;
-  /** The world's shape and the camera over it, for the labels. */
-  onCamera: (world: Size, camera: Camera) => void;
+  /** The shapes of the galaxy's world and of the system's, and the camera over the one shown, for the labels. */
+  onCamera: (worlds: { galaxy: Size; system: Size }, camera: Camera) => void;
   /** The labels over the canvas: the wheel and a pinch over them move the camera too. */
   labels?: HTMLElement;
   onLost: () => void;
@@ -94,6 +99,8 @@ export interface FleetScene {
   setShips(entries: ShipEntry[], departures?: ReadonlyMap<string, "dive" | "fade">): void;
   setSelected(slug: string | null): void;
   setHovered(slug: string | null): void;
+  /** The parts of the window the map's panels cover: a system is laid out in the rest. */
+  setInsets(insets: Insets): void;
   setActive(active: boolean): void;
   dispose(): void;
 }
@@ -103,7 +110,9 @@ export const FLIGHT_SECONDS = 0.9;
 /** The share of the flight spent falling towards the star; the rest brings up the system. */
 const FALL = 0.55;
 const MAX_SPEED = 300;
-const CIRCLING_SPEED = 0.4;
+/** A working ship hovers this far around its berth, in world units, this fast. */
+const HOVER = 3;
+const HOVER_SPEED = 1.3;
 const DEPOT_SIZE = 116;
 const TANKER_SIZE = 40;
 /** World units a tanker covers in a second. */
@@ -211,14 +220,15 @@ interface Ship {
   y: number;
   vx: number;
   vy: number;
-  /** The ship's ring, its starting angle there, and where it is on it now. */
-  radius: number;
-  base: number;
-  angle: number;
-  /** The station and ring the angle belongs to; a new one sends the ship to its new place. */
-  ring: string;
-  /** False until the ship has a ring: a ship that does not fly in starts on it. */
+  /** The ship's berth, from its station's centre; a stowed ship waits behind its station's count, unseen. */
+  berth: Point;
+  stowed: boolean;
+  /** 0 to 1: how far the ship is shown; it fades as it is stowed and back as it gets a berth. */
+  shown: number;
+  /** False until the ship has a berth: a ship that does not fly in starts on it. */
   placed: boolean;
+  /** On its way: it turns along its course; on its berth it turns to its station's side. */
+  travelling: boolean;
   arrive: boolean;
   /** Seconds to the next smoke puff. */
   smoke: number;
@@ -413,12 +423,18 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   let world = worldSize(viewport);
   let fit = fitCamera(world, viewport);
+  /** The parts of the window under the map's panels; a system is laid out in the rest, `free`, with its own world. */
+  let insets: Insets = NO_INSETS;
+  let free: View = freeView(viewport, insets);
+  let systemWorld = systemWorldSize(free);
+  let systemFit = fitCamera(systemWorld, free);
   /** The cameras over the galaxy and over the system shown; the galaxy's stays while a system is open. */
   let galaxyView = fit;
-  let systemView = fit;
-  /** The fitted camera and the window the cameras were last laid out for. */
+  let systemView = systemFit;
+  /** The fitted cameras and the views they were last laid out for. */
   let fitted = { fit, viewport };
-  let frame: SystemFrame = systemFrame(world);
+  let systemFitted: { fit: Camera; viewport: View } = { fit: systemFit, viewport: free };
+  let frame: SystemFrame = systemFrame(systemWorld);
   let model: GalaxyModel = {
     stars: [],
     layout: { places: new Map(), spacing: 200, scale: 1, labelZoom: 0.75, world: worldSize(viewport), crowded: 0 },
@@ -458,7 +474,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const spot2: Point = { x: 0, y: 0 };
 
   const view = (): Camera => (repo ? systemView : galaxyView);
-  const report = () => options.onCamera(world, view());
+  const worldOf = (): Size => (repo ? systemWorld : world);
+  const fitOf = (): Camera => (repo ? systemFit : fit);
+  /** `camera` kept over the world shown: see clampCamera. A system is kept within the free part of the window. */
+  const clampView = (camera: Camera): Camera => clampCamera(camera, worldOf(), repo ? free : viewport);
+  const report = () => options.onCamera({ galaxy: world, system: systemWorld }, view());
 
   // Drawing what changes rarely ---------------------------------------------------------------------
 
@@ -662,7 +682,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       cryo: "planetCryo",
       command: "stationCommand",
     };
-    return sprite(place === "yard" && home ? home : art(name[place]), STATIONS[place].radius * 2 * BALL_MARGIN);
+    return sprite(place === "yard" && home ? home : art(name[place]), stationOf(place, frame).radius * 2 * BALL_MARGIN);
   }
 
   function drawStations() {
@@ -702,6 +722,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
     drawStations();
     const point = stationAt("gate", frame);
+    const gateRadius = stationOf("gate", frame).radius;
+    gate.scale.set((gateRadius * 2.3) / Math.max(gate.texture.width, gate.texture.height));
+    gateGlow.scale.set((gateRadius * 2.4) / Math.max(gateGlow.texture.width, gateGlow.texture.height));
     gate.position.set(point.x, point.y);
     gateGlow.position.copyFrom(gate.position);
     sun.position.set(frame.cx, frame.cy);
@@ -715,16 +738,28 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     fit = fitCamera(world, viewport);
     // A new window keeps what the cameras looked at; a world of another shape starts from the whole of it.
     galaxyView = reshaped ? fit : refitCamera(galaxyView, fitted, fit, viewport, world);
-    systemView = reshaped ? fit : refitCamera(systemView, fitted, fit, viewport, world);
     fitted = { fit, viewport };
-    glide = null;
-    frame = systemFrame(world);
     fitBackdrop(backdrop);
     fitBackdrop(systemBackdrop);
     drawGalaxy();
+    layoutSystem();
+  }
+
+  /** Lays the system out in the free part of the window, its ships on their berths at once. */
+  function layoutSystem() {
+    free = freeView(viewport, insets);
+    const shaped = systemWorldSize(free);
+    const reshaped = shaped.width !== systemWorld.width || shaped.height !== systemWorld.height;
+    systemWorld = shaped;
+    systemFit = fitCamera(systemWorld, free);
+    systemView = reshaped ? systemFit : refitCamera(systemView, systemFitted, systemFit, free, systemWorld);
+    systemFitted = { fit: systemFit, viewport: free };
+    glide = null;
+    frame = systemFrame(systemWorld);
     drawCharts();
+    arrange();
     for (const item of ships.values()) {
-      const point = ringPoint(stationAt(item.entry.placement.place, frame), item.radius, item.angle);
+      const point = berthPoint(item);
       item.x = point.x;
       item.y = point.y;
     }
@@ -748,8 +783,14 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
   }
 
-  /** Scouts and flagships keep the room of a light ship on their ring, as before the larger hulls. */
-  const ringSize = (item: Ship) => (item.kind === "frigate" || item.kind === "cruiser" ? item.size : LIGHT_SHIP);
+  /** A ship's berth in the world. */
+  function berthPoint(item: Ship): Point {
+    const station = stationAt(item.entry.placement.place, frame);
+    return { x: station.x + item.berth.x, y: station.y + item.berth.y };
+  }
+
+  /** Parked ships face their station's side, all one way, like a fleet in formation. */
+  const headingOf = (place: Place) => ((stationOf(place, frame).side + 90) * Math.PI) / 180;
 
   /** Fits the ship's art to its task: the hull of its effort and family, and a patch per fix round. */
   function dress(item: Ship) {
@@ -820,11 +861,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       y: station.y,
       vx: 0,
       vy: 0,
-      radius: 0,
-      base: 0,
-      angle: 0,
-      ring: "",
+      berth: { x: 0, y: 0 },
+      stowed: false,
+      shown: 1,
       placed: false,
+      travelling: arrive,
       arrive,
       smoke: 0,
       escort: null,
@@ -851,7 +892,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     for (const item of [...ships.values()]) removeShip(item);
   }
 
-  /** Puts the ships of every station on their rings, larger hulls given more room. */
+  /** Puts the ships of every station on its berths, in parkingOrder; those past the berths wait behind the count. */
   function arrange() {
     const byPlace = new Map<Place, Ship[]>();
     for (const item of ships.values()) {
@@ -861,26 +902,19 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       byPlace.set(item.entry.placement.place, list);
     }
     for (const [place, list] of byPlace) {
-      list.sort((a, b) => a.entry.placement.slot - b.entry.placement.slot);
-      const rings = ringsOf(place, list.map(ringSize));
-      list.forEach((item, index) => {
-        const { radius, angle } = rings[index]!;
-        const ring = `${place}|${radius}|${angle}`;
-        if (ring !== item.ring) {
-          item.ring = ring;
-          item.radius = radius;
-          item.base = angle;
-          item.angle = angle;
-        }
-        if (!item.placed) {
-          item.placed = true;
-          if (!item.arrive) {
-            const point = ringPoint(stationAt(place, frame), radius, angle);
-            item.x = point.x;
-            item.y = point.y;
-            item.body.rotation = angle + Math.PI;
-          }
-        }
+      const order = parkingOrder(list, (item) => ({ slug: item.slug, ...item.entry.placement }), place, selected);
+      const parking = parkingOf(place, order.map((item) => item.size), frame);
+      order.forEach((item, index) => {
+        item.stowed = index >= parking.berths.length;
+        item.berth = item.stowed ? parking.count!.at : parking.berths[index]!;
+        if (item.placed) return;
+        item.placed = true;
+        item.shown = item.stowed ? 0 : 1;
+        if (item.arrive) return;
+        const point = berthPoint(item);
+        item.x = point.x;
+        item.y = point.y;
+        item.body.rotation = headingOf(place);
       });
     }
   }
@@ -890,6 +924,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     for (const item of [...ships.values()]) {
       if (known.has(item.slug) || item.leaving) continue;
       item.leaving = departureOf(item.slug, item.entry.placement.place, departures);
+      // A ship that waited behind the count comes out to leave where it can be seen.
+      item.stowed = false;
       if (still) removeShip(item);
     }
     const first = ships.size === 0;
@@ -912,17 +948,23 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       if (item.body.alpha <= 0) removeShip(item);
       return;
     }
-    const { place, working } = item.entry.placement;
+    const { working } = item.entry.placement;
     let target: Point;
     if (item.leaving === "dive") {
       target = { x: frame.cx, y: frame.cy };
     } else {
-      if (working && !still) item.angle += dt * CIRCLING_SPEED;
-      target = ringPoint(stationAt(place, frame), item.radius, item.angle);
+      target = berthPoint(item);
+      // A working ship hovers on its berth.
+      if (working && !still && !item.stowed) {
+        target.x += Math.cos(time * HOVER_SPEED + item.seed) * HOVER;
+        target.y += Math.sin(time * HOVER_SPEED * 1.4 + item.seed * 0.7) * HOVER;
+      }
     }
+    item.shown = still ? Number(!item.stowed) : Math.min(1, Math.max(0, item.shown + (item.stowed ? -dt : dt) * 2));
     const dx = target.x - item.x;
     const dy = target.y - item.y;
     const distance = Math.hypot(dx, dy);
+    item.travelling = item.leaving !== null || distance > HOVER * 4;
     const step = still ? distance : Math.min(distance, Math.min(MAX_SPEED, distance * 2.4 + 20) * dt);
     const previous = { x: item.x, y: item.y };
     if (distance > 0) {
@@ -952,7 +994,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     const where = entry.placement;
     const speed = Math.hypot(item.vx, item.vy);
     body.position.set(item.x, item.y);
-    if (speed > 3) body.rotation += turn(body.rotation, Math.atan2(item.vy, item.vx) + Math.PI / 2) * Math.min(1, dt * 6);
+    if (item.travelling && speed > 3) body.rotation += turn(body.rotation, Math.atan2(item.vy, item.vx) + Math.PI / 2) * Math.min(1, dt * 6);
+    else if (!item.travelling) body.rotation += turn(body.rotation, headingOf(where.place)) * (still ? 1 : Math.min(1, dt * 3));
+    const seen = item.shown > 0.5;
 
     const blink = Math.floor(time * 3) % 2 === 0;
     hull.tint = where.beacon && blink ? "#ff9d90" : where.action === "sleep" ? SPACE.sleep : "#ffffff";
@@ -963,15 +1007,16 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       // The glow of a fire under the plating flickers unevenly; still, it only glows.
       const flicker = still ? 0.5 : 0.5 + 0.3 * Math.sin(time * 11 + item.seed) * Math.sin(time * 6.7 + item.seed * 0.37) + 0.2 * noise(Math.floor(time * 9) + item.seed);
       item.burn.alpha = 0.35 + 0.5 * flicker;
-      if (!still && !item.leaving) sparks(item);
+      if (!still && !item.leaving && seen) sparks(item);
     }
     escort(item, dt);
-    if (item.leaving !== "fade") body.alpha = where.action === "sleep" ? 0.75 : 1;
+    if (item.leaving !== "fade") body.alpha = (where.action === "sleep" ? 0.75 : 1) * item.shown;
+    body.visible = item.shown > 0;
     const burning = where.working || speed > 30;
     engine.alpha = burning ? 0.75 + 0.25 * Math.sin(time * 18 + item.x) : 0.08;
     engine.tint = where.fixing ? SPACE.fix : FLEET[entry.task.executor].engine;
 
-    if (speed > 60) {
+    if (speed > 60 && seen) {
       const color = where.fixing ? SPACE.fix : FLEET[entry.task.executor].engine;
       for (let i = 1; i <= 7; i++) {
         const back = item.size * 0.5 + i * 9;
@@ -979,12 +1024,13 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         systemFx.fill({ color, alpha: 0.5 - i * 0.06 });
       }
     }
-    if (where.beacon) {
+    if (where.beacon && seen) {
+      // Within the ship's own room, so that the beacons of a row of ships do not run into each other.
       const pulse = (time * 0.7) % 1;
-      systemFx.circle(item.x, item.y, item.size * (0.7 + pulse * 0.8));
-      systemFx.stroke({ width: 2.5, color: SPACE.alarm, alpha: 1 - pulse });
+      systemFx.circle(item.x, item.y, item.size * (0.55 + pulse * 0.4));
+      systemFx.stroke({ width: 2, color: SPACE.alarm, alpha: 1 - pulse });
     }
-    if (item.slug === selected || item.slug === hovered) {
+    if ((item.slug === selected || item.slug === hovered) && seen) {
       const half = item.size * 0.72;
       const arm = half * 0.4;
       for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
@@ -1050,7 +1096,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     if (still) {
       let index = 0;
       for (const item of ships.values()) {
-        if (item.entry.task.ci !== "failed" || item.leaving) continue;
+        if (item.entry.task.ci !== "failed" || item.leaving || item.stowed) continue;
         for (let k = 0; k < 3 && index < puffs.length; k++, index++) {
           const puff = puffs[index]!;
           onHull(item, item.hit, spot);
@@ -1065,7 +1111,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       return;
     }
     for (const item of ships.values()) {
-      if (item.entry.task.ci !== "failed" || item.leaving) continue;
+      if (item.entry.task.ci !== "failed" || item.leaving || item.stowed) continue;
       item.smoke -= dt;
       if (item.smoke > 0) continue;
       item.smoke += PUFF_EVERY * (0.7 + noise(time * 13 + item.seed) * 0.6);
@@ -1330,9 +1376,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     // The sky drifts a little behind the camera, never further than its margin past the window.
     const looked = worldPoint({ x: viewport.width / 2, y: viewport.height / 2 });
     const sky = inGalaxy ? backdrop : systemBackdrop;
+    const [skyWorld, skyFit] = inGalaxy ? [world, fit] : [systemWorld, systemFit];
     sky.position.set(
-      viewport.width / 2 - (looked.x - world.width / 2) * fit.zoom * SKY_DRIFT,
-      viewport.height / 2 - (looked.y - world.height / 2) * fit.zoom * SKY_DRIFT,
+      viewport.width / 2 - (looked.x - skyWorld.width / 2) * skyFit.zoom * SKY_DRIFT,
+      viewport.height / 2 - (looked.y - skyWorld.height / 2) * skyFit.zoom * SKY_DRIFT,
     );
   }
 
@@ -1368,7 +1415,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     let bestDistance = Infinity;
     for (const item of ships.values()) {
       const distance = Math.hypot(item.x - point.x, item.y - point.y);
-      if (!item.leaving && distance < item.size * 0.7 && distance < bestDistance) {
+      if (!item.leaving && !item.stowed && distance < item.size * 0.7 && distance < bestDistance) {
         bestDistance = distance;
         best = item.slug;
       }
@@ -1388,7 +1435,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   function panBy(dx: number, dy: number) {
     glide = null;
     const current = view();
-    put(clampCamera({ ...current, tx: current.tx + dx, ty: current.ty + dy }, world, viewport));
+    put(clampView({ ...current, tx: current.tx + dx, ty: current.ty + dy }));
   }
 
   /**
@@ -1398,7 +1445,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   function zoomBy(factor: number, at: Point, notch: boolean) {
     const nowMs = performance.now();
     if (nowMs < pausedUntil || flight !== (repo ? 1 : 0)) return;
-    const { zoom, past } = limitZoom(glide ? glide.zoom : view().zoom, factor, fit);
+    const { zoom, past } = limitZoom(glide ? glide.zoom : view().zoom, factor, fitOf());
     beyond = past === 0 || Math.sign(past) !== Math.sign(beyond) ? past : beyond + past;
     const kind = notch ? "notch" : "pinch";
     if (repo && beyond <= -LEAVE_BEYOND[kind]) {
@@ -1422,7 +1469,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
     glide = null;
     const current = view();
-    put(clampCamera(zoomCamera(current, zoom / current.zoom, at, fit), world, viewport));
+    put(clampView(zoomCamera(current, zoom / current.zoom, at, fitOf())));
   }
 
   function glideStep(dt: number) {
@@ -1430,7 +1477,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     const current = view();
     const ratio = target.zoom / current.zoom;
     const done = Math.abs(Math.log(ratio)) < 0.002;
-    put(clampCamera(zoomCamera(current, done ? ratio : ratio ** (1 - Math.exp(-dt * GLIDE_RATE)), target.at, fit), world, viewport));
+    put(clampView(zoomCamera(current, done ? ratio : ratio ** (1 - Math.exp(-dt * GLIDE_RATE)), target.at, fitOf())));
     if (done) glide = null;
   }
 
@@ -1482,7 +1529,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         if (Math.hypot(dx, dy) > CLICK_SLOP) press.dragged = true;
         if (press.dragged) {
           glide = null;
-          put(clampCamera({ ...press.camera, tx: press.camera.tx + dx, ty: press.camera.ty + dy }, world, viewport));
+          put(clampView({ ...press.camera, tx: press.camera.tx + dx, ty: press.camera.ty + dy }));
           canvas.style.cursor = "grabbing";
         }
       }
@@ -1490,7 +1537,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
     const point = worldPoint(at);
     const found = repo ? shipAt(point) : (starAt(point) ?? (researchAt(point) ? "research" : null));
-    canvas.style.cursor = found ? "pointer" : view().zoom > fit.zoom * 1.001 ? "grab" : "";
+    canvas.style.cursor = found ? "pointer" : view().zoom > fitOf().zoom * 1.001 ? "grab" : "";
     const slug = repo ? found : null;
     if (slug !== lastHover) {
       lastHover = slug;
@@ -1601,7 +1648,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         break;
       case "0":
         glide = null;
-        put(fit);
+        put(fitOf());
         break;
       case "ArrowLeft":
         panBy(step, 0);
@@ -1665,7 +1712,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       if (next !== null) {
         clearShips();
         focus = next;
-        systemView = fit;
+        systemView = systemFit;
         paintSun(sun, next);
         corona.tint = sunKind(next).glow;
         dressSystem(next);
@@ -1680,9 +1727,15 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     setShips,
     setSelected(slug) {
       selected = slug;
+      arrange();
     },
     setHovered(slug) {
       hovered = slug;
+    },
+    setInsets(next) {
+      if (next.top === insets.top && next.right === insets.right && next.bottom === insets.bottom && next.left === insets.left) return;
+      insets = next;
+      layoutSystem();
     },
     setActive(active) {
       if (active) app.start();
