@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PLACES } from "./placement";
 import {
   MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, LIGHT_SHIP, ringOf, ringPoint, ringsOf, skyChoices,
-  RESEARCH_SIZE, LABEL_MAX_WIDTH, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
+  RESEARCH_SIZE, LABEL_MAX_WIDTH, DEPOT_LABEL_DROP, MACHINE_MIN_SIZE, MACHINE_SIZE, machinePositions, machineRoom, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
   starRadius, starSize, stationAt, systemFrame, worldSize, zoomCamera, type Rect, type StarShape,
 } from "./layout";
 
@@ -294,5 +294,97 @@ describe("galaxy", () => {
     expect(starRadius(0)).toBeLessThan(starRadius(1));
     expect(starRadius(1)).toBeLessThan(starRadius(9));
     expect(starRadius(500)).toBe(46);
+  });
+});
+
+describe("machines", () => {
+  const ids = (count: number) => Array.from({ length: count }, (_, i) => `machine-${i}`);
+  const hit = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+  /** A depot with its fuel gauge and its label of three lines, as wide as its CSS lets it be, at `zoom`. */
+  const depotRoom = (at: { x: number; y: number }, top: boolean, zoom: number): Rect => {
+    const half = Math.max(58, 85 / zoom);
+    const label = 46 / zoom;
+    return top
+      ? { x0: at.x - half, y0: at.y - 58, x1: at.x + half, y1: at.y + DEPOT_LABEL_DROP.top + label }
+      : { x0: at.x - half, y0: at.y - DEPOT_LABEL_DROP.bottom - label, x1: at.x + half, y1: at.y + 58 };
+  };
+  const depotsFor = (world: { width: number; height: number }) =>
+    [1, 2, 3, 4].flatMap((count) =>
+      Array.from({ length: count }, (_, i) => [
+        { at: depotPosition(i, count, "top", world), top: true },
+        { at: depotPosition(i, count, "bottom", world), top: false },
+      ]).flat(),
+    );
+  /** The sprite alone: the art is about two thirds as tall as it is wide. */
+  const body = (at: { x: number; y: number }, size: number): Rect => ({ x0: at.x - size / 2, y0: at.y - size / 3, x1: at.x + size / 2, y1: at.y + size / 3 });
+
+  it("is the same every time, keeps the order and stands in one column along the right edge", () => {
+    for (const world of SIZES) {
+      const column = machinePositions(ids(5), world);
+      expect(machinePositions(ids(5), world)).toEqual(column);
+      const points = [...column.places.values()];
+      expect([...column.places.keys()]).toEqual(ids(5));
+      expect(new Set(points.map((point) => point.x)).size).toBe(1);
+      expect(points[0]!.x + column.size / 2).toBeLessThanOrEqual(world.width);
+      expect(points[0]!.x).toBeGreaterThan(world.width * 0.9);
+      points.slice(1).forEach((point, i) => expect(point.y).toBeGreaterThan(points[i]!.y));
+    }
+  });
+
+  it("draws a long column smaller, down to its least size", () => {
+    const size = SIZES[0]!;
+    expect(machinePositions(ids(1), size).size).toBe(MACHINE_SIZE);
+    expect(machinePositions(ids(4), size).size).toBeLessThan(MACHINE_SIZE);
+    expect(machinePositions(ids(12), size).size).toBe(MACHINE_MIN_SIZE);
+  });
+
+  it("keeps the stations inside the world, apart from each other and clear of the depots with their labels", () => {
+    for (const world of SIZES) {
+      for (const zoom of [0.39, 0.75, 0.9]) {
+        if (world.width > world.height && zoom < 0.5) continue;
+        for (const count of [1, 4, 12]) {
+          const column = machinePositions(ids(count), world, zoom, true);
+          const what = `${count} machines in ${world.width}x${world.height} at ${zoom}`;
+          const rooms = machineRooms(column);
+          const bodies = [...column.places.values()].map((at) => body(at, column.size));
+          for (const room of [...rooms, ...bodies]) {
+            expect(room.x0, what).toBeGreaterThanOrEqual(0);
+            expect(room.y0, what).toBeGreaterThanOrEqual(0);
+            expect(room.x1, what).toBeLessThanOrEqual(world.width);
+            expect(room.y1, what).toBeLessThanOrEqual(world.height);
+            for (const depot of depotsFor(world)) expect(hit(room, depotRoom(depot.at, depot.top, zoom)), what).toBe(false);
+          }
+          // Up to the column's limit the stations and their labels have their own room; past it they close up.
+          if (count < 12) expect(column.size, what).toBeGreaterThan(MACHINE_MIN_SIZE);
+          if (column.size > MACHINE_MIN_SIZE) {
+            bodies.forEach((a, i) => bodies.slice(i + 1).forEach((b) => expect(hit(a, b), what).toBe(false)));
+            rooms.forEach((a, i) => rooms.slice(i + 1).forEach((b) => expect(hit(a, b), what).toBe(false)));
+          }
+        }
+      }
+    }
+  });
+
+  it("keeps the stations above the ship's log that spans a tall window", () => {
+    const tall = SIZES[1]!;
+    for (const room of machineRooms(machinePositions(ids(5), tall, 0.39))) expect(room.y1).toBeLessThanOrEqual(logCorner(tall).y0);
+  });
+
+  it("lets no star stand on a station or its label", () => {
+    for (const world of SIZES) {
+      const column = machinePositions(ids(5), world);
+      const depots = [0, 1].flatMap((i) => [depotPosition(i, 2, "top", world), depotPosition(i, 2, "bottom", world)]);
+      const blocked = galaxyKeepOuts(world, depots, [logCorner(world)], column);
+      for (const count of [6, 34, 100]) {
+        const stars = Array.from({ length: count }, (_, i) => ({ repo: `repo-${i}`, live: i % 3 ? 0 : 1 + (i % 7), attention: 0, ready: 0, sleeping: 0 }));
+        const galaxy = galaxyLayout(stars, world, blocked);
+        for (const star of stars) {
+          const at = galaxy.places.get(star.repo)!;
+          const glow = starSize(star.live, galaxy) * 1.15 + 4;
+          const core = { x0: at.x - glow, y0: at.y - glow, x1: at.x + glow, y1: at.y + glow };
+          for (const at2 of column.places.values()) expect(hit(core, machineRoom(at2, column)), `${count} stars`).toBe(false);
+        }
+      }
+    }
   });
 });

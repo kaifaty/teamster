@@ -3,7 +3,7 @@
 // pointer does.
 
 import { Application, Assets, ColorMatrixFilter, Container, Graphics, Sprite, Texture, type ColorMatrix } from "pixi.js";
-import type { ArtIndex, TaskSummary } from "../types";
+import type { ArtIndex, MachineStatus, TaskSummary } from "../types";
 import { ART, BACKDROPS, type ArtName } from "./art";
 import type { Depot, Family, Hull, Star, SupplyLine } from "./fleet";
 import { HULL_SIZE, depotEmpty, depotPositions, hullOf, patchSpots } from "./fleet";
@@ -18,6 +18,7 @@ import {
   fitCamera,
   hashName,
   limitZoom,
+  machineLabelDrop,
   refitCamera,
   ringPoint,
   ringsOf,
@@ -31,6 +32,7 @@ import {
   zoomCamera,
   type Camera,
   type Galaxy,
+  type MachineColumn,
   type Point,
   type Size,
   type SystemFrame,
@@ -54,6 +56,12 @@ export interface ResearchMarks {
   probes: string[];
 }
 
+/** A machine's power station: its glow tells the machine's status. */
+export interface MachineMark {
+  id: string;
+  status: MachineStatus;
+}
+
 export interface GalaxyModel {
   stars: Star[];
   /** Where the stars stand and how large they are drawn: see galaxyLayout. */
@@ -62,6 +70,9 @@ export interface GalaxyModel {
   lines: SupplyLine[];
   /** null: no station, the server tells nothing about research. */
   research: ResearchMarks | null;
+  machines: MachineMark[];
+  /** Where the machines' stations stand: see machinePositions; null without machines. */
+  machineColumn: MachineColumn | null;
 }
 
 export interface SceneOptions {
@@ -74,6 +85,8 @@ export interface SceneOptions {
   onHoverStar?: (repo: string | null) => void;
   /** The research station was clicked. */
   onResearch: () => void;
+  /** A machine's power station was clicked. */
+  onMachine?: (id: string) => void;
   /** The world's shape and the camera over it, for the labels. */
   onCamera: (world: Size, camera: Camera) => void;
   /** The labels over the canvas: the wheel and a pinch over them move the camera too. */
@@ -93,6 +106,8 @@ export interface FleetScene {
    */
   setShips(entries: ShipEntry[], departures?: ReadonlyMap<string, "dive" | "fade">): void;
   setSelected(slug: string | null): void;
+  /** The machine whose card is open: its station is marked like a selected ship. */
+  setMachine(id: string | null): void;
   setHovered(slug: string | null): void;
   setActive(active: boolean): void;
   dispose(): void;
@@ -375,6 +390,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const galaxy = new Container();
   const lanes = new Graphics();
   const depotLayer = new Container();
+  const machineLayer = new Container();
   const tankerLayer = new Container();
   const starLayer = new Container();
   const stormLayer = new Container();
@@ -382,7 +398,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const watchFx = new Graphics();
   const researchLayer = new Container();
   const probeLayer = new Container();
-  galaxy.addChild(lanes, watchFx, depotLayer, tankerLayer, researchLayer, starLayer, stormLayer, probeLayer, galaxyFx);
+  galaxy.addChild(lanes, watchFx, depotLayer, machineLayer, tankerLayer, researchLayer, starLayer, stormLayer, probeLayer, galaxyFx);
 
   const system = new Container();
   const charts = new Graphics();
@@ -425,6 +441,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     depots: [],
     lines: [],
     research: null,
+    machines: [],
+    machineColumn: null,
   };
   let stars = new Map<string, Point>();
   let depotPoints = new Map<string, Point>();
@@ -450,6 +468,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const ships = new Map<string, Ship>();
   const tankers = new Map<string, { sprite: Sprite; line: SupplyLine; seed: number }>();
   let blinks: Sprite[] = [];
+  /** The glows of overloaded machines: they pulse like the light of an empty depot. */
+  let alarms: Sprite[] = [];
+  let machineSelected: string | null = null;
   let station: { body: Sprite; halo: Sprite; beacon: Sprite } | null = null;
   const probes = new Map<string, { sprite: Container; seed: number }>();
   let storms: Storm[] = [];
@@ -507,7 +528,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       const body = sprite(art("depot"), DEPOT_SIZE);
       body.position.set(point.x, point.y);
       body.rotation = (hashName(depot.key) % 6) * 1.047;
-      if (depot.bad) body.tint = "#8a8a94";
+      if (depot.bad) body.tint = SPACE.dead;
       const gauge = new Graphics();
       const width = 112;
       const left = point.x - width / 2;
@@ -528,6 +549,52 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         const mark = glow(SPACE.gold, 46);
         mark.position.set(point.x, point.y);
         depotLayer.addChild(mark);
+      }
+    }
+  }
+
+  /**
+   * A power station for every machine, all turned alike. A steady glow on its reactor tells a free machine (green) and a
+   * busy one (amber), a pulsing red one an overloaded machine; a machine without connection is grey, one without data
+   * grey and faint. The open machine is marked like a selected ship.
+   */
+  function drawMachines() {
+    machineLayer.removeChildren().forEach((child) => child.destroy());
+    alarms = [];
+    const column = model.machineColumn;
+    if (!column) return;
+    const size = column.size;
+    for (const machine of model.machines) {
+      const point = column.places.get(machine.id);
+      if (!point) continue;
+      const body = sprite(art("stationPower"), size);
+      body.position.set(point.x, point.y);
+      const color = machine.status === "free" ? SPACE.ok : machine.status === "busy" ? SPACE.fix : machine.status === "overloaded" ? SPACE.alarm : null;
+      if (machine.status === "offline" || machine.status === "unknown") body.tint = SPACE.dead;
+      if (machine.status === "unknown") body.alpha = 0.5;
+      machineLayer.addChild(body);
+      if (color) {
+        // On the reactor's pale core, which takes any colour; a wide faint halo, a small bright heart.
+        const halo = glow(color, size * 1.2);
+        halo.alpha = machine.status === "free" ? 0.28 : 0.4;
+        const core = glow(color, size * 0.42);
+        core.alpha = machine.status === "free" ? 0.75 : 0.95;
+        for (const part of [halo, core]) part.position.set(point.x, point.y);
+        machineLayer.addChild(halo, core);
+        if (machine.status === "overloaded") alarms.push(halo, core);
+      }
+      if (machine.id === machineSelected) {
+        const mark = new Graphics();
+        const halfX = size * 0.56;
+        const halfY = machineLabelDrop(column) - 2;
+        const arm = Math.min(halfX, halfY) * 0.5;
+        for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+          const x = point.x + sx * halfX;
+          const y = point.y + sy * halfY;
+          mark.moveTo(x - sx * arm, y).lineTo(x, y).lineTo(x, y - sy * arm);
+        }
+        mark.stroke({ width: 2.2, color: SPACE.select, alpha: 0.95 });
+        machineLayer.addChild(mark);
       }
     }
   }
@@ -647,6 +714,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     depotPoints = depotPositions(model.depots, world);
     drawLanes();
     drawDepots();
+    drawMachines();
     drawStars();
     syncTankers();
     drawResearch();
@@ -1137,6 +1205,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     blinks.forEach((light, index) => {
       light.alpha = still ? 0.16 : 0.04 + 0.22 * Math.max(0, Math.sin(time * 2.2 + index * 1.3)) ** 2;
     });
+    // The same beat as an empty depot's light, brighter: halo and heart in pairs.
+    alarms.forEach((light, index) => {
+      const peak = index % 2 ? 1 : 0.6;
+      light.alpha = still ? peak * 0.7 : peak * (0.12 + 0.88 * Math.max(0, Math.sin(time * 2.2 + Math.floor(index / 2) * 1.3)) ** 2);
+    });
     for (const storm of storms) {
       const [outer, inner] = storm.layers;
       outer!.rotation = still ? storm.seed : storm.seed + time * 0.22;
@@ -1363,6 +1436,16 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     return Math.hypot(center.x - point.x, center.y - point.y) < RESEARCH_SIZE * 0.5;
   }
 
+  function machineAt(point: Point): string | null {
+    const column = model.machineColumn;
+    if (!column) return null;
+    for (const machine of model.machines) {
+      const at = column.places.get(machine.id);
+      if (at && Math.abs(at.x - point.x) < column.size * 0.5 && Math.abs(at.y - point.y) < column.size * 0.34) return machine.id;
+    }
+    return null;
+  }
+
   function shipAt(point: Point): string | null {
     let best: string | null = null;
     let bestDistance = Infinity;
@@ -1490,7 +1573,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
     const point = worldPoint(at);
     const found = repo ? shipAt(point) : (starAt(point) ?? (researchAt(point) ? "research" : null));
-    canvas.style.cursor = found ? "pointer" : view().zoom > fit.zoom * 1.001 ? "grab" : "";
+    const machine = !repo && !found && options.onMachine ? machineAt(point) : null;
+    canvas.style.cursor = found || machine ? "pointer" : view().zoom > fit.zoom * 1.001 ? "grab" : "";
     const slug = repo ? found : null;
     if (slug !== lastHover) {
       lastHover = slug;
@@ -1524,6 +1608,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     const star = starAt(point);
     if (star) options.onEnter(star);
     else if (researchAt(point)) options.onResearch();
+    else {
+      const machine = machineAt(point);
+      if (machine) options.onMachine?.(machine);
+    }
   };
 
   const onLeave = () => {
@@ -1680,6 +1768,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     setShips,
     setSelected(slug) {
       selected = slug;
+    },
+    setMachine(id) {
+      if (id === machineSelected) return;
+      machineSelected = id;
+      drawMachines();
     },
     setHovered(slug) {
       hovered = slug;

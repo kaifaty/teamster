@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import type { ArtIndex, LogEvent, ResearchView, TaskSummary } from "../types";
+import type { ArtIndex, LogEvent, Machine, ResearchView, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
 import { formatDuration, formatUntil } from "../lib/format";
 import { loadJson, saveJson } from "../lib/storage";
 import { EXECUTORS, PHASES, problemLabel, shipLine, taskTitle } from "../lib/labels";
+import { dataAge, errorLabel, statusLevel, statusText } from "../lib/machines";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
 import DaySummary from "./DaySummary.vue";
@@ -13,6 +14,7 @@ import ShipLog from "./ShipLog.vue";
 import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines, type Star } from "./fleet";
 import { placeLabels, type StarLabel } from "./declutter";
 import {
+  DEPOT_LABEL_DROP,
   RESEARCH_SIZE,
   cardPlace,
   fitCamera,
@@ -20,6 +22,8 @@ import {
   galaxyLayout,
   labelDrop,
   logCorner,
+  machineLabelDrop,
+  machinePositions,
   researchPosition,
   starSize,
   systemFrame,
@@ -36,8 +40,13 @@ import { replayExits, replayFleet } from "./replay";
 import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type ShipEntry } from "./scene";
 import { useReplay } from "./useReplay";
 
-const props = defineProps<{ board: Board; active: boolean }>();
-const emit = defineEmits<{ board: [] }>();
+/** `machine`: the machine whose card is open over the map, or null. */
+const props = defineProps<{ board: Board; active: boolean; machine?: string | null }>();
+/**
+ * `machine`: a machine's power station was clicked, with the label to give the focus back to; `panel`: the map opened a
+ * task's card or the research station's panel, which replace the machine's card.
+ */
+const emit = defineEmits<{ board: []; machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
 
 // The clock stops while the map is hidden, so a hidden map does not re-render every second.
 const clock = useNow();
@@ -204,14 +213,32 @@ watch(repo, () => {
 /** Where a label stands in the world; the camera's --tx, --ty and --zoom on the overlay turn it into pixels. */
 const at = (x: number, y: number) => ({ "--x": Math.round(x), "--y": Math.round(y) });
 
+// Machines stand as power stations along the right edge. They are the board's own and stay live in a replay and a
+// scenario: the machines' past is not recorded.
+const machinesData = computed(() => props.board.state.value.machines ?? null);
+let lastMachines: { id: string; status: Machine["status"] }[] = [];
+const machineMarks = computed(() => {
+  const next = (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, status: machine.status }));
+  if (JSON.stringify(next) === JSON.stringify(lastMachines)) return lastMachines;
+  lastMachines = next;
+  return next;
+});
+const machineNote = computed(() => machinesData.value?.config_error || null);
+
 /** The parts of the world under the map's own panels, measured for the window; the log's corner until then. */
 const covered = shallowRef<Rect[] | null>(null);
 /** The zoom of the full view in this window, at which the labels' room is reserved. */
 const fullZoom = ref<number | undefined>(undefined);
+/** The machines' column; null without machines and without a broken config, and then it takes no room. */
+const machineColumn = computed(() => {
+  const ids = machineMarks.value.map((machine) => machine.id);
+  if (!ids.length && !machineNote.value) return null;
+  return machinePositions(ids, world.value, fullZoom.value, !!machineNote.value);
+});
 let previousGalaxy: Galaxy | null = null;
 const galaxy = computed(() => {
   const depotsAt = [...depotPositions(depotList.value, world.value).values()];
-  const blocked = galaxyKeepOuts(world.value, depotsAt, covered.value ?? [logCorner(world.value)]);
+  const blocked = galaxyKeepOuts(world.value, depotsAt, covered.value ?? [logCorner(world.value)], machineColumn.value);
   // The stars keep their places from the last layout while they fit there.
   const next = galaxyLayout(starList.value, world.value, blocked, previousGalaxy, fullZoom.value);
   previousGalaxy = next;
@@ -252,13 +279,47 @@ const depotLabels = computed(() => {
     return {
       depot,
       top,
-      style: at(point.x, point.y + (top ? 76 : -66)),
+      style: at(point.x, point.y + (top ? DEPOT_LABEL_DROP.top : -DEPOT_LABEL_DROP.bottom)),
       fuel: depot.status ?? (depot.fuel === null ? "нет данных" : `${depot.fuel}%`),
       low: depotEmpty(depot),
       refuel: depotEmpty(depot) ? refuelText(depot.refuelAt, now.value) : null,
     };
   });
 });
+
+const machineLabels = computed(() => {
+  const column = machineColumn.value;
+  if (!column) return [];
+  return (machinesData.value?.items ?? []).flatMap((machine) => {
+    const point = column.places.get(machine.id);
+    if (!point) return [];
+    const status = statusText(machine);
+    // A failed probe that has not yet made the machine offline, and data that is not fresh: one short line.
+    const mark = machine.error && machine.status !== "offline" ? `⚠ ${errorLabel(machine.error)}` : null;
+    const extra = [mark, dataAge(machine, now.value)].filter(Boolean).join(" · ") || null;
+    return [{
+      machine,
+      status,
+      level: statusLevel(machine.status) ?? "muted",
+      extra,
+      title: [machine.role ? `${machine.name} · ${machine.role}` : machine.name, status, extra].filter(Boolean).join("\n"),
+      style: at(column.right, point.y + machineLabelDrop(column)),
+    }];
+  });
+});
+const machineNoteStyle = computed(() => {
+  const note = machineColumn.value?.note;
+  return note ? at(note.x, note.y) : null;
+});
+
+function openMachine(id: string, opener: HTMLElement | null) {
+  emit("machine", id, opener);
+}
+
+function openMachineAt(id: string) {
+  const label = overlay.value?.querySelector<HTMLElement>(`[data-machine="${CSS.escape(id)}"] button`) ?? null;
+  openMachine(id, label);
+}
 
 const cards = computed(() => {
   const frame = systemFrame(world.value);
@@ -297,12 +358,24 @@ const selectedTask = computed(() => (selected.value ? (source.value.state.value.
 function open(slug: string) {
   researchOpen.value = false;
   selected.value = slug;
+  emit("panel");
 }
 
 function openResearch() {
   selected.value = null;
   researchOpen.value = true;
+  emit("panel");
 }
+
+// A machine's card and the map's own panels replace each other, as on the board.
+watch(
+  () => props.machine,
+  (id) => {
+    if (!id) return;
+    selected.value = null;
+    researchOpen.value = false;
+  },
+);
 
 function closeResearch() {
   researchOpen.value = false;
@@ -340,7 +413,7 @@ function leave() {
 }
 
 function onKey(event: KeyboardEvent) {
-  if (event.key === "Escape" && props.active && repo.value && !selected.value && !researchOpen.value) leave();
+  if (event.key === "Escape" && props.active && repo.value && !selected.value && !researchOpen.value && !props.machine) leave();
 }
 
 // Ship's log and the day's summary -----------------------------------------------------------------
@@ -421,7 +494,7 @@ function placeStarLabels() {
   const frame = box.getBoundingClientRect();
   const relative = (rect: DOMRect): Rect => ({ x0: rect.left - frame.left, y0: rect.top - frame.top, x1: rect.right - frame.left, y1: rect.bottom - frame.top });
   const root = box.closest(".map") ?? box;
-  const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .dock, .overlay .station, .overlay .depot")]
+  const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .dock, .overlay .station, .overlay .depot, .overlay .machine, .overlay .machine-note")]
     .filter((el) => el.offsetParent !== null)
     .map((el) => relative(el.getBoundingClientRect()));
   const layout = galaxy.value;
@@ -460,6 +533,8 @@ function placeStarLabels() {
 }
 
 watch([starLabels, repo], () => void nextTick(measureLabels), { flush: "post" });
+// The machines' labels are obstacles for the stars' ones.
+watch([machineLabels, machineNoteStyle], () => void nextTick(scheduleLabels), { flush: "post" });
 watch(hoveredStar, scheduleLabels);
 
 // The dock ------------------------------------------------------------------------------------------
@@ -547,6 +622,7 @@ function feed() {
   scene.setView(repo.value);
   setShips(entries.value);
   scene.setSelected(selected.value);
+  scene.setMachine(props.machine ?? null);
   scene.setHovered(hovered.value);
   scene.setActive(props.active);
 }
@@ -570,6 +646,7 @@ async function mount() {
       onLeave: leave,
       onPick: open,
       onResearch: openResearch,
+      onMachine: openMachineAt,
       onHover: (slug) => {
         hovered.value = slug;
       },
@@ -607,9 +684,18 @@ function retry() {
 }
 
 function galaxyModel() {
-  return { stars: starList.value, layout: galaxy.value, depots: depotList.value, lines: lines.value, research: researchMarks.value };
+  return {
+    stars: starList.value,
+    layout: galaxy.value,
+    depots: depotList.value,
+    lines: lines.value,
+    research: researchMarks.value,
+    machines: machineMarks.value,
+    machineColumn: machineColumn.value,
+  };
 }
-watch([starList, galaxy, depotList, lines, researchMarks], () => scene?.setGalaxy(galaxyModel()));
+watch([starList, galaxy, depotList, lines, researchMarks, machineMarks, machineColumn], () => scene?.setGalaxy(galaxyModel()));
+watch(() => props.machine, (id) => scene?.setMachine(id ?? null));
 watch(repoArt, (art) => scene?.setArt(art));
 watch(repo, (name) => scene?.setView(name), { flush: "sync" });
 watch(entries, setShips);
@@ -735,6 +821,30 @@ onBeforeUnmount(() => {
             <span class="st-name">Исследовательский центр</span>
             <span class="st-notes">{{ stationLabel.note }}</span>
           </button>
+          <div
+            v-for="label in machineLabels"
+            :key="label.machine.id"
+            class="machine"
+            :class="{ open: machine === label.machine.id }"
+            :style="label.style"
+            :data-machine="label.machine.id"
+          >
+            <button
+              type="button"
+              class="m-label"
+              :class="label.machine.status"
+              :title="label.title"
+              :aria-pressed="machine === label.machine.id"
+              @click="openMachine(label.machine.id, $event.currentTarget as HTMLElement)"
+            >
+              <span class="m-name">{{ label.machine.name }}</span>
+              <span class="m-status" :class="label.level">{{ label.status }}</span>
+              <span v-if="label.extra" class="m-extra num">{{ label.extra }}</span>
+            </button>
+          </div>
+          <p v-if="machineNoteStyle" class="machine-note" :style="machineNoteStyle" :title="machineNote ?? ''">
+            Конфиг машин не прочитан: {{ machineNote }}
+          </p>
           <span
             v-for="label in depotLabels"
             :key="label.depot.key"
@@ -1091,6 +1201,8 @@ onBeforeUnmount(() => {
 .star,
 .station,
 .depot,
+.machine,
+.machine-note,
 .card {
   position: absolute;
   left: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
@@ -1288,6 +1400,109 @@ onBeforeUnmount(() => {
 
 .station.waiting .st-notes {
   color: #f3c64e;
+}
+
+/*
+ * A machine's label under its power station, flush with the right side of the column. The status takes the board's
+ * level colours at their dark values: the sky is dark in both themes.
+ */
+.machine,
+.machine-note {
+  --ok: #5fc48c;
+  --warn: #e0b04f;
+  --bad: #f07f76;
+  --muted: #9aa3b0;
+  transform: translateX(-100%);
+}
+
+.m-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  box-sizing: border-box;
+  max-width: 132px;
+  margin: 0;
+  padding: 1px 7px;
+  border: 1px solid rgba(214, 170, 96, 0.28);
+  border-radius: 3px;
+  background: rgba(8, 11, 18, 0.8);
+  color: inherit;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 14px;
+  text-align: right;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.m-label:hover {
+  border-color: rgba(243, 198, 78, 0.8);
+  background: rgba(26, 28, 34, 0.92);
+}
+
+.m-label:focus-visible {
+  outline: 2px solid #f3c64e;
+  outline-offset: 1px;
+}
+
+.machine.open .m-label {
+  border-color: #ffffff;
+  background: rgba(26, 28, 34, 0.92);
+}
+
+.m-label.overloaded {
+  border-color: rgba(255, 141, 122, 0.55);
+}
+
+.m-label.unknown {
+  opacity: 0.8;
+}
+
+.m-name,
+.m-status,
+.m-extra {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.m-name {
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 15px;
+}
+
+.m-status.ok {
+  color: var(--ok);
+}
+
+.m-status.warn {
+  color: var(--warn);
+}
+
+.m-status.bad {
+  color: var(--bad);
+}
+
+.m-status.muted,
+.m-extra {
+  color: var(--muted);
+}
+
+.machine-note {
+  max-width: 280px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--bad);
+  font-size: 11.5px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow:
+    0 0 3px #05070d,
+    0 0 2px #05070d;
+  pointer-events: auto;
 }
 
 .depot {

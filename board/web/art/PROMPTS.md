@@ -39,6 +39,8 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 9. station-research (square, 1024x1024): One large orbital research observatory seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A round central hub carrying one huge dish antenna made of a pale steel lattice, turned up towards the viewer, with a bright teal sensor eye at its centre. Around the hub runs a slender ring of glass laboratory domes glowing soft teal, and three long thin sensor booms reach outwards with small amber lamps at their tips. Dark steel and pale brass plating. Pre-rendered look with metallic highlights. No shadow on the background.
 
+10. station-power (landscape, 1536x1024): One orbital power station seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A hexagonal reactor hub with one round glass dome in the middle over a bright pale white reactor core, and four long straight radiator wings made of dark ribbed panels reaching out in a cross, joined to the hub by thick copper power conduits. Dark steel and brass plating, small amber lamps along the wings. Pre-rendered look with metallic highlights. No shadow on the background.
+
 ## Ship classes and convoys
 
 Same STYLE as the first list. Frigates and cruisers carry tasks with more reasoning effort; the escort flies with a ship under review, the tanker along a supply line.
