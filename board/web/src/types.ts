@@ -152,7 +152,14 @@ export interface StudyMessage {
   text: string | null; // lead text is at most 4000 characters
   status: "done" | "needs_decision" | null;
   questions: StudyQuestion[];
-  lessons: { id: string; cue: string; entry: string }[];
+  lessons: {
+    id: string;
+    cue: string;
+    entry: string;
+    scope: "invariant" | "domain" | null;
+    lesson: string | null; // at most 600 characters
+    proposal: string | null; // at most 600 characters
+  }[];
   file: string | null;
 }
 

@@ -67,7 +67,11 @@ def analyst_message(turn):
     for lesson in objects(turn.get("lessons")):
         lesson_id, cue = text(lesson.get("id")), text(lesson.get("cue"))
         if lesson_id is not None and cue is not None and file is not None:
-            lessons.append({"id": lesson_id, "cue": cue, "entry": f"{file} {lesson_id}"})
+            scope = lesson.get("scope")
+            lessons.append({"id": lesson_id, "cue": cue, "entry": f"{file} {lesson_id}",
+                            "scope": scope if scope in ("invariant", "domain") else None,
+                            "lesson": lesson["lesson"][:600] if isinstance(lesson.get("lesson"), str) else None,
+                            "proposal": lesson["proposal"][:600] if isinstance(lesson.get("proposal"), str) else None})
     status = turn.get("status")
     return {"at": at, "from": "analyst", "text": text(turn.get("summary")),
             "status": status if status in ("done", "needs_decision") else None,

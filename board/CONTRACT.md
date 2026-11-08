@@ -296,7 +296,14 @@ interface StudyMessage {
   text: string | null;        // lead: order or say, ≤ 4000 chars; analyst: summary
   status: "done" | "needs_decision" | null; // analyst only
   questions: StudyQuestion[]; // analyst only; options[i] belongs to questions[i]
-  lessons: { id: string; cue: string; entry: string }[]; // entry = "<file> <id>", as in INDEX.md
+  lessons: {
+    id: string;
+    cue: string;
+    entry: string;            // "<file> <id>", as in INDEX.md
+    scope: "invariant" | "domain" | null;
+    lesson: string | null;    // as written, ≤ 600 chars
+    proposal: string | null;  // as written, ≤ 600 chars
+  }[];
   file: string | null;        // analyst only
 }
 
@@ -517,6 +524,8 @@ the Claude executor and `account` otherwise. `alive` checks the supervisor PID.
 Every conversation starts with a lead message at `created`, containing `reflect_order` or `null`.
 Each object in `reflect_turns` contributes an analyst message: `summary`, `status`, `file`, paired
 `questions` and `options`, and lessons with `id`, `cue` and `entry` built as `"<file> <id>"`.
+Lessons also retain `scope` (`"invariant"` or `"domain"`), `lesson` and `proposal` from the turn.
+The latter two preserve their text, truncated to 600 characters each. Missing or invalid fields are `null`.
 Only `source: "lead"` rows from the neighboring `messages.jsonl` contribute replies. After the initial
 order, all messages are sorted by `at`. Lead messages have `status: null`, empty questions and lessons,
 and `file: null`. A study waits only while its supervisor is not alive and its last message is an analyst

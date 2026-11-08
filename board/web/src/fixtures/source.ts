@@ -45,7 +45,11 @@ const RESEARCH: ResearchView = {
         {
           at: BASE - 300, from: "analyst", text: "Both records lost time repeating a broad check before reproducing the failing case.", status: "needs_decision",
           questions: [{ text: "Where should we apply the focused-check rule first?", options: ["demo-wallet", "demo-vault", "Both projects"] }],
-          lessons: [{ id: "L1", cue: "a broad check repeats before the failure is reproduced", entry: "study-2026-11-07.md L1" }],
+          lessons: [{
+            id: "L1", cue: "a broad check repeats before the failure is reproduced", entry: "study-2026-11-07.md L1",
+            scope: "invariant", lesson: "Reproduce the failing case with a focused check before repeating the full suite.",
+            proposal: "Add the focused-check sequence to each project's task brief.",
+          }],
           file: "study-2026-11-07.md",
         },
       ],
@@ -59,15 +63,26 @@ const RESEARCH: ResearchView = {
         {
           at: BASE - 98000, from: "analyst", text: "One check stayed green after the guarded behavior was removed. The long training smoke also ran inside a turn.", status: "needs_decision",
           questions: [{ text: "Should the next task verify that the check catches the defect?", options: ["Yes, before implementation", "Defer until the next review"] }],
-          lessons: [{ id: "U1", cue: "the guarded behavior is removed while its check stays green", entry: "batch-2026-11-06.md U1" }],
+          lessons: [{
+            id: "U1", cue: "the guarded behavior is removed while its check stays green", entry: "batch-2026-11-06.md U1",
+            scope: "invariant", lesson: "A check is useful evidence only if it fails when the guarded behavior is removed.",
+            proposal: "Before implementation, run the named check against a deliberately reproduced defect.",
+          }],
           file: "batch-2026-11-06.md",
         },
         { at: BASE - 97000, from: "lead", text: "Yes. Accept U1 and add a targeted check in the next task; keep the training proposal separate.", status: null, questions: [], lessons: [], file: null },
         {
           at: BASE - 96000, from: "analyst", text: "The report now separates the accepted check lesson from the training proposal.", status: "done", questions: [],
           lessons: [
-            { id: "U1", cue: "the guarded behavior is removed while its check stays green", entry: "batch-2026-11-06.md U1" },
-            { id: "U2", cue: "the long training smoke runs inside the turn", entry: "batch-2026-11-06.md U2" },
+            {
+              id: "U1", cue: "the guarded behavior is removed while its check stays green", entry: "batch-2026-11-06.md U1",
+              scope: "invariant", lesson: "A check is useful evidence only if it fails when the guarded behavior is removed.",
+              proposal: "Before implementation, run the named check against a deliberately reproduced defect.",
+            },
+            {
+              id: "U2", cue: "the long training smoke runs inside the turn", entry: "batch-2026-11-06.md U2",
+              scope: "domain", lesson: "Keep the ml-lab training smoke outside the interactive task turn.", proposal: null,
+            },
           ],
           file: "batch-2026-11-06.md",
         },

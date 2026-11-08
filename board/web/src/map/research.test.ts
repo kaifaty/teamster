@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { fixtureSource } from "../fixtures/source";
 import type { Lesson, ResearchView, Study, TaskSummary } from "../types";
 import { stars } from "./fleet";
 import { systemTasks } from "./placement";
@@ -137,7 +138,7 @@ describe("research", () => {
     expect(busy.probes).toEqual(["alpha", "beta"]);
   });
 
-  it("includes study conversations, counts waiting studies and runs without a legacy session", () => {
+  it("includes study conversations, counts waiting studies and runs without a legacy session", async () => {
     const studies = [study("active", { alive: true, waiting: false }), study("waiting"), study("archived", { archived: true, waiting: false })];
     const active = research(view({ studies }), [], ["alpha", "beta"])!;
     expect(active.studies).toEqual(studies);
@@ -150,6 +151,18 @@ describe("research", () => {
     expect(idle.waiting).toBe(1);
     expect(idle.running).toBe(false);
     expect(idle.probes).toEqual([]);
+
+    const fixture = research(await fixtureSource().fetchResearch(), [], [])!;
+    const reports = fixture.studies.find((item) => item.archived)!.messages.filter((message) => message.from === "analyst");
+    const checkLesson = {
+      id: "U1", scope: "invariant",
+      lesson: "A check is useful evidence only if it fails when the guarded behavior is removed.",
+      proposal: "Before implementation, run the named check against a deliberately reproduced defect.",
+    };
+    expect(reports.map((message) => message.lessons)).toMatchObject([
+      [checkLesson],
+      [checkLesson, { id: "U2", scope: "domain", lesson: "Keep the ml-lab training smoke outside the interactive task turn.", proposal: null }],
+    ]);
   });
 
   it("visits a live study's known batch instead of unrelated pending records", () => {

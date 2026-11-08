@@ -211,6 +211,8 @@ def test_unchanged_records_are_not_read_again_and_cache_lasts_its_interval(tmp_p
 def test_live_and_archived_study_conversations_waiting_and_cached_reads(tmp_path, monkeypatch):
     now = datetime(2026, 11, 9, tzinfo=timezone.utc).timestamp()
     monkeypatch.setattr(research_module.time, "time", lambda: now)
+    lesson_text = "  Keep targeted checks.\n" + "l" * 600
+    proposal_text = "  Update the project rule.\n" + "p" * 600
     state = {"kind": "reflect", "reflect_mode": "study", "reflect_order": "Compare the failed checks",
              "reflect_records": ["one-20261108T000000Z", "two-20261108T010000Z"],
              "reflect_file": "batch-2026-11-09.md", "pid": os.getpid(), "outcome": "running",
@@ -218,7 +220,11 @@ def test_live_and_archived_study_conversations_waiting_and_cached_reads(tmp_path
              "reflect_turns": [{"at": now - 90, "status": "needs_decision", "summary": "Which check should we keep?",
                                 "questions": [False, "Keep the targeted check?"],
                                 "options": [["ignored"], ["Yes", None, "No"]],
-                                "lessons": [{"id": "L1", "cue": "slow full checks"}],
+                                "lessons": [{"id": "L1", "cue": "slow full checks", "scope": "invariant",
+                                             "lesson": lesson_text, "proposal": proposal_text},
+                                            {"id": "L2", "cue": "local checks", "scope": "domain", "lesson": "", "proposal": ""},
+                                            {"id": "L3", "cue": "older lesson"},
+                                            {"id": "L4", "cue": "invalid metadata", "scope": [], "lesson": 42, "proposal": {}}],
                                 "file": "batch-2026-11-09.md"}]}
     live = write_record(tmp_path, "reflect-live", state)
     archived = dict(state, created=now - 500, pid=None, executor="codex", account="lab",
@@ -258,7 +264,13 @@ def test_live_and_archived_study_conversations_waiting_and_cached_reads(tmp_path
     assert (current["executor"], current["account"], current["records"], current["file"]) == (
         "claude", "observatory", 2, "batch-2026-11-09.md")
     assert current["messages"][1]["questions"] == [{"text": "Keep the targeted check?", "options": ["Yes", "No"]}]
-    assert current["messages"][1]["lessons"] == [{"id": "L1", "cue": "slow full checks", "entry": "batch-2026-11-09.md L1"}]
+    assert current["messages"][1]["lessons"] == [
+        {"id": "L1", "cue": "slow full checks", "entry": "batch-2026-11-09.md L1", "scope": "invariant",
+         "lesson": lesson_text[:600], "proposal": proposal_text[:600]},
+        {"id": "L2", "cue": "local checks", "entry": "batch-2026-11-09.md L2", "scope": "domain", "lesson": "", "proposal": ""},
+        {"id": "L3", "cue": "older lesson", "entry": "batch-2026-11-09.md L3", "scope": None, "lesson": None, "proposal": None},
+        {"id": "L4", "cue": "invalid metadata", "entry": "batch-2026-11-09.md L4", "scope": None, "lesson": None, "proposal": None},
+    ]
     assert (old["archived"], old["mode"], old["account"], old["waiting"], len(old["error"])) == (True, "batch", "lab", False, 300)
     assert [(message["from"], message["text"]) for message in old["messages"]] == [
         ("lead", None), ("analyst", "Keep both checks?"),
