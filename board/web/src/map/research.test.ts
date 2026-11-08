@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Lesson, ResearchView, TaskSummary } from "../types";
+import type { Lesson, ResearchView, Study, TaskSummary } from "../types";
+import { stars } from "./fleet";
+import { systemTasks } from "./placement";
 import { MAX_PROBES, REFLECTION_TASK, isReflection, research, shortDate } from "./research";
 
 const lesson = (entry: string, status: Lesson["status"]): Lesson => ({
@@ -14,7 +16,8 @@ const lesson = (entry: string, status: Lesson["status"]): Lesson => ({
 });
 
 const view = (patch: Partial<ResearchView> = {}): ResearchView => ({
-  lessons: [lesson("a", "applied"), lesson("b", "proposed"), lesson("c", "declined"), lesson("d", "proposed"), lesson("e", "other")],
+  lessons: [lesson("a", "applied"), lesson("b", "proposed"), lesson("c", "declined"), lesson("d", "proposed"), lesson("e", "other"), lesson("f", "accepted")],
+  studies: [],
   batch: { name: "batch-2026-11-07.md", date: "2026-11-07", through: "20261107T051647Z", records: 9, repos: { alpha: 5, beta: 3, gone: 1 } },
   pending: { records: 4, signals: 2, repos: { beta: 1, alpha: 2 }, items: [] },
   reflection_task: "nightly-reflection",
@@ -54,14 +57,44 @@ const session = (slug: string, patch: Partial<TaskSummary> = {}): TaskSummary =>
   ...patch,
 });
 
+const study = (slug: string, patch: Partial<Study> = {}): Study => ({
+  slug,
+  archived: false,
+  mode: "study",
+  alive: false,
+  outcome: "needs_decision",
+  error: null,
+  executor: "claude",
+  account: null,
+  created: 1,
+  updated_at: 2,
+  records: 4,
+  file: null,
+  waiting: true,
+  messages: [],
+  ...patch,
+});
+
 describe("isReflection", () => {
   it("takes the scheduled task the server names, else the default one", () => {
+    expect(isReflection({ kind: "reflect" }, null)).toBe(true);
     expect(isReflection(session("s", { scheduled: "nightly-reflection" }), view())).toBe(true);
     expect(isReflection(session("s", { scheduled: REFLECTION_TASK }), view())).toBe(false);
     expect(isReflection(session("s", { scheduled: REFLECTION_TASK }), null)).toBe(true);
     expect(isReflection(session("s"), null)).toBe(false);
     expect(isReflection(session("s", { kind: "work", scheduled: REFLECTION_TASK }), null)).toBe(false);
     expect(isReflection({ kind: "session" }, null)).toBe(false);
+  });
+
+  it("keeps reflection tasks and legacy sessions out of the fleet", () => {
+    const tasks = [
+      session("study", { kind: "reflect", repo: "archive", alive: true }),
+      session("legacy", { scheduled: "nightly-reflection", repo: "archive" }),
+      session("work", { kind: "work", repo: "alpha" }),
+    ].filter((task) => !isReflection(task, view()));
+    expect(stars(tasks).map((star) => star.repo)).toEqual(["alpha"]);
+    expect(systemTasks(tasks, "archive")).toEqual({ shown: [], hidden: [] });
+    expect(systemTasks(tasks, "alpha").shown.map((task) => task.slug)).toEqual(["work"]);
   });
 });
 
@@ -73,6 +106,7 @@ describe("research", () => {
   it("sorts lessons by status, newest first", () => {
     const made = research(view(), [], [])!;
     expect(made.proposed.map((item) => item.entry)).toEqual(["d", "b"]);
+    expect(made.accepted.map((item) => item.entry)).toEqual(["f"]);
     expect(made.applied.map((item) => item.entry)).toEqual(["a"]);
     expect(made.declined.map((item) => item.entry)).toEqual(["c"]);
     expect(made.other.map((item) => item.entry)).toEqual(["e"]);
@@ -101,6 +135,29 @@ describe("research", () => {
     expect(busy.running).toBe(true);
     expect(busy.run?.slug).toBe("now");
     expect(busy.probes).toEqual(["alpha", "beta"]);
+  });
+
+  it("includes study conversations, counts waiting studies and runs without a legacy session", () => {
+    const studies = [study("active", { alive: true, waiting: false }), study("waiting"), study("archived", { archived: true, waiting: false })];
+    const active = research(view({ studies }), [], ["alpha", "beta"])!;
+    expect(active.studies).toEqual(studies);
+    expect(active.waiting).toBe(1);
+    expect(active.running).toBe(true);
+    expect(active.run).toBeNull();
+    expect(active.probes).toEqual(["alpha", "beta"]);
+
+    const idle = research(view({ studies: [study("waiting")] }), [], ["alpha", "beta"])!;
+    expect(idle.waiting).toBe(1);
+    expect(idle.running).toBe(false);
+    expect(idle.probes).toEqual([]);
+  });
+
+  it("visits a live study's known batch instead of unrelated pending records", () => {
+    const known = study("batch", { alive: true, waiting: false, file: "batch-2026-11-07.md", records: 9 });
+    const changed = view({ studies: [known], pending: { records: 9, signals: 1, repos: { beta: 9 }, items: [] } });
+    expect(research(changed, [], ["alpha", "beta"])!.probes).toEqual(["alpha", "beta"]);
+    changed.studies = [{ ...known, file: "study-2026-11-08.md" }];
+    expect(research(changed, [], ["alpha", "beta"])!.probes).toEqual(["beta"]);
   });
 
   it("sends the probes where the last run read when nothing waits", () => {

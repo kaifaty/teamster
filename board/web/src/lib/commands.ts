@@ -1,6 +1,6 @@
 // teamster commands for a task, ready to paste into a terminal. The board never runs them.
 
-import type { TaskSummary } from "../types";
+import type { LessonStatus, StudyQuestion, TaskSummary } from "../types";
 
 export const VERDICTS = ["accepted", "revised", "redone", "dropped"] as const;
 export type Verdict = (typeof VERDICTS)[number];
@@ -60,4 +60,50 @@ export function verdictCommand(slug: string, verdict: Verdict, note = ""): strin
 /** `teamster say` with the message as one word. */
 export function sayCommand(slug: string, text: string): string {
   return `teamster say ${shellWord(commandSlug(slug))} ${shellQuote(text)}`;
+}
+
+/** A short study name based on the UTC date and time. */
+export function reflectSlug(now: Date): string {
+  const pair = (value: number) => String(value).padStart(2, "0");
+  return `reflect-${pair(now.getUTCMonth() + 1)}${pair(now.getUTCDate())}-${pair(now.getUTCHours())}${pair(now.getUTCMinutes())}`;
+}
+
+/** Start a reflection of named tasks, or select its material by time and repositories. */
+export function reflectCommand({ slug, order, tasks = [], since, repos = [] }: {
+  slug: string;
+  order?: string;
+  tasks?: string[];
+  since?: string;
+  repos?: string[];
+}): string {
+  if (tasks.length && (since !== undefined || repos.length)) {
+    throw new Error("Tasks cannot be combined with since or repositories");
+  }
+  const words = ["teamster", "reflect", shellWord(slug)];
+  for (const task of tasks) words.push("--task", shellWord(task));
+  if (since !== undefined) words.push("--since", shellWord(since));
+  for (const repo of repos) words.push("--repo", shellWord(repo));
+  if (order?.trim()) words.push(shellQuote(order));
+  return words.join(" ");
+}
+
+/** Mark an indexed lesson, with a note only when it has text. */
+export function lessonCommand(entry: string, status: Exclude<LessonStatus, "other">, note = ""): string {
+  const base = `teamster lesson ${shellQuote(entry)} ${shellWord(status)}`;
+  return note.trim() ? `${base} --note ${shellQuote(note.trim())}` : base;
+}
+
+/** Commands copied together run in order while each previous command succeeds. */
+export function transmission(commands: string[]): string {
+  return commands.filter((command) => command.trim()).join(" && ");
+}
+
+/** One numbered reply per answered analyst question, ready for `say`. */
+export function answerText(questions: StudyQuestion[], answers: string[]): string {
+  return questions.flatMap((question, index) => {
+    const answer = answers[index]?.replace(/\s+/g, " ").trim();
+    if (!answer) return [];
+    const text = question.text.replace(/\s+/g, " ").trim().slice(0, 80);
+    return [`${index + 1}. ${text}: ${answer}`];
+  }).join("\n");
 }

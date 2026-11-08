@@ -1,4 +1,4 @@
-"""Read reflection lessons, the newest batch review and the records waiting for the next one.
+"""Read study conversations, reflection lessons, batch reviews and pending material.
 
 The board never imports the worker: the state fields used for signals mirror
 src/teamster/task_state.py, review_cycle.py, supervisor.py and result_schema.py.
@@ -10,18 +10,20 @@ import threading
 import time
 from pathlib import Path
 
-from .store import Store
+from .store import Store, alive, number, objects, text
 
 
 STAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z")
 RECORD = re.compile(r"(.+)-([0-9]{8}T[0-9]{6}Z)")
 BATCH = re.compile(r"batch-([0-9]{4}-[0-9]{2}-[0-9]{2})?.*\.md", re.S)
 SEPARATOR = re.compile(r":?-+:?")
-STATUSES = ("proposed", "applied", "declined")
+STATUSES = ("proposed", "accepted", "applied", "declined")
 SIGNALS = ("blocked", "refused", "needs_decision", "escalate", "round_cap",
            "fix_rounds", "check_failed", "ci_repair", "budget_exhausted")
 BATCH_LIMIT = 64 * 1024
 PENDING_ITEMS = 50
+STUDY_LIMIT = 20
+STUDY_SECONDS = 30 * 24 * 3600
 
 
 def load_json(path):
@@ -31,6 +33,45 @@ def load_json(path):
 def signature(path):
     metadata = path.stat()
     return metadata.st_mtime_ns, metadata.st_size
+
+
+def load_messages(path):
+    messages = []
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("source") != "lead":
+            continue
+        at, message = number(row.get("at")), text(row.get("text"))
+        if at is not None and message is not None:
+            messages.append({"at": at, "from": "lead", "text": message[:4000],
+                             "status": None, "questions": [], "lessons": [], "file": None})
+    return messages
+
+
+def analyst_message(turn):
+    at = number(turn.get("at"))
+    if at is None:
+        return None
+    options = _list(turn, "options")
+    questions = []
+    for index, question in enumerate(_list(turn, "questions")):
+        question = text(question)
+        if question is not None:
+            choices = options[index] if index < len(options) and isinstance(options[index], list) else []
+            questions.append({"text": question, "options": [choice for choice in map(text, choices) if choice]})
+    file = text(turn.get("file"))
+    lessons = []
+    for lesson in objects(turn.get("lessons")):
+        lesson_id, cue = text(lesson.get("id")), text(lesson.get("cue"))
+        if lesson_id is not None and cue is not None and file is not None:
+            lessons.append({"id": lesson_id, "cue": cue, "entry": f"{file} {lesson_id}"})
+    status = turn.get("status")
+    return {"at": at, "from": "analyst", "text": text(turn.get("summary")),
+            "status": status if status in ("done", "needs_decision") else None,
+            "questions": questions, "lessons": lessons, "file": file}
 
 
 def _list(state, key):
@@ -132,6 +173,7 @@ class Research:
         self._index = (None, [])
         self._batches = {}
         self._records = {}
+        self._messages = {}
         self._view = None
         self._next_scan = 0.0
 
@@ -146,16 +188,16 @@ class Research:
     def _empty(self):
         return {"lessons": [], "batch": None,
                 "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
-                "reflection_task": self.reflection_task}
+                "studies": [], "reflection_task": self.reflection_task}
 
     def _scan(self):
         archive = self.tasks_path / ".archive"
-        if self.tasks_path.is_symlink() or archive.is_symlink():
+        if self.tasks_path.is_symlink():
             return self._empty()
         try:
-            names = sorted(path.name for path in archive.iterdir())
+            names = [] if archive.is_symlink() else sorted(path.name for path in archive.iterdir())
         except OSError:
-            return self._empty()
+            names = []
         view = self._empty()
         view["lessons"] = self._lessons(archive)
         batches = sorted(self._batch_files(archive, names), key=lambda item: (item[1] or "", item[0]))
@@ -168,17 +210,31 @@ class Research:
             date = BATCH.fullmatch(name).group(1)
             view["batch"] = {"name": name, "date": date, "through": through, "records": 0, "repos": {}}
         floor = previous if through is not None else None
-        wanted = {name for _, stamp, name in records if floor is None or stamp > floor}
-        self._records = {name: value for name, value in self._records.items() if name in wanted}
+        cutoff = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(time.time() - STUDY_SECONDS))
+        wanted = set()
+        study_paths = set()
         pending = view["pending"]
         items = []
         for slug, stamp, name in records:
-            if name not in wanted:
+            material = floor is None or stamp > floor
+            recent = stamp >= cutoff
+            if not material and not recent:
                 continue
-            record = self._record(archive / name)
-            if record is None:
+            directory = archive / name
+            wanted.add(directory)
+            state = self._record(directory)
+            if state is None:
                 continue
-            repo, found = record
+            if state.get("kind") == "reflect":
+                if recent:
+                    study_paths.add(directory)
+                    view["studies"].append(self._study(directory, slug, state, archived=True))
+                continue
+            if not material:
+                continue
+            repo = text(state.get("repo"))
+            repo = Path(repo).name or "(unknown)" if repo else "(unknown)"
+            found = signals(state)
             if through is not None and stamp <= through:
                 view["batch"]["records"] += 1
                 view["batch"]["repos"][repo] = view["batch"]["repos"].get(repo, 0) + 1
@@ -190,6 +246,17 @@ class Research:
                 items.append({"slug": slug, "repo": repo, "stamp": stamp, "signals": found})
         pending["items"] = sorted(items, key=lambda item: (item["stamp"], item["slug"]),
                                   reverse=True)[:PENDING_ITEMS]
+        for directory in Store._directories(self.tasks_path):
+            wanted.add(directory)
+            state = self._record(directory)
+            if state is not None and state.get("kind") == "reflect":
+                study_paths.add(directory)
+                view["studies"].append(self._study(directory, directory.name, state, archived=False))
+        self._records = {path: value for path, value in self._records.items() if path in wanted}
+        self._messages = {path: value for path, value in self._messages.items() if path in study_paths}
+        view["studies"] = sorted(view["studies"],
+                                 key=lambda study: (study["created"], study["updated_at"], study["slug"]),
+                                 reverse=True)[:STUDY_LIMIT]
         return view
 
     def _lessons(self, archive):
@@ -229,30 +296,66 @@ class Research:
         return found
 
     def _record(self, directory):
-        """(repo, signals) for an archived record, read again only when state.json changes."""
-        name = directory.name
+        """A task's state, read again only when state.json's mtime or size changes."""
         if directory.is_symlink() or not directory.is_dir():
-            self._records.pop(name, None)
+            self._records.pop(directory, None)
             return None
         path = Store._file(directory, "state.json")
         if path is None:
-            self._records.pop(name, None)
+            self._records.pop(directory, None)
             return None
         try:
             current = signature(path)
         except OSError:
             return None
-        cached = self._records.get(name)
+        cached = self._records.get(directory)
         if cached is not None and cached[0] == current:
             return cached[1]
         try:
             state = load_json(path)
         except (OSError, ValueError):
             state = None
-        value = None
-        if isinstance(state, dict):
-            repo = state.get("repo")
-            value = (Path(repo).name or "(unknown)" if isinstance(repo, str) and repo else "(unknown)",
-                     signals(state))
-        self._records[name] = (current, value)
+        value = state if isinstance(state, dict) else None
+        self._records[directory] = (current, value)
         return value
+
+    def _study(self, directory, slug, state, archived):
+        updated_at = self._records[directory][0][0] / 1_000_000_000
+        created = number(state.get("created"))
+        if created is None:
+            created = updated_at
+        messages = []
+        path = Store._file(directory, "messages.jsonl")
+        if path is not None:
+            try:
+                current = signature(path)
+                cached = self._messages.get(directory)
+                if cached is None or cached[0] != current:
+                    cached = (current, load_messages(path))
+                    self._messages[directory] = cached
+                updated_at = max(updated_at, current[0] / 1_000_000_000)
+                messages.extend(cached[1])
+            except OSError:
+                pass
+        else:
+            self._messages.pop(directory, None)
+        messages.extend(message for turn in objects(state.get("reflect_turns"))
+                        if (message := analyst_message(turn)) is not None)
+        order = text(state.get("reflect_order"))
+        messages = [{"at": created, "from": "lead", "text": order[:4000] if order else None,
+                     "status": None, "questions": [], "lessons": [], "file": None},
+                    *sorted(messages, key=lambda message: message["at"])]
+        is_alive = alive(state.get("pid"))
+        executor = text(state.get("executor")) or "codex"
+        error = text(state.get("error"))
+        return {"slug": slug, "archived": archived,
+                "mode": "study" if state.get("reflect_mode") == "study" else "batch",
+                "alive": is_alive, "outcome": text(state.get("outcome")),
+                "error": error[:300] if error else None,
+                "executor": executor,
+                "account": text(state.get("claude_account") if executor == "claude" else state.get("account")),
+                "created": created, "updated_at": updated_at,
+                "records": len(_list(state, "reflect_records")), "file": text(state.get("reflect_file")),
+                "waiting": not is_alive and messages[-1]["from"] == "analyst"
+                and messages[-1]["status"] == "needs_decision",
+                "messages": messages}

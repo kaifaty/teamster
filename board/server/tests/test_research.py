@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -17,6 +18,7 @@ INDEX = """# Lessons
 | 2026-11-02 | beta-20261102T000000Z | domain a, b | a flaky check | applied AGENTS.md in a |
 | 2026-11-03 | gamma-20261103T000000Z | `domain` c | pipes | declined: x | y |
 | 2026-11-04 | delta-20261104T000000Z | brief only | other | held |
+| 2026-11-05 | batch-2026-11-05.md L1 | invariant | agreed lesson | accepted: pending application |
 | broken | row |
 not a table row
 | | | | | |
@@ -53,6 +55,7 @@ def test_index_rows_scopes_statuses_and_extra_cells(tmp_path):
         ("domain", ["a", "b"], "applied", "applied AGENTS.md in a"),
         ("domain", ["c"], "declined", "declined: x | y"),
         ("other", [], "other", "held"),
+        ("invariant", [], "accepted", "accepted: pending application"),
     ]
     assert lessons[1] == {"date": "2026-11-02", "entry": "beta-20261102T000000Z", "scope": "domain",
                           "scope_text": "domain a, b", "repos": ["a", "b"], "cue": "a flaky check",
@@ -77,6 +80,10 @@ def test_batch_selection_counts_pending_and_bounded_reads(tmp_path, monkeypatch)
     write_record(archive, "new-20261108T010000Z", {"repo": "/r/alpha", "result": {"status": "done"}})
     write_record(archive, "late-20261108T020000Z", {"repo": "/r/beta", "outcome": "refused"})
     write_record(archive, "later-20261108T030000Z", {"result": {"status": "needs_decision"}})
+    write_record(archive, "reflect-batch-20261106T010000Z",
+                 {"kind": "reflect", "repo": "/r/research", "result": {"status": "blocked"}})
+    write_record(archive, "reflect-pending-20261108T033000Z",
+                 {"kind": "reflect", "repo": "/r/research", "result": {"status": "needs_decision"}})
     write_record(archive, "bad-20261108T040000Z", "{not json")
     write_record(archive, "list-20261108T050000Z", "[]")
     write_record(archive, "nostamp", {"repo": "/r/alpha", "result": {"status": "blocked"}})
@@ -97,8 +104,8 @@ def test_batch_selection_counts_pending_and_bounded_reads(tmp_path, monkeypatch)
             {"slug": "late", "repo": "beta", "stamp": "20261108T020000Z", "signals": ["refused"]},
         ],
     }
-    # Records up to the previous batch's through are never read.
-    assert "old-20261104T000000Z" not in reads
+    # Recent records before the material floor may be read to discover studies.
+    assert len(reads) == len(set(reads))
     assert not {name for name in reads if "link" in name}
 
 
@@ -155,7 +162,7 @@ def test_missing_empty_and_linked_archives_give_an_empty_view(tmp_path, make):
     view = Research(tasks, reflection_task="weekly").view()
     assert view == {"lessons": [], "batch": None,
                     "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
-                    "reflection_task": "weekly"}
+                    "studies": [], "reflection_task": "weekly"}
 
 
 def test_linked_and_broken_index_and_batch_files_are_skipped(tmp_path):
@@ -195,3 +202,98 @@ def test_unchanged_records_are_not_read_again_and_cache_lasts_its_interval(tmp_p
     view = research.view()
     assert sorted(reads) == ["one-20261108T000000Z", "one-20261108T000000Z", "two-20261108T010000Z"]
     assert (view["pending"]["records"], view["pending"]["signals"]) == (2, 1)
+
+
+def test_live_and_archived_study_conversations_waiting_and_cached_reads(tmp_path, monkeypatch):
+    now = datetime(2026, 11, 9, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(research_module.time, "time", lambda: now)
+    state = {"kind": "reflect", "reflect_mode": "study", "reflect_order": "Compare the failed checks",
+             "reflect_records": ["one-20261108T000000Z", "two-20261108T010000Z"],
+             "reflect_file": "batch-2026-11-09.md", "pid": os.getpid(), "outcome": "running",
+             "executor": "claude", "claude_account": "observatory", "account": "unused", "created": now - 100,
+             "reflect_turns": [{"at": now - 90, "status": "needs_decision", "summary": "Which check should we keep?",
+                                "questions": [False, "Keep the targeted check?"],
+                                "options": [["ignored"], ["Yes", None, "No"]],
+                                "lessons": [{"id": "L1", "cue": "slow full checks"}],
+                                "file": "batch-2026-11-09.md"}]}
+    live = write_record(tmp_path, "reflect-live", state)
+    archived = dict(state, created=now - 500, pid=None, executor="codex", account="lab",
+                    reflect_order=None, reflect_mode="batch", outcome="completed", error="x" * 350)
+    archived["reflect_turns"] = [
+        {"at": now - 200, "status": "done", "summary": "The targeted check is sufficient", "file": "batch-2026-11-08.md"},
+        {"at": now - 400, "status": "needs_decision", "summary": "Keep both checks?", "questions": ["Which one?"],
+         "options": [["Targeted", "Full"]]},
+        {"at": True, "status": "done", "summary": "invalid time"},
+        "invalid turn",
+    ]
+    saved = write_record(tmp_path / ".archive", "reflect-old-20261108T000000Z", archived)
+    (saved.parent / "messages.jsonl").write_text("\n".join([
+        json.dumps({"at": now - 300, "source": "lead", "text": "Keep the targeted check"}),
+        json.dumps({"at": now - 100, "source": "analyst", "text": "not a lead message"}),
+        json.dumps({"at": False, "source": "lead", "text": "invalid time"}),
+        "{broken", "[]",
+    ]))
+    write_record(tmp_path, "broken-study", "{broken")
+    write_record(tmp_path / ".archive", "broken-20261108T010000Z", "{broken")
+    old_stamp = datetime.fromtimestamp(now, timezone.utc) - timedelta(days=31)
+    write_record(tmp_path / ".archive", f"expired-{old_stamp:%Y%m%dT%H%M%SZ}", archived)
+    reads = counting(monkeypatch)
+    message_reads = []
+    original = research_module.load_messages
+
+    def load_messages(path):
+        message_reads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(research_module, "load_messages", load_messages)
+    research = Research(tmp_path, seconds=0)
+    studies = research.view()["studies"]
+    assert [study["slug"] for study in studies] == ["reflect-live", "reflect-old"]
+    current, old = studies
+    assert (current["archived"], current["alive"], current["waiting"], current["mode"]) == (False, True, False, "study")
+    assert (current["executor"], current["account"], current["records"], current["file"]) == (
+        "claude", "observatory", 2, "batch-2026-11-09.md")
+    assert current["messages"][1]["questions"] == [{"text": "Keep the targeted check?", "options": ["Yes", "No"]}]
+    assert current["messages"][1]["lessons"] == [{"id": "L1", "cue": "slow full checks", "entry": "batch-2026-11-09.md L1"}]
+    assert (old["archived"], old["mode"], old["account"], old["waiting"], len(old["error"])) == (True, "batch", "lab", False, 300)
+    assert [(message["from"], message["text"]) for message in old["messages"]] == [
+        ("lead", None), ("analyst", "Keep both checks?"),
+        ("lead", "Keep the targeted check"), ("analyst", "The targeted check is sufficient"),
+    ]
+    assert old["messages"][0]["at"] == archived["created"]
+    previous_reads = reads.copy()
+    assert research.view()["studies"] == studies
+    assert reads == previous_reads
+    assert len(message_reads) == 1
+
+    state["pid"] = None
+    live.write_text(json.dumps(state))
+    assert research.view()["studies"][0]["waiting"] is True
+    assert reads.count("reflect-live") == 2
+    assert len(message_reads) == 1
+    messages = live.parent / "messages.jsonl"
+    messages.write_text(json.dumps({"at": now - 80, "text": "Yes", "source": "lead"}) + "\n")
+    answered = research.view()["studies"][0]
+    assert answered["waiting"] is False
+    assert answered["messages"][-1]["text"] == "Yes"
+    assert reads.count("reflect-live") == 2
+    assert len(message_reads) == 2
+    previous = messages.stat()
+    messages.write_text(json.dumps({"at": now - 80, "text": "Yes " + "x" * 4100, "source": "lead"}) + "\n")
+    os.utime(messages, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    assert len(research.view()["studies"][0]["messages"][-1]["text"]) == 4000
+    assert len(message_reads) == 3
+
+
+def test_studies_are_capped_newest_first_without_an_archive(tmp_path):
+    for index in range(23):
+        write_record(tmp_path, f"reflect-{index:02}",
+                     {"kind": "reflect", "created": index, "reflect_order": {"invalid": True},
+                      "reflect_records": "invalid", "reflect_turns": [None, {"at": "invalid"}],
+                      "error": False})
+    studies = Research(tmp_path).view()["studies"]
+    assert len(studies) == 20
+    assert [study["slug"] for study in studies] == [f"reflect-{index:02}" for index in range(22, 2, -1)]
+    assert studies[0]["messages"] == [{"at": 22, "from": "lead", "text": None, "status": None,
+                                       "questions": [], "lessons": [], "file": None}]
+    assert (studies[0]["mode"], studies[0]["records"], studies[0]["waiting"], studies[0]["error"]) == ("batch", 0, False, None)
