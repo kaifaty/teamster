@@ -163,20 +163,31 @@ def cmd_reflect(a):
     except ValueError as exc:
         procs.die(str(exc))
     archive = config.TASKS / ".archive"
-    records, through = reflection.pending_records(archive)
+    tasks, since, repos = a.task or [], getattr(a, "since", None), a.repo or []
+    study = bool(tasks or since or repos)
+    if study:
+        through = None
+        records, missing = reflection.study_records(
+            archive, tasks, since and reflection.since_stamp(since, clock.CLOCK.time()), repos)
+        if missing is not None:
+            procs.die(f"no archived record for {missing}")
+    else:
+        records, through = reflection.pending_records(archive)
     if not records:
         procs.die("no records to reflect on")
     d = config.TASKS / a.slug
     d.mkdir(parents=True)
     room = d / "room"
     reflection.build_room(room, archive, records)
-    prompt = prompts.reflect_prompt(order, records, through, cfg)
+    prompt = (prompts.study_prompt(order, records, cfg) if study else
+              prompts.reflect_prompt(order, records, through, cfg))
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "kind": "reflect", "repo": str(archive), "worktree": str(room), "branch": "",
           "executor": executor.name, "effort": a.effort,
           "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "created": clock.CLOCK.time(), "turns": 0,
-          "reflect_mode": "batch", "reflect_through": through, "reflect_records": records,
+          "reflect_mode": "study" if study else "batch", "reflect_through": through, "reflect_records": records,
+          "reflect_order": order if order and order.strip() else None, "reflect_turns": [],
           "max_turn_minutes": a.max_minutes}
     if a.model is not None:
         st["task_model"] = None if a.model == "default" else a.model
@@ -187,10 +198,15 @@ def cmd_reflect(a):
         if executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
             break
         time.sleep(0.1)
-    print(f"started reflect {a.slug}: {len(records)} records through {through}, executor {executor.name}, "
+    selection = f"study of {len(records)} records" if study else f"{len(records)} records through {through}"
+    print(f"started reflect {a.slug}: {selection}, executor {executor.name}, "
           f"account {executor.account(st) or '?'}, {executor.cursor_label} {executor.cursor(st) or '?'}, "
           f"pid {st.get('pid')}\n  reading room {room}")
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
+
+
+def cmd_lesson(a):
+    print(reflection.set_lesson_status(config.TASKS / ".archive", a.entry, a.status, a.note))
 
 
 def cmd_say(a):
@@ -325,7 +341,7 @@ def describe(st, detail):
         lines = [line, f"reading room {st['worktree']}",
                  f"result {result['status']}: {result['summary']}" if result else "result: none"]
         if st.get("reflect_file"):
-            lines.append(f"batch {Path(st['repo']) / st['reflect_file']}")
+            lines.append(f"{reflection.file_kind(st)} {Path(st['repo']) / st['reflect_file']}")
         return "\n".join(lines)
     if scouting:
         return line + "\nlast message:\n" + (threads.last_message(st) or "(none)")
