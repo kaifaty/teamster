@@ -9,7 +9,7 @@ import frameLight from "./art/frame-light.png";
 import DaySummary from "./DaySummary.vue";
 import ReplayBar from "./ReplayBar.vue";
 import ShipLog from "./ShipLog.vue";
-import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines } from "./fleet";
+import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines, type Star } from "./fleet";
 import { cardPlace, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
 import { replayDepartures, replayFleet } from "./replay";
@@ -56,7 +56,15 @@ const departures = computed(() => (replay.at !== null ? replayDepartures(replay.
 
 // Galaxy: one star per repository, one depot per account. Null means the whole galaxy is shown.
 const repo = ref<string | null>(null);
+// The same list while nothing changes, so that a playing replay does not redraw the galaxy at every step.
+let lastStars: Star[] = [];
 const starList = computed(() => {
+  const next = galaxyStars();
+  if (JSON.stringify(next) === JSON.stringify(lastStars)) return lastStars;
+  lastStars = next;
+  return next;
+});
+function galaxyStars(): Star[] {
   if (replay.at === null) return stars(tasks.value);
   // Every system of the board and of the day keeps its star, so that the galaxy does not rearrange as it plays.
   const list = stars([...tasks.value, ...liveTasks.value.map((task) => ({ ...task, column: "closed" as const }))]);
@@ -67,7 +75,7 @@ const starList = computed(() => {
     list.push({ repo: event.repo, live: 0, attention: 0, ready: 0, sleeping: 0, dots: [] });
   }
   return list.sort((a, b) => a.repo.localeCompare(b.repo));
-});
+}
 // Tankers and depots stay live: the accounts' past is not recorded.
 const depotList = computed(() => depots(source.value.state.value.accounts?.data ?? null, now.value));
 const lines = computed(() => supplyLines(liveTasks.value, depotList.value));
@@ -261,6 +269,7 @@ const logEvents = computed(() => {
   return replay.events.filter((event) => event.at >= since && event.at <= until);
 });
 const replayClock = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
+const replayTime = computed(() => (replay.at === null ? null : replayClock.format(new Date(replay.at * 1000))));
 const systemNames = computed(() => new Set(starList.value.map((star) => star.repo)));
 const eventsError = computed(() => source.value.eventsError.value);
 // The last day's history loads whenever the map opens; live events join it without duplicates.
@@ -483,6 +492,7 @@ onBeforeUnmount(() => {
         </template>
       </div>
       <div class="dock">
+        <p v-if="replayTime" class="plate in-dock num" aria-hidden="true">Перемотка · {{ replayTime }}</p>
         <ReplayBar :replay="replay" :frame="frameLight" :now="now" />
         <ShipLog
           :events="logEvents"
@@ -496,7 +506,7 @@ onBeforeUnmount(() => {
           @seek="seekTo"
         />
       </div>
-      <p v-if="replay.at !== null" class="plate num" role="status">Перемотка · {{ replayClock.format(new Date(replay.at * 1000)) }}</p>
+      <p v-if="replayTime" class="plate on-sky num" role="status">Перемотка · {{ replayTime }}</p>
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
       <p v-else-if="!starList.length" class="status">Пока ни одной задачи: галактика пуста.</p>
       <p v-else-if="repo && !entries.length" class="status">
@@ -647,10 +657,6 @@ onBeforeUnmount(() => {
 
 /* Over the map while it replays; the sky's own labels stay clear under it. */
 .plate {
-  position: absolute;
-  left: 50%;
-  top: 46px;
-  z-index: 2;
   margin: 0;
   padding: 3px 12px;
   border: 1px solid rgba(243, 198, 78, 0.6);
@@ -660,9 +666,22 @@ onBeforeUnmount(() => {
   font-size: 13px;
   font-weight: 650;
   letter-spacing: 0.02em;
-  transform: translateX(-50%);
   pointer-events: none;
   white-space: nowrap;
+}
+
+.plate.on-sky {
+  position: absolute;
+  left: 50%;
+  top: 46px;
+  z-index: 2;
+  transform: translateX(-50%);
+}
+
+/* On a phone the toolbar takes the top of the map: the plate stands over the scale instead. */
+.plate.in-dock {
+  display: none;
+  align-self: center;
 }
 
 .status,
@@ -946,8 +965,12 @@ onBeforeUnmount(() => {
     width: calc(100% - 8px);
   }
 
-  .plate {
-    top: 84px;
+  .plate.on-sky {
+    display: none;
+  }
+
+  .plate.in-dock {
+    display: block;
   }
 
   .picker select {
