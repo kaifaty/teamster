@@ -1,7 +1,7 @@
 // The order a task's state calls for: one reason and one command, from the lead's loop in lead-guide.md
 // and the turn outcomes in results.md. The board only copies the command, it never runs it.
 
-import type { TaskSummary } from "../types";
+import type { Cargo, TaskSummary } from "../types";
 import { commandSlug, sayCommand, shellWord, takesWords, verdictCommand, type CommandId, type Verdict } from "./commands";
 import { formatClock } from "./format";
 import { problemLabel, prLabel } from "./labels";
@@ -32,6 +32,38 @@ const RUNNING: Partial<Record<TaskSummary["phase"], string>> = {
 };
 
 const CONTINUE = "Продолжай с того места, где остановился.";
+const MERGE = "Слей базовую ветку и разреши конфликт, сохранив смысл обеих сторон.";
+const CHECK = "Сохранённая проверка упала: разбери её вывод и исправь.";
+const BASE_CONFLICT = "Конфликт с базой: верни на слияние";
+
+const failed = (outcome: string | null | undefined) => outcome === "failed" || outcome === "timeout";
+
+/** The first line of the text that returns a task for more work. */
+export const RETURN_HEAD = "Доработай перед приёмкой:";
+
+/**
+ * The text that returns a task on the roadstead for more work: one item per review finding, failed check,
+ * failed CI, base conflict, remaining item and question. Without the cargo, only the first line.
+ */
+export function returnText(cargo: Cargo | null | undefined): string {
+  const lines = [RETURN_HEAD];
+  if (!cargo) return RETURN_HEAD;
+  for (const finding of cargo.review?.findings ?? []) {
+    const where = finding.file ? ` — ${finding.file}${finding.line !== null ? `:${finding.line}` : ""}` : "";
+    lines.push(`- ${finding.id} [${finding.severity}] ${finding.title}${where}`);
+  }
+  if (failed(cargo.check?.outcome)) lines.push(`- ${CHECK}`);
+  const ci = cargo.ci;
+  if (ci && (ci.failed > 0 || failed(ci.outcome))) lines.push(ci.failing.length ? `- CI не прошёл: ${ci.failing.join(", ")}.` : "- CI не прошёл.");
+  const base = cargo.base;
+  if (base?.outcome === "conflict") {
+    const where = base.files.length ? ` в ${base.files.join(", ")}` : "";
+    lines.push(`- Слей ${base.base} и разреши конфликт${where}, сохранив смысл обеих сторон.`);
+  }
+  for (const item of cargo.remaining ?? []) lines.push(`- Доделай: ${item}`);
+  for (const question of cargo.questions ?? []) lines.push(`- Ответ на «${question}»: `);
+  return lines.join("\n");
+}
 
 /** The order for `task` at `now` (seconds), or null when there is nothing to order: a session or a closed task. */
 export function recommendedOrder(task: TaskSummary, now: number): Order | null {
@@ -60,13 +92,18 @@ export function recommendedOrder(task: TaskSummary, now: number): Order | null {
   if (task.alive) return plain("wait", RUNNING[task.phase] ?? "В работе: дождись итога", "muted");
 
   if (task.column === "review_me") {
-    if (task.ci === "failed" || task.ci === "timeout") {
+    if (task.stop === "base conflict") return say(BASE_CONFLICT, "bad", MERGE);
+    if (failed(task.check)) return say("Готово, но проверка упала: верни на исправление", "bad", CHECK);
+    if (failed(task.ci)) {
       return say("Готово, но CI не прошёл: верни на исправление", "bad", "CI не прошёл: разбери логи упавших проверок, исправь и запушь.");
     }
     if (task.ci === "pending") return status("CI не дождались: проверь статус PR", "warn");
-    const reason = `Готово: прочитай diff и прими${task.pr ? ` · ${prLabel(task.pr)}` : ""}`;
-    if (!takesWords(task)) return status(reason, "ok");
-    return { reason, tone: "ok", action: "verdict", label: "verdict accepted", command: verdictCommand(task.slug, "accepted"), verdict: "accepted" };
+    const pr = task.pr ? ` · ${prLabel(task.pr)}` : "";
+    const open = task.findings_left > 0 || task.left > 0;
+    const reason = open ? `Готово, остались замечания: прими или верни на доработку${pr}` : `Готово: прочитай diff и прими${pr}`;
+    const tone: OrderTone = open ? "warn" : "ok";
+    if (!takesWords(task)) return status(reason, tone);
+    return { reason, tone, action: "verdict", label: "verdict accepted", command: verdictCommand(task.slug, "accepted"), verdict: "accepted" };
   }
 
   if (task.column === "attention") {
@@ -91,6 +128,7 @@ export function recommendedOrder(task: TaskSummary, now: number): Order | null {
       case "sleeping":
         return say("Надзиратель умер: продолжи через say", "bad", CONTINUE);
     }
+    if (task.stop === "base conflict") return say(BASE_CONFLICT, "bad", MERGE);
     switch (task.result_status) {
       case "needs_decision":
         return say("Ждёт твоего решения: ответь через say", "warn", "");

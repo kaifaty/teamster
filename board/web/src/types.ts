@@ -78,6 +78,12 @@ export interface TaskSummary {
   updated_at: number; // task state mtime, or session lastActivityAt / 1000
   activity: Activity | null; // latest activity, only while alive
   scheduled?: string | null; // a session's scheduled task id; null for tasks; absent from older servers
+  // What the task came back with ("cargo"); null and 0 for sessions and older records.
+  check: string | null; // outcome of this turn's last saved check: "passed" | "failed" | "timeout" | …; null without one
+  review: "clean" | "defects" | null; // the saved review's verdict
+  findings_left: number; // findings in the saved review
+  stop: string | null; // why the automatic fix loop stopped: "clean", "only P3", "base conflict", … ; one line
+  left: number; // remaining items plus questions in the last result
 }
 
 export type TaskFile = "brief" | "last" | "review" | "check";
@@ -143,9 +149,55 @@ export interface ResearchView {
   reflection_task: string;
 }
 
+export interface CargoCheck {
+  command: string;
+  outcome: string;
+  exit: number | null;
+  seconds: number | null;
+  at: number | null;
+}
+
+export interface CargoFinding {
+  id: string;
+  severity: string;
+  title: string;
+  file: string | null;
+  line: number | null;
+}
+
+export interface CargoCi {
+  outcome: string | null;
+  passed: number; // checks with bucket "pass"
+  failed: number; // checks with bucket "fail" or "cancel"
+  total: number;
+  failing: string[]; // names of the failed checks, at most 10
+  seconds: number | null;
+  rounds: number; // CI repair rounds
+  reason: string | null;
+}
+
+/** What a task came back with: its saved check, review, fix loop stop, CI, base merge and open items. */
+export interface Cargo {
+  check: CargoCheck | null; // the same entry as summary.check
+  claims: { command: string; outcome: string; details: string }[]; // the executor's own report, at most 10
+  review: {
+    verdict: "clean" | "defects" | null;
+    summary: string | null;
+    findings: CargoFinding[]; // at most 30, in written order
+    reviews: number; // reviews so far
+  } | null;
+  stop: string | null; // as summary.stop
+  ci: CargoCi | null;
+  base: { base: string; outcome: string; files: string[] } | null; // the last base merge; files at most 20
+  remaining: string[]; // at most 20
+  questions: string[]; // at most 20
+  decisions: { fixed: number; rejected: number }; // the executor's decisions on review findings
+}
+
 export interface TaskDetail extends TaskSummary {
   timeline: { at: number; text: string }[]; // task events (≤ 200), or session creation and last activity
   files: TaskFile[]; // which files exist
+  cargo: Cargo | null; // null for sessions; always an object for tasks, possibly empty
 }
 
 export interface Accounts {

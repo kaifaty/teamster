@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { TaskSummary } from "../types";
+import type { Cargo, TaskSummary } from "../types";
 import { formatClock } from "./format";
-import { recommendedOrder } from "./orders";
+import { recommendedOrder, returnText } from "./orders";
 
 const task = (extra: Partial<TaskSummary>): TaskSummary => ({
   slug: "fix-login", kind: "work", title: null, link: null, repo: "r", branch: null, task_type: null, executor: "codex", account: null,
   reviewer: null, model: null, effort: null, column: "attention", phase: "idle", phase_started_at: null,
   alive: false, turn: 1, fix_round: 0, outcome: null, result_status: null, summary: null, pr: null,
-  ci: null, sleeping_until: null, created: null, updated_at: 0, activity: null, ...extra,
+  ci: null, sleeping_until: null, created: null, updated_at: 0, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0, ...extra,
 });
 
 const NOW = 1_800_000_000;
@@ -67,6 +67,42 @@ describe("recommendedOrder", () => {
     expect(brief({ column: "review_me" })?.[2]).toBe("Готово: прочитай diff и прими");
   });
 
+  it("returns a finished task with a base conflict or a failed check before its CI", () => {
+    const merge = "Слей базовую ветку и разреши конфликт, сохранив смысл обеих сторон.";
+    const check = "Сохранённая проверка упала: разбери её вывод и исправь.";
+    expect(recommendedOrder(task({ column: "review_me", stop: "base conflict", check: "failed", ci: "failed" }), NOW)).toMatchObject({
+      action: "say", tone: "bad", reason: "Конфликт с базой: верни на слияние", text: merge, command: `teamster say fix-login '${merge}'`,
+    });
+    expect(recommendedOrder(task({ column: "review_me", check: "failed", ci: "failed" }), NOW)).toMatchObject({
+      action: "say", tone: "bad", reason: "Готово, но проверка упала: верни на исправление", text: check,
+    });
+    expect(brief({ column: "review_me", check: "timeout", ci: "pending" })?.[2]).toBe("Готово, но проверка упала: верни на исправление");
+    expect(brief({ column: "review_me", check: "passed", ci: "failed" })?.[2]).toBe("Готово, но CI не прошёл: верни на исправление");
+  });
+
+  it("accepts a finished task with findings or open items with a warning, after its CI", () => {
+    expect(recommendedOrder(task({ column: "review_me", findings_left: 2, pr: "https://github.com/o/r/pull/118" }), NOW)).toEqual({
+      reason: "Готово, остались замечания: прими или верни на доработку · PR #118",
+      tone: "warn",
+      action: "verdict",
+      label: "verdict accepted",
+      command: "teamster verdict fix-login accepted",
+      verdict: "accepted",
+    });
+    expect(brief({ column: "review_me", left: 1 })).toEqual([
+      "verdict", "warn", "Готово, остались замечания: прими или верни на доработку", "teamster verdict fix-login accepted",
+    ]);
+    expect(brief({ column: "review_me", findings_left: 2, ci: "failed" })?.[2]).toBe("Готово, но CI не прошёл: верни на исправление");
+    expect(brief({ column: "review_me", left: 1, ci: "pending" })?.[2]).toBe("CI не дождались: проверь статус PR");
+    expect(brief({ column: "review_me", review: "clean", stop: "clean" })?.slice(0, 2)).toEqual(["verdict", "ok"]);
+  });
+
+  it("orders a base conflict in attention after the outcome and before the result status", () => {
+    const merge = "teamster say fix-login 'Слей базовую ветку и разреши конфликт, сохранив смысл обеих сторон.'";
+    expect(brief({ outcome: "conflict", result_status: "blocked", stop: "base conflict" })).toEqual(["say", "bad", "Конфликт с базой: верни на слияние", merge]);
+    expect(brief({ outcome: "stopped", stop: "base conflict" })?.[2]).toBe("Остановлена: проверь работу и продолжи");
+  });
+
   it.each([
     ["refused", "status", "bad", "Отказ модели: пересмотри задачу, повтор не поможет", "teamster status fix-login"],
     ["stuck", "status", "bad", "Повторяет одну и ту же ошибку: разберись сам", "teamster status fix-login"],
@@ -119,5 +155,53 @@ describe("recommendedOrder", () => {
       "teamster say pr-template 'Продолжай: доделай оставшееся из «Done when».'",
     );
     expect(brief({ slug: "it's odd", outcome: "stopped" })?.[3]).toBe("teamster say 'it'\\''s odd' 'Продолжай с того места, где остановился.'");
+  });
+});
+
+describe("returnText", () => {
+  const empty: Cargo = {
+    check: null, claims: [], review: null, stop: null, ci: null, base: null, remaining: [], questions: [], decisions: { fixed: 0, rejected: 0 },
+  };
+
+  it("lists every finding, failure, conflict, remaining item and question", () => {
+    const cargo: Cargo = {
+      ...empty,
+      check: { command: "npm test", outcome: "failed", exit: 1, seconds: 3, at: null },
+      review: {
+        verdict: "defects",
+        summary: null,
+        findings: [
+          { id: "F2", severity: "P3", title: "Нет примера", file: "a.md", line: 48 },
+          { id: "F4", severity: "P2", title: "Гонка", file: "b.ts", line: null },
+        ],
+        reviews: 2,
+      },
+      ci: { outcome: "failed", passed: 4, failed: 2, total: 6, failing: ["build", "lint"], seconds: 60, rounds: 0, reason: null },
+      base: { base: "origin/main", outcome: "conflict", files: ["x.ts", "y.ts"] },
+      remaining: ["README"],
+      questions: ["Убрать поле?"],
+    };
+    expect(returnText(cargo)).toBe(
+      [
+        "Доработай перед приёмкой:",
+        "- F2 [P3] Нет примера — a.md:48",
+        "- F4 [P2] Гонка — b.ts",
+        "- Сохранённая проверка упала: разбери её вывод и исправь.",
+        "- CI не прошёл: build, lint.",
+        "- Слей origin/main и разреши конфликт в x.ts, y.ts, сохранив смысл обеих сторон.",
+        "- Доделай: README",
+        "- Ответ на «Убрать поле?»: ",
+      ].join("\n"),
+    );
+  });
+
+  it("gives only the first line without cargo or with an empty one", () => {
+    expect(returnText(empty)).toBe("Доработай перед приёмкой:");
+    expect(returnText(null)).toBe("Доработай перед приёмкой:");
+  });
+
+  it("names a finding without a file by itself", () => {
+    const review = { verdict: "defects" as const, summary: null, findings: [{ id: "F1", severity: "P3", title: "Тест", file: null, line: 3 }], reviews: 1 };
+    expect(returnText({ ...empty, review })).toBe("Доработай перед приёмкой:\n- F1 [P3] Тест");
   });
 });
