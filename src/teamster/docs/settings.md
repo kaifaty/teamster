@@ -223,6 +223,45 @@ their worktree paths go through `~/.teamster/worktrees`, which the rollback remo
    above first.
 4. Restart the launchd jobs and regenerate their plists; they set `CODEX_TASK_HOME` again.
 
+## Versioned installs
+
+`teamster upgrade [--source URL|PATH] [--ref REF] [--yes]` installs a version beside the others
+in the data home:
+
+- `versions/<version>/src/` holds the revision's `src/`, where `<version>` is `__version__` from its
+  `src/teamster/__init__.py`. A version directory never changes after it is installed.
+- `versions/current` is a symbolic link to one of them.
+- `bin/teamster` and `bin/codex-worker` are launchers: a short `sh` script that runs
+  `versions/current/src/teamster/__main__.py` with `-I` and the absolute path of the Python that ran
+  the upgrade. Run the upgrade again with another Python to rewrite them.
+
+The default source is the project repository at `origin/main`, through a cache clone in
+`versions/.source` that the command fetches. `--source PATH` uses a local clone as it is and
+`--ref` selects any revision. Without `--yes` the command prints the current and the new version and
+the live supervisors with the version each one runs, and changes nothing apart from fetching the cache
+clone. With `--yes` it:
+
+1. extracts the revision with `git archive` into a temporary directory in `versions/`;
+2. checks that `--version` prints the same version and `docs lead-guide` exits with 0, with isolated
+   Python and an empty temporary home;
+3. renames the directory to `versions/<version>`. When that version is already installed with the
+   same contents the step is skipped; with other contents the command refuses: the release should have
+   raised its version;
+4. writes the launchers when they are missing or differ;
+5. points `current` at the version by renaming a new link over it.
+
+A supervisor runs from the resolved path of `__main__.py`, so a task started through `current` keeps
+its own version directory, standing rules included, when `current` moves. A release whose
+`__init__.py` sets `REQUIRES_DRAIN = True` refuses `--yes` while any supervisor, scouts included, is
+alive and names them; other releases install while tasks run.
+
+`teamster versions` lists the installed versions, marks the current one with `*`, and names for each
+the live supervisors whose command line runs a `__main__.py` in it (read with `ps`).
+`teamster versions --prune` moves every version that is not current and that no live supervisor
+uses to `versions/.trash/<version>-<time>`; it never deletes anything. Upgrades and prunes take
+`versions/.lock`, one at a time. When the command runs from `versions/`, `duty plist` puts
+`bin/teamster` in `ProgramArguments`.
+
 ## Repository trust
 
 `codex exec` trusts the repository's main checkout in `config.toml` (`[projects."<repo>"] trust_level`),
