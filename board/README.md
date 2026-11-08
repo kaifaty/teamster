@@ -75,11 +75,16 @@ constellation's name and its repositories, where `*` stands for any run of chara
 gathers their stars in one place under a faint cloud with the constellation's name, and the system picker groups them.
 The server reads the file on each request through `GET /api/constellations`; it stays outside this public repository.
 In the middle of the galaxy stands the research station, fed by `GET /api/research`. It shows the reflection
-([reflection.md](../src/teamster/docs/reflection.md)): a gold light while lessons wait for your decision, a beam to every system with
-archived records that the next reflection will read while its panel is open, and probes flying to those systems while a run is going. A run is a desktop
-session of the reflection's scheduled task; it stays at the station and is not counted in any system. A click on the station opens
-its panel: the lessons to decide, the records under watch with their signals, and the settled lessons. Like the tanks, the
-station stays live during a replay.
+([reflection.md](../src/teamster/docs/reflection.md)): a gold light while lessons wait for your decision, gold rings running out
+from its dish while the analyst waits for your answer, a beam to every system with archived records that the next reflection
+will read while its panel is open, and probes flying to those systems while a run is going. A run is a `teamster reflect` task (or, before it, a
+desktop session of the reflection's scheduled task); it stays at the station and is not counted in any system.
+A click on the station opens its panel, a conversation with the station's staff. «Связь» holds one thread per study: your
+order, the analyst's reports with dockets (a lesson to accept, decline or ask about) and questions with answer options, and
+your replies; the archive keeper adds what the board knows itself. «Уроки» lists the index by status, «Наблюдение» the records
+under watch, each of which can be ordered into a study. The transmitter at the bottom gathers a round's decisions and answers,
+or a new order, into one command (`teamster lesson … && teamster say …`, or `teamster reflect …`) and copies it: the board
+never runs it. Like the tanks, the station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
 live `event` messages) in the map's words, newest first; in a system it shows only that system and folds to its newest
 line, as on a phone, opening over the map on demand together with the replay's scale. A line leads to its

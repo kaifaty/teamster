@@ -226,6 +226,7 @@ const researchMarks = computed(() =>
     ? {
         running: station.value.running,
         proposed: station.value.proposed.length,
+        waiting: station.value.waiting,
         watched: researchOpen.value ? station.value.watched : [],
         probes: station.value.probes,
       }
@@ -386,10 +387,23 @@ const stationLabel = computed(() => {
   const point = researchPosition(world.value, machineColumn.value, fuelColumn.value);
   const last = marks.batch ? `разбор ${shortDate(marks.batch.date)}` : "разборов не было";
   const proposed = marks.proposed.length;
-  // One note under the name, the most pressing one; the panel has the rest.
-  const note = marks.running ? "идёт разбор" : proposed ? `ждут решения ${proposed}` : last;
-  const title = [marks.running ? "идёт разбор" : last, `ждут решения ${proposed}`, `с сигналом ${marks.pending.signals} из ${marks.pending.records}`].join("\n");
-  return { style: at(point.x, point.y + RESEARCH_LABEL_DROP), note, title, running: marks.running, waiting: !marks.running && proposed > 0 };
+  const asks = marks.waiting;
+  // One note under the name, the most pressing one; the panel has the rest. A question waits on the human
+  // before anything else.
+  const note = asks ? `ждёт ответа ${asks}` : marks.running ? "идёт разбор" : proposed ? `ждут решения ${proposed}` : last;
+  const title = [
+    marks.running ? "идёт разбор" : last,
+    ...(asks ? [`ждут ответа ${asks}`] : []),
+    `ждут решения ${proposed}`,
+    `с сигналом ${marks.pending.signals} из ${marks.pending.records}`,
+  ].join("\n");
+  return {
+    style: at(point.x, point.y + RESEARCH_LABEL_DROP),
+    note,
+    title,
+    running: marks.running && !asks,
+    waiting: asks > 0 || (!marks.running && proposed > 0),
+  };
 });
 
 /** A label shows at most this many spare cells, one per free reset; the title has the count. */
@@ -1220,7 +1234,7 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <ResearchPanel v-if="researchOpen && active && station" :research="station" :now="now" @close="closeResearch" @open="open" />
+    <ResearchPanel v-if="researchOpen && active && station" :research="station" :now="now" :frame="frameLight" @close="closeResearch" @open="open" />
     <TaskPanel
       v-if="selected && active"
       :slug="selected"
