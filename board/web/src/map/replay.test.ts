@@ -3,7 +3,7 @@ import { FIXTURE_EVENTS, demoEvents, logEvent } from "../fixtures/events";
 import type { LogEvent, TaskSummary } from "../types";
 import { isFresh, placement } from "./placement";
 import { SCENARIO_HISTORY } from "./scenario";
-import { REPLAY_QUIET_SECONDS, replayDepartures, replayFleet, replayMarks, replayWindow } from "./replay";
+import { REPLAY_QUIET_SECONDS, departureOf, replayDepartures, replayExits, replayFleet, replayMarks, replayWindow } from "./replay";
 
 const T = 1_800_000_000;
 const base = { slug: "ship", repo: "demo", kind: "work" as const, provider: "claude", turn: 1 };
@@ -110,6 +110,21 @@ describe("replayFleet", () => {
     expect(at([ev({ phase: "work", provider: "codex", started: T, at: T + 60 })], T + 30)!.executor).toBe("codex");
     const orphans = [ev({ phase: "work", repo: null, started: T, at: T + 60 }), ev({ phase: "work", slug: null, started: T, at: T + 60 })];
     expect(replayFleet(orphans, T + 30)).toEqual([]);
+  });
+});
+
+describe("leaving the replay", () => {
+  it("fades every ship the live fleet lacks on going back on air, then keeps the live rule", () => {
+    const sun = replayExits(T + 3000, false, VOYAGE);
+    expect(departureOf("ship", "roadstead", sun)).toBe("dive");
+    const back = replayExits(null, true, VOYAGE);
+    expect(back).toEqual(new Map());
+    expect(departureOf("ship", "roadstead", back)).toBe("fade");
+    expect(departureOf("other", "yard", back)).toBe("fade");
+    const live = replayExits(null, false, VOYAGE);
+    expect(live).toBeUndefined();
+    expect(departureOf("ship", "roadstead", live)).toBe("dive");
+    expect(departureOf("ship", "yard", live)).toBe("fade");
   });
 });
 

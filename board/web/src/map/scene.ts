@@ -32,6 +32,7 @@ import {
 } from "./layout";
 import { FLEET, SPACE, SUN_KINDS } from "./palette";
 import type { Place, Placement } from "./placement";
+import { departureOf } from "./replay";
 
 export interface ShipEntry {
   task: TaskSummary;
@@ -783,7 +784,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     const known = new Set(entries.map((entry) => entry.task.slug));
     for (const item of [...ships.values()]) {
       if (known.has(item.slug) || item.leaving) continue;
-      item.leaving = departures ? (departures.get(item.slug) ?? "fade") : item.entry.placement.place === "roadstead" ? "dive" : "fade";
+      item.leaving = departureOf(item.slug, item.entry.placement.place, departures);
       if (still) removeShip(item);
     }
     const first = ships.size === 0;

@@ -177,6 +177,25 @@ export function replayDepartures(events: readonly LogEvent[], t: number): Map<st
   return result;
 }
 
+/**
+ * How the scene's missing ships leave on this update: at a replay moment `at`, as `replayDepartures` says; on the
+ * first live update after a replay (`replayed`), every ship the live fleet lacks fades, since none of them went
+ * into the sun just now; otherwise undefined, and the live map keeps its own rule.
+ */
+export function replayExits(at: number | null, replayed: boolean, events: readonly LogEvent[]): ReadonlyMap<string, "dive" | "fade"> | undefined {
+  if (at !== null) return replayDepartures(events, at);
+  return replayed ? new Map() : undefined;
+}
+
+/**
+ * How a ship that left the map at `place` goes: by `departures` when given, where a slug it lacks fades; otherwise
+ * into the sun from the roadstead and fading from anywhere else.
+ */
+export function departureOf(slug: string, place: string, departures?: ReadonlyMap<string, "dive" | "fade">): "dive" | "fade" {
+  if (departures) return departures.get(slug) ?? "fade";
+  return place === "roadstead" ? "dive" : "fade";
+}
+
 export interface ReplayMark {
   at: number;
   /** Share of the window, 0 to 1. */

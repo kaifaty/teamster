@@ -2,8 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { ArtIndex, LogEvent, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
-import { formatAge, formatDuration, formatUntil } from "../lib/format";
-import { ACTIVITY, EXECUTORS, PHASES, prLabel, problemLabel, taskTitle } from "../lib/labels";
+import { formatDuration, formatUntil } from "../lib/format";
+import { EXECUTORS, PHASES, problemLabel, shipLine, taskTitle } from "../lib/labels";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
 import DaySummary from "./DaySummary.vue";
@@ -12,7 +12,7 @@ import ShipLog from "./ShipLog.vue";
 import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines, type Star } from "./fleet";
 import { cardPlace, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
-import { replayDepartures, replayFleet } from "./replay";
+import { replayExits, replayFleet } from "./replay";
 import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type ShipEntry } from "./scene";
 import { useReplay } from "./useReplay";
 
@@ -52,7 +52,13 @@ const replay = useReplay(source, now);
 /** The moment the map shows: the replay's, or now. */
 const mapNow = computed(() => replay.at ?? now.value);
 const tasks = computed(() => (replay.at !== null ? replayFleet(replay.events, replay.at, liveTasks.value) : liveTasks.value));
-const departures = computed(() => (replay.at !== null ? replayDepartures(replay.events, replay.at) : undefined));
+/** Whether the scene's ships were last the replay's: going back on air, the ships the live fleet lacks fade. */
+let replayedShips = false;
+function setShips(next: ShipEntry[]) {
+  if (!scene) return;
+  scene.setShips(next, replayExits(replay.at, replayedShips, replay.events));
+  replayedShips = replay.at !== null;
+}
 
 // Galaxy: one star per repository, one depot per account. Null means the whole galaxy is shown.
 const repo = ref<string | null>(null);
@@ -129,14 +135,7 @@ function phaseText(task: TaskSummary): string {
 }
 
 /** The ship's line: its latest activity and how old it is, or why it no longer works. */
-function activityLine(task: TaskSummary, where: Placement): string {
-  if (task.column === "review_me") return task.pr ? `готово · ${prLabel(task.pr)}` : "готово";
-  if (!task.alive) return `${task.summary ?? problemLabel(task) ?? "надзиратель не запущен"} · ${formatAge(task.updated_at, mapNow.value)}`;
-  const activity = task.activity;
-  if (!activity) return task.summary ? `${task.summary} · ${formatAge(task.updated_at, mapNow.value)}` : "нет активности";
-  const age = where.stale && activity.at !== null ? ` · ${formatAge(activity.at, mapNow.value)}` : "";
-  return `${ACTIVITY[activity.kind].icon} ${activity.text}${age}`;
-}
+const activityLine = (task: TaskSummary, where: Placement) => shipLine(task, where.stale, mapNow.value, replay.at !== null);
 
 const STATION_TEXT: Record<Place, { name: string; note: string }> = {
   command: { name: "Штаб", note: "твои сессии" },
@@ -315,7 +314,7 @@ function feed() {
   scene.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value });
   scene.setArt(repoArt.value);
   scene.setView(repo.value);
-  scene.setShips(entries.value, departures.value);
+  setShips(entries.value);
   scene.setSelected(selected.value);
   scene.setHovered(hovered.value);
   scene.setActive(props.active);
@@ -372,7 +371,7 @@ function retry() {
 watch([starList, depotList, lines], () => scene?.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value }));
 watch(repoArt, (art) => scene?.setArt(art));
 watch(repo, (name) => scene?.setView(name), { flush: "sync" });
-watch(entries, (next) => scene?.setShips(next, departures.value));
+watch(entries, setShips);
 watch(selected, (slug) => scene?.setSelected(slug));
 watch(hovered, (slug) => scene?.setHovered(slug));
 watch(
