@@ -92,7 +92,7 @@ class Executor:
     def telemetry_provider(self, st, phase):
         return (self.provider if (st.get("kind", "work") == "work"
                                  and phase in ("work", "fix", "wrapup", "turn")
-                                 or st.get("kind") == "scout" and phase in ("scout", "turn")) else None)
+                                 or st.get("kind") in ("scout", "reflect") and phase in (st["kind"], "turn")) else None)
 
     def turn_fields(self, st):
         if self.telemetry_provider(st, "turn") is None:

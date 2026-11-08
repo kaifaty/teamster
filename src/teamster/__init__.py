@@ -13,6 +13,7 @@ Layer 2:
     notifications (implemented): notification processes and delivery.
     accounts (implemented): account homes, RPC, limits, and availability.
     claude_accounts (implemented): role-neutral Claude account pool and cached limits.
+    reflection (implemented): archive records for batch reflection, the reading room and the batch review.
 Layer 3:
     duty (implemented): duty account elections, the duty record and the new-work exclusion.
     claude_runner (implemented): isolated Claude transport and writable work turns.
@@ -62,7 +63,7 @@ namespaces. Only config.py and __main__.py may use __file__; usage text stays in
 The executors and reviewers registries share the register, get and names API.
 """
 
-__version__ = "1.57.1"
+__version__ = "1.58.0"
 # Raised by a release whose supervisors cannot run beside those of a different value;
 # upgrade --yes then refuses while a supervisor of another data layout is alive.
 DATA_LAYOUT = 1

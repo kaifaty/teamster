@@ -502,6 +502,134 @@ class ResultScoutConfigTests(RotationTestCase):
         for name in ("paused", "woke", "turn_finished"):
             self.assertEqual(self.notification("scout-sleep", name)["kind"], "scout")
 
+    def test_reflect_reads_new_records_in_a_room_and_records_the_batch_across_say(self):
+        self.configure(language="en")
+        self.configure_notify()
+        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "reflect", "reflect-none", "--executor", "codex"],
+                                cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no records to reflect on", result.stderr)
+        self.assertFalse((self.home / "claude-tasks" / "reflect-none").exists())
+        archive = self.reflect_archive()
+        record = archive / "new-task-20260103T000000Z"
+        size = 2 * 1024 * 1024 + 10
+        (record / "events.log").write_bytes(b"x" * (size - 4) + b"TAIL")
+        (record / "nested").mkdir()
+        (record / "nested" / "note.md").write_text("Nested note.\n")
+        (record / "linked.md").symlink_to(archive / "INDEX.md")
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        name = "batch-%s.md" % today
+        first = self.reflect_result(
+            "needs_decision", report="## New lessons\n\nFirst report.",
+            lessons=[self.reflect_lesson("V1", "first cue"),
+                     self.reflect_lesson("V2", "domain cue", "domain", ["repo-a", "repo-b"])],
+            questions=["Apply V1 now?", "Where should V2 go?"], options=[["yes", "no"], []])
+        second = self.reflect_result(report="Second report.", lessons=[
+            self.reflect_lesson("V1", "first cue | revised\nline"),
+            self.reflect_lesson("V2", "changed domain cue", "domain", ["repo-a"]),
+            self.reflect_lesson("V3", "third cue")])
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": first},
+                                                       {"mode": "complete", "reply": second}])
+
+        self.cli("reflect", "reflect-batch", "Focus on the checks.", "--executor", "codex")
+        output = self.wait("reflect-batch")
+        state = self.state("reflect-batch")
+        room = self.home / "claude-tasks" / "reflect-batch" / "room"
+        self.assertEqual((state["kind"], state["repo"], state["worktree"], state["reflect_mode"]),
+                         ("reflect", str(archive), str(room), "batch"))
+        self.assertEqual((state["reflect_through"], state["reflect_records"], state["reflect_file"]),
+                         ("20260103T000000Z", ["new-task-20260103T000000Z"], name))
+        self.assertEqual(state["max_turn_minutes"], 45)
+        self.assertEqual(state["result"], first)
+        self.assertEqual(self.git("-C", str(room), "rev-list", "--count", "HEAD"), "1")
+        self.assertEqual(self.git("-C", str(room), "status", "--porcelain", "--untracked-files=all"), "")
+        prefix = "records/new-task-20260103T000000Z/"
+        self.assertEqual(sorted(self.git("-C", str(room), "ls-files").splitlines()),
+                         ["INDEX.md", "batch-2026-01-02.md", prefix + "brief.md", prefix + "events.log",
+                          prefix + "nested/note.md", prefix + "state.json"])
+        truncated = (room / prefix / "events.log").read_bytes()
+        header = ("[truncated: last 262144 of %d bytes]\n" % size).encode()
+        self.assertEqual(truncated, header + (b"x" * (size - 4) + b"TAIL")[-262144:])
+        invocation, = self.invocations()
+        self.assertEqual(invocation["cwd"], str(room))
+        self.assertIn('sandbox_mode="read-only"', invocation["argv"])
+        worker = self.worker()
+        self.assertEqual(invocation["output_schema"], worker.result_schema.REFLECT_SCHEMA)
+        self.assertEqual(invocation["prompt"], worker.prompts.reflect_prompt(
+            "Focus on the checks.", ["new-task-20260103T000000Z"], "20260103T000000Z",
+            worker.config.accounts_config()))
+        self.assertTrue(invocation["prompt"].startswith("Focus on the checks.\n\n"))
+        self.assertEqual((archive / name).read_text(),
+                         "# Batch reflection %s\n\nthrough: 20260103T000000Z\n\ntask: reflect-batch\n\n"
+                         "## New lessons\n\nFirst report.\n" % today)
+        rows = (archive / "INDEX.md").read_text().splitlines()[4:]
+        self.assertEqual(rows, [
+            "| 2026-01-02 | batch-2026-01-02.md L1 | invariant | old cue | applied rules (PR #1) |",
+            "| %s | %s V1 | invariant | first cue | proposed |" % (today, name),
+            "| %s | %s V2 | domain repo-a, repo-b | domain cue | proposed |" % (today, name)])
+        for line in ("== result: NEEDS DECISION", "== batch: " + str(archive / name), "- V1: first cue",
+                     "1. Apply V1 now?\n   - yes\n   - no\n2. Where should V2 go?\n"):
+            self.assertIn(line, output)
+        self.assertNotIn("commits on", output)
+        event = self.notification("reflect-batch", "needs_input")
+        self.assertEqual((event["kind"], event["question"]), ("reflect", "Apply V1 now?"))
+
+        for args in (("--check", "touch forbidden"), ("--review",), ("--ci",)):
+            with self.subTest(args=args):
+                rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", "reflect-batch", "Answer."] + list(args),
+                                          cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("reflect is read-only", rejected.stderr)
+                self.assertEqual(len(self.invocations()), 1)
+        (archive / "INDEX.md").write_text((archive / "INDEX.md").read_text().replace(
+            "| domain cue | proposed |", "| domain cue | applied repo-a AGENTS.md (PR #2) |"))
+        self.cli("say", "reflect-batch", "1. yes 2. repo-a", "--max-minutes", "5")
+        self.assertIn("== result: done", self.wait("reflect-batch"))
+        state = self.state("reflect-batch")
+        self.assertEqual((state["max_turn_minutes"], state["reflect_file"]), (5, name))
+        resumed = self.invocations()[-1]
+        self.assertEqual((resumed["resume"], resumed["thread"]), (True, invocation["thread"]))
+        self.assertTrue((archive / name).read_text().endswith("task: reflect-batch\n\nSecond report.\n"))
+        self.assertEqual(sorted(path.name for path in archive.glob("batch-*.md")), ["batch-2026-01-02.md", name])
+        rows = (archive / "INDEX.md").read_text().splitlines()[4:]
+        self.assertEqual(rows, [
+            "| 2026-01-02 | batch-2026-01-02.md L1 | invariant | old cue | applied rules (PR #1) |",
+            "| %s | %s V1 | invariant | first cue / revised line | proposed |" % (today, name),
+            "| %s | %s V2 | domain repo-a, repo-b | domain cue | applied repo-a AGENTS.md (PR #2) |" % (today, name),
+            "| %s | %s V3 | invariant | third cue | proposed |" % (today, name)])
+
+    def test_reflect_failed_and_invalid_turns_leave_the_archive_and_clean_removes_the_room(self):
+        self.configure(language="en")
+        archive = self.reflect_archive()
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        (archive / ("batch-%s.md" % today)).write_text("# Batch reflection\n\nthrough: 20260102T000000Z\n")
+        valid = self.reflect_result(lessons=[self.reflect_lesson("V1", "cue")])
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "failed"}, {"mode": "complete", "reply": "not a reflect result"},
+            {"mode": "complete", "reply": valid}])
+        before = self.archive_contents()
+        for slug, error in (("reflect-failed", None), ("reflect-invalid", "invalid reflect result")):
+            with self.subTest(slug=slug):
+                self.cli("reflect", slug, "--executor", "codex")
+                self.cli("wait", slug, "--timeout", "60", timeout=75)
+                state = self.state(slug)
+                self.assertEqual(state["outcome"], "failed")
+                if error:
+                    self.assertEqual(state["error"], error)
+                self.assertNotIn("reflect_file", state)
+                self.assertEqual(self.archive_contents(), before)
+        self.cli("reflect", "reflect-ok", "--executor", "codex")
+        self.wait("reflect-ok")
+        name = "batch-%sb.md" % today
+        self.assertEqual(self.state("reflect-ok")["reflect_file"], name)
+        self.assertIn("through: 20260103T000000Z\n", (archive / name).read_text())
+        self.assertIn("| %s V1 | invariant | cue | proposed |" % name, (archive / "INDEX.md").read_text())
+        self.cli("clean", "reflect-ok")
+        self.assertFalse((self.home / "claude-tasks" / "reflect-ok").exists())
+        record, = archive.glob("reflect-ok-*")
+        self.assertFalse((record / "room").exists())
+        self.assertTrue((record / "state.json").is_file())
+
     def test_teamster_environment_overrides_legacy_names(self):
         overrides = {
             "RATE_POLL_SECONDS": "2", "ROLLOUT_SEARCH_SECONDS": "2", "WAIT_POLL_SECONDS": "2",

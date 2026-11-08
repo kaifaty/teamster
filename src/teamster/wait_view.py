@@ -1,6 +1,7 @@
 """Wait output rendering and the wait command."""
 import json
 import time
+from pathlib import Path
 
 from . import account_rotation, checking, ci_runs, clock, config, executors, procs, result_schema, reviewers, sandboxing, task_state, threads, turn_monitor
 
@@ -82,10 +83,33 @@ def wait_turn_lines(st, slug):
         else:
             raw = ("(no wrap-up result)" if st.get("wrapup", {}).get("outcome") not in (None, "completed")
                    else last.read_text().strip() if last.exists() else threads.last_message(st) or "(no final message)")
-            yield raw if st.get("kind") == "scout" else "\n".join(result_schema.result_lines(st.get("result"), raw))
+            if st.get("kind") == "reflect":
+                yield from wait_reflect_lines(st, raw)
+            else:
+                yield raw if st.get("kind") == "scout" else "\n".join(result_schema.result_lines(st.get("result"), raw))
             if publication and publication["pr"]:
                 yield "PR: " + publication["pr"]
     yield from checking.guarded_lines(checking.guarded_changes(st))
+
+
+def wait_reflect_lines(st, raw):
+    result = st.get("result")
+    if result is None:
+        yield "== result: unknown (no valid reflect result)"
+        yield raw
+        return
+    yield "== result: " + ("NEEDS DECISION" if result["status"] == "needs_decision" else "done")
+    yield result["summary"]
+    if st.get("reflect_file"):
+        yield "== batch: " + str(Path(st["repo"]) / st["reflect_file"])
+    if result["lessons"]:
+        yield "Lessons:"
+        yield from (f"- {lesson['id']}: {lesson['cue']}" for lesson in result["lessons"])
+    if result["questions"]:
+        yield "Questions:"
+        for number, (question, answers) in enumerate(zip(result["questions"], result["options"]), 1):
+            yield f"{number}. {question}"
+            yield from ("   - " + answer for answer in answers)
 
 
 def wait_round_lines(st):
@@ -107,7 +131,7 @@ def wait_round_lines(st):
 
 
 def wait_check_lines(st):
-    checks = [] if st.get("kind") == "scout" else st.get("checks", [])[st.get("check_start", 0):]
+    checks = [] if st.get("kind") in ("scout", "reflect") else st.get("checks", [])[st.get("check_start", 0):]
     for check in checks:
         for name, item in ((f"check `{check['cmd']}`", check), ("base tests", check.get("base_check"))):
             if not item:
@@ -207,7 +231,7 @@ def wait_stop_lines(st):
         yield "== errors: " + json.dumps(failed[-1], ensure_ascii=False)[:500]
     if st.get("error"):
         yield "== supervisor error: " + str(st["error"])
-    if st.get("kind") == "scout":
+    if st.get("kind") in ("scout", "reflect"):
         return
     yield f"== commits on {st['branch']}:"
     yield procs.sh(config.GIT + ["log", "--oneline", f"{st['base']}..HEAD"], cwd=st["worktree"], check=False) or "(none)"

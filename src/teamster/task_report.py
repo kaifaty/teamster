@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 TOKEN_KEYS = ("input", "cached_input", "output", "reasoning")
-MODEL_PHASES = frozenset(("work", "fix", "wrapup", "review", "scout"))
+MODEL_PHASES = frozenset(("work", "fix", "wrapup", "review", "scout", "reflect"))
 CHECK_PHASES = frozenset(("check", "base_check"))
 CI_OUTCOMES = frozenset(("passed", "failed", "timeout", "none"))
 CANCELLATION_OUTCOMES = ("stopped", "interrupted")

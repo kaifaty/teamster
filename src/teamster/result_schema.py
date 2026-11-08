@@ -51,6 +51,25 @@ REVIEW_SCHEMA = object_schema({
     })},
     "summary": {"type": "string"},
 })
+REFLECT_SCHEMA = object_schema({
+    "status": {"type": "string", "enum": ["done", "needs_decision"]},
+    "summary": {"type": "string", "description": "A short recap of the batch."},
+    "report": {"type": "string", "description": "Markdown body of the batch review, without its heading and through: line."},
+    "lessons": {"type": "array", "items": object_schema({
+        "id": {"type": "string"},
+        "cue": {"type": "string"},
+        "lesson": {"type": "string"},
+        "evidence": {"type": "string"},
+        "scope": {"type": "string", "enum": ["invariant", "domain"]},
+        "repos": {"type": "array", "items": {"type": "string"}},
+        "earlier": {"type": "array", "items": {"type": "string"}},
+        "caveats": {"type": "string"},
+        "proposal": {"type": "string"},
+    })},
+    "questions": {"type": "array", "items": {"type": "string"}},
+    "options": {"type": "array", "description": "options[i] holds 2-4 short answers to questions[i], or is empty for a free answer.",
+                "items": {"type": "array", "items": {"type": "string"}}},
+})
 
 
 def matches_schema(value, schema):
@@ -69,11 +88,18 @@ def matches_schema(value, schema):
     return False
 
 
-def parse_result(message, reviewing=False):
+def valid_reflect_result(value):
+    """The reflect schema, plus one options entry per question."""
+    return matches_schema(value, REFLECT_SCHEMA) and len(value["options"]) == len(value["questions"])
+
+
+def parse_result(message, reviewing=False, reflecting=False):
     try:
         value = json.loads(message)
     except (ValueError, TypeError):
         return None
+    if reflecting:
+        return value if valid_reflect_result(value) else None
     return value if matches_schema(value, REVIEW_SCHEMA if reviewing else RESULT_SCHEMA) else None
 
 

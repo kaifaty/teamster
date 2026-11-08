@@ -2,6 +2,7 @@
 
       teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
       teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E]  read-only research
+      teamster reflect <slug> ["order" | --file FILE] [--executor codex|claude] [--effort E] [--model M] [--max-minutes M]  batch reflection over archived records
       teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-timeout SEC] [--no-base-check] [--upgrade]
       teamster review <slug> [--effort E] [--review-model M] [--max-weekly P] [--reviewer codex|claude] [--review-angles LIST]  fresh review (task must be idle)
       teamster wait <slug> [--timeout SEC] [--through-sleep]  wait, show rotations and the result
@@ -147,16 +148,17 @@ OPTION_REGISTRY = (
                   "help": "work provider saved for the task (default: executor setting, codex)"},
      "synopsis": "[--executor codex|claude]",
      "commands": {"start": {}, "scout": {"default": "codex",
-                  "help": "scout provider (default: codex, ignores settings); claude requires a git directory"}}},
+                  "help": "scout provider (default: codex, ignores settings); claude requires a git directory"},
+                  "reflect": {"default": "claude", "help": "reflect provider (default: claude, ignores settings)"}}},
     {"names": ("--file",), "argparse": {},
      "synopsis": "--file FILE", "commands": {"say": {}}},
     {"names": ("--effort",), "argparse": {"default": None},
      "synopsis": "[--effort E]",
      "commands": {"start": {"help": "default: executor configuration"},
-                  "say": {}, "review": {}}},
+                  "say": {}, "review": {}, "reflect": {}}},
     {"names": ("--model",),
      "argparse": {"type": model_name, "metavar": "M", "help": "work model; default clears the saved override"},
-     "synopsis": "[--model M]", "commands": {"start": {}, "say": {}}},
+     "synopsis": "[--model M]", "commands": {"start": {}, "say": {}, "reflect": {}}},
     {"names": ("--review-model",),
      "argparse": {"type": model_name, "metavar": "M", "help": "Codex review model; default clears the saved override"},
      "synopsis": "[--review-model M]", "commands": {"start": {}, "say": {}, "review": {}}},
@@ -172,7 +174,9 @@ OPTION_REGISTRY = (
      "synopsis": "[--sandbox off|workspace]", "commands": {"start": {}}},
     {"names": ("--max-minutes",),
      "argparse": {"type": max_minutes, "help": "active exec time budget (default: max_turn_minutes setting)"},
-     "synopsis": "[--max-minutes M]", "commands": {"start": {}, "say": {}}},
+     "synopsis": "[--max-minutes M]",
+     "commands": {"start": {}, "say": {},
+                  "reflect": {"default": 45, "help": "active time budget of each reflect turn (default: 45)"}}},
     {"names": ("--max-weekly",),
      "argparse": {"type": max_weekly, "metavar": "P", "help": "replace the task weekly percentage point budget"},
      "synopsis": "[--max-weekly P]",
@@ -275,6 +279,7 @@ def command_synopsis(command):
 COMMAND_HANDLERS = {
     "start": commands.cmd_start,
     "scout": commands.cmd_scout,
+    "reflect": commands.cmd_reflect,
     "say": commands.cmd_say,
     "review": commands.cmd_review,
     "wait": wait_view.cmd_wait,
@@ -301,7 +306,7 @@ COMMAND_HANDLERS = {
 }
 # Commands that write task records, journals or cached limits hold the settings
 # lock shared, so migrate-home cannot move the data home under them.
-HOME_LOCKED_COMMANDS = ("start", "scout", "say", "review", "clean", "verdict", "accounts", "reset-credit",
+HOME_LOCKED_COMMANDS = ("start", "scout", "reflect", "say", "review", "clean", "verdict", "accounts", "reset-credit",
                         "claude-probe", "upgrade", "versions")
 
 
@@ -323,6 +328,12 @@ def main():
     s.add_argument("--effort", default=None)
     add_command_options(s, "scout")
     scout_parser = s
+    s = sub.add_parser("reflect", help="batch reflection over archived task records, read-only")
+    s.add_argument("slug")
+    s.add_argument("order", nargs="?")
+    s.add_argument("--file")
+    add_command_options(s, "reflect")
+    reflect_parser = s
     s = sub.add_parser("say")
     s.add_argument("slug")
     s.add_argument("message", nargs="?")
@@ -397,13 +408,18 @@ def main():
             scout_parser.error("one of the arguments question --file is required")
         if a.question is not None and a.file is not None:
             scout_parser.error("argument --file: not allowed with argument question")
+    elif sys.argv[1:2] == ["reflect"]:
+        a = reflect_parser.parse_intermixed_args(sys.argv[2:])
+        a.cmd = "reflect"
+        if a.order is not None and a.file is not None:
+            reflect_parser.error("argument --file: not allowed with argument order")
     else:
         a = p.parse_args()
     if a.cmd in ("start", "say") and a.review_angles is not None:
         a.review = True
     if a.cmd in ("start", "say") and a.fix_rounds is not None and not a.review:
         p.error("--fix-rounds requires --review")
-    if a.cmd in ("start", "scout", "say", "review", "_run", "accounts", "reset-credit", "login", "clean"):
+    if a.cmd in ("start", "scout", "reflect", "say", "review", "_run", "accounts", "reset-credit", "login", "clean"):
         config.CODEX["path"] = config.resolve_codex()
     if a.cmd in HOME_LOCKED_COMMANDS:
         with config.home_lock():

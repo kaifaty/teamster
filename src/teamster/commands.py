@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, installs, procs, prompts, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads
+from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, installs, procs, prompts, reflection, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads
 
 
 def main_repo(path):
@@ -150,10 +150,54 @@ def cmd_scout(a):
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
 
 
+def cmd_reflect(a):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", a.slug):
+        procs.die("slug: 2-41 chars of a-z, 0-9 and '-'")
+    cfg = config.accounts_config()
+    if (config.TASKS / a.slug).exists():
+        procs.die(f"task {a.slug!r} exists; pick another slug or clean it")
+    order = Path(a.file).read_text() if a.file else a.order
+    executor = executors.get(a.executor)
+    try:
+        executor.prepare(a.effort, cfg)
+    except ValueError as exc:
+        procs.die(str(exc))
+    archive = config.TASKS / ".archive"
+    records, through = reflection.pending_records(archive)
+    if not records:
+        procs.die("no records to reflect on")
+    d = config.TASKS / a.slug
+    d.mkdir(parents=True)
+    room = d / "room"
+    reflection.build_room(room, archive, records)
+    prompt = prompts.reflect_prompt(order, records, through, cfg)
+    (d / "brief.md").write_text(prompt)
+    st = {"slug": a.slug, "kind": "reflect", "repo": str(archive), "worktree": str(room), "branch": "",
+          "executor": executor.name, "effort": a.effort,
+          "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
+          "rotations": [], "reviews": [], "checks": [], "created": clock.CLOCK.time(), "turns": 0,
+          "reflect_mode": "batch", "reflect_through": through, "reflect_records": records,
+          "max_turn_minutes": a.max_minutes}
+    if a.model is not None:
+        st["task_model"] = None if a.model == "default" else a.model
+    task_state.save(st)
+    proc = supervisor.spawn(st, prompt, a.effort, kind="reflect")
+    for _ in range(300):
+        st = task_state.load(a.slug)
+        if executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    print(f"started reflect {a.slug}: {len(records)} records through {through}, executor {executor.name}, "
+          f"account {executor.account(st) or '?'}, {executor.cursor_label} {executor.cursor(st) or '?'}, "
+          f"pid {st.get('pid')}\n  reading room {room}")
+    print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
+
+
 def cmd_say(a):
     st = task_state.load(a.slug)
     move = installs.follow_pin(st, upgrade=getattr(a, "upgrade", False))
-    scouting = st.get("kind") == "scout"
+    reflecting = st.get("kind") == "reflect"
+    scouting = st.get("kind") in ("scout", "reflect")
     angles = getattr(a, "review_angles", None)
     reviewer = getattr(a, "reviewer", None)
     review_model = getattr(a, "review_model", None)
@@ -164,7 +208,7 @@ def cmd_say(a):
     if scouting and (a.check is not None or a.review or a.check_timeout is not None or a.fix_rounds is not None
                      or a.no_base_check or angles is not None or reviewer is not None or review_model is not None
                      or a.ci or a.no_ci or ci_command is not None or no_ci_command or a.ci_rounds is not None):
-        procs.die("scout is read-only; say --check, --check-timeout, --review, --reviewer, --review-model, --review-angles, --fix-rounds, --ci, --no-ci, --ci-command, --no-ci-command, --ci-rounds and --no-base-check are not supported")
+        procs.die(f"{st['kind']} is read-only; say --check, --check-timeout, --review, --reviewer, --review-model, --review-angles, --fix-rounds, --ci, --no-ci, --ci-command, --no-ci-command, --ci-rounds and --no-base-check are not supported")
     require_idle(st)
     msg = Path(a.file).read_text() if a.file else a.message
     if not msg or not msg.strip():
@@ -186,7 +230,8 @@ def cmd_say(a):
     if getattr(a, "task_type", None) is not None:
         st["task_type"] = a.task_type
     minutes = getattr(a, "max_minutes", None)
-    st["max_turn_minutes"] = minutes if minutes is not None else cfg.get("max_turn_minutes")
+    if minutes is not None or not reflecting:
+        st["max_turn_minutes"] = minutes if minutes is not None else cfg.get("max_turn_minutes")
     if no_ci_command:
         st["ci_command"] = None
     elif ci_command is not None:
@@ -213,7 +258,7 @@ def cmd_say(a):
     # If no thread was created (all accounts exhausted on start), retain the brief too.
     # spawn journals the message only once this turn is claimed: a refused say leaves no trace.
     supervisor.spawn(st, lambda: threads.followup_prompt(st, msg, cfg), a.effort or st.get("effort"),
-          current_message=True, kind="scout" if scouting else "work", review_after=a.review,
+          current_message=True, kind=st["kind"] if scouting else "work", review_after=a.review,
           fix_rounds=a.fix_rounds or 0)
     if move:
         print(move)
@@ -223,8 +268,8 @@ def cmd_say(a):
 def cmd_review(a):
     st = task_state.load(a.slug)
     move = installs.follow_pin(st)
-    if st.get("kind") == "scout":
-        procs.die("scout is read-only; review is not supported")
+    if st.get("kind") in ("scout", "reflect"):
+        procs.die(f"{st['kind']} is read-only; review is not supported")
     require_idle(st)
     cfg = config.accounts_config()
     reviewer = getattr(a, "reviewer", None) or st["reviewer"]
@@ -248,7 +293,7 @@ def describe(st, detail):
     else:
         state = "running" if supervisor_alive else "idle"
     reviewing = st.get("kind") == "review"
-    scouting = st.get("kind") == "scout"
+    scouting = st.get("kind") in ("scout", "reflect")
     executor = executors.from_state(st)
     account, thread = executor.status_account(st), executor.cursor(st)
     if reviewing:
@@ -257,7 +302,7 @@ def describe(st, detail):
         if reviews and ("review_account" not in st or st["review_account"] is not None):
             account, thread = reviews[-1]["account"], reviews[-1]["thread"]
     location = st["worktree"] if scouting else st["branch"]
-    label = "  scout" if scouting else ("  review" if reviewing else "")
+    label = "  " + st["kind"] if scouting else ("  review" if reviewing else "")
     line = (f"{st['slug']:24} {state:8} turns {st.get('turns', 0)}  {location}  "
             f"executor {executor.name}  account {account}  {'thread' if reviewing else executor.cursor_label} {thread[:13]}" + label
             + "  sandbox " + ("read-only" if scouting else st.get("sandbox", "off")))
@@ -275,6 +320,13 @@ def describe(st, detail):
         line += f"\nbase {switch['from']} is gone; checked against {switch['to']}"
     if not detail:
         return line
+    if st.get("kind") == "reflect":
+        result = st.get("result")
+        lines = [line, f"reading room {st['worktree']}",
+                 f"result {result['status']}: {result['summary']}" if result else "result: none"]
+        if st.get("reflect_file"):
+            lines.append(f"batch {Path(st['repo']) / st['reflect_file']}")
+        return "\n".join(lines)
     if scouting:
         return line + "\nlast message:\n" + (threads.last_message(st) or "(none)")
     pr = st.get("publish", {}).get("pr", "")
@@ -344,7 +396,7 @@ def print_claude_work_stats(st):
               for key in ("active_seconds", "cost_usd", "weekly_spent")}
     totals["tokens"] = {key: total((row.get("tokens") or {}).get(key) for row in rows)
                         for key in token_fields}
-    print("== Claude scout" if st.get("kind") == "scout" else "== Claude work", flush=True)
+    print("== Claude " + (st["kind"] if st.get("kind") in ("scout", "reflect") else "work"), flush=True)
     print(f"{'start (UTC)':20} {'min':>6} {'account':16} {'session':13} {'model':24} {'effort':7} "
           f"{'input':>10} {'output':>10} {'cached':>10} {'cost $':>10} {'weekly %':>8}")
     for row in rows + [totals]:
@@ -405,7 +457,9 @@ def cmd_clean(a):
     st = task_state.load(a.slug)
     if procs.alive(st.get("pid")):
         procs.die("still running; stop it first")
-    if st.get("kind") != "scout":
+    if st.get("kind") == "reflect":
+        shutil.rmtree(config.TASKS / a.slug / "room", ignore_errors=True)
+    elif st.get("kind") != "scout":
         repo, wt = st["repo"], st["worktree"]
         if Path(wt).exists():
             procs.sh(config.GIT + ["worktree", "remove", "--force", wt], cwd=repo)
@@ -429,7 +483,7 @@ def cmd_clean(a):
     except OSError as exc:
         procs.die(f"could not archive task record to {archive}: {exc}; record kept at {record}")
     print(f"cleaned {a.slug}; record in {archive}")
-    if st.get("kind") == "scout":
+    if st.get("kind") in ("scout", "reflect"):
         return
     try:
         # Use the report's own matching so the reminder agrees with `report`.

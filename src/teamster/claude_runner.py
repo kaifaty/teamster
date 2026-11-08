@@ -44,7 +44,7 @@ def stream_unavailable(event, account):
     return None
 
 
-def event_result(event, telemetry, token, account, reviewing=True, scouting=False):
+def event_result(event, telemetry, token, account, reviewing=True, scouting=False, reflecting=False):
     """Decode selected stream fields; return (result, unavailability reason)."""
     if not isinstance(event, dict):
         return None, "invalid JSON output"
@@ -82,7 +82,8 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
     if reason:
         return None, reason
     if event.get("is_error"):
-        return None, "review failed" if reviewing else "scout failed" if scouting else "work turn failed"
+        return None, ("review failed" if reviewing else "scout failed" if scouting
+                      else "reflect failed" if reflecting else "work turn failed")
     if scouting:
         answer = event.get("result")
         if not isinstance(answer, str) or not answer.strip():
@@ -90,7 +91,8 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
         return answer.replace(token, "[REDACTED]"), None
     result = event.get("structured_output")
     schema = result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA
-    if not result_schema.matches_schema(result, schema):
+    if not (result_schema.valid_reflect_result(result) if reflecting
+            else result_schema.matches_schema(result, schema)):
         return None, "invalid structured output"
     # A tool may echo its environment. Even a schema-valid answer must not
     # carry the credential into state, review files, or telemetry.
@@ -128,7 +130,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                task_dir=None, role="work"):
     """Execute and drain one stream; callers own role-specific lifecycle state."""
     scouting = role == "scout"
-    read_only = reviewing or scouting
+    reflecting = role == "reflect"
+    read_only = reviewing or scouting or reflecting
     response = {"outcome": "unavailable", "result": None, "reason": None, "deadline": deadline,
                 "telemetry": {"usage": {}, "cost_usd": None, "session_id": None,
                               "model": None, "reasoning_effort": None, "num_turns": None}}
@@ -144,7 +147,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     if executable is None:
         response["reason"] = "Claude CLI was not found"
         return response
-    schema = result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA
+    schema = (result_schema.REVIEW_SCHEMA if reviewing else result_schema.REFLECT_SCHEMA if reflecting
+              else result_schema.RESULT_SCHEMA)
     args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if not scouting:
         args += ["--json-schema", json.dumps(schema)]
@@ -190,7 +194,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     response["telemetry"].update(model=model, reasoning_effort=effort)
     buffer, eof, termination = b"", False, None
     events_failed = False
-    failure = "review failed" if reviewing else "scout failed" if scouting else "work turn failed"
+    failure = ("review failed" if reviewing else "scout failed" if scouting
+               else "reflect failed" if reflecting else "work turn failed")
     try:
         if started is not None:
             started(proc)
@@ -217,7 +222,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                     if not read_only and response["reason"] in (
                             "invalid structured output", "invalid JSON output", failure):
                         response.update(outcome="unknown", result=None)
-                    elif scouting and response["reason"] in (
+                    elif (scouting or reflecting) and response["reason"] in (
                             "invalid structured output", "invalid JSON output", "invalid scout output", failure):
                         response.update(outcome="failed", result=None)
                     break
@@ -270,7 +275,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                                 if event["result"]:
                                     response["raw_message"] = event["result"].replace(token, "[REDACTED]")
                         result, reason = event_result(event, response["telemetry"], token,
-                                                      account["name"], reviewing, scouting)
+                                                      account["name"], reviewing, scouting, reflecting)
                         if reason is not None:
                             response["reason"] = response["reason"] or reason
                             response["result"] = None
