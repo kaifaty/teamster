@@ -17,6 +17,8 @@ import {
   clampCamera,
   fitCamera,
   hashName,
+  limitZoom,
+  refitCamera,
   ringPoint,
   ringsOf,
   researchPosition,
@@ -32,6 +34,7 @@ import {
   type Size,
   type SystemFrame,
 } from "./layout";
+import { ZOOM_NOTCH, wheelAction, wheelDevice, type WheelDevice } from "./navigation";
 import { FLEET, SPACE, SUN_KINDS } from "./palette";
 import type { Place, Placement } from "./placement";
 import { departureOf } from "./replay";
@@ -68,6 +71,8 @@ export interface SceneOptions {
   onResearch: () => void;
   /** The world's shape and the camera over it, for the labels. */
   onCamera: (world: Size, camera: Camera) => void;
+  /** The labels over the canvas: the wheel and a pinch over them move the camera too. */
+  labels?: HTMLElement;
   onLost: () => void;
 }
 
@@ -109,12 +114,24 @@ const PUFF_EVERY = 0.15;
 const PUFF_LIFE = 1.7;
 /** Pixels the pointer may move and still make a click. */
 const CLICK_SLOP = 5;
-const WHEEL_ZOOM = 0.0016;
-const WHEEL_STEP = 80;
+/** Milliseconds without the wheel that end a gesture; the device is told again at the next one. */
+const WHEEL_GAP_MS = 250;
+/** Milliseconds the wheel and pinches are ignored after they entered or left a system, so that one gesture does one. */
 const WHEEL_PAUSE_MS = 900;
+/**
+ * How far zooming out past the fitted system goes back to the galaxy, and zooming in past the closest galaxy over a
+ * star enters its system, as natural logarithms: by notches of the wheel or keys, one notch out and two in; by a
+ * pinch, which easily runs on a little, further.
+ */
+const LEAVE_BEYOND = { notch: 0.2, pinch: 0.5 };
+const ENTER_BEYOND = { notch: 0.4, pinch: 0.6 };
+/** How fast a zoom by the wheel or a key glides to its goal, per second. */
+const GLIDE_RATE = 14;
 /** The art is cropped a little wider than the ball, to keep its glow; see art/prepare.py. */
 const BALL_MARGIN = 1.04;
 const SUN_MARGIN = 1.5;
+/** The share of the camera's move the sky follows; the sky is 15% larger than the window, see fitBackdrop. */
+const SKY_DRIFT = 0.1;
 
 const ROUTE_BEND = 0.14;
 const FIX_BEND = -0.07;
@@ -391,7 +408,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   let world = worldSize(viewport);
   let fit = fitCamera(world, viewport);
-  let camera = fit;
+  /** The cameras over the galaxy and over the system shown; the galaxy's stays while a system is open. */
+  let galaxyView = fit;
+  let systemView = fit;
+  /** The fitted camera and the window the cameras were last laid out for. */
+  let fitted = { fit, viewport };
   let frame: SystemFrame = systemFrame(world);
   let model: GalaxyModel = { stars: [], depots: [], lines: [], research: null };
   let stars = new Map<string, Point>();
@@ -403,6 +424,12 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   let flash = 0;
   let selected: string | null = null;
   let hovered: string | null = null;
+  /** Where a zoom by the wheel or a key glides to; a trackpad and fingers move the camera at once. */
+  let glide: { zoom: number; at: Point } | null = null;
+  /** How far the zoom asked past its limit since it reached it, as a natural logarithm: see limitZoom. */
+  let beyond = 0;
+  /** Until when the wheel and pinches are ignored, in performance.now() milliseconds. */
+  let pausedUntil = 0;
   let disposed = false;
   let repoArt: ArtIndex = {};
   /** The focused system's own planet, in place of the shipyard's. */
@@ -419,7 +446,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const spot: Point = { x: 0, y: 0 };
   const spot2: Point = { x: 0, y: 0 };
 
-  const report = () => options.onCamera(world, repo ? camera : fit);
+  const view = (): Camera => (repo ? systemView : galaxyView);
+  const report = () => options.onCamera(world, view());
 
   // Drawing what changes rarely ---------------------------------------------------------------------
 
@@ -669,9 +697,15 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   }
 
   function layoutAll() {
-    world = worldSize(viewport);
+    const shaped = worldSize(viewport);
+    const reshaped = shaped.width !== world.width || shaped.height !== world.height;
+    world = shaped;
     fit = fitCamera(world, viewport);
-    camera = fit;
+    // A new window keeps what the cameras looked at; a world of another shape starts from the whole of it.
+    galaxyView = reshaped ? fit : refitCamera(galaxyView, fitted, fit, viewport, world);
+    systemView = reshaped ? fit : refitCamera(systemView, fitted, fit, viewport, world);
+    fitted = { fit, viewport };
+    glide = null;
     frame = systemFrame(world);
     fitBackdrop(backdrop);
     fitBackdrop(systemBackdrop);
@@ -1248,6 +1282,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     const goal = repo ? 1 : 0;
     const step = still ? 1 : elapsed / FLIGHT_SECONDS;
     flight = goal > flight ? Math.min(goal, flight + step) : Math.max(goal, flight - step);
+    if (glide) glideStep(dt);
 
     drawDust();
     const inGalaxy = flight < FALL;
@@ -1258,27 +1293,34 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     if (inGalaxy) {
       const u = flight / FALL;
       const star = (focus && stars.get(focus)) || { x: world.width / 2, y: world.height / 2 };
-      const zoom = fit.zoom * (1 + u * u * 5);
-      const screen = { x: star.x * fit.zoom + fit.tx, y: star.y * fit.zoom + fit.ty };
+      const zoom = galaxyView.zoom * (1 + u * u * 5);
+      const screen = { x: star.x * galaxyView.zoom + galaxyView.tx, y: star.y * galaxyView.zoom + galaxyView.ty };
       const target = { x: screen.x + (viewport.width / 2 - screen.x) * u, y: screen.y + (viewport.height / 2 - screen.y) * u };
       place(galaxy, { zoom, tx: target.x - star.x * zoom, ty: target.y - star.y * zoom });
       frameGalaxy();
       veilAlpha = u * u;
     } else {
       const v = (flight - FALL) / (1 - FALL);
-      const zoom = camera.zoom * (0.82 + 0.18 * v);
+      const zoom = systemView.zoom * (0.82 + 0.18 * v);
       const middle = { x: viewport.width / 2, y: viewport.height / 2 };
-      place(system, { zoom, tx: middle.x - ((middle.x - camera.tx) / camera.zoom) * zoom, ty: middle.y - ((middle.y - camera.ty) / camera.zoom) * zoom });
+      place(system, {
+        zoom,
+        tx: middle.x - ((middle.x - systemView.tx) / systemView.zoom) * zoom,
+        ty: middle.y - ((middle.y - systemView.ty) / systemView.zoom) * zoom,
+      });
       frameSystem(dt);
       veilAlpha = 1 - v;
     }
     veil.clear();
     if (veilAlpha > 0) veil.rect(0, 0, viewport.width, viewport.height).fill({ color: SPACE.void, alpha: veilAlpha });
 
-    // The sky drifts a little behind the camera.
-    const view = repo ? camera : fit;
+    // The sky drifts a little behind the camera, never further than its margin past the window.
+    const looked = worldPoint({ x: viewport.width / 2, y: viewport.height / 2 });
     const sky = inGalaxy ? backdrop : systemBackdrop;
-    sky.position.set(viewport.width / 2 + (view.tx - fit.tx) * 0.06, viewport.height / 2 + (view.ty - fit.ty) * 0.06);
+    sky.position.set(
+      viewport.width / 2 - (looked.x - world.width / 2) * fit.zoom * SKY_DRIFT,
+      viewport.height / 2 - (looked.y - world.height / 2) * fit.zoom * SKY_DRIFT,
+    );
   }
 
   // Pointer ---------------------------------------------------------------------------------------
@@ -1289,8 +1331,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   }
 
   function worldPoint(screen: Point): Point {
-    const view = repo ? camera : fit;
-    return { x: (screen.x - view.tx) / view.zoom, y: (screen.y - view.ty) / view.zoom };
+    const { zoom, tx, ty } = view();
+    return { x: (screen.x - tx) / zoom, y: (screen.y - ty) / zoom };
   }
 
   function starAt(point: Point): string | null {
@@ -1320,29 +1362,120 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     return best;
   }
 
+  // Camera ----------------------------------------------------------------------------------------
+
+  function put(next: Camera) {
+    if (repo) systemView = next;
+    else galaxyView = next;
+    report();
+  }
+
+  /** Moves the world by (dx, dy) screen pixels. */
+  function panBy(dx: number, dy: number) {
+    glide = null;
+    const current = view();
+    put(clampCamera({ ...current, tx: current.tx + dx, ty: current.ty + dy }, world, viewport));
+  }
+
+  /**
+   * Zooms by `factor` around the screen point `at`: by a notch, gliding there, or following a pinch. Zooming on past
+   * the fitted system goes back to the galaxy, and past the closest galaxy over a star enters its system.
+   */
+  function zoomBy(factor: number, at: Point, notch: boolean) {
+    const nowMs = performance.now();
+    if (nowMs < pausedUntil || flight !== (repo ? 1 : 0)) return;
+    const { zoom, past } = limitZoom(glide ? glide.zoom : view().zoom, factor, fit);
+    beyond = past === 0 || Math.sign(past) !== Math.sign(beyond) ? past : beyond + past;
+    const kind = notch ? "notch" : "pinch";
+    if (repo && beyond <= -LEAVE_BEYOND[kind]) {
+      beyond = 0;
+      pausedUntil = nowMs + WHEEL_PAUSE_MS;
+      options.onLeave();
+      return;
+    }
+    if (!repo && beyond >= ENTER_BEYOND[kind]) {
+      beyond = 0;
+      const star = starAt(worldPoint(at));
+      if (star) {
+        pausedUntil = nowMs + WHEEL_PAUSE_MS;
+        options.onEnter(star);
+        return;
+      }
+    }
+    if (notch && !still) {
+      glide = { zoom, at };
+      return;
+    }
+    glide = null;
+    const current = view();
+    put(clampCamera(zoomCamera(current, zoom / current.zoom, at, fit), world, viewport));
+  }
+
+  function glideStep(dt: number) {
+    const target = glide!;
+    const current = view();
+    const ratio = target.zoom / current.zoom;
+    const done = Math.abs(Math.log(ratio)) < 0.002;
+    put(clampCamera(zoomCamera(current, done ? ratio : ratio ** (1 - Math.exp(-dt * GLIDE_RATE)), target.at, fit), world, viewport));
+    if (done) glide = null;
+  }
+
+  // Pointer, wheel and keys -------------------------------------------------------------------------
+
+  /** The pointers pressed on the canvas: one drags the map, two pinch it. */
+  const pointers = new Map<number, Point>();
+  /** The press that may still be a click: where it began, and the camera then. */
   let press: { at: Point; camera: Camera; dragged: boolean } | null = null;
+  let pinch: { distance: number; middle: Point } | null = null;
+
+  const pinchOf = () => {
+    const [a, b] = [...pointers.values()] as [Point, Point];
+    return { distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), middle: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+  };
+  const pressFrom = (at: Point, dragged: boolean) => {
+    press = { at, camera: view(), dragged };
+  };
 
   const onDown = (event: PointerEvent) => {
-    press = { at: screenPoint(event), camera, dragged: false };
+    if (event.button !== 0 || pointers.size >= 2) return;
+    pointers.set(event.pointerId, screenPoint(event));
     canvas.setPointerCapture(event.pointerId);
+    glide = null;
+    if (pointers.size === 1) {
+      pressFrom(screenPoint(event), false);
+      return;
+    }
+    // A second finger: a pinch, and no click.
+    press = null;
+    pinch = pinchOf();
   };
 
   let lastHover: string | null = null;
   const onMove = (event: PointerEvent) => {
     const at = screenPoint(event);
-    if (press) {
-      const dx = at.x - press.at.x;
-      const dy = at.y - press.at.y;
-      if (Math.hypot(dx, dy) > CLICK_SLOP) press.dragged = true;
-      if (press.dragged && repo) {
-        camera = clampCamera({ ...press.camera, tx: press.camera.tx + dx, ty: press.camera.ty + dy }, world, viewport);
-        report();
+    if (pointers.has(event.pointerId)) {
+      pointers.set(event.pointerId, at);
+      if (pinch && pointers.size === 2) {
+        // The world under the fingers follows their middle, then grows or shrinks around it.
+        const next = pinchOf();
+        panBy(next.middle.x - pinch.middle.x, next.middle.y - pinch.middle.y);
+        zoomBy(next.distance / pinch.distance, next.middle, false);
+        pinch = next;
+      } else if (press) {
+        const dx = at.x - press.at.x;
+        const dy = at.y - press.at.y;
+        if (Math.hypot(dx, dy) > CLICK_SLOP) press.dragged = true;
+        if (press.dragged) {
+          glide = null;
+          put(clampCamera({ ...press.camera, tx: press.camera.tx + dx, ty: press.camera.ty + dy }, world, viewport));
+          canvas.style.cursor = "grabbing";
+        }
       }
       return;
     }
     const point = worldPoint(at);
     const found = repo ? shipAt(point) : (starAt(point) ?? (researchAt(point) ? "research" : null));
-    canvas.style.cursor = found ? "pointer" : repo && camera.zoom > fit.zoom ? "grab" : "";
+    canvas.style.cursor = found ? "pointer" : view().zoom > fit.zoom * 1.001 ? "grab" : "";
     const slug = repo ? found : null;
     if (slug !== lastHover) {
       lastHover = slug;
@@ -1351,8 +1484,16 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   };
 
   const onUp = (event: PointerEvent) => {
+    if (!pointers.delete(event.pointerId)) return;
+    if (pointers.size === 1) {
+      // The finger left of a pinch drags on from where it is.
+      pinch = null;
+      pressFrom([...pointers.values()][0]!, true);
+      return;
+    }
     const wasDragged = press?.dragged ?? true;
     press = null;
+    canvas.style.cursor = "";
     if (wasDragged) return;
     const point = worldPoint(screenPoint(event));
     if (repo) {
@@ -1365,39 +1506,93 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     else if (researchAt(point)) options.onResearch();
   };
 
-  const onCancel = () => {
+  const onCancel = (event: PointerEvent) => {
+    if (!pointers.delete(event.pointerId)) return;
+    pinch = null;
     press = null;
+    if (pointers.size === 1) pressFrom([...pointers.values()][0]!, true);
   };
 
-  // In a system the wheel zooms; past the fitted view it goes back to the galaxy. In the galaxy, forward
-  // over a star enters it.
-  let wheel = 0;
-  let wheelAt = 0;
+  /** Over the canvas or a label on it: the wheel there moves the camera; over the log and the panels it scrolls them. */
+  const onMap = (target: EventTarget | null) => target === canvas || (target instanceof Node && !!options.labels?.contains(target));
+
+  // A mouse wheel zooms by notches; a trackpad moves the map with two fingers and zooms it with a pinch (the wheel with
+  // Ctrl). The device is told at the start of each gesture: a trackpad's slow first event can pass for a notch.
+  let gesture: { device: WheelDevice; last: number } | null = null;
   const onWheel = (event: WheelEvent) => {
+    if (!onMap(event.target)) return;
     event.preventDefault();
     const nowMs = performance.now();
-    if (nowMs - wheelAt < WHEEL_PAUSE_MS) return;
-    const at = screenPoint(event);
-    if (repo && (event.deltaY < 0 || camera.zoom > fit.zoom * 1.001)) {
-      wheel = 0;
-      camera = clampCamera(zoomCamera(camera, Math.exp(-event.deltaY * WHEEL_ZOOM), at, fit), world, viewport);
-      report();
-      return;
+    const device = wheelDevice(event);
+    if (!gesture || nowMs - gesture.last > WHEEL_GAP_MS) {
+      gesture = { device, last: nowMs };
+    } else {
+      if (device === "trackpad") gesture.device = "trackpad";
+      gesture.last = nowMs;
     }
-    wheel += event.deltaY;
-    if (Math.abs(wheel) < WHEEL_STEP) return;
-    const forward = wheel < 0;
-    wheel = 0;
-    if (repo && !forward) {
-      wheelAt = nowMs;
-      options.onLeave();
-    } else if (!repo && forward) {
-      const star = starAt(worldPoint(at));
-      if (star) {
-        wheelAt = nowMs;
-        options.onEnter(star);
-      }
+    if (nowMs < pausedUntil || safariPinch || pointers.size) return;
+    const action = wheelAction(event, gesture.device);
+    if (action.kind === "pan") panBy(action.dx, action.dy);
+    else zoomBy(action.factor, screenPoint(event), action.notch);
+  };
+
+  // Safari tells a pinch on the trackpad by its own gesture events, with the scale since the pinch began.
+  let safariPinch: { scale: number } | null = null;
+  const onGestureStart = (event: Event) => {
+    if (!onMap(event.target)) return;
+    event.preventDefault();
+    if (pointers.size >= 2) return;
+    safariPinch = { scale: 1 };
+    glide = null;
+  };
+  const onGestureChange = (event: Event) => {
+    if (!onMap(event.target)) return;
+    event.preventDefault();
+    const { scale, clientX, clientY } = event as Event & { scale: number; clientX: number; clientY: number };
+    if (!safariPinch || pointers.size >= 2 || !scale) return;
+    const factor = scale / safariPinch.scale;
+    safariPinch.scale = scale;
+    const rect = canvas.getBoundingClientRect();
+    zoomBy(factor, { x: clientX - rect.left, y: clientY - rect.top }, false);
+  };
+  const onGestureEnd = (event: Event) => {
+    safariPinch = null;
+    if (onMap(event.target)) event.preventDefault();
+  };
+
+  const onKey = (event: KeyboardEvent) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const middle = { x: viewport.width / 2, y: viewport.height / 2 };
+    const step = Math.round(Math.min(viewport.width, viewport.height) * 0.15);
+    switch (event.key) {
+      case "+":
+      case "=":
+        zoomBy(ZOOM_NOTCH, middle, true);
+        break;
+      case "-":
+      case "_":
+        zoomBy(1 / ZOOM_NOTCH, middle, true);
+        break;
+      case "0":
+        glide = null;
+        put(fit);
+        break;
+      case "ArrowLeft":
+        panBy(step, 0);
+        break;
+      case "ArrowRight":
+        panBy(-step, 0);
+        break;
+      case "ArrowUp":
+        panBy(0, step);
+        break;
+      case "ArrowDown":
+        panBy(0, -step);
+        break;
+      default:
+        return;
     }
+    event.preventDefault();
   };
 
   const onContextLost = (event: Event) => {
@@ -1405,11 +1600,16 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     options.onLost();
   };
 
+  const host = options.host;
   canvas.addEventListener("pointerdown", onDown);
   canvas.addEventListener("pointermove", onMove);
   canvas.addEventListener("pointerup", onUp);
   canvas.addEventListener("pointercancel", onCancel);
-  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("keydown", onKey);
+  host.addEventListener("wheel", onWheel, { passive: false });
+  host.addEventListener("gesturestart", onGestureStart);
+  host.addEventListener("gesturechange", onGestureChange);
+  host.addEventListener("gestureend", onGestureEnd);
   canvas.addEventListener("webglcontextlost", onContextLost);
 
   const resize = new ResizeObserver(() => {
@@ -1438,13 +1638,15 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       if (next !== null) {
         clearShips();
         focus = next;
-        camera = fit;
+        systemView = fit;
         paintSun(sun, next);
         corona.tint = sunKind(next).glow;
         dressSystem(next);
       }
       repo = next;
       lastHover = null;
+      glide = null;
+      beyond = 0;
       report();
     },
     setShips,
@@ -1466,7 +1668,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("pointercancel", onCancel);
-      canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("keydown", onKey);
+      host.removeEventListener("wheel", onWheel);
+      host.removeEventListener("gesturestart", onGestureStart);
+      host.removeEventListener("gesturechange", onGestureChange);
+      host.removeEventListener("gestureend", onGestureEnd);
       canvas.removeEventListener("webglcontextlost", onContextLost);
       // The textures stay in the Assets cache for the next scene.
       app.destroy({ removeView: true }, { children: true });

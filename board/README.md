@@ -29,8 +29,11 @@ in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy s
 as a fuel depot, with lines from the depots to the systems they feed. A click on a star flies into its system: the
 sun is the main branch, and each task is a ship that moves towards it, from the yard through the range, the
 inspection and the hypergate to the roadstead, where it waits for you. Sleeping ships drift in the cryofield, the
-lead's sessions stay at the command station. In a system the wheel zooms and dragging moves the camera; the wheel
-past the full view or Esc goes back. `board/web/src/map/placement.ts` decides the station and the action.
+lead's sessions stay at the command station. The galaxy and a system move alike: a mouse wheel zooms around the
+pointer, two fingers on a trackpad move the camera in any direction and a pinch zooms, dragging moves the camera, and
+`+`, `-`, the arrows and `0` (the whole view) work on the focused map. Zooming on past the closest galaxy over a star enters
+its system; past the full view of a system, or Esc, goes back. `board/web/src/map/navigation.ts` tells a mouse wheel
+from a trackpad. `board/web/src/map/placement.ts` decides the station and the action.
 `board/web/art/` holds the prompts of the art and the script that prepares it.
 A repository may look like itself: `<data home>/board-art/<repo>/` can hold its own `sky.jpg`, `planet.png` and `emblem.png`, outside
 this public repository. The sky replaces the system's shared sky, the planet its shipyard, and the emblem stands next to the star's
