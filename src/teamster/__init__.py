@@ -26,7 +26,7 @@ Layer 5:
     telemetry_log (implemented): journal rows and phase telemetry.
     publishing (implemented): completed turns and work or pull request publishing.
     home_migration (implemented): migrate-home moves from the Codex home into the data home.
-    installs (implemented): side-by-side version installs, launchers and the current link.
+    installs (implemented): side-by-side version installs, launchers, the current link and task pins.
 Layer 6:
     checking (implemented): guarded paths and check or base-check execution.
     account_rotation (implemented): account errors, waits, and login refresh.
@@ -62,7 +62,7 @@ namespaces. Only config.py and __main__.py may use __file__; usage text stays in
 The executors and reviewers registries share the register, get and names API.
 """
 
-__version__ = "1.56.0"
+__version__ = "1.57.0"
 # Raised by a release whose supervisors cannot run beside those of a different value;
 # upgrade --yes then refuses while a supervisor of another data layout is alive.
 DATA_LAYOUT = 1

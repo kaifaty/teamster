@@ -2,7 +2,7 @@
 
       teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
       teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E]  read-only research
-      teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-timeout SEC] [--no-base-check]
+      teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-timeout SEC] [--no-base-check] [--upgrade]
       teamster review <slug> [--effort E] [--review-model M] [--max-weekly P] [--reviewer codex|claude] [--review-angles LIST]  fresh review (task must be idle)
       teamster wait <slug> [--timeout SEC] [--through-sleep]  wait, show rotations and the result
       teamster status [<slug>]                       state, account and current thread
@@ -228,6 +228,10 @@ OPTION_REGISTRY = (
     {"names": ("--no-base-check",),
      "argparse": {"action": "store_true", "help": "disable the saved base check"},
      "synopsis": "[--no-base-check]", "commands": {"say": {}}},
+    {"names": ("--upgrade",),
+     "argparse": {"action": "store_true",
+                  "help": "run this turn and later ones in this version instead of the task's pinned version"},
+     "synopsis": "[--upgrade]", "commands": {"say": {}}},
 )
 
 

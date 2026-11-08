@@ -152,6 +152,7 @@ def cmd_scout(a):
 
 def cmd_say(a):
     st = task_state.load(a.slug)
+    move = installs.follow_pin(st, upgrade=getattr(a, "upgrade", False))
     scouting = st.get("kind") == "scout"
     angles = getattr(a, "review_angles", None)
     reviewer = getattr(a, "reviewer", None)
@@ -213,11 +214,14 @@ def cmd_say(a):
     prompt = threads.followup_prompt(st, msg, cfg)
     supervisor.spawn(st, prompt, a.effort or st.get("effort"), current_message=True,
           kind="scout" if scouting else "work", review_after=a.review, fix_rounds=a.fix_rounds or 0)
+    if move:
+        print(move)
     print(f"sent to {a.slug} (turn {st['turns']}), pid {st['pid']}")
 
 
 def cmd_review(a):
     st = task_state.load(a.slug)
+    move = installs.follow_pin(st)
     if st.get("kind") == "scout":
         procs.die("scout is read-only; review is not supported")
     require_idle(st)
@@ -230,6 +234,8 @@ def cmd_review(a):
     budgets.set_weekly_budget(st, getattr(a, "max_weekly", None), cfg)
     st["review_angles"] = a.review_angles
     supervisor.spawn(st, prompts.review_prompt(st, cfg), a.effort or st.get("effort"), kind="review")
+    if move:
+        print(move)
     print(f"reviewing {a.slug}, pid {st['pid']}")
 
 

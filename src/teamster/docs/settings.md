@@ -265,10 +265,32 @@ release which changed the layout still waits. A supervisor outside `versions/` c
 of the process that runs the upgrade (`1` when it has none). Releases with the same layout install
 while tasks run.
 
+A task stays on the version it started on. Each spawn records `runtime` in its state: `version` (the
+`__version__` that spawned the turn) and `script` (the resolved `__main__.py` its `_run` supervisor
+runs). The task's pinned version is `runtime.version`, else `plugin_version` for records from before
+`runtime`. Before `say` or `review` changes the state, it compares that version with its own; when they
+differ, `versions/<pinned>/src/teamster/__main__.py` exists, and that version's `DATA_LAYOUT` equals
+the one of `current`, the command re-runs itself there with `os.execv`: the same Python and arguments,
+with `TEAMSTER_PINNED=<pinned>` in the environment. From the check until the re-run exits it holds
+`versions/.lock` shared, so `versions --prune` waits instead of moving that version away. A command
+that already has `TEAMSTER_PINNED` never re-runs again, and removes the variable before it starts a
+supervisor; when the task is pinned to another version by then, because a `say --upgrade` finished in
+between, it stops and asks to run the command again. Otherwise the turn runs on the
+command's own version and the command prints one line, `task <slug> moves from <old> to <new>` (`<old>`
+is `unknown` for a record without a version): the pinned version was pruned, never was in `versions/`
+(a uv tool install or a task from before 1.55), or has another `DATA_LAYOUT`. `say --upgrade` skips the
+check and moves the task, with the same line, to the version that runs it: the current one through the
+launchers. `review` has no such option. `start` and `scout` always run on their own version; `status`, `wait`,
+`stats`, `report`, `clean`, `verdict`, `stop` and the board read the state of every version and never
+re-run. A version without the pinning code, such as 1.55 or 1.56, runs `say` without recording `runtime`, so
+its tasks stay with it until `say --upgrade` or a prune.
+
 `teamster versions` lists the installed versions, marks the current one with `*`, and names for each
-the live supervisors whose command line runs a `__main__.py` in it (read with `ps`).
+the live supervisors whose command line runs a `__main__.py` in it (read with `ps`), then the number
+of idle tasks pinned to it, archived tasks not counted.
 `teamster versions --prune` moves every version that is not current and that no live supervisor
-uses to `versions/.trash/<version>-<time>`; it never deletes anything.
+uses to `versions/.trash/<version>-<time>`; it never deletes anything. Idle tasks pinned to a moved
+version move to the current version at their next `say`.
 
 Locks: upgrades and prunes run one at a time under `versions/.upgrade.lock`, which also covers the clone
 and fetch of the cache clone. A supervisor start holds `versions/.lock` shared until its pid is saved;

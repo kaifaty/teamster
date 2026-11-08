@@ -4,6 +4,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,11 +14,13 @@ from unittest import mock
 # Isolated Python omits the script directory from its import path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from make_state_fixtures import ROOT_PLACEHOLDER
 from worker_loader import load_worker
 
 
 SCRIPT = (Path(__file__).resolve().parents[1]
           / "src/teamster/__main__.py")
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def literal_mapping_keys(node):
@@ -109,7 +112,7 @@ st[dynamic_key] = 1
         unused = registered - used
         self.assertFalse(missing, "Unregistered state keys: " + ", ".join(sorted(missing)))
         self.assertFalse(unused, "Unused state registry keys: " + ", ".join(sorted(unused)))
-        self.assertEqual(len(registered), 89)
+        self.assertEqual(len(registered), 90)
         for key, field in self.worker.task_state.STATE_FIELDS.items():
             with self.subTest(key=key):
                 self.assertIn(field.lifetime, {"task", "history", "cursor", "turn", "attempt", "runtime"})
@@ -137,7 +140,7 @@ st[dynamic_key] = 1
             "max_turn_minutes": 11, "needs_login": ["old-work"], "outcome": "done",
             "no_push": True,
             "pending": {"prompt": "old-prompt"}, "pid": 103,
-            "plugin_version": "1.20.0",
+            "plugin_version": "1.20.0", "runtime": {"version": "1.20.0", "script": "/old/__main__.py"},
             "publish": {"pr": "https://example.invalid/pull/1"}, "refusal": "old-refusal",
             "repo": str(self.home), "reset_reconciled": True, "reset_wait_seconds": 15,
             "result": {"status": "done", "summary": "old-result"},
@@ -193,6 +196,8 @@ st[dynamic_key] = 1
             "outcome": "running", "reset_wait_seconds": 0, "capacity_start": 2,
             "fix_rounds": 4, "rounds": [],
             "model": None, "reasoning_effort": None,
+            "runtime": {"version": self.worker.config.plugin_version(),
+                        "script": str(self.worker.config.SCRIPT_RESOLVED)},
         }
         self.assertEqual(marked, deleted | set(expected))
         for key, value in expected.items():
@@ -254,6 +259,26 @@ st[dynamic_key] = 1
                 ({"thread": ""}, [])):
             with self.subTest(state=state):
                 self.assertEqual(self.load_state(state)["threads"], expected)
+
+    def test_this_version_reads_the_state_of_earlier_releases(self):
+        directories = sorted(FIXTURES.glob("state-*"))
+        self.assertTrue(directories)
+        for directory in directories:
+            data = self.home / directory.name
+            env = {key: value for key, value in os.environ.items() if not key.startswith(("TEAMSTER_", "CODEX_"))}
+            env.update(HOME=str(self.home), TEAMSTER_HOME=str(data))
+            slugs = sorted(path.parent.name for path in directory.glob("*/state.json"))
+            for slug in slugs:
+                text = (directory / slug / "state.json").read_text(encoding="utf-8")
+                text = text.replace(ROOT_PLACEHOLDER, str(data / "root"))
+                (data / "tasks" / slug).mkdir(parents=True)
+                (data / "tasks" / slug / "state.json").write_text(text, encoding="utf-8")
+                Path(json.loads(text)["worktree"]).mkdir(parents=True, exist_ok=True)
+            for args in [("status",)] + [(name, slug) for slug in slugs for name in ("status", "wait", "stats")]:
+                with self.subTest(fixtures=directory.name, command=args):
+                    result = subprocess.run([sys.executable, "-I", str(SCRIPT), *args], cwd=self.home, env=env,
+                                            capture_output=True, text=True, timeout=60)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""), result.stdout)
 
 
 if __name__ == "__main__":
