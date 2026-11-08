@@ -3,7 +3,7 @@
 import type { BoardSource } from "../lib/source";
 import { ART, BACKDROPS } from "../map/art";
 import { emptyState, reduce, type BoardState } from "../store/reduce";
-import type { ResearchView, ServerMessage, Snapshot, TaskDetail, TaskFile } from "../types";
+import type { Cargo, ResearchView, ServerMessage, Snapshot, TaskDetail, TaskFile } from "../types";
 import snapshotJson from "./snapshot.json";
 import streamJson from "./stream.json";
 import detailsJson from "./details.json";
@@ -12,7 +12,13 @@ import { FIXTURE_EVENTS, FIXTURE_LIVE, demoEvents, demoReport, logEvent } from "
 interface FixtureDetail {
   timeline: { at: number; text: string }[];
   files: Partial<Record<TaskFile, string>>;
+  cargo?: Cargo;
 }
+
+/** A task's cargo when the fixtures give none: present, but with nothing in it. */
+const NO_CARGO: Cargo = {
+  check: null, claims: [], review: null, stop: null, ci: null, base: null, remaining: [], questions: [], decisions: { fixed: 0, rejected: 0 },
+};
 
 const snapshot = snapshotJson as unknown as Snapshot;
 const stream = streamJson as unknown as ServerMessage[];
@@ -115,13 +121,14 @@ export function fixtureSource(): BoardSource {
       const task = state.tasks[slug];
       if (!task) return null;
       const extra = details[slug];
-      const timeline = extra
+      const timeline = extra?.timeline.length
         ? shiftTimes(extra.timeline, delta)
         : task.created !== null
           ? [{ at: task.created, text: "задача создана" }]
           : [];
       const files = (["brief", "last", "review", "check"] as const).filter((name) => extra?.files[name] !== undefined);
-      const detail: TaskDetail = { ...task, timeline, files };
+      const cargo = task.kind === "session" ? null : shiftTimes(extra?.cargo ?? NO_CARGO, delta);
+      const detail: TaskDetail = { ...task, timeline, files, cargo };
       return detail;
     },
     async fetchFile(slug, name) {

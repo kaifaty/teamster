@@ -54,19 +54,54 @@ The worker finds Codex in this order:
 
 ## Install
 
-1. Install the command:
+There are two ways to install the command. Both give the same `teamster` and `codex-worker` commands.
+
+**Versioned install (recommended).** Each version lives in its own directory and is never changed
+after installation, so you can upgrade while tasks run:
+
+1. Get any copy of the source and install from it once (later upgrades fetch it themselves):
 
    ```sh
-   uv tool install git+https://github.com/kaifaty/teamster
+   git clone https://github.com/kaifaty/teamster /tmp/teamster-source
+   python3 -I /tmp/teamster-source/src/teamster/__main__.py upgrade --source /tmp/teamster-source --ref HEAD --yes
+   ```
+
+2. Add `~/.teamster/bin` to `PATH` (for example in `~/.zshrc`), open a new shell and check:
+
+   ```sh
+   export PATH="$HOME/.teamster/bin:$PATH"
    teamster --version
    ```
 
-2. Add the plugin for Claude Code:
+`teamster upgrade` prints the plan (the current and the new version, and the live supervisors with the
+version each one runs) and changes nothing; `teamster upgrade --yes` installs `origin/main` of this
+repository into `~/.teamster/versions/<version>/` and switches `~/.teamster/versions/current` to it.
+Running supervisors keep using the version they started from. `teamster versions` lists the installed
+versions; `teamster versions --prune` moves the unused ones to `~/.teamster/versions/.trash/`. See
+[Versioned installs](src/teamster/docs/settings.md#versioned-installs).
 
-   ```text
-   /plugin marketplace add kaifaty/teamster
-   /plugin install teamster@kaifaty
-   ```
+**uv tool.** Install with `uv tool install git+https://github.com/kaifaty/teamster` and update with
+`uv tool upgrade teamster` only when no tasks are running: supervisors run from the same installed
+files, which an upgrade replaces.
+
+**Moving from uv tool to the versioned install**, once:
+
+1. Update the uv tool install to 1.55.0 or newer: wait until no tasks are running, then `uv tool upgrade teamster`.
+2. Run the upgrade with the Python you want the launchers to use, not the tool's own environment:
+   `python3 -I "$(teamster path)/__main__.py" upgrade --yes`. Run from a virtual environment, as
+   `teamster upgrade --yes` from the uv tool install is, the upgrade itself picks that environment's
+   base interpreter, so the launchers keep working after the tool is uninstalled.
+3. Add `~/.teamster/bin` to `PATH` ahead of `~/.local/bin`, open a new shell, and check that
+   `command -v teamster` prints `~/.teamster/bin/teamster`.
+4. Wait until no tasks are running, then `uv tool uninstall teamster`.
+5. If you use the duty job, print its plist again with `teamster duty plist` and reload it.
+
+Then add the plugin for Claude Code:
+
+```text
+/plugin marketplace add kaifaty/teamster
+/plugin install teamster@kaifaty
+```
 
 Invoke the skill with `/teamster:teamster`, followed by the task. For example:
 
@@ -78,9 +113,7 @@ Use the existing filters, add a focused test, and open a PR for review.
 The command also works without Claude Code; run `teamster --help` for usage.
 Read the lead guide with `teamster docs lead-guide`; `teamster docs` lists all documents.
 Use `teamster path` to find the installed package directory and its standalone helpers.
-
-Update with `uv tool upgrade teamster` when no tasks are running: supervisors run from the same
-installed files, which an upgrade replaces. The plugin checks that the command is version 1.51.0 or newer.
+The plugin checks that the command is version 1.51.0 or newer.
 
 ## Other leads
 
@@ -184,6 +217,8 @@ Run all commands as `teamster <command>`.
 | `stop <slug>` | Interrupt the task; send the next instructions with `say`. |
 | `clean <slug> [--keep-branch]` | Remove the worktree and task logs and archive threads; optionally retain the local branch. |
 | `migrate-home [--apply]` | Print, or with `--apply` carry out, the move of legacy data from `~/.codex` to `~/.teamster` ([Data home](#data-home)). |
+| `upgrade [--source URL\|PATH] [--ref REF] [--yes]` | Print, or with `--yes` carry out, the install of a version beside the others and the switch of `current` ([Install](#install)). |
+| `versions [--prune]` | List installed versions, the current one and the live supervisors of each; `--prune` moves unused versions to the trash. |
 
 Tasks use `~/.teamster/worktrees/claude-<slug>/<repo>`, with state and logs under
 `~/.teamster/tasks/<slug>/`. Turns continue independently of the lead's session. Only one task runs at

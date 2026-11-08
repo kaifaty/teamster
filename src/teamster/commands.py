@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, procs, prompts, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads
+from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, installs, procs, prompts, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads
 
 
 def main_repo(path):
@@ -603,7 +603,10 @@ def duty_launchd_plist(minutes):
             environment["TEAMSTER_" + key.removeprefix("CODEX_TASK_")] = config.env(key)
     log = str(config.data_path("duty_launchd_log"))
     command = Path(sys.executable).parent / "teamster"
-    if command.is_file():
+    if installs.running_from_versions():
+        # The launcher follows the current link, so the job survives upgrades and prunes.
+        program = [str(installs.bin_dir() / "teamster"), "duty", "tick"]
+    elif command.is_file():
         program = [str(command), "duty", "tick"]
     else:
         program = [sys.executable, "-I", str(config.SCRIPT_RESOLVED), "duty", "tick"]

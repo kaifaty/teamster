@@ -176,6 +176,11 @@ def plugin_version():
     return teamster.__version__
 
 
+def data_layout():
+    """This process's DATA_LAYOUT; packages from before the constant count as 1."""
+    return getattr(teamster, "DATA_LAYOUT", 1)
+
+
 def resolve_codex():
     override = env("CODEX_TASK_CODEX")
     if override:

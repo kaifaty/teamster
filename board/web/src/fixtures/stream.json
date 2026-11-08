@@ -63,7 +63,12 @@
       "column": "running",
       "phase": "ci",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     }
   },
   {
@@ -117,7 +122,12 @@
       "column": "running",
       "phase": "turn",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     }
   },
   {
@@ -3428,7 +3438,12 @@
       "column": "review_me",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "clean",
+      "findings_left": 0,
+      "stop": "clean",
+      "left": 0
     }
   },
   {
@@ -3460,7 +3475,12 @@
       "column": "running",
       "phase": "turn",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     }
   },
   {
@@ -6656,7 +6676,12 @@
       "column": "closed",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "defects",
+      "findings_left": 2,
+      "stop": "only P3",
+      "left": 2
     }
   },
   {
@@ -6692,7 +6717,12 @@
       "column": "running",
       "phase": "review",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "defects",
+      "findings_left": 3,
+      "stop": null,
+      "left": 0
     }
   },
   {

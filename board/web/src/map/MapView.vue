@@ -396,6 +396,7 @@ async function mount() {
         world.value = next;
         applyCamera(camera);
       },
+      labels: overlay.value ?? undefined,
       onLost: () => {
         failure.value = "lost";
         scene?.dispose();
@@ -488,7 +489,7 @@ onBeforeUnmount(() => {
         <span class="codex">◆ Codex</span>
         <span class="claude">✳ Claude</span>
       </span>
-      <span class="hint">{{ repo ? "Колесо назад или Esc — к галактике" : "Нажми на звезду или прокрути к ней колесо" }}</span>
+      <span class="hint">{{ repo ? "Колесо назад, щипок или Esc — к галактике" : "Нажми на звезду · колесо или щипок — масштаб · тяни — обзор" }}</span>
     </div>
 
     <div v-if="failure" class="fallback" role="alert">

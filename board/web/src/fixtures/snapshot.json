@@ -32,7 +32,12 @@
       "column": "running",
       "phase": "turn",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "failed",
+      "review": "defects",
+      "findings_left": 2,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -65,7 +70,12 @@
       "column": "running",
       "phase": "check",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "defects",
+      "findings_left": 3,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -98,7 +108,12 @@
       "column": "running",
       "phase": "ci",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "review",
@@ -131,7 +146,12 @@
       "column": "running",
       "phase": "review",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -164,7 +184,12 @@
       "column": "running",
       "phase": "fix",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "defects",
+      "findings_left": 1,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -193,7 +218,12 @@
       "column": "running",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "slug": "local_3f2a9c1e-7b4d-4e8a-9c21-5d6e7f8a9b0c",
@@ -226,7 +256,12 @@
         "at": 1793999994,
         "kind": "tool",
         "text": "Read src/cart/merge.ts"
-      }
+      },
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -255,7 +290,12 @@
       "column": "sleeping",
       "phase": "sleeping",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -284,7 +324,12 @@
       "column": "sleeping",
       "phase": "sleeping",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -313,7 +358,12 @@
       "column": "review_me",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "clean",
+      "findings_left": 0,
+      "stop": "clean",
+      "left": 0
     },
     {
       "kind": "work",
@@ -342,7 +392,12 @@
       "column": "review_me",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "defects",
+      "findings_left": 2,
+      "stop": "only P3",
+      "left": 2
     },
     {
       "slug": "local_8d1e5b7a-2c3f-4a6b-8e9d-0f1a2b3c4d5e",
@@ -371,7 +426,12 @@
       "sleeping_until": null,
       "created": 1793913600,
       "updated_at": 1793998500,
-      "activity": null
+      "activity": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "slug": "local_c4b9e2d7-6a1f-4c3e-b8d2-9e7f6a5b4c3d",
@@ -400,7 +460,12 @@
       "sleeping_until": null,
       "created": 1793991000,
       "updated_at": 1793992800,
-      "activity": null
+      "activity": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "slug": "local_5e0d7c2b-9a41-4f6e-a3b8-7c1d2e3f4a5b",
@@ -434,7 +499,12 @@
         "at": 1793999985,
         "kind": "tool",
         "text": "Read .archive/INDEX.md"
-      }
+      },
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -463,7 +533,12 @@
       "column": "attention",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "clean",
+      "findings_left": 0,
+      "stop": "result needs_decision",
+      "left": 1
     },
     {
       "kind": "work",
@@ -492,7 +567,12 @@
       "column": "attention",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "failed",
+      "review": "defects",
+      "findings_left": 1,
+      "stop": "budget_exhausted",
+      "left": 2
     },
     {
       "kind": "work",
@@ -521,7 +601,12 @@
       "column": "attention",
       "phase": "turn",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -550,7 +635,12 @@
       "column": "attention",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": null,
+      "findings_left": 0,
+      "stop": "base conflict",
+      "left": 0
     },
     {
       "kind": "work",
@@ -579,7 +669,12 @@
       "column": "closed",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "passed",
+      "review": "clean",
+      "findings_left": 0,
+      "stop": "clean",
+      "left": 0
     },
     {
       "kind": "scout",
@@ -608,7 +703,12 @@
       "column": "closed",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": null,
+      "review": null,
+      "findings_left": 0,
+      "stop": null,
+      "left": 0
     },
     {
       "kind": "work",
@@ -637,7 +737,12 @@
       "column": "closed",
       "phase": "idle",
       "title": null,
-      "link": null
+      "link": null,
+      "check": "timeout",
+      "review": null,
+      "findings_left": 0,
+      "stop": "check timeout",
+      "left": 1
     }
   ],
   "accounts": {

@@ -33,6 +33,11 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
     created: NOW - 1000,
     updated_at: NOW - 50,
     activity: { at: NOW - 5, kind: "command", text: "npm test" },
+    check: null,
+    review: null,
+    findings_left: 0,
+    stop: null,
+    left: 0,
     ...overrides,
   };
 }

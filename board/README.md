@@ -29,8 +29,11 @@ in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy s
 as a fuel depot, with lines from the depots to the systems they feed. A click on a star flies into its system: the
 sun is the main branch, and each task is a ship that moves towards it, from the yard through the range, the
 inspection and the hypergate to the roadstead, where it waits for you. Sleeping ships drift in the cryofield, the
-lead's sessions stay at the command station. In a system the wheel zooms and dragging moves the camera; the wheel
-past the full view or Esc goes back. `board/web/src/map/placement.ts` decides the station and the action.
+lead's sessions stay at the command station. The galaxy and a system move alike: a mouse wheel zooms around the
+pointer, two fingers on a trackpad move the camera in any direction and a pinch zooms, dragging moves the camera, and
+`+`, `-`, the arrows and `0` (the whole view) work on the focused map. Zooming on past the closest galaxy over a star enters
+its system; past the full view of a system, or Esc, goes back. `board/web/src/map/navigation.ts` tells a mouse wheel
+from a trackpad. `board/web/src/map/placement.ts` decides the station and the action.
 `board/web/art/` holds the prompts of the art and the script that prepares it.
 A repository may look like itself: `<data home>/board-art/<repo>/` can hold its own `sky.jpg`, `planet.png` and `emblem.png`, outside
 this public repository. The sky replaces the system's shared sky, the planet its shipyard, and the emblem stands next to the star's
@@ -51,7 +54,9 @@ live fleet. `board/web/src/map/replay.ts` rebuilds the fleet at each moment from
 hours before the day for ships already under way), shaped like live tasks, so ships, stars and storms show the past
 while live updates wait; depots and tankers stay live, since the accounts' past is not recorded. In replay the log
 marks the lines up to the moment, and a click on a line moves the scale to it. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
-(`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them.
+(`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them. Above the commands
+stands the order the task's state calls for, one reason and one command, and the other commands fold under «Все команды».
+A finished task shows its «Груз» above the commands (the saved check, the review and its findings, why the fix loop stopped, CI, the base merge, what is left and the questions), and on the roadstead «вернуть на доработку» puts all of it into one `say` text, while «принять» goes back to the verdict.
 `npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
 every station; both fixture sources include a day of log events, with a ship that reaches the sun, one turned back at the gate and one in trouble, and a day's report.
 

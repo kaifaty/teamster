@@ -41,6 +41,27 @@ export function zoomCamera(camera: Camera, factor: number, at: Point, fit: Camer
   return { zoom, tx: at.x - (at.x - camera.tx) * scale, ty: at.y - (at.y - camera.ty) * scale };
 }
 
+/**
+ * A zoom from `zoom` by `factor`, kept within the fitted zoom and MAX_ZOOM; `past` is how far it asked beyond them,
+ * as a natural logarithm: below zero past the fitted view, above zero past the closest one.
+ */
+export function limitZoom(zoom: number, factor: number, fit: Camera): { zoom: number; past: number } {
+  const wanted = zoom * factor;
+  const kept = Math.min(fit.zoom * MAX_ZOOM, Math.max(fit.zoom, wanted));
+  return { zoom: kept, past: Math.log(wanted / kept) };
+}
+
+/**
+ * `camera` carried over to a window of another size: the same share of the fitted zoom, around the same world point
+ * in the middle of the window.
+ */
+export function refitCamera(camera: Camera, before: { fit: Camera; viewport: Size }, fit: Camera, viewport: Size, world: Size): Camera {
+  const zoom = fit.zoom * (camera.zoom / before.fit.zoom);
+  const x = (before.viewport.width / 2 - camera.tx) / camera.zoom;
+  const y = (before.viewport.height / 2 - camera.ty) / camera.zoom;
+  return clampCamera({ zoom, tx: viewport.width / 2 - x * zoom, ty: viewport.height / 2 - y * zoom }, world, viewport);
+}
+
 /** `camera` kept so that the world covers the window; a world smaller than the window stays centred. */
 export function clampCamera(camera: Camera, world: Size, viewport: Size): Camera {
   const axis = (offset: number, worldLength: number, viewLength: number) => {

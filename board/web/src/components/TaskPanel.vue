@@ -4,6 +4,7 @@ import type { BoardSource } from "../lib/source";
 import type { TaskDetail, TaskFile, TaskSummary } from "../types";
 import { formatAge, formatClock, formatDuration, formatFullTime } from "../lib/format";
 import { renderMarkdown } from "../lib/markdown";
+import { cargoRows, findingLine, hasCargo } from "../lib/cargo";
 import TaskCommands from "./TaskCommands.vue";
 import { COLUMNS, EXECUTORS, FILES, KINDS, PHASES, RESULT, ciChip, claudeLink, prLabel, taskTitle } from "../lib/labels";
 
@@ -133,6 +134,28 @@ onMounted(() => {
 });
 onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
+// What the task came back with, once it no longer works; the detail of another task never shows here.
+const cargo = computed(() => {
+  const value = detail.value?.slug === props.slug ? detail.value.cargo : null;
+  return shown.value && !session.value && !shown.value.alive && hasCargo(value) ? value : null;
+});
+const cargoView = computed(() => {
+  const value = cargo.value;
+  if (!value) return null;
+  const findings = value.review?.findings ?? [];
+  const decisions = value.decisions ?? { fixed: 0, rejected: 0 };
+  return {
+    rows: cargoRows(value),
+    findings: findings.slice(0, 5),
+    more: findings.slice(5),
+    remaining: value.remaining ?? [],
+    questions: value.questions ?? [],
+    claims: value.claims ?? [],
+    decisions: decisions.fixed || decisions.rejected ? `исправлено ${decisions.fixed}, отклонено ${decisions.rejected}` : null,
+  };
+});
+const CLAIM_TONE: Record<string, string> = { passed: "ok", failed: "bad", timeout: "bad" };
+
 const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? id;
 </script>
 
@@ -220,7 +243,57 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
         <dd class="num" :title="formatFullTime(shown.updated_at)">{{ formatAge(shown.updated_at, now) }}</dd>
       </dl>
 
-      <TaskCommands v-if="shown && !session" :task="shown" />
+      <section v-if="cargoView" class="cargo" aria-labelledby="cargo-title">
+        <h3 id="cargo-title">Груз</h3>
+        <dl class="fields">
+          <template v-for="row in cargoView.rows" :key="row.key">
+            <dt>{{ row.label }}</dt>
+            <dd>
+              <span :class="['tone', row.tone]" :title="row.title">{{ row.text }}</span>
+              <template v-if="row.key === 'review' && cargoView.findings.length">
+                <ul class="items">
+                  <li v-for="finding in cargoView.findings" :key="finding.id" class="wrap">{{ findingLine(finding) }}</li>
+                </ul>
+                <details v-if="cargoView.more.length" class="more">
+                  <summary>ещё {{ cargoView.more.length }}</summary>
+                  <ul class="items">
+                    <li v-for="finding in cargoView.more" :key="finding.id" class="wrap">{{ findingLine(finding) }}</li>
+                  </ul>
+                </details>
+              </template>
+            </dd>
+          </template>
+          <template v-if="cargoView.remaining.length">
+            <dt>Осталось</dt>
+            <dd>
+              <ul class="items tone warn">
+                <li v-for="(item, index) in cargoView.remaining" :key="index" class="wrap">{{ item }}</li>
+              </ul>
+            </dd>
+          </template>
+          <template v-if="cargoView.questions.length">
+            <dt>Вопросы</dt>
+            <dd>
+              <ul class="items tone warn">
+                <li v-for="(item, index) in cargoView.questions" :key="index" class="wrap">{{ item }}</li>
+              </ul>
+            </dd>
+          </template>
+        </dl>
+        <details v-if="cargoView.claims.length || cargoView.decisions" class="more claims">
+          <summary>Отчёт исполнителя</summary>
+          <ul class="items">
+            <li v-for="(claim, index) in cargoView.claims" :key="index" class="wrap">
+              <span class="mono">{{ claim.command }}</span>
+              · <span :class="['tone', CLAIM_TONE[claim.outcome] ?? 'muted']">{{ claim.outcome }}</span>
+              <span v-if="claim.details" class="muted"> · {{ claim.details }}</span>
+            </li>
+          </ul>
+          <p v-if="cargoView.decisions" class="muted decisions">{{ cargoView.decisions }}</p>
+        </details>
+      </section>
+
+      <TaskCommands v-if="shown && !session" :task="shown" :now="now" :cargo="detail?.slug === slug ? detail.cargo : null" />
 
       <section v-if="detail && detail.timeline.length" class="timeline" aria-labelledby="timeline-title">
         <h3 id="timeline-title">Хронология</h3>
@@ -347,6 +420,7 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
   overflow-wrap: anywhere;
 }
 
+.cargo h3,
 .timeline h3 {
   margin: 0 0 4px;
   font-size: 12px;
@@ -354,6 +428,58 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.cargo .fields {
+  margin-bottom: 8px;
+}
+
+.tone.ok {
+  color: var(--ok);
+}
+
+.tone.warn {
+  color: var(--warn);
+}
+
+.tone.bad {
+  color: var(--bad);
+}
+
+.tone.muted {
+  color: var(--muted);
+}
+
+.items {
+  margin: 2px 0 0;
+  padding-left: 16px;
+}
+
+.items li + li {
+  margin-top: 1px;
+}
+
+.more {
+  margin: 2px 0 0;
+}
+
+.more > summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.claims {
+  margin: 0 0 14px;
+}
+
+.claims .items {
+  margin-top: 4px;
+}
+
+.decisions {
+  margin: 4px 0 0;
 }
 
 .timeline ol {
