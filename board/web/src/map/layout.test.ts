@@ -370,6 +370,17 @@ describe("machines", () => {
     for (const room of machineRooms(machinePositions(ids(5), tall, 0.39))) expect(room.y1).toBeLessThanOrEqual(logCorner(tall).y0);
   });
 
+  it("keeps the research station in the middle of a wide galaxy and its label clear of the column on a narrow one", () => {
+    const wide = SIZES[0]!;
+    expect(researchPosition(wide, machinePositions(ids(5), wide, 0.85))).toEqual(researchPosition(wide));
+    const tall = SIZES[1]!;
+    const column = machinePositions(ids(5), tall, 0.39);
+    const station = researchPosition(tall, column);
+    const label = { x0: station.x - 100 / 0.39, y0: station.y, x1: station.x + 100 / 0.39, y1: station.y + RESEARCH_SIZE };
+    expect(label.x0).toBeGreaterThanOrEqual(0);
+    for (const room of machineRooms(column)) expect(hit(label, room)).toBe(false);
+  });
+
   it("lets no star stand on a station or its label", () => {
     for (const world of SIZES) {
       const column = machinePositions(ids(5), world);

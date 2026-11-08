@@ -680,7 +680,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     researchLayer.removeChildren().forEach((child) => child.destroy());
     station = null;
     if (!model.research) return;
-    const point = researchPosition(world);
+    const point = researchPosition(world, model.machineColumn);
     const halo = glow(SPACE.research, RESEARCH_SIZE * 2.6);
     const body = sprite(art("stationResearch"), RESEARCH_SIZE);
     const beacon = glow(SPACE.gold, RESEARCH_SIZE * 0.9);
@@ -1242,7 +1242,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     watchFx.clear();
     const marks = model.research;
     if (!marks || !station) return;
-    const center = researchPosition(world);
+    const center = researchPosition(world, model.machineColumn);
     const { body, halo, beacon } = station;
     if (marks.running && !still) body.rotation = time * 0.12;
     halo.alpha = marks.running ? (still ? 0.5 : 0.38 + 0.18 * Math.sin(time * 2.4)) : 0.16;
@@ -1432,7 +1432,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   function researchAt(point: Point): boolean {
     if (!model.research) return false;
-    const center = researchPosition(world);
+    const center = researchPosition(world, model.machineColumn);
     return Math.hypot(center.x - point.x, center.y - point.y) < RESEARCH_SIZE * 0.5;
   }
 

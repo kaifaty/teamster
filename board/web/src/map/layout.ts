@@ -216,9 +216,19 @@ export function cardPlace(place: Place, frame: SystemFrame): Point & { side: boo
 
 // Galaxy ------------------------------------------------------------------------------------------
 
-/** The research station watches every system, so it stands in the middle of the galaxy. */
-export function researchPosition(size: Size): Point {
-  return { x: size.width * 0.5, y: size.height * 0.49 };
+/** The research station's label at its widest, in pixels. */
+const RESEARCH_LABEL_PX = 200;
+
+/**
+ * The research station watches every system, so it stands in the middle of the galaxy; on a narrow window it moves left
+ * of the machines' column, so that its label keeps clear of theirs.
+ */
+export function researchPosition(size: Size, machines: MachineColumn | null = null): Point {
+  const middle = { x: size.width * 0.5, y: size.height * 0.49 };
+  if (!machines?.places.size) return middle;
+  const half = Math.max(RESEARCH_SIZE / 2, RESEARCH_LABEL_PX / machines.labelZoom / 2);
+  const left = Math.min(...[...machines.places.values()].map((at) => machineRoom(at, machines).x0));
+  return { x: Math.max(half, Math.min(middle.x, left - half - MACHINE_GAP * 2)), y: middle.y };
 }
 
 /** The station's size in world units. */
@@ -304,7 +314,7 @@ export function stormRadius(live: number, lattice: Lattice): number {
  * their labels, and the parts `covered` by the map's own panels.
  */
 export function galaxyKeepOuts(size: Size, depots: readonly Point[], covered: readonly Rect[], machines: MachineColumn | null = null): Rect[] {
-  const station = researchPosition(size);
+  const station = researchPosition(size, machines);
   const result: Rect[] = [
     { x0: station.x - 150, y0: station.y - RESEARCH_SIZE / 2 - 40, x1: station.x + 150, y1: station.y + RESEARCH_SIZE / 2 + 85 },
   ];
@@ -507,7 +517,7 @@ const DEPOT_LABEL_PX = 46;
 /** A machine's label at its tallest, in pixels: its name, its status and how old its data is. */
 export const MACHINE_LABEL_PX = 50;
 /** The widest machine label, in pixels; MapView's CSS keeps it to this. */
-export const MACHINE_LABEL_WIDTH_PX = 132;
+export const MACHINE_LABEL_WIDTH_PX = 176;
 /** The line over the column that tells the machines' config could not be read, in pixels. */
 export const MACHINE_NOTE_PX = { width: 280, height: 20 } as const;
 /** The power station's art is wider than tall by this ratio. */

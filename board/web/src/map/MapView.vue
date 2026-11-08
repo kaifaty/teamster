@@ -262,7 +262,7 @@ const starLabels = computed(() => {
 const stationLabel = computed(() => {
   const marks = station.value;
   if (!marks) return null;
-  const point = researchPosition(world.value);
+  const point = researchPosition(world.value, machineColumn.value);
   const last = marks.batch ? `разбор ${shortDate(marks.batch.date)}` : "разборов не было";
   const proposed = marks.proposed.length;
   // One note under the name, the most pressing one; the panel has the rest.
@@ -1420,7 +1420,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: flex-end;
   box-sizing: border-box;
-  max-width: 132px;
+  max-width: 176px;
   margin: 0;
   padding: 1px 7px;
   border: 1px solid rgba(214, 170, 96, 0.28);
