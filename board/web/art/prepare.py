@@ -5,6 +5,7 @@ Standard library only. Sprites on magenta lose their background, balls on black 
 lose the black around it, and macOS `sips` scales the results into src/map/art. Files named backdrop-*.png
 become the skies of the star systems.
 
+With --only NAME ... it prepares only those sprites, so that one new picture needs no other sources.
 With --project TARGET_DIR it prepares the art of one repository instead: sky.png, planet.png and emblem.png,
 whichever exist, go into TARGET_DIR, which lies outside this repository (see PROMPTS.md).
 """
@@ -31,6 +32,7 @@ SPRITES = {
     "tanker": ("key", 160),
     "escort": ("key", 96),
     "station-command": ("key", 384),
+    "station-yard": ("key", 384),
     "station-research": ("key", 384),
     "station-power": ("key", 256),
     "gate": ("key", 320),
@@ -187,15 +189,23 @@ def main():
     parser = argparse.ArgumentParser(description="Turn generated art into the files the map loads.")
     parser.add_argument("source", type=Path)
     parser.add_argument("--project", type=Path, metavar="TARGET_DIR", help="prepare one repository's art into this directory")
+    parser.add_argument("--only", nargs="+", metavar="NAME", help="prepare only these sprites, such as station-yard")
     args = parser.parse_args()
     source = args.source
     if args.project:
         prepare_project(source, args.project.expanduser())
         return
+    unknown = sorted(set(args.only or []) - set(SPRITES))
+    if unknown:
+        raise SystemExit(f"no such sprites: {', '.join(unknown)}")
     OUT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as temp:
         for name, (kind, longest) in SPRITES.items():
+            if args.only and name not in args.only:
+                continue
             prepare_sprite(source / f"{name}.png", OUT / f"{name}.png", kind, longest, temp)
+    if args.only:
+        return
     subprocess.run(
         ["sips", "-s", "format", "jpeg", "-s", "formatOptions", "70", str(source / "nebula.png"), "--out", str(OUT / "nebula.jpg")],
         check=True, capture_output=True,

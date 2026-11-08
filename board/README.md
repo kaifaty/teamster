@@ -38,8 +38,9 @@ A busy star's label is one line: its name, its ships and badges for alarms, ship
 Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,
 and a quiet star's name, shows on zooming in or under the pointer. A click on a star flies into its system: the
 sun is the main branch, and each task is a ship that moves towards it, from the yard through the range, the
-inspection and the hypergate to the roadstead, where it waits for you. Sleeping ships drift in the cryofield, the
-lead's sessions stay at the command station. A system is laid out in the part of the window the toolbar, the list of
+inspection and the hypergate to the roadstead, where it waits for you. The yard is an orbital dock over the limb of
+the system's home world, a large planet at its left edge from which new ships fly in. Sleeping ships drift in the
+cryofield, the lead's sessions stay at the command station. A system is laid out in the part of the window the toolbar, the list of
 its ships and the folded log leave free, and its world takes that part's shape. Each station parks its ships on one
 arc on its own side, away from its name, the ships in trouble first; a station shows a few ships, and a count «+N»
 stands for the rest and opens the list at that station (`parkingOf` in `board/web/src/map/layout.ts`). The list
@@ -52,7 +53,7 @@ its system; past the full view of a system, or Esc, goes back. `board/web/src/ma
 from a trackpad. `board/web/src/map/placement.ts` decides the station and the action.
 `board/web/art/` holds the prompts of the art and the script that prepares it.
 A repository may look like itself: `<data home>/board-art/<repo>/` can hold its own `sky.jpg`, `planet.png` and `emblem.png`, outside
-this public repository. The sky replaces the system's shared sky, the planet its shipyard, and the emblem stands next to the star's
+this public repository. The sky replaces the system's shared sky, the planet its home world, and the emblem stands next to the star's
 label and in the system's toolbar; whatever is missing stays shared art. The server serves these files read-only through `GET /api/art`.
 Generation is manual: see "The art of one project" in [PROMPTS.md](web/art/PROMPTS.md).
 In the middle of the galaxy stands the research station, fed by `GET /api/research`. It shows the reflection
