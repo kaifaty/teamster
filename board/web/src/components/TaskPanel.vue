@@ -4,6 +4,7 @@ import type { BoardSource } from "../lib/source";
 import type { TaskDetail, TaskFile, TaskSummary } from "../types";
 import { formatAge, formatClock, formatDuration, formatFullTime } from "../lib/format";
 import { renderMarkdown } from "../lib/markdown";
+import TaskCommands from "./TaskCommands.vue";
 import { COLUMNS, EXECUTORS, FILES, KINDS, PHASES, RESULT, ciChip, claudeLink, prLabel, taskTitle } from "../lib/labels";
 
 const props = defineProps<{
@@ -218,6 +219,8 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
         <dt>Обновлена</dt>
         <dd class="num" :title="formatFullTime(shown.updated_at)">{{ formatAge(shown.updated_at, now) }}</dd>
       </dl>
+
+      <TaskCommands v-if="shown && !session" :task="shown" />
 
       <section v-if="detail && detail.timeline.length" class="timeline" aria-labelledby="timeline-title">
         <h3 id="timeline-title">Хронология</h3>

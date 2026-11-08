@@ -10,6 +10,45 @@ export interface Activity {
   text: string; // one line, ≤ 200 chars
 }
 
+/** One completed phase of a task, or the lead's verdict on it, from the worker's journal. */
+export interface LogEvent {
+  at: number;
+  started: number | null;
+  slug: string | null;
+  repo: string | null;
+  kind: "work" | "review" | "scout" | "verdict";
+  phase: string | null; // "work", "fix", "check", "base_check", "review", "wrapup", "scout", "turn"
+  turn: number | null;
+  round: number | null;
+  outcome: string | null;
+  result_status: string | null;
+  verdict: string | null;
+  findings: number | null;
+  severe_findings: number | null;
+  angle: string | null;
+  account: string | null;
+  reviewer: string | null;
+  provider: string | null;
+  model: string | null;
+  task_type: string | null;
+  ci: string | null; // only ci.outcome from the journal row
+  note: string | null; // verdict only; one line, ≤ 200 chars
+}
+
+export interface Events {
+  since: number;
+  until: number;
+  events: LogEvent[]; // ascending at, at most 5000 newest matching events
+  truncated?: true; // present only when older matching events were dropped by the limit
+}
+
+/** GET /api/report: the same envelope as Accounts, with `report --json` output as `data`. */
+export interface Report {
+  fetched_at: number | null;
+  error: string | null;
+  data: unknown | null;
+}
+
 export interface TaskSummary {
   slug: string;
   kind: "work" | "review" | "scout" | "session";
@@ -187,6 +226,7 @@ export type ServerMessage =
   | { type: "task"; task: TaskSummary }
   | { type: "task_removed"; slug: string }
   | { type: "activity"; slug: string; activity: Activity }
+  | { type: "event"; event: LogEvent }
   | { type: "accounts"; accounts: Accounts }
   | { type: "machines"; machines: Machines }
   | { type: "ping"; at: number };
