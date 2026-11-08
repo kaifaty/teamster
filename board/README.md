@@ -39,9 +39,15 @@ Labels stand around their stars without overlapping, alarms first (`board/web/sr
 and a quiet star's name, shows on zooming in or under the pointer. A click on a star flies into its system: the
 sun is the main branch, and each task is a ship that moves towards it, from the yard through the range, the
 inspection and the hypergate to the roadstead, where it waits for you. Sleeping ships drift in the cryofield, the
-lead's sessions stay at the command station. The galaxy and a system move alike: a mouse wheel zooms around the
+lead's sessions stay at the command station. A system is laid out in the part of the window the toolbar, the list of
+its ships and the folded log leave free, and its world takes that part's shape. Each station parks its ships on one
+arc on its own side, away from its name, the ships in trouble first; a station shows a few ships, and a count «+N»
+stands for the rest and opens the list at that station (`parkingOf` in `board/web/src/map/layout.ts`). The list
+«Корабли системы» names every ship by station at the right of the map, and «Корабли» in the toolbar hides it; on a
+phone it opens over the map. The galaxy and a system move alike: a mouse wheel zooms around the
 pointer, two fingers on a trackpad move the camera in any direction and a pinch zooms, dragging moves the camera, and
-`+`, `-`, the arrows and `0` (the whole view) work on the focused map. Zooming on past the closest galaxy over a star enters
+`+`, `-`, the arrows and `0` (the whole view) work on the focused map; zoomed in, every edge of a system can be brought
+out from under the panels. Zooming on past the closest galaxy over a star enters
 its system; past the full view of a system, or Esc, goes back. `board/web/src/map/navigation.ts` tells a mouse wheel
 from a trackpad. `board/web/src/map/placement.ts` decides the station and the action.
 `board/web/art/` holds the prompts of the art and the script that prepares it.
@@ -56,7 +62,8 @@ session of the reflection's scheduled task; it stays at the station and is not c
 its panel: the lessons to decide, the records under watch with their signals, and the settled lessons. Like the depots, the
 station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
-live `event` messages) in the map's words, newest first; in a system it shows only that system. A line leads to its
+live `event` messages) in the map's words, newest first; in a system it shows only that system and folds to its newest
+line, as on a phone, opening over the map on demand together with the replay's scale. A line leads to its
 system and selects the ship while it is still there. «Сводка дня» shows today's `teamster report --by executor` and
 the day's verdicts. The scale over the log replays a day — the last 24 hours, or any of the 31 days before
 today: a slider, play and pause at ×60, ×600 or ×3600, marks at verdicts and CI failures, and «В эфир» back to the

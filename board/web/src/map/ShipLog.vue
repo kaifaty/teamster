@@ -19,11 +19,11 @@ const props = defineProps<{
   emblemOf: (repo: string | null) => string | null;
   /** The replay's moment: the rows up to it are marked and scrolled to, and every row moves the replay. */
   at?: number | null;
-  /** A narrow window: folded, the log is one line, and whether it is open is the map's to keep. */
+  /** A narrow window or a star system: folded, the log is one line, and whether it is open is the map's to keep. */
   compact?: boolean;
 }>();
 const emit = defineEmits<{ go: [event: LogEvent]; seek: [event: LogEvent] }>();
-/** Open on a narrow window; the map folds it again and measures the dock folded. */
+/** Open while compact; the map folds it again and measures the dock folded. */
 const open = defineModel<boolean>("open", { default: false });
 
 /** In replay, this many rows after the moment stay above it. */
@@ -111,7 +111,7 @@ watch(
   () => rows.value.find((row) => row.current)?.key,
   (key) => key !== undefined && showCurrent(),
 );
-// A folded log on a narrow window is hidden and forgets its scroll.
+// A folded compact log is hidden and forgets its scroll.
 watch(folded, (value) => !value && showCurrent());
 
 function pick(row: { go: boolean; event: LogEvent }) {
@@ -130,7 +130,7 @@ const hideImage = (event: Event) => {
     <header class="l-head">
       <slot name="head" />
       <h2 id="log-title" :class="{ 'sr-only': folded }">Бортовой журнал<span v-if="repo" class="l-where"> · {{ repo }}</span></h2>
-      <!-- Folded on a narrow window, the toggle is the log's one line. -->
+      <!-- Folded, the toggle is the log's one line. -->
       <button
         type="button"
         class="l-toggle"
@@ -349,11 +349,7 @@ const hideImage = (event: Event) => {
   color: #ff8d7a;
 }
 
-/* A narrow window: rows tall enough for a finger, and folded, one line that opens the log. */
-.log.compact {
-  --row: 28px;
-}
-
+/* Compact, on a narrow window and in a star system: folded, one line that opens the log. */
 .log.compact .l-head {
   align-items: center;
   gap: 6px;
@@ -361,7 +357,18 @@ const hideImage = (event: Event) => {
 }
 
 .log.compact .l-toggle {
-  min-height: 32px;
+  min-height: 22px;
+}
+
+/* A narrow window: rows tall enough for a finger. */
+@media (max-width: 760px) {
+  .log.compact {
+    --row: 28px;
+  }
+
+  .log.compact .l-toggle {
+    min-height: 32px;
+  }
 }
 
 .log.folded {
