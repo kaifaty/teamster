@@ -160,6 +160,51 @@ def test_events_window_limit_and_websocket(board):
         assert message["event"]["note"] == "Ready for review"
 
 
+def test_new_login_rows_refresh_accounts_once_per_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
+    monkeypatch.setattr(board_app, "LOGIN_REFRESH_SECONDS", 1.0)
+    calls = tmp_path / "accounts-calls"
+    fake = tmp_path / "accounts.py"
+    fake.write_text(
+        "import json, sys, time\n"
+        f"with open({str(calls)!r}, 'a') as stream:\n    stream.write(f'{{time.monotonic()}}\\n')\n"
+        "print(json.dumps({'calls': len(open(" + repr(str(calls)) + ").readlines())}))\n"
+    )
+    settings = Settings(tmp_path, fake, poll_seconds=0.01, web_dist=tmp_path / "dist")
+    journal = settings.path("telemetry")
+    now = board_app.time.time()
+
+    def login(account):
+        with journal.open("a") as stream:
+            stream.write(json.dumps({"v": 1, "event": "account_login", "at": board_app.time.time(),
+                                     "family": "codex", "account": account, "status": "available"}) + "\n")
+
+    def refreshes():
+        return [float(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+
+    journal.write_text(json.dumps({"v": 1, "event": "account_login", "at": now - 60, "family": "codex",
+                                   "account": "old", "status": "available"}) + "\n")
+    with TestClient(create_app(settings), base_url="http://localhost", headers={"Host": "localhost"}) as client:
+        with client.websocket_connect("/ws") as socket:
+            assert socket.receive_json()["type"] == "snapshot"
+            assert receive_until(socket, "accounts")["accounts"]["data"] == {"calls": 1}
+            board_app.time.sleep(0.5)
+            # The startup refresh alone: the row already in the journal forced none.
+            assert len(refreshes()) == 1
+            login("second")
+            assert receive_until(socket, "accounts")["accounts"]["data"] == {"calls": 2}
+            login("third")
+            board_app.time.sleep(0.05)
+            login("fourth")
+            assert receive_until(socket, "accounts")["accounts"]["data"] == {"calls": 3}
+            board_app.time.sleep(1.5)
+            first, second, third = refreshes()
+            # The 300 s throttle did not hold the forced refreshes back; the two later rows share one.
+            assert second - first < 2
+            assert third - second >= 1.0
+    assert client.get("/api/events", params={"since": now - 120}).json()["events"] == []
+
+
 def test_report_arguments_and_cached_envelope(board, tmp_path):
     client, _, _, _, settings = board
     marker = tmp_path / "report-calls"

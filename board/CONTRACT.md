@@ -23,7 +23,12 @@ stops or changes work, and never writes under either source's home.
   `LogEvent` fields below are retained, for the last 31 days, in memory; no history is written.
 - Accounts: `python3 -I <script> accounts --json` (never `--refresh`), at most once per
   `BOARD_ACCOUNTS_SECONDS` (default 300). The script path comes from `BOARD_TEAMSTER_COMMAND`, then `BOARD_CODEX_TASK` and defaults to this
-  repository's `src/teamster/__main__.py`.
+  repository's `src/teamster/__main__.py`. When the journal tail reads a new row with
+  `"event": "account_login"` and a finite `at`, the next accounts call runs at once, ignoring that
+  interval, and its result goes out as the usual `accounts` message. Such forced calls start at most once
+  per 5 seconds; rows read during that pause or during a running call share one call after it. Rows
+  present when the server starts, or re-read after the journal is replaced, force none. These rows are
+  not `LogEvent`s.
 - Reports: `python3 -I <script> report --json --since <date> [--by <dimensions>]`, using the same script
   as accounts. Both commands have a 60-second timeout and a 1 MiB stdout limit. Report stderr goes
   only to server logs; accounts errors retain their stderr reason. A report response is cached for

@@ -21,6 +21,8 @@ from .store import LOG_RETENTION_SECONDS, Store, number
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 PING_SECONDS = 20
+# A new sign-in row in the journal refreshes accounts at once, at most this often.
+LOGIN_REFRESH_SECONDS = 5
 FILE_LIMIT = 256 * 1024
 LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", re.I)
 # The board's files in the worker's data home, by layout. The board never imports the worker.
@@ -147,6 +149,8 @@ class Board:
                                  settings.ssh_command)
         self.lock = asyncio.Lock()
         self.clients = set()
+        self.login_seen = asyncio.Event()
+        self._forced_at = float("-inf")
 
     def publish(self, message):
         for queue in self.clients:
@@ -157,6 +161,8 @@ class Board:
             messages = await asyncio.to_thread(self.store.poll)
             for message in messages:
                 self.publish(message)
+            if self.store.take_logins():
+                self.login_seen.set()
 
     async def snapshot(self):
         async with self.lock:
@@ -169,12 +175,27 @@ class Board:
             await self.poll()
 
     async def poll_accounts(self):
+        forced = False
         while True:
             started = time.monotonic()
-            value = await self.accounts.refresh()
+            if forced:
+                self._forced_at = started
+            value = await self.accounts.refresh(force=forced)
             if value is not None:
                 self.publish({"type": "accounts", "accounts": value})
-            await asyncio.sleep(max(0, self.settings.accounts_seconds - (time.monotonic() - started)))
+            forced = await self._wait_for_login(
+                max(0, self.settings.accounts_seconds - (time.monotonic() - started)))
+
+    async def _wait_for_login(self, timeout):
+        """Wait for the next periodic refresh; return True when a new sign-in forces one sooner."""
+        try:
+            await asyncio.wait_for(self.login_seen.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        # Sign-ins during the pause, or during the previous refresh, share one refresh after it.
+        await asyncio.sleep(max(0, self._forced_at + LOGIN_REFRESH_SECONDS - time.monotonic()))
+        self.login_seen.clear()
+        return True
 
     async def poll_machines(self):
         while True:

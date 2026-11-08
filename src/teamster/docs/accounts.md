@@ -14,8 +14,18 @@ them.
 
 For another subscription, have the user run `teamster login second`. Its separate `CODEX_HOME`
 is `~/.codex-accounts/second`, and login writes the settings file (`~/.teamster/config.json`, see [settings.md](settings.md#data-home)). Never copy
-`auth.json` between homes: each subscription needs its own sign-in. When the user has chosen multiple
-subscriptions, the settings can contain:
+`auth.json` between homes: each subscription needs its own sign-in.
+
+`login` runs `codex login --device-auth` (`codex login` with `--browser`) in that home on the user's
+terminal and waits for it. A failed `codex login` ends `login` with its exit code and nothing more. After a
+successful sign-in, `login` reads all accounts as `accounts` does and prints this account's row in the
+`accounts` format. When the new sign-in is the same ChatGPT account as another configured account, it
+also prints that row, says to sign in again with another account (`teamster login <name>`) and exits 1.
+It also exits 1 when the account is not logged in, or its status cannot be read. The account stays in
+the settings in every case. A finished sign-in appends an [`account_login` row](telemetry.md#the-journal)
+to the journal, which makes the board (`board/` in the repository) refresh accounts at once.
+
+When the user has chosen multiple subscriptions, the settings can contain:
 
 ```json
 {
@@ -62,7 +72,8 @@ watches its input with kqueue);
 the tool does not copy the issued token into its own output, arguments, settings, state, or logs.
 
 After saving, `claude-login` runs the same check as `claude-probe <name>`. A failed probe prints its
-reason and exits nonzero; the account remains saved. Signing in to an existing account updates its
+reason and exits nonzero; the account remains saved. Either way, it appends an `account_login` row
+with the probe's outcome to the [journal](telemetry.md#the-journal). Signing in to an existing account updates its
 login fields and preserves the other account settings, including `weight`.
 
 `claude-probe <name>` sends one request, `Reply with the single word OK.`, with `claude.model`,

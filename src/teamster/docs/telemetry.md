@@ -114,6 +114,15 @@ The supervisor appends numeric counters and identifiers to `log.jsonl` in the da
 State and final turn journal rows retain `turn_stops` across turns (`turn`, stop details, `at`, and for `stuck` the last 300 output characters as `output_tail`); wrap-up stops add `phase: "wrapup"` with the same turn number and preserve the parent's `turn_stop`; `report --json` includes the list, and [empty searches](results.md#turn-outcomes) also allow leading `NAME=value` assignments or `env NAME=value` prefixes, but no `env` options.
 `clean` also saves task and scout records in `~/.teamster/tasks/.archive/<slug>-YYYYmmddTHHMMSSZ` (UTC), except `events.jsonl`, `claude-events.jsonl` and `state.lock`.
 Journal errors, including a busy lock, go to the task's `stderr.log` without blocking execution.
+
+A finished sign-in appends `{"v": 1, "event": "account_login", "at", "family", "account", "status"}`:
+`family` is `codex` for `login` and `claude` for `claude-login`, `account` is the account name.
+For Codex, `status` is `available`, `exhausted`, `duplicate` (the same ChatGPT account as another
+configured account), `not_logged_in` or `unknown` (the account could not be read); for Claude it is
+`ok` or the probe's failure reason, such as `token unavailable` or `request failed`. The row has no
+email, token, account id or path. A failed `codex login` or `claude setup-token` writes no row, and a
+journal write error only prints a warning. These rows have no task fields, so `report`, `verdict` and
+`clean` skip them; the board uses them only to refresh accounts and leaves them out of its ship's log.
 Creation time identifies each task, so reusing a slug after `clean` produces a separate report row.
 
 ## Reading the numbers
