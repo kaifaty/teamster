@@ -122,6 +122,14 @@ def record_lead_verdict(slug, verdict, note=None):
     return row
 
 
+def record_account_login(family, name, status):
+    """Append a finished sign-in: no task fields, so task readers skip it."""
+    row = {"v": 1, "event": "account_login", "at": clock.CLOCK.time(), "family": family,
+           "account": name, "status": status}
+    append_row(row)
+    return row
+
+
 def record_turn_result(st, stopped):
     """Persist the supervisor's final result separately from measured stages."""
     try:

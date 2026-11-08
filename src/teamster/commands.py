@@ -470,6 +470,17 @@ def cmd_accounts(a):
         cfg, record["account"] if record and record["family"] == "claude" else None)))
 
 
+def codex_status(info, cfg):
+    """The machine-readable status of one Codex account snapshot; None when unknown."""
+    if info.get("duplicate"):
+        return "duplicate"
+    if info["logged_in"] is None:
+        return None
+    if not info["logged_in"]:
+        return "not_logged_in"
+    return "exhausted" if accounts.exhausted(info, cfg) else "available"
+
+
 def accounts_json(infos, cfg):
     def iso_time(stamp):
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp)) if stamp is not None else None
@@ -490,16 +501,7 @@ def accounts_json(infos, cfg):
         credits = limits.get("credits", {})
         resets = info.get("reset_credits", {})
         available = credit_resets.reset_credits(info)
-        if info.get("duplicate"):
-            status = "duplicate"
-        elif info["logged_in"] is None:
-            status = None
-        elif not info["logged_in"]:
-            status = "not_logged_in"
-        elif accounts.exhausted(info, cfg):
-            status = "exhausted"
-        else:
-            status = "available"
+        status = codex_status(info, cfg)
         codex.append({
             "name": info["name"], "plan": info.get("account", {}).get("planType"),
             "primary": window(limits.get("primary")), "secondary": window(limits.get("secondary")),
@@ -540,34 +542,42 @@ def print_accounts(infos, cfg, duty_record=None):
         until = cfg.get("credits_floor_until")
         print(f"credits_floor: {floor:g}" + (f" through {until}" if until else "") +
               ("" if cfg.get("credits") else " (credits off)"))
-    print("NAME\tEMAIL\tPLAN\tWEEKLY %\tRESET (LOCAL)\tCREDITS\tRESETS\tSTATUS")
+    print(ACCOUNTS_HEADER)
     for info in infos:
-        w = accounts.longest_window(info)
-        credits = info.get("limits", {}).get("credits", {})
-        if info.get("duplicate"):
-            status = "same account as " + info["duplicate"]
-        elif info["logged_in"] is None:
-            status = "unknown (rpc error: " + info.get("error", "unavailable") + ")"
-        elif not info["logged_in"]:
-            status = "not logged in"
-        elif accounts.exhausted(info, cfg):
-            status = "exhausted until " + config.local_time(accounts.reset_time(info, cfg))
-        else:
-            status = "available"
-        if duty_record and duty_record["family"] == "codex" and duty_record["account"] == info["name"]:
-            status += " (on duty)"
-        account = info.get("account", {})
-        resets = credit_resets.reset_credits(info)
-        count = info.get("reset_credits", {}).get("availableCount", len(resets))
-        nearest = resets[0].get("expiresAt") if resets else None
-        reset_label = str(count) + (f" (exp {config.local_time(nearest).split()[0]})" if nearest is not None else "")
-        print("\t".join((info["name"], account.get("email") or "—", account.get("planType") or "—",
-                         f"{w['used']:g}" if w else "—", config.local_time(w.get("reset")),
-                         ("unlimited" if credits.get("unlimited") else
-                          str(credits.get("balance") or "0") if credits.get("hasCredits", credits.get("has_credits", False))
-                          else "0") +
-                         (" (at floor)" if accounts.at_credit_floor(info, cfg) else ""),
-                         reset_label, status)))
+        print(account_line(info, cfg, duty_record))
+
+
+ACCOUNTS_HEADER = "NAME\tEMAIL\tPLAN\tWEEKLY %\tRESET (LOCAL)\tCREDITS\tRESETS\tSTATUS"
+
+
+def account_line(info, cfg, duty_record=None):
+    """One Codex account row of the accounts table."""
+    w = accounts.longest_window(info)
+    credits = info.get("limits", {}).get("credits", {})
+    if info.get("duplicate"):
+        status = "same account as " + info["duplicate"]
+    elif info["logged_in"] is None:
+        status = "unknown (rpc error: " + info.get("error", "unavailable") + ")"
+    elif not info["logged_in"]:
+        status = "not logged in"
+    elif accounts.exhausted(info, cfg):
+        status = "exhausted until " + config.local_time(accounts.reset_time(info, cfg))
+    else:
+        status = "available"
+    if duty_record and duty_record["family"] == "codex" and duty_record["account"] == info["name"]:
+        status += " (on duty)"
+    account = info.get("account", {})
+    resets = credit_resets.reset_credits(info)
+    count = info.get("reset_credits", {}).get("availableCount", len(resets))
+    nearest = resets[0].get("expiresAt") if resets else None
+    reset_label = str(count) + (f" (exp {config.local_time(nearest).split()[0]})" if nearest is not None else "")
+    return "\t".join((info["name"], account.get("email") or "—", account.get("planType") or "—",
+                      f"{w['used']:g}" if w else "—", config.local_time(w.get("reset")),
+                      ("unlimited" if credits.get("unlimited") else
+                       str(credits.get("balance") or "0") if credits.get("hasCredits", credits.get("has_credits", False))
+                       else "0") +
+                      (" (at floor)" if accounts.at_credit_floor(info, cfg) else ""),
+                      reset_label, status))
 
 
 DUTY_LAUNCHD_LABEL = "teamster.duty"
@@ -722,7 +732,52 @@ def cmd_login(a):
         tmp.replace(path)
     accounts.prepare_home(account)
     binary = config.codex_binary()
-    os.execvpe(binary, [binary, "login"] + ([] if a.browser else ["--device-auth"]), accounts.account_env(account))
+    try:
+        # The child inherits the person's terminal for the device code or the browser prompt.
+        code = subprocess.run([binary, "login"] + ([] if a.browser else ["--device-auth"]),
+                              env=accounts.account_env(account)).returncode
+    except KeyboardInterrupt:
+        code = 130
+    if code:
+        raise SystemExit(code if code > 0 else 128 - code)
+    # Like `accounts`, read the homes under the shared lock so migrate-home cannot move them meanwhile.
+    with config.home_lock():
+        # Re-read the settings: another login may have added an account during this sign-in.
+        cfg = config.accounts_config()
+        infos = accounts.snapshots(cfg)
+        info = next((item for item in infos if item["name"] == a.name), None)
+        if info is None:
+            procs.die(f"account {a.name!r} was removed from the settings during the sign-in")
+        # Snapshots mark the later of two accounts with one ChatGPT identity as the duplicate.
+        others = [item for item in infos if item.get("duplicate") == a.name]
+        other = info.get("duplicate") or (others[0]["name"] if others else None)
+        status = "duplicate" if other else codex_status(info, cfg) or "unknown"
+        record_login("codex", a.name, status)
+    print(ACCOUNTS_HEADER)
+    for item in [info] + others:
+        print(account_line(item, cfg))
+    ru = cfg.get("language", "en") == "ru"
+    if other:
+        print(f"{a.name} — тот же аккаунт ChatGPT, что и {other}; войди заново другим аккаунтом: "
+              f"teamster login {a.name}" if ru else
+              f"{a.name} is the same ChatGPT account as {other}; sign in again with another account: "
+              f"teamster login {a.name}")
+    elif status == "not_logged_in":
+        print(f"{a.name} не вошёл в аккаунт после codex login; войди заново: teamster login {a.name}" if ru else
+              f"{a.name} is not logged in after codex login; sign in again: teamster login {a.name}")
+    elif status == "unknown":
+        print(f"не удалось проверить {a.name} после codex login; проверь: teamster accounts" if ru else
+              f"could not check {a.name} after codex login; check it with: teamster accounts")
+    if status not in ("available", "exhausted"):
+        raise SystemExit(1)
+
+
+def record_login(family, name, status):
+    """Journal a finished sign-in so the board refreshes accounts; a failed write only warns."""
+    try:
+        telemetry_log.record_account_login(family, name, status)
+    except OSError as exc:
+        print(f"could not write the telemetry journal: {exc}", file=sys.stderr)
 
 
 def terminal_device():
@@ -779,16 +834,22 @@ def cmd_claude_remove(a):
 
 
 def cmd_claude_probe(a):
+    probe_claude_account(a.name)
+
+
+def probe_claude_account(name, login=False):
     cfg = config.accounts_config()
-    account = next((item for item in claude_accounts.accounts(cfg) if item["name"] == a.name), None)
+    account = next((item for item in claude_accounts.accounts(cfg) if item["name"] == name), None)
     if account is None:
-        procs.die(f"Claude account {a.name!r} does not exist")
+        procs.die(f"Claude account {name!r} does not exist")
     reason = claude_review.probe(cfg, account)
+    if login:
+        record_login("claude", name, reason or "ok")
     if reason:
-        print(f"Claude account {a.name}: {reason}")
+        print(f"Claude account {name}: {reason}")
         raise SystemExit(1)
-    windows = claude_accounts.format_windows(claude_accounts.read_limits().get(a.name, {}))
-    print(f"Claude account {a.name}: token ok; {windows}")
+    windows = claude_accounts.format_windows(claude_accounts.read_limits().get(name, {}))
+    print(f"Claude account {name}: token ok; {windows}")
 
 
 def cmd_claude_login(a):
@@ -829,7 +890,7 @@ def cmd_claude_login(a):
     print(f"Claude account {a.name} saved")
     # The probe writes cached limits; like claude-probe, it must not run while the home moves.
     with config.home_lock():
-        cmd_claude_probe(a)
+        probe_claude_account(a.name, login=True)
 
 
 def cmd_docs(a):

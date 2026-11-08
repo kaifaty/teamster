@@ -169,6 +169,14 @@ def log_event(row):
     return event
 
 
+def login_key(row):
+    """A sign-in journal row from `teamster login` or `claude-login`, or None."""
+    if not isinstance(row, dict) or row.get("event") != "account_login":
+        return None
+    at = number(row.get("at"))
+    return None if at is None else (at, text(row.get("family")), text(row.get("account")))
+
+
 def alive(pid):
     if type(pid) is not int or pid <= 0:
         return False
@@ -296,6 +304,8 @@ class Store:
         self._log_seen = {}
         self._log_signature = None
         self._log_offset = 0
+        self._login_seen = {}
+        self._new_logins = 0
         self.lock = threading.RLock()
         self._initial_poll = True
 
@@ -402,10 +412,17 @@ class Store:
                 result["truncated"] = True
             return result
 
+    def take_logins(self):
+        """Count sign-in rows appended since the last call; rows present at startup do not count."""
+        with self.lock:
+            count, self._new_logins = self._new_logins, 0
+            return count
+
     def _poll_log(self):
         cutoff = time.time() - LOG_RETENTION_SECONDS
         self._log_events = [event for event in self._log_events if event["at"] >= cutoff]
         self._log_seen = {key: at for key, at in self._log_seen.items() if at >= cutoff}
+        self._login_seen = {key: at for key, at in self._login_seen.items() if at >= cutoff}
         path = self.telemetry_path
         if path is None:
             return []
@@ -440,9 +457,16 @@ class Store:
                         break
                     self._log_offset = stream.tell()
                     try:
-                        event = log_event(json.loads(line))
+                        row = json.loads(line)
+                        event = log_event(row)
                     except (ValueError, UnicodeDecodeError, OverflowError, RecursionError):
                         continue
+                    login = login_key(row)
+                    if login is not None and login[0] >= cutoff:
+                        # Sign-ins stay out of the ship's log; they only make accounts refresh.
+                        if not self._initial_poll and (not reset or login not in self._login_seen):
+                            self._new_logins += 1
+                        self._login_seen[login] = login[0]
                     if event is not None and event["at"] >= cutoff:
                         self._log_events.append(event)
                         key = tuple(event.items())

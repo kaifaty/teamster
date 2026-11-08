@@ -1,8 +1,11 @@
 """Contract checks through the REST and WebSocket interfaces."""
 
+import asyncio
 import json
 import os
 import subprocess
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import anyio
@@ -158,6 +161,92 @@ def test_events_window_limit_and_websocket(board):
         assert message["event"]["at"] == now
         assert message["event"]["slug"] == "demo"
         assert message["event"]["note"] == "Ready for review"
+
+
+@contextmanager
+def login_board(tmp_path, monkeypatch, **options):
+    """A started board whose accounts calls are recorded and whose second call can be held."""
+    monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
+    calls = tmp_path / "accounts-calls"
+    fake = tmp_path / "accounts.py"
+    fake.write_text(
+        "import json\n"
+        f"with open({str(calls)!r}, 'a') as stream:\n    stream.write('call\\n')\n"
+        f"print(json.dumps({{'calls': len(open({str(calls)!r}).readlines())}}))\n"
+    )
+    settings = Settings(tmp_path, fake, poll_seconds=0.01, web_dist=tmp_path / "dist", **options)
+    journal = settings.path("telemetry")
+    now = board_app.time.time()
+    journal.write_text(json.dumps({"v": 1, "event": "account_login", "at": now - 60, "family": "codex",
+                                   "account": "old", "status": "available"}) + "\n")
+    application = create_app(settings)
+    board = application.state.board
+    starts, release = [], threading.Event()
+    refresh = board.accounts.refresh
+
+    async def recorded(force=False):
+        starts.append(board_app.time.monotonic())
+        if len(starts) == 2:
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+        return await refresh(force=force)
+
+    board.accounts.refresh = recorded
+
+    def login(account):
+        with journal.open("a") as stream:
+            stream.write(json.dumps({"v": 1, "event": "account_login", "at": board_app.time.time(),
+                                     "family": "codex", "account": account, "status": "available"}) + "\n")
+        client.portal.call(board.poll)
+
+    def until(predicate):
+        deadline = board_app.time.monotonic() + 30
+        while not predicate():
+            assert board_app.time.monotonic() < deadline
+            board_app.time.sleep(0.01)
+
+    try:
+        with TestClient(application, base_url="http://localhost", headers={"Host": "localhost"}) as client:
+            until(lambda: board.accounts.value["data"] is not None)
+            client.portal.call(board.poll)
+            # Only the startup refresh: the row already in the journal forces none.
+            assert (len(starts), board._login_at) == (1, None)
+            yield client, board, login, starts, release, until
+    finally:
+        release.set()
+    assert client.get("/api/events", params={"since": now - 120}).json()["events"] == []
+
+
+def test_new_login_rows_refresh_accounts_once_per_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(board_app, "LOGIN_REFRESH_SECONDS", 1.0)
+    with login_board(tmp_path, monkeypatch) as (client, board, login, starts, release, until):
+        with client.websocket_connect("/ws") as socket:
+            assert socket.receive_json()["snapshot"]["accounts"]["data"] == {"calls": 1}
+            login("second")
+            # The 300 s throttle does not hold the forced refresh back; it is held here instead.
+            until(lambda: len(starts) == 2)
+            login("third")
+            login("fourth")
+            release.set()
+            assert receive_until(socket, "accounts")["accounts"]["data"] == {"calls": 2}
+            # Both rows were read after the second refresh started; they share one more refresh.
+            assert receive_until(socket, "accounts")["accounts"]["data"] == {"calls": 3}
+            assert board._login_at is None
+            assert len(starts) == 3
+            assert starts[2] - starts[1] >= 1.0
+
+
+def test_a_pending_login_does_not_delay_the_periodic_refresh(tmp_path, monkeypatch):
+    with login_board(tmp_path, monkeypatch, accounts_seconds=1) as (client, board, login, starts, release, until):
+        release.set()
+        login("second")
+        until(lambda: len(starts) == 2)
+        login("third")
+        assert board._login_at > starts[1]
+        until(lambda: len(starts) == 3)
+        # The periodic refresh comes on time and covers the sign-in read before it started.
+        assert 0.9 <= starts[2] - starts[1] < board_app.LOGIN_REFRESH_SECONDS
+        assert board._login_at is None
 
 
 def test_report_arguments_and_cached_envelope(board, tmp_path):
