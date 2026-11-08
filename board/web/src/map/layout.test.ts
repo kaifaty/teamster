@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PLACES } from "./placement";
 import {
   MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, LIGHT_SHIP, ringOf, ringPoint, ringsOf, skyChoices,
-  RESEARCH_SIZE, researchPosition, starPositions, starRadius, stationAt, systemFrame, worldSize, zoomCamera,
+  RESEARCH_SIZE, limitZoom, refitCamera, researchPosition, starPositions, starRadius, stationAt, systemFrame, worldSize, zoomCamera,
 } from "./layout";
 
 const SIZES = [
@@ -64,6 +64,28 @@ describe("camera", () => {
     expect(worldX * near.zoom + near.tx).toBeCloseTo(at.x);
     expect(zoomCamera(fit, 100, at, fit).zoom).toBe(fit.zoom * MAX_ZOOM);
     expect(zoomCamera(fit, 0.1, at, fit).zoom).toBe(fit.zoom);
+  });
+
+  it("tells how far a zoom asked past its limits", () => {
+    expect(limitZoom(fit.zoom, 2, fit)).toEqual({ zoom: fit.zoom * 2, past: 0 });
+    const out = limitZoom(fit.zoom * 1.5, 0.5, fit);
+    expect(out.zoom).toBe(fit.zoom);
+    expect(out.past).toBeCloseTo(Math.log(0.75));
+    const near = limitZoom(fit.zoom * MAX_ZOOM, 1.5, fit);
+    expect(near.zoom).toBe(fit.zoom * MAX_ZOOM);
+    expect(near.past).toBeCloseTo(Math.log(1.5));
+  });
+
+  it("keeps what the camera looked at when the window changes size", () => {
+    const near = clampCamera(zoomCamera(fit, 2, { x: 600, y: 300 }, fit), world, view);
+    const looked = { x: (view.width / 2 - near.tx) / near.zoom, y: (view.height / 2 - near.ty) / near.zoom };
+    const wider = { width: 1200, height: 800 };
+    const wideFit = fitCamera(world, wider);
+    const moved = refitCamera(near, { fit, viewport: view }, wideFit, wider, world);
+    expect(moved.zoom).toBeCloseTo(wideFit.zoom * 2);
+    expect((wider.width / 2 - moved.tx) / moved.zoom).toBeCloseTo(looked.x);
+    expect((wider.height / 2 - moved.ty) / moved.zoom).toBeCloseTo(looked.y);
+    expect(refitCamera(fit, { fit, viewport: view }, wideFit, wider, world)).toEqual(wideFit);
   });
 
   it("never shows past the world's edge and centres a world smaller than the window", () => {
