@@ -202,19 +202,57 @@ const GRIDS: readonly (readonly [number, number])[] = [
   [14, 7],
 ];
 
+/** The research station watches every system, so it stands in the middle of the galaxy. */
+export function researchPosition(size: Size): Point {
+  return { x: size.width * 0.5, y: size.height * 0.49 };
+}
+
+/** The station's size in world units. */
+export const RESEARCH_SIZE = 150;
+
+/** Grid cells whose middle lies this close to the station, in world units, are left to it: the labels of the stars above it hang down towards it, and its own label is below. */
+const RESEARCH_CLEARANCE = { x: 160, up: 190, down: 200 };
+
+function cellMiddle(cell: number, columns: number, rows: number): { x: number; y: number } {
+  return {
+    x: 0.08 + (0.84 * ((cell % columns) + 0.5)) / columns,
+    y: 0.26 + (0.46 * (Math.floor(cell / columns) + 0.5)) / rows,
+  };
+}
+
+/** The cells of a grid left free for the research station. */
+function researchCells(columns: number, rows: number, size: Size): Set<number> {
+  const station = researchPosition(size);
+  const result = new Set<number>();
+  for (let cell = 0; cell < columns * rows; cell++) {
+    const middle = cellMiddle(cell, columns, rows);
+    const dx = middle.x * size.width - station.x;
+    const dy = middle.y * size.height - station.y;
+    if (Math.abs(dx) < RESEARCH_CLEARANCE.x && dy > -RESEARCH_CLEARANCE.up && dy < RESEARCH_CLEARANCE.down) result.add(cell);
+  }
+  return result;
+}
+
 /**
  * Stars of the repositories. Each takes a cell of a grid by the hash of its name, so a star stays in place
- * when other repositories come and go, and two stars never share a cell while the grid has room.
+ * when other repositories come and go, and two stars never share a cell while the grid has room. The cells in
+ * the middle belong to the research station.
  */
 export function starPositions(repos: readonly string[], size: Size): Map<string, Point> {
-  const [columns, rows] = GRIDS.find(([c, r]) => c * r >= repos.length * 1.5) ?? GRIDS[GRIDS.length - 1]!;
+  const [columns, rows] =
+    GRIDS.find(([c, r]) => c * r - researchCells(c, r, size).size >= repos.length * 1.5) ?? GRIDS[GRIDS.length - 1]!;
   const count = columns * rows;
-  const taken = new Set<number>();
+  const reserved = researchCells(columns, rows, size);
+  const taken = new Set<number>(reserved);
   const result = new Map<string, Point>();
   for (const repo of [...repos].sort((a, b) => a.localeCompare(b))) {
     const hash = hashName(repo);
     let cell = hash % count;
     for (let tries = 0; tries < count && taken.has(cell); tries++) cell = (cell + 1) % count;
+    // A galaxy fuller than its largest grid shares cells, but never the station's.
+    if (taken.has(cell) && taken.size >= count) {
+      while (reserved.has(cell)) cell = (cell + 1) % count;
+    }
     taken.add(cell);
     const jitterX = ((hash >>> 8) % 100) / 100 - 0.5;
     const jitterY = ((hash >>> 16) % 100) / 100 - 0.5;

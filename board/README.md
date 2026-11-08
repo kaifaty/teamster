@@ -36,6 +36,12 @@ A repository may look like itself: `<data home>/board-art/<repo>/` can hold its 
 this public repository. The sky replaces the system's shared sky, the planet its shipyard, and the emblem stands next to the star's
 label and in the system's toolbar; whatever is missing stays shared art. The server serves these files read-only through `GET /api/art`.
 Generation is manual: see "The art of one project" in [PROMPTS.md](web/art/PROMPTS.md).
+In the middle of the galaxy stands the research station, fed by `GET /api/research`. It shows the reflection
+([reflection.md](../src/teamster/docs/reflection.md)): a gold light while lessons wait for your decision, a beam to every system with
+archived records that the next reflection will read, and probes flying to those systems while a run is going. A run is a desktop
+session of the reflection's scheduled task; it stays at the station and is not counted in any system. A click on the station opens
+its panel: the lessons to decide, the records under watch with their signals, and the settled lessons. Like the depots, the
+station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
 live `event` messages) in the map's words, newest first; in a system it shows only that system. A line leads to its
 system and selects the ship while it is still there. «Сводка дня» shows today's `teamster report --by executor` and

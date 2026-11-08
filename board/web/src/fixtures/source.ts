@@ -3,7 +3,7 @@
 import type { BoardSource } from "../lib/source";
 import { ART, BACKDROPS } from "../map/art";
 import { emptyState, reduce, type BoardState } from "../store/reduce";
-import type { ServerMessage, Snapshot, TaskDetail, TaskFile } from "../types";
+import type { ResearchView, ServerMessage, Snapshot, TaskDetail, TaskFile } from "../types";
 import snapshotJson from "./snapshot.json";
 import streamJson from "./stream.json";
 import detailsJson from "./details.json";
@@ -18,6 +18,31 @@ const snapshot = snapshotJson as unknown as Snapshot;
 const stream = streamJson as unknown as ServerMessage[];
 const details = detailsJson as unknown as Record<string, FixtureDetail>;
 const BASE = snapshot.generated_at;
+
+/** What the reflection learned, in made-up projects. */
+const RESEARCH: ResearchView = {
+  lessons: [
+    { date: "2026-10-28", entry: "batch-2026-10-28.md L1", scope: "invariant", scope_text: "invariant", repos: [], cue: "review diff against a moved base", status: "applied", status_text: "applied rules (PR #12)" },
+    { date: "2026-10-30", entry: "batch-2026-10-30.md L2", scope: "domain", scope_text: "domain demo-game", repos: ["demo-game"], cue: "full test suite times out while the machine is loaded", status: "applied", status_text: "applied demo-game AGENTS.md" },
+    { date: "2026-11-01", entry: "batch-2026-11-01.md L1", scope: "domain", scope_text: "domain demo-shop, demo-vault", repos: ["demo-shop", "demo-vault"], cue: "sibling PRs conflict on one shared changelog", status: "declined", status_text: "declined 2026-11-02: one merge round each" },
+    { date: "2026-11-05", entry: "batch-2026-11-05.md T1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a partial result with a pushed commit skips the first review", status: "proposed", status_text: "proposed" },
+    { date: "2026-11-06", entry: "batch-2026-11-06.md U1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a test named by the brief stays green when the guarded behaviour is removed; the reviewer finds it by breaking the code", status: "proposed", status_text: "proposed" },
+    { date: "2026-11-06", entry: "batch-2026-11-06.md U2", scope: "domain", scope_text: "domain ml-lab", repos: ["ml-lab"], cue: "a smoke run starts the long training job inside the turn", status: "proposed", status_text: "proposed" },
+  ],
+  batch: { name: "batch-2026-11-07.md", date: "2026-11-07", through: "20261107T051647Z", records: 11, repos: { teamster: 4, "demo-game": 3, "ml-lab": 2, "demo-wallet": 2 } },
+  pending: {
+    records: 7,
+    signals: 4,
+    repos: { "demo-wallet": 2, "ml-lab": 1, "demo-vault": 1 },
+    items: [
+      { slug: "died-supervisor", repo: "demo-wallet", stamp: "20261107T221500Z", signals: ["blocked"] },
+      { slug: "budget-overrun", repo: "ml-lab", stamp: "20261107T201000Z", signals: ["budget_exhausted", "fix_rounds"] },
+      { slug: "merge-conflict-fix", repo: "demo-vault", stamp: "20261107T153000Z", signals: ["check_failed", "ci_repair"] },
+      { slug: "flaky-e2e", repo: "demo-wallet", stamp: "20261107T090000Z", signals: ["escalate"] },
+    ],
+  },
+  reflection_task: "codex-batch-reflection",
+};
 const STEP_MS = 1000;
 /** A new line in the ship's log this often. */
 const EVENT_MS = 9000;
@@ -106,6 +131,9 @@ export function fixtureSource(): BoardSource {
     // Shared pictures in other roles, so that one repository looks like itself and the others stay as they are.
     async fetchArt() {
       return { "demo-game": { sky: BACKDROPS[0], planet: ART.planetRoadstead, emblem: ART.gate } };
+    },
+    async fetchResearch() {
+      return RESEARCH;
     },
     async fetchEvents(since, until) {
       return demoEvents(FIXTURE_EVENTS, origin, since, until);

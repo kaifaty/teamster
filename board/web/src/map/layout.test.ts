@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PLACES } from "./placement";
 import {
   MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, LIGHT_SHIP, ringOf, ringPoint, ringsOf, skyChoices,
-  starPositions, starRadius, stationAt, systemFrame, worldSize, zoomCamera,
+  RESEARCH_SIZE, researchPosition, starPositions, starRadius, stationAt, systemFrame, worldSize, zoomCamera,
 } from "./layout";
 
 const SIZES = [
@@ -163,6 +163,21 @@ describe("galaxy", () => {
   it("handles more repositories than any grid has cells", () => {
     const repos = Array.from({ length: 120 }, (_, i) => `repo-${i}`);
     expect(starPositions(repos, size).size).toBe(120);
+  });
+
+  it("leaves the middle to the research station, with room for its label below", () => {
+    for (const world of SIZES) {
+      for (const count of [1, 6, 12, 25, 60, 120]) {
+        const repos = Array.from({ length: count }, (_, i) => `repo-${i}`);
+        const station = researchPosition(world);
+        for (const point of starPositions(repos, world).values()) {
+          const dx = Math.abs(point.x - station.x);
+          const dy = point.y - station.y;
+          const clear = dx > RESEARCH_SIZE * 0.5 + 60 || dy < -(RESEARCH_SIZE * 0.5 + 60) || dy > RESEARCH_SIZE * 0.5 + 110;
+          expect(clear, `${count} repositories, star at ${point.x},${point.y}`).toBe(true);
+        }
+      }
+    }
   });
 
   it("grows a star with its ships, up to a limit", () => {

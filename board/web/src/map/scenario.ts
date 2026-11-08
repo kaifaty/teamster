@@ -335,6 +335,7 @@ export function scenarioSource(): BoardSource {
   return {
     label: "сценарий",
     fetchArt: async () => ({}),
+    fetchResearch: async () => null,
     fetchEvents: async (since, until) => demoEvents(SCENARIO_HISTORY, origin, since, until),
     fetchReport: async () =>
       demoReport(Date.now() / 1000, [

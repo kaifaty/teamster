@@ -37,6 +37,8 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 8. frame-light (landscape, 1536x1024): A flat front view of an empty rectangular panel frame. A slim brushed dark metal border only a few percent of the image wide, with a thin brass inner line and small plain corner brackets with one rivet each. No pipes, no lamps, no vents. The frame is symmetrical, runs right along the edges of the image, and its whole centre is a plain flat near-black area.
 
+9. station-research (square, 1024x1024): One large orbital research observatory seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A round central hub carrying one huge dish antenna made of a pale steel lattice, turned up towards the viewer, with a bright teal sensor eye at its centre. Around the hub runs a slender ring of glass laboratory domes glowing soft teal, and three long thin sensor booms reach outwards with small amber lamps at their tips. Dark steel and pale brass plating. Pre-rendered look with metallic highlights. No shadow on the background.
+
 ## Ship classes and convoys
 
 Same STYLE as the first list. Frigates and cruisers carry tasks with more reasoning effort; the escort flies with a ship under review, the tanker along a supply line.

@@ -31,6 +31,8 @@ export const SPACE = {
   lightning: "#e6dcff",
   /** The dim warning light of an empty depot. */
   empty: "#ff7a50",
+  /** The research station's glow, its watch beams and probes. */
+  research: "#5fd6c8",
 } as const;
 
 /** `escort` tints the reviewer's drone: the family's hue, light enough that the art's paint still shows. */

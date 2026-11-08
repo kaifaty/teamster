@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+import type { Lesson, ResearchView, TaskSummary } from "../types";
+import { MAX_PROBES, REFLECTION_TASK, isReflection, research, shortDate } from "./research";
+
+const lesson = (entry: string, status: Lesson["status"]): Lesson => ({
+  date: "2026-11-07",
+  entry,
+  scope: "invariant",
+  scope_text: "invariant",
+  repos: [],
+  cue: `cue of ${entry}`,
+  status,
+  status_text: status,
+});
+
+const view = (patch: Partial<ResearchView> = {}): ResearchView => ({
+  lessons: [lesson("a", "applied"), lesson("b", "proposed"), lesson("c", "declined"), lesson("d", "proposed"), lesson("e", "other")],
+  batch: { name: "batch-2026-11-07.md", date: "2026-11-07", through: "20261107T051647Z", records: 9, repos: { alpha: 5, beta: 3, gone: 1 } },
+  pending: { records: 4, signals: 2, repos: { beta: 1, alpha: 2 }, items: [] },
+  reflection_task: "nightly-reflection",
+  ...patch,
+});
+
+const session = (slug: string, patch: Partial<TaskSummary> = {}): TaskSummary => ({
+  slug,
+  kind: "session",
+  title: null,
+  link: null,
+  repo: "(no folder)",
+  branch: null,
+  task_type: null,
+  executor: "claude",
+  account: null,
+  reviewer: null,
+  model: null,
+  effort: null,
+  column: "review_me",
+  phase: "idle",
+  phase_started_at: null,
+  alive: false,
+  turn: 1,
+  fix_round: 0,
+  outcome: null,
+  result_status: null,
+  summary: null,
+  pr: null,
+  ci: null,
+  sleeping_until: null,
+  created: 1,
+  updated_at: 1,
+  activity: null,
+  scheduled: null,
+  ...patch,
+});
+
+describe("isReflection", () => {
+  it("takes the scheduled task the server names, else the default one", () => {
+    expect(isReflection(session("s", { scheduled: "nightly-reflection" }), view())).toBe(true);
+    expect(isReflection(session("s", { scheduled: REFLECTION_TASK }), view())).toBe(false);
+    expect(isReflection(session("s", { scheduled: REFLECTION_TASK }), null)).toBe(true);
+    expect(isReflection(session("s"), null)).toBe(false);
+    expect(isReflection(session("s", { kind: "work", scheduled: REFLECTION_TASK }), null)).toBe(false);
+    expect(isReflection({ kind: "session" }, null)).toBe(false);
+  });
+});
+
+describe("research", () => {
+  it("is null without a view", () => {
+    expect(research(null, [], ["alpha"])).toBeNull();
+  });
+
+  it("sorts lessons by status, newest first", () => {
+    const made = research(view(), [], [])!;
+    expect(made.proposed.map((item) => item.entry)).toEqual(["d", "b"]);
+    expect(made.applied.map((item) => item.entry)).toEqual(["a"]);
+    expect(made.declined.map((item) => item.entry)).toEqual(["c"]);
+    expect(made.other.map((item) => item.entry)).toEqual(["e"]);
+  });
+
+  it("watches only systems on the map, most records first", () => {
+    expect(research(view(), [], ["alpha", "beta"])!.watched).toEqual([
+      { repo: "alpha", count: 2 },
+      { repo: "beta", count: 1 },
+    ]);
+    expect(research(view(), [], ["beta"])!.watched).toEqual([{ repo: "beta", count: 1 }]);
+  });
+
+  it("flies probes only while a run is alive", () => {
+    const idle = research(view(), [session("old", { scheduled: "nightly-reflection", updated_at: 5 })], ["alpha", "beta"])!;
+    expect(idle.running).toBe(false);
+    expect(idle.run?.slug).toBe("old");
+    expect(idle.probes).toEqual([]);
+
+    const tasks = [
+      session("old", { scheduled: "nightly-reflection", updated_at: 50 }),
+      session("now", { scheduled: "nightly-reflection", alive: true, updated_at: 10 }),
+      session("other", { alive: true }),
+    ];
+    const busy = research(view(), tasks, ["alpha", "beta"])!;
+    expect(busy.running).toBe(true);
+    expect(busy.run?.slug).toBe("now");
+    expect(busy.probes).toEqual(["alpha", "beta"]);
+  });
+
+  it("sends the probes where the last run read when nothing waits", () => {
+    const quiet = view({ pending: { records: 0, signals: 0, repos: {}, items: [] } });
+    const tasks = [session("now", { scheduled: "nightly-reflection", alive: true })];
+    expect(research(quiet, tasks, ["alpha", "beta"])!.probes).toEqual(["alpha", "beta"]);
+  });
+
+  it("sends at most MAX_PROBES probes", () => {
+    const repos = Array.from({ length: 10 }, (_, i) => `repo-${i}`);
+    const many = view({ pending: { records: 10, signals: 10, repos: Object.fromEntries(repos.map((repo) => [repo, 1])), items: [] } });
+    const tasks = [session("now", { scheduled: "nightly-reflection", alive: true })];
+    expect(research(many, tasks, repos)!.probes).toHaveLength(MAX_PROBES);
+  });
+});
+
+describe("shortDate", () => {
+  it("shows day and month, and anything else as written", () => {
+    expect(shortDate("2026-11-07")).toBe("07.11");
+    expect(shortDate("yesterday")).toBe("yesterday");
+    expect(shortDate(null)).toBe("—");
+  });
+});
