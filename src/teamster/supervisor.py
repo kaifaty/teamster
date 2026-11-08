@@ -39,6 +39,11 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
         if not config.SCRIPT_RESOLVED.is_file():
             procs.die(f"{config.SCRIPT_RESOLVED} no longer exists: its version was pruned; "
                       f"run {config.COMMAND} again from the current version")
+        # A start that waited out a data layout upgrade must not run beside the new layout.
+        current = installs.current_version()
+        if current is not None and installs.version_layout(current) != config.data_layout():
+            procs.die(f"current is now {current} with data layout {installs.version_layout(current)}, "
+                      f"this command has layout {config.data_layout()}; run {config.COMMAND} again")
         with (d / "stderr.log").open("a") as errors:
             proc = subprocess.Popen([sys.executable, "-I", str(config.SCRIPT_RESOLVED), "_run", st["slug"]],
                                     cwd=st["worktree"], env=environment, stdin=subprocess.DEVNULL,

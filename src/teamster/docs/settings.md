@@ -273,8 +273,8 @@ uses to `versions/.trash/<version>-<time>`; it never deletes anything.
 Locks: upgrades and prunes run one at a time under `versions/.upgrade.lock`, which also covers the clone
 and fetch of the cache clone. A supervisor start holds `versions/.lock` shared until its pid is saved;
 a prune and an upgrade that changes `DATA_LAYOUT` against the current version hold it exclusively and
-read the live supervisors under it. A start whose `__main__.py` was moved to the trash meanwhile
-refuses. Without `versions/` (a uv tool install) a start takes no lock and creates nothing.
+read the live supervisors under it. A start whose `__main__.py` was moved to the trash meanwhile,
+or whose `DATA_LAYOUT` differs from the current version's, refuses. Without `versions/` (a uv tool install) a start takes no lock and creates nothing.
 
 When the command runs from `versions/`, `duty plist` puts `bin/teamster` in `ProgramArguments`.
 
