@@ -10,6 +10,10 @@ from . import budgets, checking, ci_runs, clock, config, installs, notifications
 
 
 def spawn(st, prompt, effort=None, current_message=False, kind="work", review_after=False, fix_rounds=0):
+    """Start the next turn of st, the state this command loaded, and return its supervisor.
+
+    prompt is the text, or a callable that builds it once no other turn has started (say journals its message then).
+    """
     # Until the pid is saved, prune and data layout upgrades wait. Refuse before touching
     # the task, so a refused start leaves its files and state as they were.
     with installs.spawn_lock():
@@ -21,36 +25,50 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
         if current is not None and installs.version_layout(current) != config.data_layout():
             procs.die(f"current is now {current} with data layout {installs.version_layout(current)}, "
                       f"this command has layout {config.data_layout()}; run {config.COMMAND} again")
-        d = config.TASKS / st["slug"]
-        for name in (("review.md",) if kind == "review" else ("last.md", "review.md")):
-            last = d / name
-            if last.exists():
-                last.unlink()
-        turn = {"pending": {"prompt": prompt, "effort": effort, "current_message": current_message,
-                            "review_after": review_after}, "kind": kind, "fix_rounds": fix_rounds}
-        st.update({key: field.spawn_reset(st, turn) for key, field in task_state.STATE_FIELDS.items()
-                   if field.spawn_reset is not None and field.spawn_reset is not task_state.STATE_DELETE})
-        for key, field in task_state.STATE_FIELDS.items():
-            if field.spawn_reset is task_state.STATE_DELETE:
-                st.pop(key, None)
-        if kind != "review":
-            # Standalone review preserves the last work result and publication receipt.
-            st.pop("publish", None)
-            st["result"] = None
-        # The supervisor runs in the worktree: pass the resolved homes, not relative variables.
-        environment = dict(os.environ)
-        if config.HOME_VARIABLES["TEAMSTER_HOME"]:
-            environment["TEAMSTER_HOME"] = str(config.DATA_HOME)
-        if config.HOME_VARIABLES["TEAMSTER_HOME"] and config.HOME_VARIABLES["TEAMSTER_CODEX_HOME"]:
-            environment["TEAMSTER_CODEX_HOME"] = str(config.CODEX_HOME)
-        if config.HOME_VARIABLES["CODEX_TASK_HOME"]:
-            environment["CODEX_TASK_HOME"] = str(config.CODEX_HOME)
-        with (d / "stderr.log").open("a") as errors:
-            proc = subprocess.Popen([sys.executable, "-I", str(config.SCRIPT_RESOLVED), "_run", st["slug"]],
-                                    cwd=st["worktree"], env=environment, stdin=subprocess.DEVNULL,
-                                    stdout=errors, stderr=errors, start_new_session=True)
-        st["pid"] = proc.pid
-        task_state.save(st)
+        # Held from this re-check through the new pid, so of two commands that loaded the same
+        # idle state only the first starts a turn. write_state, since save would take it again.
+        with task_state.state_lock(st["slug"]):
+            # Every spawn writes state.json: without one, no other turn can have started.
+            if task_state.state_path(st["slug"]).exists():
+                latest = task_state.load(st["slug"])
+                if latest.get("turns", 0) != st.get("turns", 0):
+                    procs.die(f"{st['slug']}: another say or review started turn {latest.get('turns', 0)} while this "
+                              "command ran; nothing was sent. Wait for it (or stop it), then run this command again")
+                busy = task_state.busy_message(latest)
+                if busy is not None:
+                    procs.die(busy)
+            if callable(prompt):
+                prompt = prompt()
+            d = config.TASKS / st["slug"]
+            for name in (("review.md",) if kind == "review" else ("last.md", "review.md")):
+                last = d / name
+                if last.exists():
+                    last.unlink()
+            turn = {"pending": {"prompt": prompt, "effort": effort, "current_message": current_message,
+                                "review_after": review_after}, "kind": kind, "fix_rounds": fix_rounds}
+            st.update({key: field.spawn_reset(st, turn) for key, field in task_state.STATE_FIELDS.items()
+                       if field.spawn_reset is not None and field.spawn_reset is not task_state.STATE_DELETE})
+            for key, field in task_state.STATE_FIELDS.items():
+                if field.spawn_reset is task_state.STATE_DELETE:
+                    st.pop(key, None)
+            if kind != "review":
+                # Standalone review preserves the last work result and publication receipt.
+                st.pop("publish", None)
+                st["result"] = None
+            # The supervisor runs in the worktree: pass the resolved homes, not relative variables.
+            environment = dict(os.environ)
+            if config.HOME_VARIABLES["TEAMSTER_HOME"]:
+                environment["TEAMSTER_HOME"] = str(config.DATA_HOME)
+            if config.HOME_VARIABLES["TEAMSTER_HOME"] and config.HOME_VARIABLES["TEAMSTER_CODEX_HOME"]:
+                environment["TEAMSTER_CODEX_HOME"] = str(config.CODEX_HOME)
+            if config.HOME_VARIABLES["CODEX_TASK_HOME"]:
+                environment["CODEX_TASK_HOME"] = str(config.CODEX_HOME)
+            with (d / "stderr.log").open("a") as errors:
+                proc = subprocess.Popen([sys.executable, "-I", str(config.SCRIPT_RESOLVED), "_run", st["slug"]],
+                                        cwd=st["worktree"], env=environment, stdin=subprocess.DEVNULL,
+                                        stdout=errors, stderr=errors, start_new_session=True)
+            st["pid"] = proc.pid
+            task_state.write_state(st)
     return proc
 
 

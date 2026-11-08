@@ -167,12 +167,12 @@ st[dynamic_key] = 1
         with mock.patch.object(self.worker.supervisor.subprocess, "Popen") as popen, \
                 mock.patch.object(self.worker.clock.time, "time", return_value=1234567), \
                 mock.patch.object(self.worker.threads, "events", return_value=[{}] * 5), \
-                mock.patch.object(self.worker.task_state, "save") as save:
+                mock.patch.object(self.worker.task_state, "write_state") as write:
             popen.return_value.pid = 200
             self.worker.supervisor.spawn(st, "new-prompt", effort="medium", current_message=True,
                               kind=kind, review_after=True, fix_rounds=4)
             popen.assert_called_once()
-            save.assert_called_once_with(st)
+            write.assert_called_once_with(st)
 
     def test_spawn_resets_exactly_the_marked_registry_fields(self):
         st = self.complete_state()

@@ -1,5 +1,7 @@
 """Supervisor lifecycle, signals, rotation and subscription sleep tests."""
+import argparse
 import datetime
+import io
 import json
 import os
 import re
@@ -10,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -728,6 +730,110 @@ worker.notifications.reap_notifications = reap
         self.assertEqual(self.state("review-idle")["turns"], 1)
         self.cli("stop", "review-idle", timeout=20)
         self.wait("review-idle")
+
+    def test_concurrent_say_or_review_starts_only_the_first_turn(self):
+        self.configure(language="en")
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "reply": "Started"},
+            {"mode": "complete", "reply": "First follow-up done"},
+            {"mode": "complete", "reply": "Second follow-up done"}])
+        slug = "say-race"
+        self.start(slug)
+        self.wait(slug)
+        worker = self.worker()
+        parser = argparse.ArgumentParser()
+        commands = parser.add_subparsers(dest="cmd")
+        for name in ("say", "review"):
+            command = commands.add_parser(name)
+            command.add_argument("slug")
+            if name == "say":
+                command.add_argument("message", nargs="?")
+            worker.cli.add_command_options(command, name)
+        handlers = {"say": worker.commands.cmd_say, "review": worker.commands.cmd_review}
+        original_require_idle = worker.commands.require_idle
+        original_popen = subprocess.Popen
+
+        def race(first_message, second_args):
+            """Pause both commands after require_idle, then let the first and afterwards the second go on."""
+            gate = self.root / ("supervisor-gate-" + second_args[0])
+            before = self.state(slug)
+            arrived = {name: threading.Event() for name in ("first", "second")}
+            resume = {name: threading.Event() for name in ("first", "second")}
+            exits, supervisors = {}, []
+
+            def paused_require_idle(st):
+                original_require_idle(st)
+                arrived[threading.current_thread().name].set()
+                resume[threading.current_thread().name].wait(60)
+
+            def popen(command, *args, **kwargs):
+                if command[3:4] == ["_run"]:
+                    # exec keeps the supervisor's pid; it starts only after the gate, so the
+                    # state its spawn wrote stays on disk until the test has read it.
+                    process = original_popen(
+                        ["/bin/sh", "-c", 'while [ ! -e "$0" ]; do sleep 0.02; done; exec "$@"', str(gate), *command],
+                        *args, **kwargs)
+                    self.extra_pids.add(process.pid)
+                    supervisors.append(process)
+                    return process
+                return original_popen(command, *args, **kwargs)
+
+            def run(args):
+                try:
+                    handlers[args[0]](parser.parse_args(args))
+                    exits[threading.current_thread().name] = 0
+                except SystemExit as exc:
+                    exits[threading.current_thread().name] = exc.code
+                except BaseException as exc:
+                    exits[threading.current_thread().name] = repr(exc)
+
+            threads = [threading.Thread(target=run, name="first", args=(["say", slug, first_message],)),
+                       threading.Thread(target=run, name="second", args=(second_args,))]
+            output = io.StringIO()
+            try:
+                with mock.patch.dict(os.environ, self.env, clear=True), \
+                        mock.patch.object(worker.commands, "require_idle", side_effect=paused_require_idle), \
+                        mock.patch.object(worker.supervisor.subprocess, "Popen", side_effect=popen), \
+                        redirect_stdout(output):
+                    for thread in threads:
+                        thread.start()
+                    self.assertTrue(arrived["first"].wait(60) and arrived["second"].wait(60))
+                    resume["first"].set()
+                    threads[0].join(60)
+                    resume["second"].set()
+                    threads[1].join(60)
+                state = self.state(slug)
+                busy = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", slug, "Third message"],
+                                      cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=30)
+            finally:
+                for event in resume.values():
+                    event.set()
+                for thread in threads:
+                    thread.join(60)
+                gate.touch()
+            turn = before["turns"] + 1
+            self.assertEqual(exits, {"first": 0, "second": (
+                f"teamster: {slug}: another say or review started turn {turn} while this command ran; "
+                "nothing was sent. Wait for it (or stop it), then run this command again")})
+            self.assertEqual([process.pid for process in supervisors], [state["pid"]])
+            self.assertIn(f"sent to {slug} (turn {turn}), pid {state['pid']}", output.getvalue())
+            self.assertEqual((state["turns"], state["kind"], state["outcome"]), (turn, "work", "running"))
+            self.assertEqual(state["pending"]["prompt"], first_message)
+            self.assertNotEqual(busy.returncode, 0)
+            self.assertIn(f"{slug} is still running a turn; wait for it (or stop it) first", busy.stderr)
+            self.wait(slug)
+            for process in supervisors:
+                process.wait(30)
+            state = self.state(slug)
+            self.assertEqual((state["turns"], state["outcome"]), (turn, "completed"))
+            self.assertEqual(self.invocations()[-1]["prompt"], first_message)
+
+        race("First message", ["say", slug, "Lost message"])
+        race("Second message", ["review", slug])
+        self.assertEqual(len(self.invocations()), 3)
+        self.assertFalse(self.review_invocations())
+        self.assertEqual([message["text"] for message in self.worker().threads.followup_messages(self.state(slug))],
+                         ["First message", "Second message"])
 
     def test_review_limit_restarts_fresh_on_another_account(self):
         self.configure()

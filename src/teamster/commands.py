@@ -107,10 +107,10 @@ def cmd_start(a):
 
 
 def require_idle(st):
-    if procs.alive(st.get("pid")):
-        if st.get("outcome") == "sleeping":
-            procs.die(f"waiting for limit reset until {config.local_time(st['sleeping']['until'])}; stop first to send a new message")
-        procs.die(f"{st['slug']} is still running a turn; wait for it (or stop it) first")
+    # The early check; spawn repeats it under the state lock against the state on disk.
+    busy = task_state.busy_message(st)
+    if busy is not None:
+        procs.die(busy)
 
 
 def cmd_scout(a):
@@ -211,9 +211,10 @@ def cmd_say(a):
     if a.check_timeout is not None:
         st["check_timeout"] = a.check_timeout
     # If no thread was created (all accounts exhausted on start), retain the brief too.
-    prompt = threads.followup_prompt(st, msg, cfg)
-    supervisor.spawn(st, prompt, a.effort or st.get("effort"), current_message=True,
-          kind="scout" if scouting else "work", review_after=a.review, fix_rounds=a.fix_rounds or 0)
+    # spawn journals the message only once this turn is claimed: a refused say leaves no trace.
+    supervisor.spawn(st, lambda: threads.followup_prompt(st, msg, cfg), a.effort or st.get("effort"),
+          current_message=True, kind="scout" if scouting else "work", review_after=a.review,
+          fix_rounds=a.fix_rounds or 0)
     if move:
         print(move)
     print(f"sent to {a.slug} (turn {st['turns']}), pid {st['pid']}")
