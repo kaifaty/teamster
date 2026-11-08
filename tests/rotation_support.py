@@ -487,6 +487,14 @@ elif command == "sandbox":
     os.execv(args[0], args)
 elif command == "archive":
     trace({"command": "archive", "thread": sys.argv[2]})
+elif command == "login":
+    trace({"command": "login", "argv": sys.argv[2:]})
+    # login.json in the account home scripts the sign-in: its exit code and the account it yields.
+    login_path = home / "login.json"
+    login = json.loads(login_path.read_text()) if login_path.exists() else {}
+    if "fixture" in login:
+        fixture_path.write_text(json.dumps(login["fixture"]))
+    sys.exit(login.get("exit", 0))
 else:
     sys.exit("unsupported fake codex command: " + command)
 '''

@@ -365,6 +365,43 @@ class AccountAuthTests(RotationTestCase):
         self.assertEqual([call.kwargs["timeout"] for call in launched.call_args_list],
                          [worker.config.ACCOUNT_TIMEOUT, 0.1])
 
+    def test_login_waits_for_codex_and_reports_the_account(self):
+        self.configure()
+        local_time = self.worker().config.local_time
+
+        def login(*extra):
+            before = len(self.telemetry_journal())
+            result = subprocess.run([PYTHON, "-I", str(SCRIPT), "login", "second", *extra], cwd=self.root,
+                                    env=self.env, stdin=subprocess.DEVNULL, text=True, capture_output=True,
+                                    timeout=15)
+            return result, self.telemetry_journal()[before:]
+
+        result, rows = login()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "NAME\tEMAIL\tPLAN\tWEEKLY %\tRESET (LOCAL)\tCREDITS\tRESETS\tSTATUS\n"
+                         "second\tb@example.test\tpro\t10\t" + local_time(self.reset + 3600) +
+                         "\t123.45\t0\tavailable\n")
+        self.assertEqual([{key: row[key] for key in row if key != "at"} for row in rows],
+                         [{"v": 1, "event": "account_login", "family": "codex", "account": "second",
+                           "status": "available"}])
+        self.assertIsInstance(rows[0]["at"], float)
+
+        (self.other / "login.json").write_text(json.dumps({"fixture": self.account(self.home, "A", self.reset)}))
+        result, rows = login("--browser")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[1:], [
+            "second\ta@example.test\tpro\t10\t" + local_time(self.reset) + "\t123.45\t0\tsame account as main",
+            "second — тот же аккаунт ChatGPT, что и main; войди заново другим аккаунтом: teamster login second"])
+        self.assertEqual([row["status"] for row in rows], ["duplicate"])
+        self.assertEqual([event["argv"] for event in self.trace() if event["command"] == "login"],
+                         [["--device-auth"], []])
+
+        (self.other / "login.json").write_text(json.dumps({"exit": 3}))
+        result, rows = login()
+        self.assertEqual((result.returncode, result.stdout, rows), (3, "", []))
+        saved = json.loads((self.home / "codex-worker.json").read_text())
+        self.assertEqual([account["name"] for account in saved["accounts"]], ["main", "second"])
+
     def test_claude_login_probes_after_saving_and_preserves_account_on_probe_failure(self):
         token, fixture, trace = self.claude_probe_fixture()
         worker = self.worker()
@@ -398,6 +435,10 @@ class AccountAuthTests(RotationTestCase):
                 self.assertTrue(rows[-1]["saved"])
                 captured = output.getvalue() + errors.getvalue()
                 self.assertIn("request failed" if failure else "token ok", captured)
+                login = self.telemetry_journal()[-1]
+                self.assertEqual({key: login[key] for key in login if key != "at"},
+                                 {"v": 1, "event": "account_login", "family": "claude", "account": "probe",
+                                  "status": "request failed" if failure else "ok"})
                 state = "".join(path.read_text() for path in self.home.rglob("*") if path.is_file())
                 self.assertNotIn(token, captured + json.dumps(rows) + state)
 

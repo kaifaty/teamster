@@ -668,15 +668,16 @@ class ResultScoutConfigTests(RotationTestCase):
         old = legacy.read_bytes()
         worker = self.worker()
         with mock.patch.object(worker.accounts, "prepare_home"), \
-                mock.patch.object(worker.os, "execvpe") as execute, \
-                mock.patch("builtins.print"):
+                mock.patch.object(worker.commands.subprocess, "run", return_value=SimpleNamespace(returncode=5)) as execute, \
+                mock.patch("builtins.print"), self.assertRaises(SystemExit) as stopped:
             worker.commands.cmd_login(SimpleNamespace(name="second", browser=False))
+        self.assertEqual(stopped.exception.code, 5)
         self.assertEqual(legacy.read_bytes(), old)
         saved = json.loads((self.home / "codex-worker.json").read_text())
         self.assertEqual(saved["switch_at"], 97)
         self.assertEqual(saved["language"], "ru")
         self.assertEqual(saved["accounts"], cfg["accounts"])
-        self.assertEqual(execute.call_args.args[2]["CODEX_HOME"], str(self.other))
+        self.assertEqual(execute.call_args.kwargs["env"]["CODEX_HOME"], str(self.other))
 
     def test_notify_logs_without_computer_use_and_chains_only_when_present(self):
         hook = SCRIPT.with_name("turn_log.py")
