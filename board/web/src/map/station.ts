@@ -33,6 +33,15 @@ export function studyTitle(study: Study): string {
   return study.mode === "batch" ? "Плановый разбор" : "Разбор по приказу";
 }
 
+/** A study's own key: a slug may be reused after its record was archived. */
+export const studyKey = (study: Study) => `${study.slug}:${study.created}`;
+
+/** The key of the analyst turn whose questions are open: answers belong to one turn, not to the study. */
+export function turnKey(study: Study): string {
+  const at = openQuestionsAt(study);
+  return `${studyKey(study)}@${at >= 0 ? study.messages[at]!.at : "none"}`;
+}
+
 /** The study the panel opens first: one that waits for the human, then one at work, then the newest. */
 export function firstStudy(studies: readonly Study[]): Study | null {
   return studies.find((study) => study.waiting) ?? studies.find((study) => study.alive) ?? studies[0] ?? null;
@@ -100,7 +109,14 @@ export interface OrderDraft {
 }
 
 const words = (text: string) => text.split(/[\s,]+/).filter(Boolean);
-const SINCE = /^(\d{4}-\d{2}-\d{2}|\d{1,3}d)$/;
+
+/** A period `teamster reflect --since` accepts: a real calendar date or a number of days. */
+export function validSince(value: string): boolean {
+  if (/^\d{1,3}d$/.test(value)) return true;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
 
 /** The `teamster reflect` command of a new order, or why it cannot be built yet. */
 export function orderCommand(draft: OrderDraft, now: Date): { command: string } | { error: string } {
@@ -114,8 +130,11 @@ export function orderCommand(draft: OrderDraft, now: Date): { command: string } 
   if (draft.kind === "question") {
     if (!order) return { error: "Сформулируй вопрос" };
     const since = draft.since.trim();
-    if (since && !SINCE.test(since)) return { error: "Срок — дата ГГГГ-ММ-ДД или число дней, например 14d" };
-    return { command: reflectCommand({ slug, order, since: since || undefined, repos: words(draft.repos) }) };
+    const repos = words(draft.repos);
+    if (since && !validSince(since)) return { error: "Срок — дата ГГГГ-ММ-ДД или число дней, например 14d" };
+    // Without a period or projects teamster would run a batch and move its through: stamp.
+    if (!since && !repos.length) return { error: "Укажи срок или проекты" };
+    return { command: reflectCommand({ slug, order, since: since || undefined, repos }) };
   }
   return { command: reflectCommand({ slug, order }) };
 }

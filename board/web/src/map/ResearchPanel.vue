@@ -19,9 +19,11 @@ import {
   orderCommand,
   reach,
   replyText,
+  studyKey,
   studyState,
   studyTitle,
   transmissionFor,
+  turnKey,
   type Decision,
   type DecisionStatus,
   type OrderDraft,
@@ -37,18 +39,19 @@ const tab = ref<Tab>("link");
 // ---- the conversation
 
 const studies = computed(() => props.research.studies);
-const openSlug = ref<string | null>(firstStudy(props.research.studies)?.slug ?? null);
-const openStudy = computed(() => studies.value.find((study) => study.slug === openSlug.value) ?? null);
+const keyOf = (study: Study | null) => (study ? studyKey(study) : null);
+const openKey = ref<string | null>(keyOf(firstStudy(props.research.studies)));
+const openStudy = computed(() => studies.value.find((study) => studyKey(study) === openKey.value) ?? null);
 // A study that starts waiting while the panel is open comes forward, unless the human is in another one.
 watch(
-  () => firstStudy(studies.value)?.slug ?? null,
-  (slug) => {
-    if (!openStudy.value) openSlug.value = slug;
+  () => keyOf(firstStudy(studies.value)),
+  (key) => {
+    if (!openStudy.value) openKey.value = key;
   },
 );
 
 function toggle(study: Study) {
-  openSlug.value = openSlug.value === study.slug ? null : study.slug;
+  openKey.value = openKey.value === studyKey(study) ? null : studyKey(study);
 }
 
 const index = computed(() =>
@@ -104,20 +107,26 @@ function decide(entry: string, id: string, status: DecisionStatus) {
     decisions.value = decisions.value.filter((decision) => decision !== current);
     return;
   }
-  decisions.value = [...decisions.value.filter((decision) => decision.entry !== key), { entry: key, id, status, note: current?.note ?? "" }];
+  // A reason belongs to a refusal only: accepting after a refusal drops it.
+  const note = status === "declined" ? (current?.note ?? "") : "";
+  decisions.value = [...decisions.value.filter((decision) => decision.entry !== key), { entry: key, id, status, note }];
 }
 
 function drop(decision: Decision) {
   decisions.value = decisions.value.filter((item) => item !== decision);
 }
 
-/** Answers to the open questions, by study slug and question number. */
+/** A lesson id names a staged decision, unless another one shares it: then the whole entry does. */
+const chipName = (decision: Decision) =>
+  decisions.value.some((other) => other !== decision && other.id === decision.id) ? decision.entry : decision.id;
+
+/** Answers to the open questions, by the analyst's turn and question number: a new turn starts clean. */
 const answers = reactive<Record<string, string[]>>({});
-const answersOf = (study: Study) => (answers[study.slug] ??= []);
+const answersOf = (study: Study) => (answers[turnKey(study)] ??= []);
 
 /** Questions answered in the human's own words instead of an option. */
 const custom = reactive<Record<string, boolean[]>>({});
-const customOf = (study: Study) => (custom[study.slug] ??= []);
+const customOf = (study: Study) => (custom[turnKey(study)] ??= []);
 
 function choose(study: Study, number: number, option: string) {
   const list = answersOf(study);
@@ -130,7 +139,14 @@ function ownAnswer(study: Study, number: number) {
   answersOf(study)[number] = "";
 }
 
-const free = ref("");
+/** The free text of a reply, kept for each study. */
+const drafts = reactive<Record<string, string>>({});
+const free = computed({
+  get: () => (openStudy.value ? (drafts[studyKey(openStudy.value)] ?? "") : ""),
+  set: (text: string) => {
+    if (openStudy.value) drafts[studyKey(openStudy.value)] = text;
+  },
+});
 const replyField = ref<HTMLTextAreaElement | null>(null);
 
 async function clarify(id: string) {
@@ -212,12 +228,14 @@ async function send(command: string, after: () => void) {
 
 function sendReply() {
   const study = target.value;
+  // The say goes out only when there is a text for a study that can take it; otherwise the draft stays.
+  const answered = !!reply.value && !!study && targetReach.value === "ok";
   void send(replyCommand.value, () => {
     decisions.value = [];
-    free.value = "";
-    if (study) {
-      answers[study.slug] = [];
-      custom[study.slug] = [];
+    if (answered && study) {
+      drafts[studyKey(study)] = "";
+      answers[turnKey(study)] = [];
+      custom[turnKey(study)] = [];
     }
   });
 }
@@ -261,7 +279,14 @@ const runLine = computed(() => {
 
 const closeButton = ref<HTMLButtonElement | null>(null);
 const onKey = (event: KeyboardEvent) => {
-  if (event.key === "Escape") emit("close");
+  if (event.key !== "Escape" || event.isComposing) return;
+  // Escape in a field leaves the field; the next one closes the panel. Drafts live only while it is open.
+  const field = event.target instanceof HTMLElement && event.target.closest("input, textarea, select");
+  if (field) {
+    (field as HTMLElement).blur();
+    return;
+  }
+  emit("close");
 };
 onMounted(() => {
   closeButton.value?.focus();
@@ -313,15 +338,15 @@ const SCOPE: Record<"invariant" | "domain", string> = { invariant: "общий",
           <span>Исследований на станции нет. Отдай приказ ниже — аналитик возьмётся за записи.</span>
         </p>
 
-        <section v-for="study in studies" :key="study.slug" class="study" :class="[studyState(study), { open: openSlug === study.slug }]">
-          <button type="button" class="s-head" :aria-expanded="openSlug === study.slug" @click="toggle(study)">
+        <section v-for="study in studies" :key="studyKey(study)" class="study" :class="[studyState(study), { open: openKey === studyKey(study) }]">
+          <button type="button" class="s-head" :aria-expanded="openKey === studyKey(study)" @click="toggle(study)">
             <span class="dot" aria-hidden="true"></span>
             <span class="s-title">{{ studyTitle(study) }}</span>
             <span class="s-meta">{{ MODE[study.mode] }} · записей {{ study.records }} · {{ formatClock(study.updated_at, now) }}</span>
             <span class="s-state">{{ STATE_TEXT[studyState(study)] }}</span>
           </button>
 
-          <ol v-if="openSlug === study.slug" class="talk">
+          <ol v-if="openKey === studyKey(study)" class="talk">
             <li v-for="(message, at) in study.messages" :key="`${message.from}-${message.at}-${at}`" class="msg" :class="message.from">
               <img v-if="message.from === 'analyst'" :src="analystPortrait" alt="" class="avatar" />
               <div class="bubble-wrap">
@@ -331,7 +356,7 @@ const SCOPE: Record<"invariant" | "domain", string> = { invariant: "общий",
 
                 <!-- Dockets: a lesson's card stands at the last report that carries it. -->
                 <template v-for="lesson in message.lessons" :key="lesson.id">
-                  <article v-if="docketsOf(study).get(lesson.id) === at" class="docket" :class="index.get(lesson.entry)?.status ?? 'proposed'">
+                  <article v-if="docketsOf(study).get(lesson.id) === at" class="docket" :class="index.get(lesson.entry)?.status ?? 'unindexed'">
                     <header class="d-head">
                       <span>Докладная · {{ lesson.id }}<template v-if="lesson.scope"> · {{ SCOPE[lesson.scope] }}</template></span>
                       <span v-if="index.get(lesson.entry) && index.get(lesson.entry)!.status !== 'proposed'" class="d-state">{{ LESSON_STATE[index.get(lesson.entry)!.status] || index.get(lesson.entry)!.status_text }}</span>
@@ -342,7 +367,7 @@ const SCOPE: Record<"invariant" | "domain", string> = { invariant: "общий",
                       <template v-if="lesson.lesson"><dt>Что делать</dt><dd>{{ lesson.lesson }}</dd></template>
                       <template v-if="lesson.proposal"><dt>Предложение</dt><dd>{{ lesson.proposal }}</dd></template>
                     </dl>
-                    <div v-if="(index.get(lesson.entry)?.status ?? 'proposed') === 'proposed'" class="d-actions">
+                    <div v-if="index.get(lesson.entry)?.status === 'proposed'" class="d-actions">
                       <button type="button" class="chip" :class="{ picked: decided(lesson.entry)?.status === 'accepted' }" :aria-pressed="decided(lesson.entry)?.status === 'accepted'" @click="decide(lesson.entry, lesson.id, 'accepted')">Принять</button>
                       <button type="button" class="chip" :class="{ picked: decided(lesson.entry)?.status === 'declined' }" :aria-pressed="decided(lesson.entry)?.status === 'declined'" @click="decide(lesson.entry, lesson.id, 'declined')">Отклонить</button>
                       <button v-if="reach(study) === 'ok'" type="button" class="chip" @click="clarify(lesson.id)">Уточнить</button>
@@ -497,9 +522,9 @@ const SCOPE: Record<"invariant" | "domain", string> = { invariant: "общий",
       </div>
 
       <ul v-if="decisions.length" class="staged" aria-label="Решения по урокам">
-        <li v-for="decision in decisions" :key="decision.entry" :class="decision.status">
-          {{ decision.id }} · {{ decision.status === "accepted" ? "принять" : "отклонить" }}<template v-if="decision.note.trim()">: {{ decision.note.trim() }}</template>
-          <button type="button" class="x" :aria-label="`Убрать решение по ${decision.id}`" @click="drop(decision)">×</button>
+        <li v-for="decision in decisions" :key="decision.entry" :class="decision.status" :title="decision.entry">
+          {{ chipName(decision) }} · {{ decision.status === "accepted" ? "принять" : "отклонить" }}<template v-if="decision.note.trim()">: {{ decision.note.trim() }}</template>
+          <button type="button" class="x" :aria-label="`Убрать решение по ${decision.entry}`" @click="drop(decision)">×</button>
         </li>
       </ul>
 
@@ -938,6 +963,10 @@ h2 {
   border-left-color: #6fcf8f;
 }
 
+.docket.unindexed {
+  border-left-color: #6b6457;
+}
+
 .docket.declined {
   border-left-color: #6b6457;
   opacity: 0.8;
@@ -1212,8 +1241,11 @@ h3 {
 /* The transmitter. */
 .radio {
   display: flex;
+  flex: none;
   flex-direction: column;
   gap: 6px;
+  max-height: 55%;
+  overflow-y: auto;
   padding: 8px 4px 2px;
   border-top: 1px solid rgba(214, 170, 96, 0.3);
 }

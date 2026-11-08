@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Study, StudyMessage } from "../types";
 import {
   docketPlacement,
+  studyKey,
+  turnKey,
+  validSince,
   firstStudy,
   openQuestionsAt,
   orderCommand,
@@ -26,7 +29,7 @@ const analyst = (at: number, patch: Partial<StudyMessage> = {}): StudyMessage =>
 });
 
 const study = (patch: Partial<Study> = {}): Study => ({
-  slug: "reflect-1109-0412",
+  slug: "reflect-1109-041200",
   archived: false,
   mode: "batch",
   alive: false,
@@ -114,7 +117,7 @@ describe("transmission", () => {
       "1. Brief gap",
     );
     expect(command).toBe(
-      "teamster lesson 'batch-2026-11-09.md V1' declined --note 'one incident' && teamster say reflect-1109-0412 '1. Brief gap'",
+      "teamster lesson 'batch-2026-11-09.md V1' declined --note 'one incident' && teamster say reflect-1109-041200 '1. Brief gap'",
     );
   });
 
@@ -132,22 +135,44 @@ describe("orderCommand", () => {
   const draft = (patch: Partial<OrderDraft>): OrderDraft => ({ kind: "batch", tasks: "", since: "", repos: "", text: "", ...patch });
 
   it("builds a batch order with an optional focus", () => {
-    expect(orderCommand(draft({}), now)).toEqual({ command: "teamster reflect reflect-1109-0412" });
-    expect(orderCommand(draft({ text: "Focus on CI" }), now)).toEqual({ command: "teamster reflect reflect-1109-0412 'Focus on CI'" });
+    expect(orderCommand(draft({}), now)).toEqual({ command: "teamster reflect reflect-1109-041200" });
+    expect(orderCommand(draft({ text: "Focus on CI" }), now)).toEqual({ command: "teamster reflect reflect-1109-041200 'Focus on CI'" });
   });
 
   it("needs a task for a task order", () => {
     expect(orderCommand(draft({ kind: "tasks" }), now)).toEqual({ error: "Назови хотя бы одну задачу" });
     expect(orderCommand(draft({ kind: "tasks", tasks: "nft-send, wallet-fix" }), now)).toEqual({
-      command: "teamster reflect reflect-1109-0412 --task nft-send --task wallet-fix",
+      command: "teamster reflect reflect-1109-041200 --task nft-send --task wallet-fix",
     });
   });
 
   it("needs the question and a valid period for a question", () => {
     expect(orderCommand(draft({ kind: "question" }), now)).toEqual({ error: "Сформулируй вопрос" });
     expect("error" in orderCommand(draft({ kind: "question", text: "Why?", since: "last week" }), now)).toBe(true);
-    expect(orderCommand(draft({ kind: "question", text: "Why?", since: "14d", repos: "wallet vault" }), now)).toEqual({
-      command: "teamster reflect reflect-1109-0412 --since 14d --repo wallet --repo vault 'Why?'",
+    expect("error" in orderCommand(draft({ kind: "question", text: "Why?", since: "2026-02-30" }), now)).toBe(true);
+    // Without a period or projects it would be a batch.
+    expect(orderCommand(draft({ kind: "question", text: "Why?" }), now)).toEqual({ error: "Укажи срок или проекты" });
+    expect(orderCommand(draft({ kind: "question", text: "Why?", repos: "wallet" }), now)).toEqual({
+      command: "teamster reflect reflect-1109-041200 --repo wallet 'Why?'",
     });
+    expect(orderCommand(draft({ kind: "question", text: "Why?", since: "14d", repos: "wallet vault" }), now)).toEqual({
+      command: "teamster reflect reflect-1109-041200 --since 14d --repo wallet --repo vault 'Why?'",
+    });
+  });
+});
+
+describe("keys", () => {
+  it("tells apart a reused slug and the turns of one study", () => {
+    expect(studyKey(study({ created: 1 }))).not.toBe(studyKey(study({ created: 2 })));
+    const first = study({ waiting: true, messages: [lead(100, null), asking] });
+    const second = study({ waiting: true, messages: [lead(100, null), asking, lead(160, "answer"), { ...asking, at: 190 }] });
+    expect(turnKey(first)).not.toBe(turnKey(second));
+  });
+
+  it("accepts only real dates and day counts", () => {
+    expect(validSince("2026-11-01")).toBe(true);
+    expect(validSince("14d")).toBe(true);
+    expect(validSince("2026-02-30")).toBe(false);
+    expect(validSince("yesterday")).toBe(false);
   });
 });

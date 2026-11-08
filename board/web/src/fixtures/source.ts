@@ -34,6 +34,7 @@ const RESEARCH: ResearchView = {
     { date: "2026-11-05", entry: "batch-2026-11-05.md T1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a partial result with a pushed commit skips the first review", status: "proposed", status_text: "proposed" },
     { date: "2026-11-06", entry: "batch-2026-11-06.md U1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a test named by the brief stays green when the guarded behaviour is removed; the reviewer finds it by breaking the code", status: "accepted", status_text: "accepted: add a targeted check in the next task" },
     { date: "2026-11-06", entry: "batch-2026-11-06.md U2", scope: "domain", scope_text: "domain ml-lab", repos: ["ml-lab"], cue: "a smoke run starts the long training job inside the turn", status: "proposed", status_text: "proposed" },
+    { date: "2026-11-07", entry: "study-2026-11-07.md L1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a broad check repeats before the failure is reproduced", status: "proposed", status_text: "proposed" },
   ],
   studies: [
     {
