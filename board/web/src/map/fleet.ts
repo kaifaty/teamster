@@ -1,9 +1,7 @@
-// The galaxy from the board's data: one star per repository, one fuel depot per account, and the supply
-// lines between them.
+// The galaxy from the board's data: one star per repository and one fuel tank per account.
 
 import { parseAccounts } from "../lib/accounts";
 import type { TaskSummary } from "../types";
-import { depotPosition, type Point, type Size } from "./layout";
 
 export type Family = "codex" | "claude";
 
@@ -17,36 +15,51 @@ export interface Star {
   dots: { executor: Family; state: "work" | "attention" | "ready" | "sleep" }[];
 }
 
-export interface Depot {
+/** A subscription as a fuel tank at the galaxy's edge. */
+export interface Tank {
   key: string;
   name: string;
   executor: Family;
   /** Weekly limit left, in percent; null when the account does not report it. */
   fuel: number | null;
-  /** Limited, exhausted or logged out: the depot gives nothing. */
+  /** Limited, exhausted or logged out: the tank gives nothing. */
   bad: boolean;
   status: string | null;
-  duty: boolean;
+  /** The account kept for the orchestrator (teamster's duty account): new tasks skip it. */
+  admiral: boolean;
   /**
-   * Unix seconds when the depot refuels: a limited or exhausted account at the end of its limit, a low one at
-   * the weekly reset; null when unknown or when the account needs a login or a token rather than a reset.
+   * Unix seconds when the tank refills: an exhausted or limited account at the end of its limit, any other at the weekly
+   * reset; null when unknown or when the account needs a login or a token rather than a reset.
    */
-  refuelAt: number | null;
+  refillAt: number | null;
+  /** Free resets left (Codex reset credits) and when each expires; null when the account has none to tell. */
+  resets: { count: number; expires: number[] } | null;
+  /** The five-hour window in percent used, and when it resets; null when not reported. */
+  burst: { percent: number; resetsAt: number | null } | null;
 }
 
-/** Below this share the depot is shown as low. */
+/** Below this share the tank is shown as low. */
 export const LOW_FUEL = 20;
 
-/** The depot gives nothing or almost nothing: it blinks on the map and its label tells when it refuels. */
-export function depotEmpty(depot: Pick<Depot, "bad" | "fuel">): boolean {
-  return depot.bad || (depot.fuel !== null && depot.fuel <= LOW_FUEL);
+/** The tank gives nothing or almost nothing: its glass runs red and it blinks a warning light. */
+export function tankEmpty(tank: Pick<Tank, "bad" | "fuel">): boolean {
+  return tank.bad || (tank.fuel !== null && tank.fuel <= LOW_FUEL);
 }
 
-/** "заправка через N ч", or "через N мин" under an hour, until `at` (Unix seconds); null without a future time. */
-export function refuelText(at: number | null, now: number): string | null {
+/** How long until `at` (Unix seconds), short: "3 д", "10 ч", "25 мин"; null without a future time. */
+export function untilText(at: number | null, now: number): string | null {
   if (at === null || at <= now) return null;
   const minutes = Math.max(1, Math.ceil((at - now) / 60));
-  return minutes < 60 ? `заправка через ${minutes} мин` : `заправка через ${Math.round(minutes / 60)} ч`;
+  if (minutes < 60) return `${minutes} мин`;
+  const hours = Math.round(minutes / 60);
+  return hours < 36 ? `${hours} ч` : `${Math.round(hours / 24)} д`;
+}
+
+/** The lamps beside a tank, one per day of the week: as many burn as days are left until it refills, 0 to 7. */
+export const DAY_LAMPS = 7;
+export function daysLeft(at: number | null, now: number): number {
+  if (at === null || at <= now) return 0;
+  return Math.min(DAY_LAMPS, Math.ceil((at - now) / 86400));
 }
 
 /**
@@ -111,13 +124,6 @@ export function patchSpots(slug: string, fixRound: number): { x: number; y: numb
   return result;
 }
 
-export interface SupplyLine {
-  depot: string;
-  repo: string;
-  /** A ship of this repository is working on this account right now. */
-  active: boolean;
-}
-
 export function stars(tasks: readonly TaskSummary[]): Star[] {
   const byRepo = new Map<string, Star>();
   for (const task of tasks) {
@@ -135,9 +141,9 @@ export function stars(tasks: readonly TaskSummary[]): Star[] {
   return [...byRepo.values()].sort((a, b) => a.repo.localeCompare(b.repo));
 }
 
-export function depots(data: unknown, now: number): Depot[] {
+export function tanks(data: unknown, now: number): Tank[] {
   const items = parseAccounts(data, now).items ?? [];
-  const result: Depot[] = [];
+  const result: Tank[] = [];
   for (const item of items) {
     if (item.kind !== "row") continue;
     const { row } = item;
@@ -148,34 +154,11 @@ export function depots(data: unknown, now: number): Depot[] {
       fuel: row.weeklyPercent === null ? null : Math.max(0, Math.round(100 - row.weeklyPercent)),
       bad: row.bad,
       status: row.status,
-      duty: row.duty !== null,
-      refuelAt: row.bad ? row.limitedUntil : row.weeklyResetsAt,
+      admiral: row.duty !== null,
+      refillAt: row.bad ? row.limitedUntil : row.weeklyResetsAt,
+      resets: row.resets,
+      burst: row.burst,
     });
-  }
-  return result;
-}
-
-export function supplyLines(tasks: readonly TaskSummary[], known: readonly Depot[]): SupplyLine[] {
-  const keys = new Set(known.map((depot) => depot.key));
-  const lines = new Map<string, SupplyLine>();
-  for (const task of tasks) {
-    if (task.column === "closed" || !task.account) continue;
-    const depot = `${task.executor}:${task.account}`;
-    if (!keys.has(depot)) continue;
-    const key = `${depot}|${task.repo}`;
-    const line = lines.get(key) ?? { depot, repo: task.repo, active: false };
-    line.active ||= task.alive;
-    lines.set(key, line);
-  }
-  return [...lines.values()];
-}
-
-/** Each depot's place: Codex along the top edge, Claude along the bottom one, in the order given. */
-export function depotPositions(known: readonly Depot[], size: Size): Map<string, Point> {
-  const result = new Map<string, Point>();
-  for (const [family, row] of [["codex", "top"], ["claude", "bottom"]] as const) {
-    const list = known.filter((depot) => depot.executor === family);
-    list.forEach((depot, index) => result.set(depot.key, depotPosition(index, list.length, row, size)));
   }
   return result;
 }

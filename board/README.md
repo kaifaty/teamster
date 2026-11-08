@@ -25,14 +25,22 @@ npm --prefix board/web ci && npm --prefix board/web run build
 Until that directory exists, `/` returns a short build instruction. The API is available independently.
 
 The header switches between two views of the same data: «Доска», the columns, and «Карта», a space fleet
-in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy shows every repository as a star and every account
-as a fuel depot, with lines from the depots to the systems they feed. The stars stand on a hexagonal lattice whose step
-follows their count, so a few stand wide apart and many fill the galaxy evenly, clear of the research station, the
-depots and the ship's log; a star keeps its place while it fits there (`galaxyLayout` in `board/web/src/map/layout.ts`).
-Every machine of the machines strip stands as a power station in a column on the right edge of the galaxy, between the rows of
-depots (`machinePositions`), with a short label on its left: the name and the status, the name alone on a phone. A halo
+in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy shows every repository as a star, and nothing joins them: no supply lines and no
+tankers. The stars stand on a hexagonal lattice whose step follows their count, so a few stand wide apart and many fill
+the galaxy evenly, clear of the research station, the columns at the edges, the toolbar and the ship's log; a star keeps
+its place while it fits there (`galaxyLayout` in `board/web/src/map/layout.ts`).
+Every subscription stands as a fuel tank in a column on the left edge of the galaxy, Codex above Claude, under the toolbar
+and above the ship's log (`fuelPositions`); on a phone the tanks stand in a row under the toolbar. The fuel in a tank's
+glass is the week's limit left, in the family's colour and red at 20% or less, where a warning light blinks; an
+exhausted, limited or logged-out tank turns grey. Seven lamps beside it burn one per day until it refills: the weekly
+reset, or the end of the limit that ran out. The admiral's badge crowns the duty account, the one teamster keeps for the
+orchestrator and new tasks skip. The label on the right tells the name, the share left and the time to the refill
+(«83% · ↻ 5 д»), with a spare cell for every free reset of a Codex account; its title has the five-hour window, the
+reset times and when the free resets expire.
+Every machine of the machines strip stands as a power station in a column on the right edge of the galaxy
+(`machinePositions`), with a short label on its left: the name and the status, the name alone on a phone. A halo
 around the station tells its status — green free, amber busy, pulsing red overloaded; a grey station has no connection or
-no data — and a click on the station or its label opens the same machine card as on «Доска»; like the depots, the stations stay live during a replay. The map
+no data — and a click on the station or its label opens the same machine card as on «Доска»; like the tanks, the stations stay live during a replay. The map
 tab has no machines strip: there the machines live in the galaxy, as the accounts do.
 A busy star's label is one line: its name, its ships and badges for alarms, ships waiting for you and sleeping ones.
 Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,
@@ -56,11 +64,16 @@ A repository may look like itself: `<data home>/board-art/<repo>/` can hold its 
 this public repository. The sky replaces the system's shared sky, the planet its home world, and the emblem stands next to the star's
 label and in the system's toolbar; whatever is missing stays shared art. The server serves these files read-only through `GET /api/art`.
 Generation is manual: see "The art of one project" in [PROMPTS.md](web/art/PROMPTS.md).
+Related projects can stand together as a constellation: `<data home>/board-constellations.json` lists each
+constellation's name and its repositories, where `*` stands for any run of characters, for example
+`{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse", "my-support"]}]}`. The galaxy
+gathers their stars in one place under a faint cloud with the constellation's name, and the system picker groups them.
+The server reads the file on each request through `GET /api/constellations`; it stays outside this public repository.
 In the middle of the galaxy stands the research station, fed by `GET /api/research`. It shows the reflection
 ([reflection.md](../src/teamster/docs/reflection.md)): a gold light while lessons wait for your decision, a beam to every system with
-archived records that the next reflection will read, and probes flying to those systems while a run is going. A run is a desktop
+archived records that the next reflection will read while its panel is open, and probes flying to those systems while a run is going. A run is a desktop
 session of the reflection's scheduled task; it stays at the station and is not counted in any system. A click on the station opens
-its panel: the lessons to decide, the records under watch with their signals, and the settled lessons. Like the depots, the
+its panel: the lessons to decide, the records under watch with their signals, and the settled lessons. Like the tanks, the
 station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
 live `event` messages) in the map's words, newest first; in a system it shows only that system and folds to its newest
@@ -70,7 +83,7 @@ the day's verdicts. The scale over the log replays a day — the last 24 hours, 
 today: a slider, play and pause at ×60, ×600 or ×3600, marks at verdicts and CI failures, and «В эфир» back to the
 live fleet. `board/web/src/map/replay.ts` rebuilds the fleet at each moment from the log's events alone (with two
 hours before the day for ships already under way), shaped like live tasks, so ships, stars and storms show the past
-while live updates wait; depots and tankers stay live, since the accounts' past is not recorded. In replay the log
+while live updates wait; the tanks stay live, since the accounts' past is not recorded. In replay the log
 marks the lines up to the moment, and a click on a line moves the scale to it. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
 (`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them. Above the commands
 stands the order the task's state calls for, one reason and one command, and the other commands fold under «Все команды».

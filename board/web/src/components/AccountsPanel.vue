@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Accounts } from "../types";
-import { parseAccounts, type DutyInfo } from "../lib/accounts";
+import { ADMIRAL_NOTE, parseAccounts, type DutyInfo } from "../lib/accounts";
 import { formatAge, formatClock, formatFullTime, formatUntil } from "../lib/format";
 
 const props = defineProps<{ accounts: Accounts | null; now: number; collapsed: boolean }>();
@@ -10,9 +10,9 @@ const emit = defineEmits<{ toggle: [] }>();
 const parsed = computed(() => parseAccounts(props.accounts?.data ?? null, props.now));
 const count = computed(() => parsed.value.items?.length ?? 0);
 const level = (percent: number) => (percent >= 90 ? "bad" : percent >= 70 ? "warn" : "ok");
+// The duty account is kept for the orchestrator: the board calls it the admiral's, as the map does.
 const dutyTitle = (duty: DutyInfo) =>
-  [duty.reason, duty.since !== null ? `с ${formatClock(duty.since, props.now)}` : null].filter(Boolean).join("\n") ||
-  "дежурный аккаунт";
+  [ADMIRAL_NOTE, duty.reason, duty.since !== null ? `с ${formatClock(duty.since, props.now)}` : null].filter(Boolean).join("\n");
 </script>
 
 <template>
@@ -52,7 +52,7 @@ const dutyTitle = (duty: DutyInfo) =>
               <span :class="level(item.row.weeklyPercent)" :style="{ width: `${Math.min(100, Math.max(0, item.row.weeklyPercent))}%` }"></span>
             </div>
             <div class="line sub">
-              <span v-if="item.row.duty" class="duty" :title="dutyTitle(item.row.duty)">дежурный</span>
+              <span v-if="item.row.duty" class="duty" :title="dutyTitle(item.row.duty)">★ адмирал</span>
               <span v-if="item.row.status" class="status" :class="{ bad: item.row.bad }">
                 {{ item.row.status }}<template v-if="item.row.limitedUntil !== null"> · {{ formatUntil(item.row.limitedUntil, now) }}</template>
               </span>
@@ -201,9 +201,9 @@ const dutyTitle = (duty: DutyInfo) =>
   flex: none;
   padding: 0 5px;
   margin-right: auto;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, #d6a23c 55%, var(--border));
   border-radius: 999px;
-  color: var(--muted);
+  color: #b5821f;
   font-size: 11px;
   line-height: 15px;
   cursor: help;

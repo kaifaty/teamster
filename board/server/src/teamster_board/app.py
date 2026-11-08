@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 from .accounts import Accounts, Reports
 from .art import MEDIA_TYPES, art_file, art_index
+from .constellations import read_constellations
 from .machines import Machines
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
@@ -28,9 +29,10 @@ LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", re.I)
 # The board's files in the worker's data home, by layout. The board never imports the worker.
 LAYOUT_FILES = {
     "legacy": {"tasks": "claude-tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
-               "board_art": "board-art", "telemetry": "codex-worker-log.jsonl"},
+               "board_art": "board-art", "board_constellations": "board-constellations.json",
+               "telemetry": "codex-worker-log.jsonl"},
     "new": {"tasks": "tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
-            "board_art": "board-art", "telemetry": "log.jsonl"},
+            "board_art": "board-art", "board_constellations": "board-constellations.json", "telemetry": "log.jsonl"},
 }
 
 
@@ -294,6 +296,10 @@ def create_app(settings=None):
     @app.get("/api/art")
     async def art():
         return await asyncio.to_thread(art_index, board.settings.path("board_art"))
+
+    @app.get("/api/constellations")
+    async def constellations():
+        return await asyncio.to_thread(read_constellations, board.settings.path("board_constellations"))
 
     @app.get("/api/art/{repo}/{name}")
     async def art_picture(repo: str, name: str):

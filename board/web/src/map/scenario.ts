@@ -272,17 +272,29 @@ const BRIEF = `# Демо-сценарий карты
 один из них. Это не настоящие задачи: сценарий есть только в режиме \`npm run dev:fixture\`.
 `;
 
-/** Fuel depots of the demo: enough, low and spent, so that the galaxy shows them all, with their refuel times. */
+/**
+ * Fuel tanks of the demo: full, low and spent, with free resets on the Codex ones and the admiral's badge on one, so that
+ * the galaxy shows them all, with their refill times.
+ */
 function accounts(start: number) {
+  const credits = (count: number) => ({
+    available_count: count,
+    expires_at: Array.from({ length: count }, (_, i) => new Date((start + (20 + i) * 86400) * 1000).toISOString()),
+  });
   return {
     codex: [
-      { name: "codex-team-1", status: "available", secondary: { used_percent: 41, window_minutes: 10080, resets_at: start + 4 * 86400 } },
-      { name: "codex-team-2", status: "available", secondary: { used_percent: 88, window_minutes: 10080, resets_at: start + 40 * 60 } },
+      {
+        name: "codex-team-1", status: "available", reset_credits: credits(2),
+        primary: { used_percent: 12, window_minutes: 300, resets_at: start + 3 * 3600 },
+        secondary: { used_percent: 41, window_minutes: 10080, resets_at: start + 4 * 86400 },
+      },
+      { name: "codex-team-2", status: "available", reset_credits: credits(1), secondary: { used_percent: 88, window_minutes: 10080, resets_at: start + 40 * 60 } },
     ],
     claude: [
-      { name: "claude-pool-1", seven_day: { used_percent: 30 } },
+      { name: "claude-pool-1", seven_day: { used_percent: 30, resets_at: start + 6 * 86400 }, five_hour: { used_percent: 20, resets_at: start + 2 * 3600 } },
       { name: "claude-pool-2", seven_day: { used_percent: 100, resets_at: start + 2 * 86400 }, limited_until: start + 5 * 3600 },
     ],
+    duty: { account: "claude-pool-1", family: "claude", reason: "most room", since: start - 3600 },
   };
 }
 
@@ -345,6 +357,7 @@ export function scenarioSource(): BoardSource {
   return {
     label: "сценарий",
     fetchArt: async () => ({}),
+    fetchConstellations: async () => ({ constellations: [{ name: "Демо", repos: [R, O] }], error: null }),
     fetchResearch: async () => null,
     fetchEvents: async (since, until) => demoEvents(SCENARIO_HISTORY, origin, since, until),
     fetchReport: async () =>

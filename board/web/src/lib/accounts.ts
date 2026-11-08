@@ -15,9 +15,19 @@ export interface AccountRow {
   bad: boolean;
   /** Unix seconds until which the account is limited. */
   limitedUntil: number | null;
-  /** Set when this is the duty account (`data.duty`). */
+  /**
+   * Set when this is the duty account (`data.duty`): the one kept for the orchestrator, which new tasks skip. The board
+   * calls it the admiral's.
+   */
   duty: DutyInfo | null;
+  /** Free resets of the limits left on a Codex account, and when each expires (Unix seconds); null when unknown. */
+  resets: { count: number; expires: number[] } | null;
+  /** The short window (five hours) in percent, and its reset; null when the account does not report it. */
+  burst: { percent: number; resetsAt: number | null } | null;
 }
+
+/** What the admiral's account is, for titles: the duty account kept for the orchestrator. */
+export const ADMIRAL_NOTE = "Адмирал: подписка в резерве оркестратора, новые задачи её не берут";
 
 export interface DutyInfo {
   /** Why this account was elected, as `duty tick` wrote it. */
@@ -77,6 +87,24 @@ function codexWeekly(entry: Obj): Obj | null {
   return isObj(entry.secondary) ? entry.secondary : null;
 }
 
+/** The short window of a Codex account: one with a length under a week. */
+function codexBurst(entry: Obj): Obj | null {
+  return [entry.primary, entry.secondary].filter(isObj).find((w) => num(w.window_minutes) !== null && num(w.window_minutes)! < WEEK_MINUTES) ?? null;
+}
+
+function burstOf(window: Obj | null): AccountRow["burst"] {
+  const percent = window ? num(window.used_percent) : null;
+  return percent === null ? null : { percent, resetsAt: toSeconds(window!.resets_at) };
+}
+
+/** `reset_credits` of a Codex account: how many free resets are left and when they expire. */
+function resetsOf(entry: Obj): AccountRow["resets"] {
+  const credits = entry.reset_credits;
+  if (!isObj(credits) || num(credits.available_count) === null) return null;
+  const expires = Array.isArray(credits.expires_at) ? credits.expires_at.map(toSeconds).filter((at): at is number => at !== null) : [];
+  return { count: Math.max(0, Math.round(num(credits.available_count)!)), expires: expires.sort((a, b) => a - b) };
+}
+
 const CODEX_STATUS: Record<string, string> = {
   exhausted: "исчерпан",
   not_logged_in: "не вошёл",
@@ -107,6 +135,8 @@ function codexRow(entry: Obj, index: number): AccountRow | null {
     bad: status !== null && status !== "available",
     limitedUntil: status === "exhausted" ? spentUntil(entry) : null,
     duty: null,
+    resets: resetsOf(entry),
+    burst: burstOf(codexBurst(entry)),
   };
 }
 
@@ -135,6 +165,8 @@ function claudeRow(entry: Obj, index: number, now: number): AccountRow | null {
     bad,
     limitedUntil: bad && limitedUntil !== null && limitedUntil > now ? limitedUntil : null,
     duty: null,
+    resets: null,
+    burst: burstOf(isObj(entry.five_hour) ? entry.five_hour : null),
   };
 }
 

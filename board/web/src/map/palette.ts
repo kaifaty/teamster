@@ -8,7 +8,6 @@ export const SPACE = {
   star: "#e9eefc",
   orbit: "#a0bedc",
   route: "#c8d7f0",
-  lane: "#7a8cb8",
   fix: "#ebaa46",
   gold: "#f3c64e",
   alarm: "#ff5a4a",
@@ -29,9 +28,7 @@ export const SPACE = {
   storm: "#17121f",
   stormEdge: "#3a2d4a",
   lightning: "#e6dcff",
-  /** A depot or a machine's station that gives nothing: no connection, or no data. */
-  dead: "#8a8a94",
-  /** The dim warning light of an empty depot. */
+  /** The dim warning light of an empty fuel tank. */
   empty: "#ff7a50",
   /** The research station's glow, its watch beams and probes. */
   research: "#5fd6c8",
