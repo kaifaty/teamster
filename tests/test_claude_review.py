@@ -563,6 +563,37 @@ class ClaudeReviewTests(RotationTestCase):
                     self.assertEqual((self.repo / filename).read_text(), contents)
         self.assertEqual(self.invocations(), [])
 
+    def test_claude_reflect_uses_the_reflect_schema_read_only_and_fails_when_the_room_changes(self):
+        archive = self.reflect_archive()
+        valid = self.reflect_result(lessons=[self.reflect_lesson("V1", "claude cue")])
+        brief = "records/new-task-20260103T000000Z/brief.md"
+        self.claude_fixture(runs=[{"reply": valid}, {"reply": valid, "write_files": {brief: "Changed.\n"}}])
+        self.cli("reflect", "claude-reflect")
+        self.wait("claude-reflect")
+        state = self.state("claude-reflect")
+        room = self.home / "claude-tasks" / "claude-reflect" / "room"
+        self.assertEqual((state["executor"], state["result"]), ("claude", valid))
+        name = state["reflect_file"]
+        self.assertIn("| %s V1 | invariant | claude cue | proposed |" % name, (archive / "INDEX.md").read_text())
+        before = self.archive_contents()
+        self.cli("say", "claude-reflect", "Read the record again.")
+        self.cli("wait", "claude-reflect", "--timeout", "30", timeout=45)
+        state = self.state("claude-reflect")
+        self.assertEqual((state["outcome"], state["error"]), ("failed", "reflect modified the reading room"))
+        self.assertIsNone(state["result"])
+        self.assertEqual(self.archive_contents(), before)
+        self.assertEqual((room / brief).read_text(), "Changed.\n")
+        first, second = self.claude_invocations()
+        schema = self.worker().result_schema.REFLECT_SCHEMA
+        for entry in (first, second):
+            argv = entry["argv"]
+            self.assertEqual(entry["cwd"], str(room))
+            self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]), schema)
+            self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+            self.assertEqual(argv[argv.index("--disallowedTools") + 1], "Edit,Write,NotebookEdit")
+        self.assertEqual(second["argv"][second["argv"].index("--resume") + 1], first["session_id"])
+        self.assertEqual(self.invocations(), [])
+
     def test_claude_scout_refuses_a_non_git_directory_without_a_record(self):
         self.claude_fixture()
         directory = self.root / "plain-directory"
