@@ -2,7 +2,8 @@
 
       teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
       teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E]  read-only research
-      teamster reflect <slug> ["order" | --file FILE] [--executor codex|claude] [--effort E] [--model M] [--max-minutes M]  batch reflection over archived records
+      teamster reflect <slug> ["order" | --file FILE] [--task SLUG ... | [--since YYYY-MM-DD|Nd] [--repo NAME ...]] [--executor codex|claude] [--effort E] [--model M] [--max-minutes M]  batch reflection or a study of chosen records
+      teamster lesson "<entry>" accepted|applied|declined|proposed [--note TEXT]  record the user's decision on a lesson in INDEX.md
       teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-timeout SEC] [--no-base-check] [--upgrade]
       teamster review <slug> [--effort E] [--review-model M] [--max-weekly P] [--reviewer codex|claude] [--review-angles LIST]  fresh review (task must be idle)
       teamster wait <slug> [--timeout SEC] [--through-sleep]  wait, show rotations and the result
@@ -44,6 +45,7 @@ codex-worker-log.jsonl; migrate-home [--apply] prints or applies the move (docs 
 The internal _run <slug> supervisor survives the caller and opens a new thread on rotation.
 """
 import argparse
+import datetime
 import math
 import re
 import sys
@@ -52,6 +54,18 @@ from . import commands, config, executors, home_migration, installs, prompts, re
 
 
 HELP_TEXT = __doc__
+
+
+def since_value(value):
+    if re.fullmatch(r"[0-9]{1,5}d", value):
+        return value
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        try:
+            datetime.date.fromisoformat(value)
+            return value
+        except ValueError:
+            pass
+    raise argparse.ArgumentTypeError("must be YYYY-MM-DD or Nd, such as 7d")
 
 
 def task_type(value):
@@ -280,6 +294,7 @@ COMMAND_HANDLERS = {
     "start": commands.cmd_start,
     "scout": commands.cmd_scout,
     "reflect": commands.cmd_reflect,
+    "lesson": commands.cmd_lesson,
     "say": commands.cmd_say,
     "review": commands.cmd_review,
     "wait": wait_view.cmd_wait,
@@ -306,7 +321,7 @@ COMMAND_HANDLERS = {
 }
 # Commands that write task records, journals or cached limits hold the settings
 # lock shared, so migrate-home cannot move the data home under them.
-HOME_LOCKED_COMMANDS = ("start", "scout", "reflect", "say", "review", "clean", "verdict", "accounts", "reset-credit",
+HOME_LOCKED_COMMANDS = ("start", "scout", "reflect", "lesson", "say", "review", "clean", "verdict", "accounts", "reset-credit",
                         "claude-probe", "upgrade", "versions")
 
 
@@ -332,8 +347,18 @@ def main():
     s.add_argument("slug")
     s.add_argument("order", nargs="?")
     s.add_argument("--file")
+    s.add_argument("--task", action="append", metavar="SLUG",
+                   help="study the newest archived record of this task (repeatable)")
+    s.add_argument("--since", type=since_value, metavar="YYYY-MM-DD|Nd",
+                   help="study the records archived from this UTC date or in the last N days")
+    s.add_argument("--repo", action="append", metavar="NAME",
+                   help="study only the records of this repository directory name (repeatable)")
     add_command_options(s, "reflect")
     reflect_parser = s
+    s = sub.add_parser("lesson", help="record the user's decision on a lesson in the reflection index")
+    s.add_argument("entry", help="the entry cell of the INDEX.md row, such as \"batch-2026-11-02.md V1\"")
+    s.add_argument("status", choices=("accepted", "applied", "declined", "proposed"))
+    s.add_argument("--note", help="short text after the status and date")
     s = sub.add_parser("say")
     s.add_argument("slug")
     s.add_argument("message", nargs="?")
@@ -413,6 +438,9 @@ def main():
         a.cmd = "reflect"
         if a.order is not None and a.file is not None:
             reflect_parser.error("argument --file: not allowed with argument order")
+        if a.task and (a.since is not None or a.repo):
+            reflect_parser.error("argument --task: not allowed with argument "
+                                 + ("--since" if a.since is not None else "--repo"))
     else:
         a = p.parse_args()
     if a.cmd in ("start", "say") and a.review_angles is not None:

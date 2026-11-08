@@ -654,6 +654,110 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertNotIn("reflect_file", st)
         self.assertEqual(self.archive_contents(), before)
 
+    def test_reflect_study_selects_records_and_keeps_the_conversation(self):
+        self.configure(language="en")
+        archive = self.reflect_archive()
+        for name, repo in (("new-task-20260105T000000Z", "/work/repo-a"), ("before-20261031T235959Z", "/work/repo-b"),
+                           ("other-20261102T000000Z", "/work/repo-b"), ("week-20261103T000000Z", "/work/repo-a")):
+            (archive / name).mkdir()
+            (archive / name / "state.json").write_text(json.dumps({"slug": name[:-17], "kind": "work", "repo": repo}))
+        worker = self.worker()
+        now = 1794225600  # 2026-11-09T12:00:00Z
+        select = worker.reflection.study_records
+        self.assertEqual(worker.reflection.since_stamp("2026-11-01", now), "20261101T000000Z")
+        self.assertEqual(select(archive, since=worker.reflection.since_stamp("2026-11-01", now)),
+                         (["other-20261102T000000Z", "week-20261103T000000Z"], None))
+        self.assertEqual(select(archive, since=worker.reflection.since_stamp("7d", now)),
+                         (["week-20261103T000000Z"], None))
+        self.assertEqual(select(archive, repos=["repo-a"]),
+                         (["new-task-20260105T000000Z", "week-20261103T000000Z"], None))
+        self.assertEqual(select(archive, since="20261101T000000Z", repos=["repo-b"]),
+                         (["other-20261102T000000Z"], None))
+        self.assertEqual(select(archive, tasks=["new-task", "past-reflect"]), ([], "past-reflect"))
+        for args, error in ((["--task", "missing"], "no archived record for missing"),
+                            (["--task", "new-task", "--since", "7d"], "argument --task: not allowed with argument --since"),
+                            (["--task", "new-task", "--repo", "repo-a"], "argument --task: not allowed with argument --repo")):
+            with self.subTest(args=args):
+                result = subprocess.run([PYTHON, "-I", str(SCRIPT), "reflect", "reflect-bad", "--executor", "codex"] + args,
+                                        cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(error, result.stderr)
+                self.assertFalse((self.home / "claude-tasks" / "reflect-bad").exists())
+        pending = worker.reflection.pending_records(archive)
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        name = "study-%s-reflect-study.md" % today
+        first = self.reflect_result("needs_decision", report="First study.", lessons=[self.reflect_lesson("V1", "study cue")],
+                                    questions=["Apply V1?"], options=[["yes", "no"]])
+        second = self.reflect_result(report="Second study.", lessons=[self.reflect_lesson("V1", "study cue")])
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": first}, {"mode": "failed"},
+                                                       {"mode": "complete", "reply": second},
+                                                       {"mode": "complete", "reply": self.reflect_result()}])
+
+        self.cli("reflect", "reflect-study", "Why did new-task stall?", "--task", "new-task", "--executor", "codex")
+        self.assertIn("== study: " + str(archive / name), self.wait("reflect-study"))
+        state = self.state("reflect-study")
+        self.assertEqual((state["reflect_mode"], state["reflect_records"], state["reflect_through"], state["reflect_order"],
+                          state["reflect_file"]),
+                         ("study", ["new-task-20260105T000000Z"], None, "Why did new-task stall?", name))
+        self.assertEqual(self.invocations()[-1]["prompt"], worker.prompts.study_prompt(
+            "Why did new-task stall?", ["new-task-20260105T000000Z"], worker.config.accounts_config()))
+        self.assertEqual((archive / name).read_text(),
+                         "# Study %s\n\ntask: reflect-study\n\nrecords: 1\n\nFirst study.\n" % today)
+        self.assertEqual((archive / "INDEX.md").read_text().splitlines()[-1],
+                         "| %s | %s V1 | invariant | study cue | proposed |" % (today, name))
+        turn, = state["reflect_turns"]
+        self.assertEqual(turn, {"at": turn["at"], "status": "needs_decision", "summary": "Reflected on one record.",
+                                "questions": ["Apply V1?"], "options": [["yes", "no"]],
+                                "lessons": [{"id": "V1", "cue": "study cue"}], "file": name})
+        self.cli("say", "reflect-study", "1. yes")
+        self.cli("wait", "reflect-study", "--timeout", "60", timeout=75)
+        state = self.state("reflect-study")
+        self.assertEqual((state["outcome"], len(state["reflect_turns"])), ("failed", 1))
+        self.cli("say", "reflect-study", "1. yes")
+        self.wait("reflect-study")
+        state = self.state("reflect-study")
+        self.assertEqual([entry["summary"] for entry in state["reflect_turns"]], ["Reflected on one record."] * 2)
+        self.assertEqual(state["reflect_turns"][-1]["status"], "done")
+        self.assertTrue((archive / name).read_text().endswith("records: 1\n\nSecond study.\n"))
+        self.assertEqual(worker.reflection.pending_records(archive), pending)
+
+        self.cli("reflect", "reflect-next", "--executor", "codex")
+        self.wait("reflect-next")
+        state = self.state("reflect-next")
+        self.assertEqual((state["reflect_mode"], state["reflect_records"], state["reflect_through"], state["reflect_order"]),
+                         ("batch", pending[0], pending[1], None))
+        room = self.home / "claude-tasks" / "reflect-next" / "room"
+        self.assertTrue((room / name).is_file())
+
+    def test_lesson_replaces_only_the_status_cell_of_one_row(self):
+        archive = self.reflect_archive()
+        index = archive / "INDEX.md"
+        index.write_text(index.read_text() + "| 2026-11-02 |  batch-2026-11-02.md V1 | domain repo-a | cue one | proposed |\n"
+                         "| 2026-11-02 | batch-2026-11-02.md V2 | invariant | cue two | proposed |\n"
+                         "| 2026-11-02 | batch-2026-11-02.md V2 | invariant | cue two again | proposed |\n\nNotes.\n")
+        before = index.read_text().splitlines(keepends=True)
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+
+        def lesson(*args):
+            return subprocess.run([PYTHON, "-I", str(SCRIPT), "lesson"] + list(args), cwd=self.repo, env=self.env,
+                                  text=True, capture_output=True, timeout=15)
+
+        result = lesson("batch-2026-11-02.md V1", "accepted", "--note", "user | agrees\nfor repo-a")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = "| 2026-11-02 |  batch-2026-11-02.md V1 | domain repo-a | cue one | accepted %s: user / agrees for repo-a |" % today
+        self.assertEqual(result.stdout, row + "\n")
+        self.assertEqual(index.read_text().splitlines(keepends=True), before[:5] + [row + "\n"] + before[6:])
+        result = lesson("batch-2026-11-02.md V1", "proposed", "--note", "ignored")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(index.read_text().splitlines(keepends=True), before)
+        for args, error in ((("batch-2026-11-02.md V3", "applied"), "no lesson batch-2026-11-02.md V3 in INDEX.md"),
+                            (("batch-2026-11-02.md V2", "declined"), "2 lessons match batch-2026-11-02.md V2")):
+            with self.subTest(args=args):
+                result = lesson(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(error, result.stderr)
+                self.assertEqual(index.read_text().splitlines(keepends=True), before)
+
     def test_teamster_environment_overrides_legacy_names(self):
         overrides = {
             "RATE_POLL_SECONDS": "2", "ROLLOUT_SEARCH_SECONDS": "2", "WAIT_POLL_SECONDS": "2",
