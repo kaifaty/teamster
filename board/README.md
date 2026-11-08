@@ -30,8 +30,9 @@ as a fuel depot, with lines from the depots to the systems they feed. The stars 
 follows their count, so a few stand wide apart and many fill the galaxy evenly, clear of the research station, the
 depots and the ship's log; a star keeps its place while it fits there (`galaxyLayout` in `board/web/src/map/layout.ts`).
 Every machine of the machines strip stands as a power station in a column on the right edge of the galaxy, between the rows of
-depots (`machinePositions`); the glow of its reactor tells its status — green free, amber busy, pulsing red overloaded, grey
-without connection or data — and a click on the station or its label opens the same machine card as on «Доска»; like the depots, the stations stay live during a replay. The map
+depots (`machinePositions`), with a short label on its left: the name and the status, the name alone on a phone. A halo
+around the station tells its status — green free, amber busy, pulsing red overloaded; a grey station has no connection or
+no data — and a click on the station or its label opens the same machine card as on «Доска»; like the depots, the stations stay live during a replay. The map
 tab has no machines strip: there the machines live in the galaxy, as the accounts do.
 A busy star's label is one line: its name, its ships and badges for alarms, ships waiting for you and sleeping ones.
 Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,

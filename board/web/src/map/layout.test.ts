@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PLACES } from "./placement";
 import {
   MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, LIGHT_SHIP, ringOf, ringPoint, ringsOf, skyChoices,
-  RESEARCH_SIZE, LABEL_MAX_WIDTH, DEPOT_LABEL_DROP, MACHINE_MIN_SIZE, MACHINE_SIZE, machinePositions, machineRoom, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
+  RESEARCH_SIZE, LABEL_MAX_WIDTH, DEPOT_LABEL_DROP, MACHINE_MIN_SIZE, MACHINE_SIZE, machineLabelAnchor, machinePositions, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
   starRadius, starSize, stationAt, systemFrame, worldSize, zoomCamera, type Rect, type StarShape,
 } from "./layout";
 
@@ -298,7 +298,18 @@ describe("galaxy", () => {
 });
 
 describe("machines", () => {
-  const ids = (count: number) => Array.from({ length: count }, (_, i) => `machine-${i}`);
+  /** The fixture's machines, with the statuses their labels show. */
+  const FIXTURE = [
+    { id: "lapka", name: "lapka", status: "перегружена: память, GPU" },
+    { id: "kedr", name: "kedr", status: "свободна" },
+    { id: "sosna", name: "sosna", status: "занята: видеопамять" },
+    { id: "olha", name: "olha", status: "нет связи: не отвечает" },
+    { id: "yasen", name: "yasen", status: "нет данных" },
+  ];
+  const machines = (count: number) => Array.from({ length: count }, (_, i) => ({ id: `machine-${i}`, name: `machine-${i}`, status: "занята: видеопамять" }));
+  const [WIDE, TALL] = SIZES as [{ width: number; height: number }, { width: number; height: number }];
+  /** The full view's zoom of a 1400×900 window and of a 390×844 phone, and others around them. */
+  const ZOOMS = new Map([[WIDE, [0.75, 0.855, 0.9]], [TALL, [0.39, 0.5]]]);
   const hit = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
   /** A depot with its fuel gauge and its label of three lines, as wide as its CSS lets it be, at `zoom`. */
   const depotRoom = (at: { x: number; y: number }, top: boolean, zoom: number): Rect => {
@@ -320,31 +331,48 @@ describe("machines", () => {
 
   it("is the same every time, keeps the order and stands in one column along the right edge", () => {
     for (const world of SIZES) {
-      const column = machinePositions(ids(5), world);
-      expect(machinePositions(ids(5), world)).toEqual(column);
+      const column = machinePositions(FIXTURE, world);
+      expect(machinePositions(FIXTURE, world)).toEqual(column);
       const points = [...column.places.values()];
-      expect([...column.places.keys()]).toEqual(ids(5));
+      expect([...column.places.keys()]).toEqual(FIXTURE.map((machine) => machine.id));
       expect(new Set(points.map((point) => point.x)).size).toBe(1);
       expect(points[0]!.x + column.size / 2).toBeLessThanOrEqual(world.width);
-      expect(points[0]!.x).toBeGreaterThan(world.width * 0.9);
+      expect(points[0]!.x).toBeGreaterThan(world.width * 0.85);
       points.slice(1).forEach((point, i) => expect(point.y).toBeGreaterThan(points[i]!.y));
     }
   });
 
-  it("draws a long column smaller, down to its least size", () => {
-    const size = SIZES[0]!;
-    expect(machinePositions(ids(1), size).size).toBe(MACHINE_SIZE);
-    expect(machinePositions(ids(4), size).size).toBeLessThan(MACHINE_SIZE);
-    expect(machinePositions(ids(12), size).size).toBe(MACHINE_MIN_SIZE);
+  it("draws the stations as large as a depot, larger on a phone, and smaller in a long column down to its least size", () => {
+    expect(machinePositions(machines(1), WIDE).size).toBe(MACHINE_SIZE.wide);
+    expect(machinePositions(machines(1), TALL).size).toBe(MACHINE_SIZE.tall);
+    expect(machinePositions(machines(12), WIDE).size).toBe(MACHINE_MIN_SIZE);
+    // The fixture's five machines in the full view: at least 80 pixels on a 1400×900 window, 48 on a 390×844 phone.
+    expect(machinePositions(FIXTURE, WIDE, 0.855).size * 0.855).toBeGreaterThanOrEqual(80);
+    expect(machinePositions(FIXTURE, TALL, 0.39).size * 0.39).toBeGreaterThanOrEqual(48);
   });
 
-  it("keeps the stations inside the world, apart from each other and clear of the depots with their labels", () => {
+  it("puts the name and the status on the left of a station in a wide world, the name alone in a tall one", () => {
     for (const world of SIZES) {
-      for (const zoom of [0.39, 0.75, 0.9]) {
-        if (world.width > world.height && zoom < 0.5) continue;
-        for (const count of [1, 4, 12]) {
-          const column = machinePositions(ids(count), world, zoom, true);
-          const what = `${count} machines in ${world.width}x${world.height} at ${zoom}`;
+      const column = machinePositions(FIXTURE, world);
+      expect(column.status).toBe(world === WIDE);
+      for (const machine of FIXTURE) {
+        const anchor = machineLabelAnchor(machine.id, column)!;
+        const at = column.places.get(machine.id)!;
+        expect(anchor.y).toBe(at.y);
+        expect(anchor.x).toBeLessThan(at.x - column.size / 2);
+        expect(column.labels.get(machine.id)!.width).toBeLessThanOrEqual(150);
+      }
+    }
+    const long = { id: "x", name: "x", status: "перегружена: процессор, память, GPU, видеопамять, диск /data" };
+    expect(machinePositions([long], WIDE).labels.get("x")!.width).toBe(150);
+  });
+
+  it("keeps the stations with their labels inside the world, apart from each other and clear of the depots with their labels", () => {
+    for (const world of SIZES) {
+      for (const zoom of ZOOMS.get(world)!) {
+        for (const list of [machines(1), machines(4), FIXTURE, machines(12)]) {
+          const column = machinePositions(list, world, zoom, true);
+          const what = `${list.length} machines in ${world.width}x${world.height} at ${zoom}`;
           const rooms = machineRooms(column);
           const bodies = [...column.places.values()].map((at) => body(at, column.size));
           for (const room of [...rooms, ...bodies]) {
@@ -354,11 +382,16 @@ describe("machines", () => {
             expect(room.y1, what).toBeLessThanOrEqual(world.height);
             for (const depot of depotsFor(world)) expect(hit(room, depotRoom(depot.at, depot.top, zoom)), what).toBe(false);
           }
-          // Up to the column's limit the stations and their labels have their own room; past it they close up.
-          if (count < 12) expect(column.size, what).toBeGreaterThan(MACHINE_MIN_SIZE);
+          // Up to the column's limit every row has its own room, and a label keeps clear of every station.
+          if (list.length < 12) expect(column.size, what).toBeGreaterThan(MACHINE_MIN_SIZE);
           if (column.size > MACHINE_MIN_SIZE) {
-            bodies.forEach((a, i) => bodies.slice(i + 1).forEach((b) => expect(hit(a, b), what).toBe(false)));
             rooms.forEach((a, i) => rooms.slice(i + 1).forEach((b) => expect(hit(a, b), what).toBe(false)));
+            for (const { id } of list) {
+              const anchor = machineLabelAnchor(id, column)!;
+              const size = column.labels.get(id)!;
+              const label = { x0: anchor.x - size.width / zoom, y0: anchor.y - size.height / zoom / 2, x1: anchor.x, y1: anchor.y + size.height / zoom / 2 };
+              for (const station of bodies) expect(hit(label, station), what).toBe(false);
+            }
           }
         }
       }
@@ -366,24 +399,27 @@ describe("machines", () => {
   });
 
   it("keeps the stations above the ship's log that spans a tall window", () => {
-    const tall = SIZES[1]!;
-    for (const room of machineRooms(machinePositions(ids(5), tall, 0.39))) expect(room.y1).toBeLessThanOrEqual(logCorner(tall).y0);
+    for (const room of machineRooms(machinePositions(FIXTURE, TALL, 0.39))) expect(room.y1).toBeLessThanOrEqual(logCorner(TALL).y0);
   });
 
-  it("keeps the research station in the middle of a wide galaxy and its label clear of the column on a narrow one", () => {
-    const wide = SIZES[0]!;
-    expect(researchPosition(wide, machinePositions(ids(5), wide, 0.85))).toEqual(researchPosition(wide));
-    const tall = SIZES[1]!;
-    const column = machinePositions(ids(5), tall, 0.39);
-    const station = researchPosition(tall, column);
-    const label = { x0: station.x - 100 / 0.39, y0: station.y, x1: station.x + 100 / 0.39, y1: station.y + RESEARCH_SIZE };
+  it("moves the research station only as far as a machine's label makes it", () => {
+    expect(researchPosition(WIDE, machinePositions(FIXTURE, WIDE, 0.855))).toEqual(researchPosition(WIDE));
+    expect(researchPosition(TALL, machinePositions([{ id: "x", name: "kedr", status: "" }], TALL, 0.39))).toEqual(researchPosition(TALL));
+    const column = machinePositions(FIXTURE, TALL, 0.39);
+    const station = researchPosition(TALL, column);
+    expect(station.x).toBeLessThan(researchPosition(TALL).x);
+    const sprite = { x0: station.x - RESEARCH_SIZE / 2, y0: station.y - RESEARCH_SIZE / 2, x1: station.x + RESEARCH_SIZE / 2, y1: station.y + RESEARCH_SIZE / 2 };
+    const label = { x0: station.x - 88 / 0.39, y0: station.y + 93, x1: station.x + 88 / 0.39, y1: station.y + 93 + 36 / 0.39 };
     expect(label.x0).toBeGreaterThanOrEqual(0);
-    for (const room of machineRooms(column)) expect(hit(label, room)).toBe(false);
+    for (const room of machineRooms(column)) {
+      expect(hit(label, room)).toBe(false);
+      expect(hit(sprite, room)).toBe(false);
+    }
   });
 
   it("lets no star stand on a station or its label", () => {
     for (const world of SIZES) {
-      const column = machinePositions(ids(5), world);
+      const column = machinePositions(FIXTURE, world);
       const depots = [0, 1].flatMap((i) => [depotPosition(i, 2, "top", world), depotPosition(i, 2, "bottom", world)]);
       const blocked = galaxyKeepOuts(world, depots, [logCorner(world)], column);
       for (const count of [6, 34, 100]) {
@@ -393,7 +429,7 @@ describe("machines", () => {
           const at = galaxy.places.get(star.repo)!;
           const glow = starSize(star.live, galaxy) * 1.15 + 4;
           const core = { x0: at.x - glow, y0: at.y - glow, x1: at.x + glow, y1: at.y + glow };
-          for (const at2 of column.places.values()) expect(hit(core, machineRoom(at2, column)), `${count} stars`).toBe(false);
+          for (const room of machineRooms(column)) expect(hit(core, room), `${count} stars`).toBe(false);
         }
       }
     }

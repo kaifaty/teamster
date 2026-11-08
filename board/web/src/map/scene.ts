@@ -18,7 +18,6 @@ import {
   fitCamera,
   hashName,
   limitZoom,
-  machineLabelDrop,
   refitCamera,
   ringPoint,
   ringsOf,
@@ -120,6 +119,12 @@ const FALL = 0.55;
 const MAX_SPEED = 300;
 const CIRCLING_SPEED = 0.4;
 const DEPOT_SIZE = 116;
+/** The glow of a machine's station by its status: its halo and its heart; an overloaded one pulses up to these. */
+const MACHINE_GLOW: Partial<Record<MachineStatus, { halo: number; core: number }>> = {
+  free: { halo: 0.5, core: 0.55 },
+  busy: { halo: 0.8, core: 0.85 },
+  overloaded: { halo: 1, core: 1 },
+};
 const TANKER_SIZE = 40;
 /** World units a tanker covers in a second. */
 const TANKER_SPEED = 46;
@@ -348,6 +353,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const art = (name: ArtName): Texture => loaded[ART[name]]!;
   const glowTexture = Texture.from(softDisc(), true);
   const stormTexture = Texture.from(stormCloud(), true);
+  const greyFilter = new ColorMatrixFilter();
+  greyFilter.desaturate();
 
   const canvas = app.canvas;
   canvas.className = "map-canvas";
@@ -570,23 +577,26 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       const body = sprite(art("stationPower"), size);
       body.position.set(point.x, point.y);
       const color = machine.status === "free" ? SPACE.ok : machine.status === "busy" ? SPACE.fix : machine.status === "overloaded" ? SPACE.alarm : null;
-      if (machine.status === "offline" || machine.status === "unknown") body.tint = SPACE.dead;
-      if (machine.status === "unknown") body.alpha = 0.5;
-      machineLayer.addChild(body);
-      if (color) {
-        // On the reactor's pale core, which takes any colour; a wide faint halo, a small bright heart.
-        const halo = glow(color, size * 1.2);
-        halo.alpha = machine.status === "free" ? 0.28 : 0.4;
-        const core = glow(color, size * 0.42);
-        core.alpha = machine.status === "free" ? 0.75 : 0.95;
+      // Without connection or data the station turns grey, its own light kept so that it still shows on the dark sky.
+      if (machine.status === "offline" || machine.status === "unknown") body.filters = [greyFilter];
+      if (machine.status === "unknown") body.alpha = 0.65;
+      const glows = MACHINE_GLOW[machine.status];
+      if (color && glows) {
+        // A halo around the whole station behind it, and a heart on the reactor's pale core, which takes any colour.
+        const halo = glow(color, size * 1.4);
+        const core = glow(color, size * 0.45);
+        halo.alpha = glows.halo;
+        core.alpha = glows.core;
         for (const part of [halo, core]) part.position.set(point.x, point.y);
-        machineLayer.addChild(halo, core);
+        machineLayer.addChild(halo, body, core);
         if (machine.status === "overloaded") alarms.push(halo, core);
+      } else {
+        machineLayer.addChild(body);
       }
       if (machine.id === machineSelected) {
         const mark = new Graphics();
         const halfX = size * 0.56;
-        const halfY = machineLabelDrop(column) - 2;
+        const halfY = (size * 170) / 256 / 2 + 6;
         const arm = Math.min(halfX, halfY) * 0.5;
         for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
           const x = point.x + sx * halfX;
@@ -1206,9 +1216,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       light.alpha = still ? 0.16 : 0.04 + 0.22 * Math.max(0, Math.sin(time * 2.2 + index * 1.3)) ** 2;
     });
     // The same beat as an empty depot's light, brighter: halo and heart in pairs.
+    // An overloaded machine pulses in the same beat, from plain to bright, and never fades out: halo and heart in pairs.
     alarms.forEach((light, index) => {
-      const peak = index % 2 ? 1 : 0.6;
-      light.alpha = still ? peak * 0.7 : peak * (0.12 + 0.88 * Math.max(0, Math.sin(time * 2.2 + Math.floor(index / 2) * 1.3)) ** 2);
+      const peak = index % 2 ? MACHINE_GLOW.overloaded!.core : MACHINE_GLOW.overloaded!.halo;
+      light.alpha = still ? peak * 0.85 : peak * (0.55 + 0.45 * Math.max(0, Math.sin(time * 2.2 + Math.floor(index / 2) * 1.3)) ** 2);
     });
     for (const storm of storms) {
       const [outer, inner] = storm.layers;
@@ -1441,7 +1452,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     if (!column) return null;
     for (const machine of model.machines) {
       const at = column.places.get(machine.id);
-      if (at && Math.abs(at.x - point.x) < column.size * 0.5 && Math.abs(at.y - point.y) < column.size * 0.34) return machine.id;
+      if (at && Math.abs(at.x - point.x) < column.size * 0.5 && Math.abs(at.y - point.y) < (column.size * 170) / 256 / 2) return machine.id;
     }
     return null;
   }
@@ -1800,6 +1811,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       app.destroy({ removeView: true }, { children: true });
       glowTexture.destroy(true);
       stormTexture.destroy(true);
+      greyFilter.destroy();
     },
   };
 }

@@ -15,15 +15,16 @@ import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines, typ
 import { placeLabels, type StarLabel } from "./declutter";
 import {
   DEPOT_LABEL_DROP,
-  RESEARCH_SIZE,
   cardPlace,
   fitCamera,
   galaxyKeepOuts,
   galaxyLayout,
   labelDrop,
   logCorner,
-  machineLabelDrop,
+  RESEARCH_LABEL_DROP,
+  machineLabelAnchor,
   machinePositions,
+  type MachineShape,
   researchPosition,
   starSize,
   systemFrame,
@@ -224,6 +225,14 @@ const machineMarks = computed(() => {
   return next;
 });
 const machineNote = computed(() => machinesData.value?.config_error || null);
+// What the labels show, so that the column knows their sizes; the same list while it does not change.
+let lastShapes: MachineShape[] = [];
+const machineShapes = computed(() => {
+  const next = (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, name: machine.name, status: statusText(machine) }));
+  if (JSON.stringify(next) === JSON.stringify(lastShapes)) return lastShapes;
+  lastShapes = next;
+  return next;
+});
 
 /** The parts of the world under the map's own panels, measured for the window; the log's corner until then. */
 const covered = shallowRef<Rect[] | null>(null);
@@ -231,9 +240,8 @@ const covered = shallowRef<Rect[] | null>(null);
 const fullZoom = ref<number | undefined>(undefined);
 /** The machines' column; null without machines and without a broken config, and then it takes no room. */
 const machineColumn = computed(() => {
-  const ids = machineMarks.value.map((machine) => machine.id);
-  if (!ids.length && !machineNote.value) return null;
-  return machinePositions(ids, world.value, fullZoom.value, !!machineNote.value);
+  if (!machineShapes.value.length && !machineNote.value) return null;
+  return machinePositions(machineShapes.value, world.value, fullZoom.value, !!machineNote.value);
 });
 let previousGalaxy: Galaxy | null = null;
 const galaxy = computed(() => {
@@ -268,7 +276,7 @@ const stationLabel = computed(() => {
   // One note under the name, the most pressing one; the panel has the rest.
   const note = marks.running ? "идёт разбор" : proposed ? `ждут решения ${proposed}` : last;
   const title = [marks.running ? "идёт разбор" : last, `ждут решения ${proposed}`, `с сигналом ${marks.pending.signals} из ${marks.pending.records}`].join("\n");
-  return { style: at(point.x, point.y + RESEARCH_SIZE * 0.5 + 18), note, title, running: marks.running, waiting: !marks.running && proposed > 0 };
+  return { style: at(point.x, point.y + RESEARCH_LABEL_DROP), note, title, running: marks.running, waiting: !marks.running && proposed > 0 };
 });
 
 const depotLabels = computed(() => {
@@ -291,19 +299,19 @@ const machineLabels = computed(() => {
   const column = machineColumn.value;
   if (!column) return [];
   return (machinesData.value?.items ?? []).flatMap((machine) => {
-    const point = column.places.get(machine.id);
-    if (!point) return [];
+    const anchor = machineLabelAnchor(machine.id, column);
+    if (!anchor) return [];
     const status = statusText(machine);
-    // A failed probe that has not yet made the machine offline, and data that is not fresh: one short line.
+    // A failed probe that has not yet made the machine offline, and data that is not fresh: in the title, as the card has them.
     const mark = machine.error && machine.status !== "offline" ? `⚠ ${errorLabel(machine.error)}` : null;
     const extra = [mark, dataAge(machine, now.value)].filter(Boolean).join(" · ") || null;
     return [{
       machine,
       status,
       level: statusLevel(machine.status) ?? "muted",
-      extra,
+      showStatus: column.status,
       title: [machine.role ? `${machine.name} · ${machine.role}` : machine.name, status, extra].filter(Boolean).join("\n"),
-      style: at(column.right, point.y + machineLabelDrop(column)),
+      style: at(anchor.x, anchor.y),
     }];
   });
 });
@@ -497,6 +505,14 @@ function placeStarLabels() {
   const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .dock, .overlay .station, .overlay .depot, .overlay .machine, .overlay .machine-note")]
     .filter((el) => el.offsetParent !== null)
     .map((el) => relative(el.getBoundingClientRect()));
+  // The machines' stations are drawn on the canvas: their sprites keep the labels off too.
+  const column = machineColumn.value;
+  for (const point of column?.places.values() ?? []) {
+    const half = { x: (column!.size / 2) * camera.zoom, y: ((column!.size * 170) / 256 / 2) * camera.zoom };
+    const x = camera.tx + point.x * camera.zoom;
+    const y = camera.ty + point.y * camera.zoom;
+    obstacles.push({ x0: x - half.x, y0: y - half.y, x1: x + half.x, y1: y + half.y });
+  }
   const layout = galaxy.value;
   const names = layout.spacing * camera.zoom >= QUIET_NAMES_PX;
   const labels: StarLabel[] = [];
@@ -838,8 +854,7 @@ onBeforeUnmount(() => {
               @click="openMachine(label.machine.id, $event.currentTarget as HTMLElement)"
             >
               <span class="m-name">{{ label.machine.name }}</span>
-              <span class="m-status" :class="label.level">{{ label.status }}</span>
-              <span v-if="label.extra" class="m-extra num">{{ label.extra }}</span>
+              <span v-if="label.showStatus" class="m-status" :class="label.level">{{ label.status }}</span>
             </button>
           </div>
           <p v-if="machineNoteStyle" class="machine-note" :style="machineNoteStyle" :title="machineNote ?? ''">
@@ -1403,8 +1418,8 @@ onBeforeUnmount(() => {
 }
 
 /*
- * A machine's label under its power station, flush with the right side of the column. The status takes the board's
- * level colours at their dark values: the sky is dark in both themes.
+ * A machine's label on the left of its power station, at the height of its centre. The status takes the board's level
+ * colours at their dark values: the sky is dark in both themes. The line about a broken config stands over the column.
  */
 .machine,
 .machine-note {
@@ -1415,12 +1430,16 @@ onBeforeUnmount(() => {
   transform: translateX(-100%);
 }
 
+.machine {
+  transform: translate(-100%, -50%);
+}
+
 .m-label {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   box-sizing: border-box;
-  max-width: 176px;
+  max-width: 150px;
   margin: 0;
   padding: 1px 7px;
   border: 1px solid rgba(214, 170, 96, 0.28);
@@ -1460,8 +1479,7 @@ onBeforeUnmount(() => {
 }
 
 .m-name,
-.m-status,
-.m-extra {
+.m-status {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1485,8 +1503,7 @@ onBeforeUnmount(() => {
   color: var(--bad);
 }
 
-.m-status.muted,
-.m-extra {
+.m-status.muted {
   color: var(--muted);
 }
 
