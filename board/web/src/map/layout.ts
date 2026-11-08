@@ -216,13 +216,6 @@ export function cardPlace(place: Place, frame: SystemFrame): Point & { side: boo
 
 // Galaxy ------------------------------------------------------------------------------------------
 
-const GRIDS: readonly (readonly [number, number])[] = [
-  [6, 3],
-  [8, 4],
-  [10, 5],
-  [14, 7],
-];
-
 /** The research station watches every system, so it stands in the middle of the galaxy. */
 export function researchPosition(size: Size): Point {
   return { x: size.width * 0.5, y: size.height * 0.49 };
@@ -231,57 +224,256 @@ export function researchPosition(size: Size): Point {
 /** The station's size in world units. */
 export const RESEARCH_SIZE = 150;
 
-/** Grid cells whose middle lies this close to the station, in world units, are left to it: the labels of the stars above it hang down towards it, and its own label is below. */
-const RESEARCH_CLEARANCE = { x: 160, up: 190, down: 200 };
-
-function cellMiddle(cell: number, columns: number, rows: number): { x: number; y: number } {
-  return {
-    x: 0.08 + (0.84 * ((cell % columns) + 0.5)) / columns,
-    y: 0.26 + (0.46 * (Math.floor(cell / columns) + 0.5)) / rows,
-  };
+/** A rectangle in world units. */
+export interface Rect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
-/** The cells of a grid left free for the research station. */
-function researchCells(columns: number, rows: number, size: Size): Set<number> {
-  const station = researchPosition(size);
-  const result = new Set<number>();
-  for (let cell = 0; cell < columns * rows; cell++) {
-    const middle = cellMiddle(cell, columns, rows);
-    const dx = middle.x * size.width - station.x;
-    const dy = middle.y * size.height - station.y;
-    if (Math.abs(dx) < RESEARCH_CLEARANCE.x && dy > -RESEARCH_CLEARANCE.up && dy < RESEARCH_CLEARANCE.down) result.add(cell);
-  }
-  return result;
+/** What the galaxy's layout knows of a star: its name and its ships. */
+export interface StarShape {
+  repo: string;
+  live: number;
+  attention: number;
+  ready: number;
+  sleeping: number;
+}
+
+/** Where the stars stand, and the lattice they stand on. */
+export interface Galaxy {
+  places: Map<string, Point>;
+  /** The step of the lattice, in world units. */
+  spacing: number;
+  /** How much smaller the stars are drawn in a crowded galaxy. */
+  scale: number;
+  /** The zoom, in pixels per world unit, the labels' room was reserved at: the window's full view. */
+  labelZoom: number;
+  /** The world the layout was made for. */
+  world: Size;
+  /** Busy stars whose labels found no room of their own; they wait for the zoom. */
+  crowded: number;
+}
+
+/** The zoom of the full view on a laptop: the labels' room is reserved at it until the map knows its window. */
+const LABEL_ZOOM = 0.75;
+/** Two steps of the lattice differ by this ratio, so that a galaxy that gains or loses a star usually keeps its lattice. */
+const SPACING_LADDER = 1.08;
+/** The stars share the free part of the galaxy with a quarter more room than they take, so that it fills evenly. */
+const SPARE = 1.25;
+/** The share of a step a star stands off its node, so that the rows do not look ruled. */
+const NODE_JITTER = 0.12;
+/** The widest label of a star, in pixels. */
+export const LABEL_MAX_WIDTH = 220;
+
+/** A star's label in pixels: the emblem, the name, the ships and a badge for each kind of trouble; a quiet star's is its name. */
+export function starLabelSize(star: StarShape): Size {
+  if (!star.live) return { width: Math.round(star.repo.length * 6.6 + 8), height: 17 };
+  const digits = (count: number) => String(count).length;
+  const badges = [star.attention, star.ready, star.sleeping].filter(Boolean).reduce((sum, count) => sum + digits(count) * 7 + 16, 0);
+  return { width: Math.min(LABEL_MAX_WIDTH, Math.round(star.repo.length * 7.3 + digits(star.live) * 7 + 52 + badges)), height: 23 };
+}
+
+/** The step of the lattice and the scale of the stars on it. */
+export type Lattice = Pick<Galaxy, "spacing" | "scale">;
+/** The lattice and the zoom the labels' room is reserved at. */
+export type LabelledLattice = Pick<Galaxy, "spacing" | "scale" | "labelZoom">;
+
+/** A star's radius as the galaxy draws it: by its ships, at the galaxy's scale, and never wider than a third of a step. */
+export function starSize(live: number, lattice: Lattice): number {
+  return Math.min(starRadius(live) * lattice.scale, lattice.spacing * 0.36);
+}
+
+/** World units from a star's centre down to the top of its label, below the ring of its ship dots. */
+export function labelDrop(live: number, lattice: Lattice): number {
+  return starSize(live, lattice) * 1.25 + 22 * lattice.scale;
+}
+
+/** The radius of the storm over a star with ships in trouble, in world units. */
+export function stormRadius(live: number, lattice: Lattice): number {
+  return starSize(live, lattice) * 1.25 + 62 * lattice.scale;
 }
 
 /**
- * Stars of the repositories. Each takes a cell of a grid by the hash of its name, so a star stays in place
- * when other repositories come and go, and two stars never share a cell while the grid has room. The cells in
- * the middle belong to the research station.
+ * The parts of the galaxy where no star stands: the research station and the depots with their labels, and the parts
+ * `covered` by the map's own panels.
  */
-export function starPositions(repos: readonly string[], size: Size): Map<string, Point> {
-  const [columns, rows] =
-    GRIDS.find(([c, r]) => c * r - researchCells(c, r, size).size >= repos.length * 1.5) ?? GRIDS[GRIDS.length - 1]!;
-  const count = columns * rows;
-  const reserved = researchCells(columns, rows, size);
-  const taken = new Set<number>(reserved);
-  const result = new Map<string, Point>();
-  for (const repo of [...repos].sort((a, b) => a.localeCompare(b))) {
-    const hash = hashName(repo);
-    let cell = hash % count;
-    for (let tries = 0; tries < count && taken.has(cell); tries++) cell = (cell + 1) % count;
-    // A galaxy fuller than its largest grid shares cells, but never the station's.
-    if (taken.has(cell) && taken.size >= count) {
-      while (reserved.has(cell)) cell = (cell + 1) % count;
-    }
-    taken.add(cell);
-    const jitterX = ((hash >>> 8) % 100) / 100 - 0.5;
-    const jitterY = ((hash >>> 16) % 100) / 100 - 0.5;
-    const column = (cell % columns) + 0.5 + jitterX * 0.4;
-    const row = Math.floor(cell / columns) + 0.5 + jitterY * 0.4;
-    result.set(repo, { x: size.width * (0.08 + (0.84 * column) / columns), y: size.height * (0.26 + (0.46 * row) / rows) });
+export function galaxyKeepOuts(size: Size, depots: readonly Point[], covered: readonly Rect[]): Rect[] {
+  const station = researchPosition(size);
+  const result: Rect[] = [
+    { x0: station.x - 150, y0: station.y - RESEARCH_SIZE / 2 - 40, x1: station.x + 150, y1: station.y + RESEARCH_SIZE / 2 + 85 },
+  ];
+  for (const depot of depots) {
+    const top = depot.y < size.height / 2;
+    result.push(
+      top ? { x0: depot.x - 120, y0: 0, x1: depot.x + 120, y1: depot.y + 165 } : { x0: depot.x - 120, y0: depot.y - 170, x1: depot.x + 120, y1: size.height },
+    );
   }
-  return result;
+  return [...result, ...covered];
+}
+
+/** The part of the world under the ship's log, until the map measures it: the lower left corner, or the bottom on a phone. */
+export function logCorner(size: Size): Rect {
+  return size.width >= size.height
+    ? { x0: 0, y0: size.height * 0.64, x1: size.width * 0.37, y1: size.height }
+    : { x0: 0, y0: size.height * 0.8, x1: size.width, y1: size.height };
+}
+
+/** The room a star takes: itself, its storm and its label below. The lattice keeps the stars a step apart. */
+export function starFootprint(star: StarShape, at: Point, lattice: LabelledLattice): Rect {
+  const glow = starSize(star.live, lattice) * 1.15 + 4;
+  const storm = star.attention ? stormRadius(star.live, lattice) * 0.75 : 0;
+  const label = starLabelSize(star);
+  // A quiet star's name shows only where there is room for it, so it claims none.
+  const half = Math.max(glow, storm, star.live ? label.width / lattice.labelZoom / 2 + 8 : 0);
+  const below = star.live ? labelDrop(star.live, lattice) + label.height / lattice.labelZoom + 8 : glow;
+  return { x0: at.x - half, y0: at.y - glow, x1: at.x + half, y1: at.y + below };
+}
+
+const overlaps = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+/**
+ * A number in [0, 1) from a name, its bits mixed well: names that differ in their last letter, like art-1 and art-2,
+ * land far apart.
+ */
+function unit(name: string): number {
+  let hash = hashName(name);
+  hash = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b);
+  hash = Math.imul(hash ^ (hash >>> 13), 0xc2b2ae35);
+  return ((hash ^ (hash >>> 16)) >>> 0) / 2 ** 32;
+}
+
+/** The region the stars stand in: clear of the depots' rows at the edges. */
+function galaxyRegion(size: Size): Rect {
+  return { x0: 60, y0: 140, x1: size.width - 60, y1: size.height - 30 };
+}
+
+function freeArea(region: Rect, blocked: readonly Rect[]): number {
+  let area = 0;
+  for (let x = region.x0 + 10; x < region.x1; x += 20) {
+    for (let y = region.y0 + 10; y < region.y1; y += 20) {
+      if (!blocked.some((rect) => x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1)) area += 400;
+    }
+  }
+  return area;
+}
+
+/** The nodes of a hexagonal lattice over the region, each row shifted by half a step; none inside `blocked`. */
+function latticeNodes(region: Rect, blocked: readonly Rect[], spacing: number): Point[] {
+  const nodes: Point[] = [];
+  const rowStep = (spacing * Math.sqrt(3)) / 2;
+  for (let row = 0, y = region.y0 + rowStep / 2; y < region.y1; row++, y += rowStep) {
+    for (let x = region.x0 + spacing / 2 + (row % 2 ? spacing / 2 : 0); x < region.x1; x += spacing) {
+      if (!blocked.some((rect) => x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1)) nodes.push({ x, y });
+    }
+  }
+  return nodes;
+}
+
+/** The star alone, without its label: no two of these overlap, nor the keep-outs. */
+function starCore(star: StarShape, at: Point, lattice: Lattice): Rect {
+  const glow = starSize(star.live, lattice) * 1.15 + 4;
+  return { x0: at.x - glow, y0: at.y - glow, x1: at.x + glow, y1: at.y + glow };
+}
+
+/**
+ * Places the stars on one lattice. A star takes the nearest node to its home, within a few steps, where it and its
+ * label fit; failing that, the nearest node where the star itself fits, its label left to wait for the zoom, which
+ * `crowded` counts.
+ */
+function placeStars(
+  stars: readonly StarShape[],
+  region: Rect,
+  blocked: readonly Rect[],
+  lattice: LabelledLattice,
+  previous: ReadonlyMap<string, Point> | null,
+): { places: Map<string, Point>; crowded: number } {
+  const { spacing } = lattice;
+  const slack = 30;
+  const inside = (rect: Rect) => rect.x0 >= region.x0 - slack && rect.y0 >= region.y0 - slack && rect.x1 <= region.x1 + slack && rect.y1 <= region.y1 + slack;
+  const nodes = latticeNodes(region, blocked, spacing);
+  const rooms: Rect[] = [...blocked];
+  const cores: Rect[] = [...blocked];
+  const places = new Map<string, Point>();
+  const free = (rect: Rect, taken: Rect[]) => inside(rect) && !taken.some((other) => overlaps(rect, other));
+  const fits = (star: StarShape, at: Point) => free(starFootprint(star, at, lattice), rooms);
+  const put = (star: StarShape, at: Point, labelled: boolean) => {
+    places.set(star.repo, at);
+    cores.push(starCore(star, at, lattice));
+    rooms.push(labelled ? starFootprint(star, at, lattice) : starCore(star, at, lattice));
+  };
+  // The largest first: they need the most room.
+  const area = (star: StarShape) => {
+    const rect = starFootprint(star, { x: 0, y: 0 }, lattice);
+    return (rect.x1 - rect.x0) * (rect.y1 - rect.y0);
+  };
+  const order = [...stars].sort((a, b) => area(b) - area(a) || a.repo.localeCompare(b.repo));
+  // A star keeps its place while it still fits there.
+  for (const star of order) {
+    const before = previous?.get(star.repo);
+    if (before && fits(star, before)) put(star, before, true);
+  }
+  let crowded = 0;
+  for (const star of order) {
+    if (places.has(star.repo)) continue;
+    const home = { x: region.x0 + unit(star.repo) * (region.x1 - region.x0), y: region.y0 + unit(`${star.repo}#y`) * (region.y1 - region.y0) };
+    const nearest = nodes
+      .map((node) => ({ node, distance: Math.hypot((node.x - home.x) / 1.4, node.y - home.y) }))
+      .sort((a, b) => a.distance - b.distance);
+    const near = nearest.filter((item) => item.distance <= spacing * 3.5).map((item) => item.node);
+    const node = near.find((candidate) => fits(star, candidate));
+    if (node) {
+      const off = { x: node.x + (unit(`${star.repo}#jx`) - 0.5) * NODE_JITTER * spacing, y: node.y + (unit(`${star.repo}#jy`) - 0.5) * NODE_JITTER * spacing * 0.8 };
+      put(star, fits(star, off) ? off : node, true);
+      continue;
+    }
+    if (star.live) crowded++;
+    const room = nearest.find((item) => free(starCore(star, item.node, lattice), cores) && free(starCore(star, item.node, lattice), rooms.slice(0, blocked.length)));
+    put(star, room?.node ?? nearest[0]?.node ?? home, false);
+  }
+  return { places, crowded };
+}
+
+/**
+ * The stars of the repositories on a lattice that follows their count: every star gets an equal share of the free part
+ * of the galaxy with some to spare, so a few stars stand wide apart and many fill it densely, without clumps or empty
+ * patches. The rows of the lattice are shifted by half a step, so a label below a star falls between the stars of the
+ * next row. A busy star claims the room of its label as well. Each star takes the free node nearest its home, a point
+ * from its name, the largest first, and keeps its place from `previous` while it fits there and the lattice holds. When
+ * busy labels find no room, the step narrows, to about three quarters; what still does not fit waits for the zoom. A
+ * crowded galaxy also draws its stars smaller. The labels' room is reserved at `labelZoom`, the zoom of the full view.
+ */
+export function galaxyLayout(
+  stars: readonly StarShape[],
+  size: Size,
+  blocked: readonly Rect[],
+  previous: Galaxy | null = null,
+  labelZoom = LABEL_ZOOM,
+): Galaxy {
+  const region = galaxyRegion(size);
+  const ideal = Math.sqrt(freeArea(region, blocked) / (Math.max(1, stars.length) * SPARE));
+  const rungOf = (spacing: number) => Math.round(Math.log(spacing) / Math.log(SPACING_LADDER));
+  const top = rungOf(ideal);
+  const attempt = (rung: number, previousPlaces: ReadonlyMap<string, Point> | null): Galaxy => {
+    const spacing = SPACING_LADDER ** rung;
+    const scale = Math.min(1, Math.max(0.6, spacing / 120));
+    const placed = placeStars(stars, region, blocked, { spacing, scale, labelZoom }, previousPlaces);
+    return { places: placed.places, spacing, scale, labelZoom, world: size, crowded: placed.crowded };
+  };
+  // The lattice of the previous layout, with the stars in their places, while it is near the ideal one and crowds no
+  // more labels out than a fresh layout would: then a star moves only when it must.
+  const kept = previous && previous.world.width === size.width && previous.world.height === size.height ? previous : null;
+  const keptRung = kept ? rungOf(kept.spacing) : null;
+  const sticky = keptRung !== null && keptRung <= top + 1 && keptRung >= top - 4 ? attempt(keptRung, kept!.places) : null;
+  if (sticky && !sticky.crowded) return sticky;
+  let best: Galaxy | null = null;
+  for (let rung = top; rung >= top - 4; rung--) {
+    const fresh = attempt(rung, null);
+    if (!best || fresh.crowded < best.crowded) best = fresh;
+    if (!fresh.crowded) break;
+  }
+  const result = sticky && sticky.crowded <= best!.crowded ? sticky : best;
+  return result!;
 }
 
 /** A star grows with the number of its ships; a star without ships stays small. */
@@ -289,10 +481,14 @@ export function starRadius(live: number): number {
   return live === 0 ? 16 : Math.min(46, 18 + Math.round(Math.sqrt(live) * 9));
 }
 
-/** Codex depots stand along the top edge, Claude depots along the bottom one. */
+/**
+ * Codex depots stand along the top edge, Claude depots along the bottom one; on a wide window the bottom row starts
+ * right of the ship's log in the lower left corner.
+ */
 export function depotPosition(index: number, count: number, row: "top" | "bottom", size: Size): Point {
+  const start = row === "bottom" && size.width >= size.height ? logCorner(size).x1 : 0;
   return {
-    x: (size.width * (index + 0.5)) / Math.max(1, count),
+    x: start + ((size.width - start) * (index + 0.5)) / Math.max(1, count),
     y: row === "top" ? 125 : size.height - 90,
   };
 }

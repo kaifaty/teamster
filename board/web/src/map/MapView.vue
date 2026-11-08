@@ -10,7 +10,24 @@ import DaySummary from "./DaySummary.vue";
 import ReplayBar from "./ReplayBar.vue";
 import ShipLog from "./ShipLog.vue";
 import { depotEmpty, depots, depotPositions, refuelText, stars, supplyLines, type Star } from "./fleet";
-import { RESEARCH_SIZE, cardPlace, researchPosition, starPositions, starRadius, systemFrame, worldSize, type Camera, type Size } from "./layout";
+import { placeLabels, type StarLabel } from "./declutter";
+import {
+  RESEARCH_SIZE,
+  cardPlace,
+  fitCamera,
+  galaxyKeepOuts,
+  galaxyLayout,
+  labelDrop,
+  logCorner,
+  researchPosition,
+  starSize,
+  systemFrame,
+  worldSize,
+  type Camera,
+  type Galaxy,
+  type Rect,
+  type Size,
+} from "./layout";
 import ResearchPanel from "./ResearchPanel.vue";
 import { isReflection, research, shortDate } from "./research";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
@@ -186,8 +203,22 @@ watch(repo, () => {
 /** Where a label stands in the world; the camera's --tx, --ty and --zoom on the overlay turn it into pixels. */
 const at = (x: number, y: number) => ({ "--x": Math.round(x), "--y": Math.round(y) });
 
+/** The parts of the world under the map's own panels, measured for the window; the log's corner until then. */
+const covered = shallowRef<Rect[] | null>(null);
+/** The zoom of the full view in this window, at which the labels' room is reserved. */
+const fullZoom = ref<number | undefined>(undefined);
+let previousGalaxy: Galaxy | null = null;
+const galaxy = computed(() => {
+  const depotsAt = [...depotPositions(depotList.value, world.value).values()];
+  const blocked = galaxyKeepOuts(world.value, depotsAt, covered.value ?? [logCorner(world.value)]);
+  // The stars keep their places from the last layout while they fit there.
+  const next = galaxyLayout(starList.value, world.value, blocked, previousGalaxy, fullZoom.value);
+  previousGalaxy = next;
+  return next;
+});
+
 const starLabels = computed(() => {
-  const places = starPositions(starList.value.map((star) => star.repo), world.value);
+  const places = galaxy.value.places;
   return starList.value.map((star) => {
     const point = places.get(star.repo)!;
     const notes = [
@@ -195,7 +226,8 @@ const starLabels = computed(() => {
       star.ready ? `ждут ${star.ready}` : "",
       star.sleeping ? `спят ${star.sleeping}` : "",
     ].filter(Boolean);
-    return { star, style: at(point.x, point.y + starRadius(star.live) * 1.25 + 44), notes: notes.join(" · "), emblem: emblemOf(star.repo) };
+    const ships = star.live ? `кораблей ${star.live}` : "тихо";
+    return { star, style: at(point.x, point.y), title: [`${star.repo}: ${ships}`, ...notes].join(" · "), emblem: emblemOf(star.repo) };
   });
 });
 
@@ -353,6 +385,102 @@ function closeSummary() {
   void nextTick(() => summaryButton.value?.focus());
 }
 
+// Star labels -------------------------------------------------------------------------------------
+
+/** A quiet star shows its name once a step of the galaxy's lattice is this many pixels on the screen. */
+const QUIET_NAMES_PX = 110;
+const hoveredStar = ref<string | null>(null);
+let lastCamera: Camera | null = null;
+let labelFrame = 0;
+/** The labels' sizes in pixels, measured when they change; the camera does not change them. */
+const labelSizes = new Map<string, Size>();
+
+function measureLabels() {
+  labelSizes.clear();
+  for (const el of overlay.value?.querySelectorAll<HTMLElement>("[data-star]") ?? []) {
+    labelSizes.set(el.dataset.star!, { width: el.offsetWidth, height: el.offsetHeight });
+  }
+  scheduleLabels();
+}
+
+function scheduleLabels() {
+  cancelAnimationFrame(labelFrame);
+  labelFrame = requestAnimationFrame(placeStarLabels);
+}
+
+/**
+ * Places the star labels for the camera, the most pressing first: alarms, then systems waiting for you, then the
+ * busiest. Each stands around its star where it covers no other label, busy star or panel; one with no room waits for
+ * the zoom, except an alarm's or the one under the pointer.
+ */
+function placeStarLabels() {
+  const box = overlay.value;
+  const camera = lastCamera;
+  if (!box || !camera || repo.value) return;
+  const frame = box.getBoundingClientRect();
+  const relative = (rect: DOMRect): Rect => ({ x0: rect.left - frame.left, y0: rect.top - frame.top, x1: rect.right - frame.left, y1: rect.bottom - frame.top });
+  const root = box.closest(".map") ?? box;
+  const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .dock, .overlay .station, .overlay .depot")]
+    .filter((el) => el.offsetParent !== null)
+    .map((el) => relative(el.getBoundingClientRect()));
+  const layout = galaxy.value;
+  const names = layout.spacing * camera.zoom >= QUIET_NAMES_PX;
+  const labels: StarLabel[] = [];
+  for (const star of starList.value) {
+    const point = layout.places.get(star.repo);
+    const size = labelSizes.get(star.repo);
+    const pointed = hoveredStar.value === star.repo;
+    if (!point || !size || (!star.live && !names && !pointed)) continue;
+    const x = camera.tx + point.x * camera.zoom;
+    const y = camera.ty + point.y * camera.zoom;
+    // A star off the screen has no label: there is nothing for it to name.
+    if (x < 0 || y < 0 || x > frame.width || y > frame.height) continue;
+    const ring = star.live ? starSize(star.live, layout) * 1.25 + 26 * layout.scale : starSize(0, layout) * 1.15;
+    labels.push({
+      id: star.repo,
+      x,
+      y,
+      ...size,
+      radius: ring * camera.zoom,
+      drop: (star.live ? labelDrop(star.live, layout) : ring + 4) * camera.zoom,
+      priority: pointed ? 1e9 : star.attention ? 1e6 + star.attention * 100 + star.live : star.ready ? 1e4 + star.ready * 10 + star.live : star.live,
+      forced: pointed || star.attention > 0,
+      solid: star.live > 0,
+    });
+  }
+  const spots = placeLabels(labels, obstacles, { x0: 0, y0: 0, x1: frame.width, y1: frame.height });
+  for (const el of box.querySelectorAll<HTMLElement>("[data-star]")) {
+    const spot = spots.get(el.dataset.star!) ?? null;
+    el.style.visibility = spot ? "visible" : "hidden";
+    if (!spot) continue;
+    el.style.setProperty("--dx", `${spot.dx}px`);
+    el.style.setProperty("--dy", `${spot.dy}px`);
+  }
+}
+
+watch([starLabels, repo], () => void nextTick(measureLabels), { flush: "post" });
+watch(hoveredStar, scheduleLabels);
+
+/** Measures, for the window, the part of the world under the ship's log, where no star stands, and the full view's zoom. */
+let coveredFor = "";
+function measureCovered() {
+  const stage = host.value?.getBoundingClientRect();
+  const dock = host.value?.querySelector<HTMLElement>(".dock")?.getBoundingClientRect();
+  if (!stage || !dock || !stage.width || !stage.height) return;
+  const key = `${Math.round(stage.width)}x${Math.round(stage.height)}/${world.value.width}`;
+  if (key === coveredFor) return;
+  coveredFor = key;
+  const fit = fitCamera(world.value, { width: stage.width, height: stage.height });
+  const margin = 12;
+  const toWorld = (x: number, y: number) => ({ x: (x - stage.left - fit.tx) / fit.zoom, y: (y - stage.top - fit.ty) / fit.zoom });
+  const from = toWorld(dock.left - margin, dock.top - margin);
+  const to = toWorld(dock.right + margin, dock.bottom + margin);
+  covered.value = [{ x0: from.x, y0: from.y, x1: to.x, y1: to.y }];
+  fullZoom.value = fit.zoom;
+}
+watch(world, () => void nextTick(measureCovered));
+let stageObserver: ResizeObserver | null = null;
+
 // Scene -------------------------------------------------------------------------------------------
 
 const host = ref<HTMLElement | null>(null);
@@ -363,7 +491,7 @@ let unmounted = false;
 
 function feed() {
   if (!scene) return;
-  scene.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value, research: researchMarks.value });
+  scene.setGalaxy(galaxyModel());
   scene.setArt(repoArt.value);
   scene.setView(repo.value);
   setShips(entries.value);
@@ -373,6 +501,8 @@ function feed() {
 }
 
 function applyCamera(camera: Camera) {
+  lastCamera = camera;
+  scheduleLabels();
   const style = overlay.value?.style;
   style?.setProperty("--tx", `${camera.tx}px`);
   style?.setProperty("--ty", `${camera.ty}px`);
@@ -391,6 +521,9 @@ async function mount() {
       onResearch: openResearch,
       onHover: (slug) => {
         hovered.value = slug;
+      },
+      onHoverStar: (name) => {
+        hoveredStar.value = name;
       },
       onCamera: (next, camera) => {
         world.value = next;
@@ -422,9 +555,10 @@ function retry() {
   void nextTick(mount);
 }
 
-watch([starList, depotList, lines, researchMarks], () =>
-  scene?.setGalaxy({ stars: starList.value, depots: depotList.value, lines: lines.value, research: researchMarks.value }),
-);
+function galaxyModel() {
+  return { stars: starList.value, layout: galaxy.value, depots: depotList.value, lines: lines.value, research: researchMarks.value };
+}
+watch([starList, galaxy, depotList, lines, researchMarks], () => scene?.setGalaxy(galaxyModel()));
 watch(repoArt, (art) => scene?.setArt(art));
 watch(repo, (name) => scene?.setView(name), { flush: "sync" });
 watch(entries, setShips);
@@ -452,6 +586,10 @@ const RESEARCH_REFRESH_MS = 60_000;
 let researchTimer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   window.addEventListener("keydown", onKey);
+  if (host.value) {
+    stageObserver = new ResizeObserver(() => measureCovered());
+    stageObserver.observe(host.value);
+  }
   void mount();
   researchTimer = setInterval(() => {
     if (props.active) void loadResearch();
@@ -462,6 +600,8 @@ onBeforeUnmount(() => {
   clearInterval(researchTimer);
   clearTimeout(flightTimer);
   window.removeEventListener("keydown", onKey);
+  stageObserver?.disconnect();
+  cancelAnimationFrame(labelFrame);
   scene?.dispose();
   scene = null;
   scenario.value?.stop();
@@ -488,6 +628,11 @@ onBeforeUnmount(() => {
       <span class="legend" aria-hidden="true">
         <span class="codex">◆ Codex</span>
         <span class="claude">✳ Claude</span>
+        <template v-if="!repo">
+          <span class="key"><i class="badge b-alarm" />тревоги</span>
+          <span class="key"><i class="badge b-ready" />ждут тебя</span>
+          <span class="key"><i class="badge b-sleep" />спят</span>
+        </template>
       </span>
       <span class="hint">{{ repo ? "Колесо назад, щипок или Esc — к галактике" : "Нажми на звезду · колесо или щипок — масштаб · тяни — обзор" }}</span>
     </div>
@@ -511,12 +656,17 @@ onBeforeUnmount(() => {
             class="star"
             :class="{ quiet: !label.star.live, alarm: label.star.attention }"
             :style="label.style"
+            :data-star="label.star.repo"
+            :title="label.title"
+            :aria-label="label.title"
             @click="enter(label.star.repo)"
           >
-            <img v-if="label.emblem" :key="label.emblem" class="emblem" :src="label.emblem" alt="" @error="hideImage" />
-            <span class="s-text">
-              <span class="s-name">{{ label.star.repo }}<span class="num"> · {{ label.star.live || "тихо" }}</span></span>
-              <span v-if="label.notes" class="s-notes">{{ label.notes }}</span>
+            <img v-if="label.emblem && label.star.live" :key="label.emblem" class="emblem" :src="label.emblem" alt="" @error="hideImage" />
+            <span class="s-name">{{ label.star.repo }}<span v-if="label.star.live" class="num"> · {{ label.star.live }}</span></span>
+            <span v-if="label.star.attention || label.star.ready || label.star.sleeping" class="badges" aria-hidden="true">
+              <b v-if="label.star.attention" class="badge b-alarm">{{ label.star.attention }}</b>
+              <b v-if="label.star.ready" class="badge b-ready">{{ label.star.ready }}</b>
+              <b v-if="label.star.sleeping" class="badge b-sleep">{{ label.star.sleeping }}</b>
             </span>
           </button>
           <button
@@ -821,21 +971,39 @@ onBeforeUnmount(() => {
   transform: translateX(-50%);
 }
 
+/*
+ * A star's label: one line, around its star where placeStarLabels finds room (--dx and --dy from the star's centre);
+ * hidden until it is placed, and while it waits for the zoom.
+ */
 .star {
+  left: calc(var(--tx) + var(--x) * var(--zoom) * 1px + var(--dx, 0px));
+  top: calc(var(--ty) + var(--y) * var(--zoom) * 1px + var(--dy, 0px));
+  transform: none;
+  visibility: hidden;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  box-sizing: border-box;
   max-width: 220px;
-  padding: 2px 9px;
+  padding: 1px 7px;
   border: 1px solid rgba(214, 170, 96, 0.28);
   border-radius: 3px;
-  background: rgba(8, 11, 18, 0.74);
+  background: rgba(8, 11, 18, 0.8);
   color: inherit;
   font: inherit;
-  font-size: 13px;
-  line-height: 17px;
+  font-size: 12.5px;
+  line-height: 19px;
+  white-space: nowrap;
   pointer-events: auto;
   cursor: pointer;
+}
+
+.star:has(.emblem) {
+  padding-left: 2px;
+}
+
+.star.alarm {
+  border-color: rgba(255, 141, 122, 0.55);
 }
 
 .star:hover {
@@ -851,16 +1019,70 @@ onBeforeUnmount(() => {
 }
 
 .star.quiet {
+  padding: 0 3px;
   border-color: transparent;
   background: none;
   color: #9aa3b4;
+  font-size: 11.5px;
+  line-height: 15px;
+  text-shadow:
+    0 0 3px #05070d,
+    0 0 2px #05070d;
 }
 
-.s-text {
+.star .emblem {
+  width: 19px;
+  height: 19px;
+  padding: 0;
+}
+
+/* The counts of a star's ships in trouble, waiting for you and asleep, in the colours of their dots. */
+.badges {
   display: flex;
-  flex-direction: column;
+  flex: none;
+  gap: 3px;
+}
+
+.badge {
+  box-sizing: border-box;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+
+.b-alarm {
+  background: #e0533c;
+  color: #fff4ef;
+}
+
+.b-ready {
+  background: #f3c64e;
+  color: #1a1408;
+}
+
+.b-sleep {
+  background: #a9cdf0;
+  color: #0b1626;
+}
+
+.legend .key {
+  display: inline-flex;
   align-items: center;
-  min-width: 0;
+  gap: 4px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.legend .key .badge {
+  min-width: 9px;
+  height: 9px;
+  padding: 0;
 }
 
 /* A repository's own mark. It stands on dark in both of the board's themes, like the rest of the map. */
@@ -892,16 +1114,6 @@ onBeforeUnmount(() => {
 .s-name .num {
   font-weight: 400;
   color: #b8ad98;
-}
-
-.s-notes {
-  color: #b8ad98;
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-
-.star.alarm .s-notes {
-  color: #ff8d7a;
 }
 
 /* The research station's label: teal, like its glow; a gold note while lessons wait for a decision. */
