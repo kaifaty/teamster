@@ -622,11 +622,11 @@ class CheckGuardTests(RotationTestCase):
                 mock.patch.object(worker.procs, "alive", side_effect=lambda pid: pid == new_pid), \
                 mock.patch.object(worker.supervisor.subprocess, "Popen", side_effect=popen), \
                 mock.patch.object(worker.checking, "guarded_changes", side_effect=describe_old_state), \
-                mock.patch.object(worker.task_state, "save", wraps=worker.task_state.save) as save, \
+                mock.patch.object(worker.task_state, "write_state", wraps=worker.task_state.write_state) as write, \
                 mock.patch("builtins.print") as printer:
             worker.wait_view.cmd_wait(SimpleNamespace(slug=slug, timeout=0, through_sleep=False))
         self.assertEqual(len(launches), 1)
-        save.assert_called_once()
+        write.assert_called_once()
         current = worker.task_state.load(slug)
         self.assertEqual((current["turns"], current["pid"], current["outcome"]),
                          (2, new_pid, "running"))

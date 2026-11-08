@@ -159,8 +159,8 @@ def load(slug):
 
 @contextmanager
 def state_lock(slug):
-    # stop is the only concurrent state writer; serialize its read/modify/write
-    # with supervisor saves so neither can lose the other's published fields.
+    # stop and spawn read, modify and write state under it, serialized with
+    # supervisor saves so none can lose another's published fields.
     with state_path(slug).with_suffix(".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
@@ -181,6 +181,15 @@ def save(st):
             if latest.get("pid") == st["pid"] and "stop_request" in latest:
                 st["stop_request"] = latest["stop_request"]
         write_state(st)
+
+
+def busy_message(st):
+    """Why no new turn may start beside the live supervisor of st, or None when it is idle."""
+    if not procs.alive(st.get("pid")):
+        return None
+    if st.get("outcome") == "sleeping":
+        return f"waiting for limit reset until {config.local_time(st['sleeping']['until'])}; stop first to send a new message"
+    return f"{st['slug']} is still running a turn; wait for it (or stop it) first"
 
 
 def stop_outcome(st, stopped):
