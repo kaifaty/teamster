@@ -26,7 +26,12 @@ Until that directory exists, `/` returns a short build instruction. The API is a
 
 The header switches between two views of the same data: «Доска», the columns, and «Карта», a space fleet
 in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy shows every repository as a star and every account
-as a fuel depot, with lines from the depots to the systems they feed. A click on a star flies into its system: the
+as a fuel depot, with lines from the depots to the systems they feed. The stars stand on a hexagonal lattice whose step
+follows their count, so a few stand wide apart and many fill the galaxy evenly, clear of the research station, the
+depots and the ship's log; a star keeps its place while it fits there (`galaxyLayout` in `board/web/src/map/layout.ts`).
+A busy star's label is one line: its name, its ships and badges for alarms, ships waiting for you and sleeping ones.
+Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,
+and a quiet star's name, shows on zooming in or under the pointer. A click on a star flies into its system: the
 sun is the main branch, and each task is a ship that moves towards it, from the yard through the range, the
 inspection and the hypergate to the roadstead, where it waits for you. Sleeping ships drift in the cryofield, the
 lead's sessions stay at the command station. The galaxy and a system move alike: a mouse wheel zooms around the

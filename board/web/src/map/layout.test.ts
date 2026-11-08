@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { PLACES } from "./placement";
 import {
   MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, cardPlace, clampCamera, depotPosition, fitCamera, LIGHT_SHIP, ringOf, ringPoint, ringsOf, skyChoices,
-  RESEARCH_SIZE, limitZoom, refitCamera, researchPosition, starPositions, starRadius, stationAt, systemFrame, worldSize, zoomCamera,
+  RESEARCH_SIZE, LABEL_MAX_WIDTH, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
+  starRadius, starSize, stationAt, systemFrame, worldSize, zoomCamera, type Rect, type StarShape,
 } from "./layout";
 
 const SIZES = [
@@ -167,32 +168,104 @@ describe("system", () => {
 
 describe("galaxy", () => {
   const size = { width: 1600, height: 1000 };
+  const quiet = (repo: string): StarShape => ({ repo, live: 0, attention: 0, ready: 0, sleeping: 0 });
+  /** `count` stars, four in ten busy, a few with alarms: like a board. */
+  const fleet = (count: number): StarShape[] =>
+    Array.from({ length: count }, (_, i) => {
+      const live = i % 5 < 2 ? 1 + ((i * 7) % 16) : 0;
+      return { repo: `repo-${i}`, live, attention: live && i % 4 === 0 ? 1 + (i % 3) : 0, ready: live ? Math.floor(live / 2) : 0, sleeping: 0 };
+    });
+  const blockedFor = (world: { width: number; height: number }) => {
+    const depots = [0, 1].flatMap((i) => [depotPosition(i, 2, "top", world), depotPosition(i, 2, "bottom", world)]);
+    return galaxyKeepOuts(world, depots, [logCorner(world)]);
+  };
+  const hit = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 
-  it("keeps stars apart, away from the depot rows and in place when another repository appears", () => {
-    const repos = ["teamster", "demo-game", "demo-shop", "ml-lab", "demo-vault", "(no folder)"];
-    const before = starPositions(repos, size);
-    const points = [...before.values()];
-    expect(points).toHaveLength(repos.length);
-    points.forEach((a, i) => points.slice(i + 1).forEach((b) => expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThan(120)));
-    for (const point of points) {
-      expect(point.y).toBeGreaterThan(depotPosition(0, 1, "top", size).y + 60);
-      expect(point.y).toBeLessThan(depotPosition(0, 1, "bottom", size).y - 60);
-    }
-    const after = starPositions([...repos, "new-repo"], size);
-    expect(repos.filter((repo) => after.get(repo)!.x === before.get(repo)!.x).length).toBeGreaterThanOrEqual(repos.length - 1);
+  it("spreads a few stars wide and many densely, drawing a crowd smaller", () => {
+    const blocked = blockedFor(size);
+    const few = galaxyLayout(fleet(6), size, blocked);
+    const some = galaxyLayout(fleet(34), size, blocked);
+    const many = galaxyLayout(fleet(100), size, blocked);
+    expect(few.spacing).toBeGreaterThan(some.spacing);
+    expect(some.spacing).toBeGreaterThan(many.spacing);
+    expect(few.scale).toBe(1);
+    expect(many.scale).toBeLessThan(1);
+    const xs = [...few.places.values()].map((point) => point.x);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(size.width * 0.4);
   });
 
-  it("handles more repositories than any grid has cells", () => {
-    const repos = Array.from({ length: 120 }, (_, i) => `repo-${i}`);
-    expect(starPositions(repos, size).size).toBe(120);
+  it("never lets two stars overlap, nor the station, the depots or the log", () => {
+    for (const world of SIZES) {
+      const blocked = blockedFor(world);
+      for (const count of [1, 6, 15, 34, 60, 100]) {
+        const stars = fleet(count);
+        const galaxy = galaxyLayout(stars, world, blocked);
+        expect(galaxy.places.size).toBe(count);
+        const cores = stars.map((star) => {
+          const at = galaxy.places.get(star.repo)!;
+          const glow = starSize(star.live, galaxy) * 1.15 + 4;
+          return { x0: at.x - glow, y0: at.y - glow, x1: at.x + glow, y1: at.y + glow };
+        });
+        cores.forEach((core, i) => {
+          for (const other of [...cores.slice(i + 1), ...blocked]) expect(hit(core, other), `${count} stars in ${world.width}x${world.height}`).toBe(false);
+        });
+      }
+    }
+  });
+
+  it("gives busy labels their room on a desktop galaxy, nearly all of them up to a few dozen stars", () => {
+    const blocked = blockedFor(size);
+    for (const count of [1, 6, 15]) {
+      const stars = fleet(count);
+      const galaxy = galaxyLayout(stars, size, blocked);
+      expect(galaxy.crowded).toBe(0);
+      const rooms = stars.map((star) => starFootprint(star, galaxy.places.get(star.repo)!, galaxy));
+      rooms.forEach((room, i) => {
+        for (const other of [...rooms.slice(i + 1), ...blocked]) expect(hit(room, other), `${count} stars`).toBe(false);
+      });
+    }
+    for (const count of [25, 34]) {
+      const stars = fleet(count);
+      expect(galaxyLayout(stars, size, blocked).crowded).toBeLessThanOrEqual(Math.ceil(stars.filter((star) => star.live).length / 4));
+    }
+  });
+
+  it("places every star of a galaxy fuller than its room, inside the world", () => {
+    const galaxy = galaxyLayout(fleet(150), size, blockedFor(size));
+    expect(galaxy.places.size).toBe(150);
+    for (const point of galaxy.places.values()) {
+      expect(point.x).toBeGreaterThan(0);
+      expect(point.x).toBeLessThan(size.width);
+      expect(point.y).toBeGreaterThan(0);
+      expect(point.y).toBeLessThan(size.height);
+    }
+  });
+
+  it("is the same every time, and keeps the stars in place when a repository comes", () => {
+    const blocked = blockedFor(size);
+    const stars = fleet(30);
+    const before = galaxyLayout(stars, size, blocked);
+    expect(galaxyLayout(stars, size, blocked).places).toEqual(before.places);
+    const after = galaxyLayout([...stars, quiet("new-repo")], size, blocked, before);
+    const kept = stars.filter((star) => before.places.get(star.repo)!.x === after.places.get(star.repo)!.x);
+    expect(kept.length).toBeGreaterThanOrEqual(stars.length * 0.9);
+  });
+
+  it("keeps the stars in their places while a system gets busy", () => {
+    const blocked = blockedFor(size);
+    const stars = fleet(30);
+    const before = galaxyLayout(stars, size, blocked);
+    const busier = stars.map((star) => (star.repo === "repo-3" ? { ...star, live: 4, ready: 2 } : star));
+    const after = galaxyLayout(busier, size, blocked, before);
+    const kept = stars.filter((star) => star.repo !== "repo-3" && before.places.get(star.repo)!.x === after.places.get(star.repo)!.x);
+    expect(kept.length).toBeGreaterThanOrEqual(stars.length - 3);
   });
 
   it("leaves the middle to the research station, with room for its label below", () => {
     for (const world of SIZES) {
       for (const count of [1, 6, 12, 25, 60, 120]) {
-        const repos = Array.from({ length: count }, (_, i) => `repo-${i}`);
         const station = researchPosition(world);
-        for (const point of starPositions(repos, world).values()) {
+        for (const point of galaxyLayout(fleet(count), world, blockedFor(world)).places.values()) {
           const dx = Math.abs(point.x - station.x);
           const dy = point.y - station.y;
           const clear = dx > RESEARCH_SIZE * 0.5 + 60 || dy < -(RESEARCH_SIZE * 0.5 + 60) || dy > RESEARCH_SIZE * 0.5 + 110;
@@ -200,6 +273,21 @@ describe("galaxy", () => {
         }
       }
     }
+  });
+
+  it("starts the bottom row of depots right of the ship's log on a wide window", () => {
+    expect(depotPosition(0, 2, "bottom", size).x).toBeGreaterThan(logCorner(size).x1);
+    expect(depotPosition(0, 2, "top", size).x).toBeLessThan(logCorner(size).x1);
+    const tall = { width: 1000, height: 1500 };
+    expect(depotPosition(0, 2, "bottom", tall).x).toBe(depotPosition(0, 2, "top", tall).x);
+  });
+
+  it("sizes a busy label by its name and badges, and a quiet one by its name", () => {
+    const plain = starLabelSize({ ...quiet("teamster"), live: 3 });
+    const troubled = starLabelSize({ ...quiet("teamster"), live: 3, attention: 1, ready: 2 });
+    expect(troubled.width).toBeGreaterThan(plain.width);
+    expect(starLabelSize(quiet("teamster")).height).toBeLessThan(plain.height);
+    expect(starLabelSize({ ...quiet("x".repeat(80)), live: 1 }).width).toBe(LABEL_MAX_WIDTH);
   });
 
   it("grows a star with its ships, up to a limit", () => {

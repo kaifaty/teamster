@@ -23,13 +23,14 @@ import {
   ringsOf,
   researchPosition,
   skyChoices,
-  starPositions,
-  starRadius,
+  starSize,
+  stormRadius,
   stationAt,
   systemFrame,
   worldSize,
   zoomCamera,
   type Camera,
+  type Galaxy,
   type Point,
   type Size,
   type SystemFrame,
@@ -55,6 +56,8 @@ export interface ResearchMarks {
 
 export interface GalaxyModel {
   stars: Star[];
+  /** Where the stars stand and how large they are drawn: see galaxyLayout. */
+  layout: Galaxy;
   depots: Depot[];
   lines: SupplyLine[];
   /** null: no station, the server tells nothing about research. */
@@ -67,6 +70,8 @@ export interface SceneOptions {
   onLeave: () => void;
   onPick: (slug: string) => void;
   onHover: (slug: string | null) => void;
+  /** The star under the pointer in the galaxy, so that its label shows even while it waits for the zoom. */
+  onHoverStar?: (repo: string | null) => void;
   /** The research station was clicked. */
   onResearch: () => void;
   /** The world's shape and the camera over it, for the labels. */
@@ -414,7 +419,13 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   /** The fitted camera and the window the cameras were last laid out for. */
   let fitted = { fit, viewport };
   let frame: SystemFrame = systemFrame(world);
-  let model: GalaxyModel = { stars: [], depots: [], lines: [], research: null };
+  let model: GalaxyModel = {
+    stars: [],
+    layout: { places: new Map(), spacing: 200, scale: 1, labelZoom: 0.75, world: worldSize(viewport), crowded: 0 },
+    depots: [],
+    lines: [],
+    research: null,
+  };
   let stars = new Map<string, Point>();
   let depotPoints = new Map<string, Point>();
   let repo: string | null = null;
@@ -540,7 +551,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     for (const star of model.stars) {
       const point = stars.get(star.repo);
       if (!point) continue;
-      const radius = starRadius(star.live);
+      const radius = starSize(star.live, model.layout);
       const halo = glow(sunKind(star.repo).glow, radius * 6);
       const body = sprite(art("sun"), radius * 2 * SUN_MARGIN);
       paintSun(body, star.repo);
@@ -561,9 +572,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     for (const star of model.stars) {
       const point = stars.get(star.repo);
       if (!point || !star.attention) continue;
-      const radius = starRadius(star.live) * 1.25 + 62;
+      const radius = stormRadius(star.live, model.layout);
+      const lift = 14 * model.layout.scale;
       const body = new Container();
-      body.position.set(point.x, point.y - 14);
+      body.position.set(point.x, point.y - lift);
       body.scale.set(1, 0.72);
       const layers = [sprite(stormTexture, radius * 2), sprite(stormTexture, radius * 1.75)];
       layers[1]!.alpha = 0.8;
@@ -572,7 +584,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       flash.alpha = 0;
       body.addChild(...layers, flash);
       stormLayer.addChild(body);
-      storms.push({ point: { x: point.x, y: point.y - 14 }, radius, seed: hashName(star.repo) % 997, layers, flash });
+      storms.push({ point: { x: point.x, y: point.y - lift }, radius, seed: hashName(star.repo) % 997, layers, flash });
     }
   }
 
@@ -631,7 +643,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   }
 
   function drawGalaxy() {
-    stars = starPositions(model.stars.map((star) => star.repo), world);
+    stars = model.layout.places;
     depotPoints = depotPositions(model.depots, world);
     drawLanes();
     drawDepots();
@@ -1137,12 +1149,13 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     for (const star of model.stars) {
       const point = stars.get(star.repo);
       if (!point) continue;
-      const radius = starRadius(star.live);
+      const { scale } = model.layout;
+      const radius = starSize(star.live, model.layout);
       star.dots.forEach((dot, index) => {
-        const ring = radius * 1.25 + 16 + (index % 2) * 10;
+        const ring = radius * 1.25 + (16 + (index % 2) * 10) * scale;
         const angle = (still ? 0 : time * (dot.state === "work" ? 0.45 : 0.08)) + (index * Math.PI * 2) / star.dots.length;
         const color = dot.state === "attention" ? SPACE.alarm : dot.state === "ready" ? SPACE.gold : dot.state === "sleep" ? SPACE.sleep : FLEET[dot.executor].hull;
-        galaxyFx.circle(point.x + ring * Math.cos(angle), point.y + ring * 0.72 * Math.sin(angle), 4.5);
+        galaxyFx.circle(point.x + ring * Math.cos(angle), point.y + ring * 0.72 * Math.sin(angle), 4.5 * Math.max(0.75, scale));
         galaxyFx.fill(color);
       });
     }
@@ -1165,7 +1178,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       const to = stars.get(name);
       if (!to) continue;
       const length = Math.hypot(to.x - center.x, to.y - center.y);
-      const end = length - starRadius(model.stars.find((star) => star.repo === name)?.live ?? 0) * 1.25 - 18;
+      const end = length - starSize(model.stars.find((star) => star.repo === name)?.live ?? 0, model.layout) * 1.25 - 18;
       const size = 2.2 + Math.min(count, 4) * 0.45;
       const start = RESEARCH_SIZE * 0.55;
       if (end <= start) continue;
@@ -1338,7 +1351,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   function starAt(point: Point): string | null {
     for (const star of model.stars) {
       const at = stars.get(star.repo);
-      if (at && Math.hypot(at.x - point.x, at.y - point.y) < starRadius(star.live) * 1.25 + 34) return star.repo;
+      const reach = Math.min(starSize(star.live, model.layout) * 1.25 + 34 * model.layout.scale, model.layout.spacing * 0.5);
+      if (at && Math.hypot(at.x - point.x, at.y - point.y) < reach) return star.repo;
     }
     return null;
   }
@@ -1451,6 +1465,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   };
 
   let lastHover: string | null = null;
+  let lastStar: string | null = null;
   const onMove = (event: PointerEvent) => {
     const at = screenPoint(event);
     if (pointers.has(event.pointerId)) {
@@ -1481,6 +1496,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       lastHover = slug;
       options.onHover(slug);
     }
+    const star = !repo && found !== "research" ? found : null;
+    if (star !== lastStar) {
+      lastStar = star;
+      options.onHoverStar?.(star);
+    }
   };
 
   const onUp = (event: PointerEvent) => {
@@ -1504,6 +1524,12 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     const star = starAt(point);
     if (star) options.onEnter(star);
     else if (researchAt(point)) options.onResearch();
+  };
+
+  const onLeave = () => {
+    if (lastStar === null) return;
+    lastStar = null;
+    options.onHoverStar?.(null);
   };
 
   const onCancel = (event: PointerEvent) => {
@@ -1605,6 +1631,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   canvas.addEventListener("pointermove", onMove);
   canvas.addEventListener("pointerup", onUp);
   canvas.addEventListener("pointercancel", onCancel);
+  canvas.addEventListener("pointerleave", onLeave);
   canvas.addEventListener("keydown", onKey);
   host.addEventListener("wheel", onWheel, { passive: false });
   host.addEventListener("gesturestart", onGestureStart);
@@ -1645,6 +1672,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       }
       repo = next;
       lastHover = null;
+      onLeave();
       glide = null;
       beyond = 0;
       report();
@@ -1668,6 +1696,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("pointercancel", onCancel);
+      canvas.removeEventListener("pointerleave", onLeave);
       canvas.removeEventListener("keydown", onKey);
       host.removeEventListener("wheel", onWheel);
       host.removeEventListener("gesturestart", onGestureStart);
