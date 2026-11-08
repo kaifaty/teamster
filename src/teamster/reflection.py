@@ -170,11 +170,14 @@ def update_index(archive, date, name, lessons):
     replace_archive_file(path, "\n".join(lines) + "\n")
 
 
-def record_batch(st):
+def record_batch(st, stopped):
     """Write the batch review of a valid reflect result and its proposed lessons in INDEX.md."""
     result = st["result"]
     archive = Path(st["repo"])
     with index_lock(archive):
+        # A stop may arrive while another writer holds the lock.
+        if stopped():
+            return
         name = st.get("reflect_file")
         if not name:
             today = time.strftime("%Y-%m-%d", time.gmtime(clock.CLOCK.time()))

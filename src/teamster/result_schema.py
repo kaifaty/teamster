@@ -89,8 +89,9 @@ def matches_schema(value, schema):
 
 
 def valid_reflect_result(value):
-    """The reflect schema, plus one options entry per question."""
-    return matches_schema(value, REFLECT_SCHEMA) and len(value["options"]) == len(value["questions"])
+    """The reflect schema, plus one options entry of none or 2-4 answers per question."""
+    return (matches_schema(value, REFLECT_SCHEMA) and len(value["options"]) == len(value["questions"])
+            and all(len(answers) in (0, 2, 3, 4) for answers in value["options"]))
 
 
 def parse_result(message, reviewing=False, reflecting=False):

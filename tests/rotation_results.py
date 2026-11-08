@@ -1,9 +1,11 @@
 """Typed results, scout and configuration tests."""
+import fcntl
 import json
 import os
 import runpy
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -606,9 +608,11 @@ class ResultScoutConfigTests(RotationTestCase):
         valid = self.reflect_result(lessons=[self.reflect_lesson("V1", "cue")])
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "failed"}, {"mode": "complete", "reply": "not a reflect result"},
+            {"mode": "complete", "reply": dict(valid, questions=["Apply V1?"], options=[["only one answer"]])},
             {"mode": "complete", "reply": valid}])
         before = self.archive_contents()
-        for slug, error in (("reflect-failed", None), ("reflect-invalid", "invalid reflect result")):
+        for slug, error in (("reflect-failed", None), ("reflect-invalid", "invalid reflect result"),
+                            ("reflect-one-option", "invalid reflect result")):
             with self.subTest(slug=slug):
                 self.cli("reflect", slug, "--executor", "codex")
                 self.cli("wait", slug, "--timeout", "60", timeout=75)
@@ -629,6 +633,26 @@ class ResultScoutConfigTests(RotationTestCase):
         record, = archive.glob("reflect-ok-*")
         self.assertFalse((record / "room").exists())
         self.assertTrue((record / "state.json").is_file())
+
+    def test_reflect_stop_while_waiting_for_the_index_lock_writes_nothing(self):
+        archive = self.reflect_archive()
+        worker = self.worker()
+        st = {"slug": "reflect-stop", "repo": str(archive), "reflect_through": "20260103T000000Z",
+              "result": self.reflect_result(lessons=[self.reflect_lesson("V1", "cue")])}
+        stop = threading.Event()
+        with (archive / "INDEX.md.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            before = self.archive_contents()
+            writer = threading.Thread(target=worker.reflection.record_batch, args=(st, stop.is_set))
+            writer.start()
+            time.sleep(0.3)
+            self.assertTrue(writer.is_alive())
+            stop.set()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        writer.join(timeout=10)
+        self.assertFalse(writer.is_alive())
+        self.assertNotIn("reflect_file", st)
+        self.assertEqual(self.archive_contents(), before)
 
     def test_teamster_environment_overrides_legacy_names(self):
         overrides = {

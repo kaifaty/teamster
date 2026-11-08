@@ -567,7 +567,9 @@ class ClaudeReviewTests(RotationTestCase):
         archive = self.reflect_archive()
         valid = self.reflect_result(lessons=[self.reflect_lesson("V1", "claude cue")])
         brief = "records/new-task-20260103T000000Z/brief.md"
-        self.claude_fixture(runs=[{"reply": valid}, {"reply": valid, "write_files": {brief: "Changed.\n"}}])
+        one_option = dict(valid, questions=["Apply V1?"], options=[["only one answer"]])
+        self.claude_fixture(runs=[{"reply": valid}, {"reply": valid, "write_files": {brief: "Changed.\n"}},
+                                  {"reply": one_option}])
         self.cli("reflect", "claude-reflect")
         self.wait("claude-reflect")
         state = self.state("claude-reflect")
@@ -583,7 +585,13 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertIsNone(state["result"])
         self.assertEqual(self.archive_contents(), before)
         self.assertEqual((room / brief).read_text(), "Changed.\n")
-        first, second = self.claude_invocations()
+        self.cli("say", "claude-reflect", "Answer with options.")
+        self.cli("wait", "claude-reflect", "--timeout", "30", timeout=45)
+        state = self.state("claude-reflect")
+        self.assertEqual((state["outcome"], state["error"]), ("failed", "invalid structured output"))
+        self.assertIsNone(state["result"])
+        self.assertEqual(self.archive_contents(), before)
+        first, second, _ = self.claude_invocations()
         schema = self.worker().result_schema.REFLECT_SCHEMA
         for entry in (first, second):
             argv = entry["argv"]
