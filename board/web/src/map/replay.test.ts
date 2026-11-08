@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { logEvent } from "../fixtures/events";
+import { FIXTURE_EVENTS, demoEvents, logEvent } from "../fixtures/events";
 import type { LogEvent, TaskSummary } from "../types";
 import { isFresh, placement } from "./placement";
+import { SCENARIO_HISTORY } from "./scenario";
 import { REPLAY_QUIET_SECONDS, replayDepartures, replayFleet, replayMarks, replayWindow } from "./replay";
 
 const T = 1_800_000_000;
@@ -124,4 +125,33 @@ describe("replay scale", () => {
     expect(new Date(day.since * 1000).getHours()).toBe(0);
     expect(day.until - day.since).toBe(86400);
   });
+});
+
+describe("demo history", () => {
+  const sources = { fixtures: FIXTURE_EVENTS, scenario: SCENARIO_HISTORY };
+  for (const [name, list] of Object.entries(sources)) {
+    it(`${name}: a ship reaches the sun, one fails at the gate and goes back to the yard, one needs attention`, () => {
+      const now = T;
+      const { events } = demoEvents(list, now, now - 26 * 3600, now);
+      const tracks = new Map<string, string[]>();
+      for (let t = now - 24 * 3600; t <= now; t += 60) {
+        const fleet = replayFleet(events, t);
+        for (const task of fleet) {
+          const where = placement(task, t, fleet)!;
+          const mark = `${where.place}${task.ci === "failed" ? "/damaged" : ""}${task.column === "attention" ? "/attention" : ""}`;
+          const track = tracks.get(task.slug) ?? [];
+          if (track[track.length - 1] !== mark) track.push(mark);
+          tracks.set(task.slug, track);
+        }
+        for (const [slug, how] of replayDepartures(events, t)) {
+          const track = tracks.get(slug);
+          if (track && how === "dive" && track[track.length - 1] === "roadstead") track.push("sun");
+        }
+      }
+      const all = [...tracks.values()].map((track) => track.join(" "));
+      expect(all.some((track) => /yard.* range.* inspection.* gate.* roadstead sun/.test(track)), all.join("\n")).toBe(true);
+      expect(all.some((track) => /gate yard\/damaged/.test(track)), all.join("\n")).toBe(true);
+      expect(all.some((track) => track.includes("/attention")), all.join("\n")).toBe(true);
+    });
+  }
 });

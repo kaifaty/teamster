@@ -61,7 +61,11 @@ export interface FleetScene {
   setArt(art: ArtIndex): void;
   /** Shows system `repo`, or the galaxy for null, flying there unless motion is reduced. */
   setView(repo: string | null): void;
-  setShips(entries: ShipEntry[]): void;
+  /**
+   * The ships to show. A ship missing from `entries` leaves: by `departures` when given (a slug it lacks fades),
+   * otherwise into the sun from the roadstead and fading from anywhere else.
+   */
+  setShips(entries: ShipEntry[], departures?: ReadonlyMap<string, "dive" | "fade">): void;
   setSelected(slug: string | null): void;
   setHovered(slug: string | null): void;
   setActive(active: boolean): void;
@@ -775,11 +779,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
   }
 
-  function setShips(entries: ShipEntry[]) {
+  function setShips(entries: ShipEntry[], departures?: ReadonlyMap<string, "dive" | "fade">) {
     const known = new Set(entries.map((entry) => entry.task.slug));
     for (const item of [...ships.values()]) {
       if (known.has(item.slug) || item.leaving) continue;
-      item.leaving = item.entry.placement.place === "roadstead" ? "dive" : "fade";
+      item.leaving = departures ? (departures.get(item.slug) ?? "fade") : item.entry.placement.place === "roadstead" ? "dive" : "fade";
       if (still) removeShip(item);
     }
     const first = ships.size === 0;
