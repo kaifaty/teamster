@@ -53,6 +53,7 @@ while live updates wait; depots and tankers stay live, since the accounts' past 
 marks the lines up to the moment, and a click on a line moves the scale to it. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
 (`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them. Above the commands
 stands the order the task's state calls for, one reason and one command, and the other commands fold under «Все команды».
+A finished task shows its «Груз» above the commands (the saved check, the review and its findings, why the fix loop stopped, CI, the base merge, what is left and the questions), and on the roadstead «вернуть на доработку» puts all of it into one `say` text, while «принять» goes back to the verdict.
 `npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
 every station; both fixture sources include a day of log events, with a ship that reaches the sun, one turned back at the gate and one in trouble, and a day's report.
 

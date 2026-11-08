@@ -322,7 +322,7 @@
       "stop": "base conflict",
       "ci": {
         "outcome": "timeout",
-        "passed": 4,
+        "passed": 3,
         "failed": 0,
         "total": 4,
         "failing": [],

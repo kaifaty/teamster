@@ -1,7 +1,7 @@
 // The rows of a task's "Груз" section: what it came back with, one row per part that has data.
 
 import type { Cargo, CargoFinding } from "../types";
-import { coarseSpan } from "./format";
+import { coarseSpan, formatDuration } from "./format";
 import { CI, findingsLabel, stopLabel, type Tone } from "./labels";
 
 export interface CargoRow {
@@ -36,7 +36,7 @@ export function cargoRows(cargo: Cargo): CargoRow[] {
   if (check) {
     const text =
       check.outcome === "passed"
-        ? `прошла${check.seconds !== null ? ` · ${coarseSpan(check.seconds)}` : ""}`
+        ? `прошла${check.seconds !== null ? ` · ${formatDuration(check.seconds)}` : ""}`
         : check.outcome === "failed"
           ? `упала${check.exit !== null ? ` · код ${check.exit}` : ""}`
           : check.outcome === "timeout"
