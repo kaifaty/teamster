@@ -19,8 +19,12 @@ const props = defineProps<{
   emblemOf: (repo: string | null) => string | null;
   /** The replay's moment: the rows up to it are marked and scrolled to, and every row moves the replay. */
   at?: number | null;
+  /** A narrow window: folded, the log is one line, and whether it is open is the map's to keep. */
+  compact?: boolean;
 }>();
 const emit = defineEmits<{ go: [event: LogEvent]; seek: [event: LogEvent] }>();
+/** Open on a narrow window; the map folds it again and measures the dock folded. */
+const open = defineModel<boolean>("open", { default: false });
 
 /** In replay, this many rows after the moment stay above it. */
 const AHEAD = 50;
@@ -31,6 +35,12 @@ const SHOWN = 300;
 const KEY = "codex-board.log-expanded.v1";
 const expanded = ref(loadJson(KEY, false, (v): v is boolean => typeof v === "boolean"));
 watch(expanded, (value) => saveJson(KEY, value));
+const unfolded = computed(() => (props.compact ? open.value : expanded.value));
+const folded = computed(() => props.compact && !open.value);
+function toggle() {
+  if (props.compact) open.value = !open.value;
+  else expanded.value = !expanded.value;
+}
 
 const clock = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
 /** The colour of the system's sun, as the map paints it. */
@@ -72,23 +82,37 @@ const rows = computed(() => {
   return rows;
 });
 
+const note = computed(() => {
+  if (props.error) return `Журнал не загрузился: ${props.error}`;
+  if (!rows.value.length) return props.repo ? "В этой системе за сутки тихо." : "За сутки в журнале ни строчки.";
+  return null;
+});
+
+/** The folded log's one line: the newest row, or in replay the latest up to the moment, else the next one. */
+const line = computed(() => {
+  const list = rows.value;
+  return list.find((row) => row.current) ?? (props.at != null ? list[list.length - 1] : list[0]) ?? null;
+});
+
 // In replay the latest row up to the moment stays in view, moved only within the log.
 const list = ref<HTMLElement | null>(null);
+function showCurrent() {
+  void nextTick(() => {
+    const box = list.value;
+    const row = box?.querySelector<HTMLElement>(".l-row.current");
+    if (!box || !row) return;
+    const top = row.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    if (top < box.scrollTop || top + row.offsetHeight > box.scrollTop + box.clientHeight) {
+      box.scrollTop = Math.max(0, top - box.clientHeight / 2);
+    }
+  });
+}
 watch(
   () => rows.value.find((row) => row.current)?.key,
-  (key) => {
-    if (key === undefined) return;
-    void nextTick(() => {
-      const box = list.value;
-      const row = box?.querySelector<HTMLElement>(".l-row.current");
-      if (!box || !row) return;
-      const top = row.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
-      if (top < box.scrollTop || top + row.offsetHeight > box.scrollTop + box.clientHeight) {
-        box.scrollTop = Math.max(0, top - box.clientHeight / 2);
-      }
-    });
-  },
+  (key) => key !== undefined && showCurrent(),
 );
+// A folded log on a narrow window is hidden and forgets its scroll.
+watch(folded, (value) => !value && showCurrent());
 
 function pick(row: { go: boolean; event: LogEvent }) {
   if (!row.go) return;
@@ -102,16 +126,38 @@ const hideImage = (event: Event) => {
 </script>
 
 <template>
-  <section class="log" :class="{ open: expanded }" :style="{ '--frame': `url(${frame})` }" aria-labelledby="log-title">
+  <section class="log" :class="{ open: unfolded, compact, folded }" :style="{ '--frame': `url(${frame})` }" aria-labelledby="log-title">
     <header class="l-head">
-      <h2 id="log-title">Бортовой журнал<span v-if="repo" class="l-where"> · {{ repo }}</span></h2>
-      <button type="button" class="l-toggle" :aria-expanded="expanded" @click="expanded = !expanded">
-        {{ expanded ? "свернуть ▾" : "развернуть ▴" }}
+      <slot name="head" />
+      <h2 id="log-title" :class="{ 'sr-only': folded }">Бортовой журнал<span v-if="repo" class="l-where"> · {{ repo }}</span></h2>
+      <!-- Folded on a narrow window, the toggle is the log's one line. -->
+      <button
+        type="button"
+        class="l-toggle"
+        :class="folded ? ['l-line', line && !error ? line.tone : ''] : null"
+        :title="folded ? (line && !error ? line.title : (error ?? undefined)) : undefined"
+        :aria-expanded="unfolded"
+        aria-controls="log-rows"
+        @click="toggle"
+      >
+        <template v-if="folded">
+          <span class="sr-only">Развернуть журнал: </span>
+          <template v-if="line && !error">
+            <time class="num">{{ line.time }}</time>
+            <img v-if="line.emblem" :key="line.emblem" class="l-mark" :src="line.emblem" alt="" @error="hideImage" />
+            <span v-else class="l-dot" :style="{ background: line.colour }" aria-hidden="true"></span>
+            <span class="l-text">{{ line.text }}</span>
+          </template>
+          <span v-else class="l-text l-quiet" :class="{ bad: error }">{{ note }}</span>
+          <svg class="l-chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+            <path d="M2 8l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </template>
+        <template v-else>{{ unfolded ? "свернуть ▾" : "развернуть ▴" }}</template>
       </button>
     </header>
-    <ol ref="list" class="l-rows" :aria-live="at == null ? 'polite' : 'off'" aria-relevant="additions">
-      <li v-if="error" class="l-note bad" :title="error">Журнал не загрузился: {{ error }}</li>
-      <li v-else-if="!rows.length" class="l-note">{{ repo ? "В этой системе за сутки тихо." : "За сутки в журнале ни строчки." }}</li>
+    <ol v-show="!folded" id="log-rows" ref="list" class="l-rows" :aria-live="at == null ? 'polite' : 'off'" aria-relevant="additions">
+      <li v-if="note" class="l-note" :class="{ bad: error }" :title="error ?? undefined">{{ note }}</li>
       <li v-for="row in rows" :key="row.key">
         <component
           :is="row.go ? 'button' : 'div'"
@@ -303,9 +349,77 @@ const hideImage = (event: Event) => {
   color: #ff8d7a;
 }
 
-@media (max-width: 760px) {
-  .log {
-    --row: 22px;
-  }
+/* A narrow window: rows tall enough for a finger, and folded, one line that opens the log. */
+.log.compact {
+  --row: 28px;
+}
+
+.log.compact .l-head {
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 2px;
+}
+
+.log.compact .l-toggle {
+  min-height: 32px;
+}
+
+.log.folded {
+  padding: 1px 3px;
+}
+
+.log.folded .l-head {
+  padding: 0;
+}
+
+.l-line {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: #e8e2d4;
+  font-size: 12px;
+  text-align: left;
+}
+
+.l-line:hover {
+  background: rgba(214, 170, 96, 0.18);
+}
+
+.l-line time {
+  flex: none;
+  color: #9b907c;
+}
+
+.l-line.ok .l-text {
+  color: #cfe3c4;
+}
+
+.l-line.bad .l-text {
+  color: #ffb3a3;
+}
+
+.l-quiet {
+  color: #a89c86;
+}
+
+.l-quiet.bad {
+  color: #ff8d7a;
+}
+
+.l-chevron {
+  flex: none;
+  margin: 0 2px 0 auto;
+  color: #b8ad98;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 </style>

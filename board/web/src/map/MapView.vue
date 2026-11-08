@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import type { ArtIndex, LogEvent, ResearchView, TaskSummary } from "../types";
 import { createBoard, useNow, type Board } from "../store/board";
 import { formatDuration, formatUntil } from "../lib/format";
+import { loadJson, saveJson } from "../lib/storage";
 import { EXECUTORS, PHASES, problemLabel, shipLine, taskTitle } from "../lib/labels";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
@@ -461,9 +462,59 @@ function placeStarLabels() {
 watch([starLabels, repo], () => void nextTick(measureLabels), { flush: "post" });
 watch(hoveredStar, scheduleLabels);
 
-/** Measures, for the window, the part of the world under the ship's log, where no star stands, and the full view's zoom. */
+// The dock ------------------------------------------------------------------------------------------
+
+/** A phone-sized window, as the `@media (max-width: 760px)` rules see it: the dock folds there to one line. */
+const narrowQuery = matchMedia("(max-width: 760px)");
+const narrow = ref(narrowQuery.matches);
+const onNarrow = (event: MediaQueryListEvent) => {
+  narrow.value = event.matches;
+};
+/** On a wide window the replay's scale shows or hides as the viewer last chose. */
+const REPLAY_KEY = "codex-board.replay-shown.v1";
+const replayShown = ref(loadJson(REPLAY_KEY, true, (v): v is boolean => typeof v === "boolean"));
+watch(replayShown, (value) => saveJson(REPLAY_KEY, value));
+/** On a narrow window, the replay's scale and the whole log open over the map on demand. */
+const replayOpen = ref(false);
+const logOpen = ref(false);
+const replayVisible = computed(() => (narrow.value ? replayOpen.value : replayShown.value));
+function toggleReplay() {
+  if (narrow.value) replayOpen.value = !replayOpen.value;
+  else replayShown.value = !replayShown.value;
+}
+const dockFolded = computed(() => !narrow.value || (!replayOpen.value && !logOpen.value));
+// On a wide window the scale is part of the dock's shape: hidden, it leaves its corner to the stars.
+watch(replayShown, () => {
+  if (narrow.value) return;
+  coveredFor = "";
+  void nextTick(() => {
+    measureCovered();
+    scheduleLabels();
+  });
+});
+// Across the breakpoint the dock changes its shape: it folds and is measured again.
+watch(narrow, () => {
+  replayOpen.value = false;
+  logOpen.value = false;
+  coveredFor = "";
+  void nextTick(measureCovered);
+});
+// The open dock covers the map. Once it folds, a resize made meanwhile is measured and the star labels come back.
+watch(dockFolded, (folded) => {
+  if (!folded) return;
+  void nextTick(() => {
+    measureCovered();
+    scheduleLabels();
+  });
+});
+
+/**
+ * Measures, for the window, the part of the world under the ship's log, where no star stands, and the full view's zoom.
+ * A narrow dock is measured folded: what opens over the map does not move the stars.
+ */
 let coveredFor = "";
 function measureCovered() {
+  if (!dockFolded.value) return;
   const stage = host.value?.getBoundingClientRect();
   const dock = host.value?.querySelector<HTMLElement>(".dock")?.getBoundingClientRect();
   if (!stage || !dock || !stage.width || !stage.height) return;
@@ -586,6 +637,7 @@ const RESEARCH_REFRESH_MS = 60_000;
 let researchTimer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   window.addEventListener("keydown", onKey);
+  narrowQuery.addEventListener("change", onNarrow);
   if (host.value) {
     stageObserver = new ResizeObserver(() => measureCovered());
     stageObserver.observe(host.value);
@@ -600,6 +652,7 @@ onBeforeUnmount(() => {
   clearInterval(researchTimer);
   clearTimeout(flightTimer);
   window.removeEventListener("keydown", onKey);
+  narrowQuery.removeEventListener("change", onNarrow);
   stageObserver?.disconnect();
   cancelAnimationFrame(labelFrame);
   scene?.dispose();
@@ -720,8 +773,9 @@ onBeforeUnmount(() => {
       </div>
       <div class="dock">
         <p v-if="replayTime" class="plate in-dock num" aria-hidden="true">Перемотка · {{ replayTime }}</p>
-        <ReplayBar :replay="replay" :frame="frameLight" :now="now" />
+        <ReplayBar v-show="replayVisible" id="replay-scale" :replay="replay" :frame="frameLight" :now="now" />
         <ShipLog
+          v-model:open="logOpen"
           :events="logEvents"
           :error="replay.at === null ? eventsError : replay.error"
           :repo="repo"
@@ -729,9 +783,31 @@ onBeforeUnmount(() => {
           :systems="systemNames"
           :emblem-of="emblemOf"
           :at="replay.at"
+          :compact="narrow"
           @go="goTo"
           @seek="seekTo"
-        />
+        >
+          <template #head>
+            <button
+              type="button"
+              class="dock-replay"
+              :class="{ on: replay.active }"
+              aria-controls="replay-scale"
+              :aria-expanded="replayVisible"
+              aria-label="Перемотка дня"
+              :title="replayVisible ? 'Скрыть перемотку дня' : 'Показать перемотку дня'"
+              @click="toggleReplay"
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" />
+                <path d="M1 6.4l1.5 1.8L4 6.4" />
+                <path d="M8 5v3.2l2.2 1.4" />
+              </svg>
+            </button>
+            <!-- The way back to the live map while the scale with its own button is hidden. -->
+            <button v-if="replay.active && !replayVisible" type="button" class="dock-live" @click="replay.live()">В эфир</button>
+          </template>
+        </ShipLog>
       </div>
       <p v-if="replayTime" class="plate on-sky num" role="status">Перемотка · {{ replayTime }}</p>
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
@@ -881,6 +957,57 @@ onBeforeUnmount(() => {
 
 .dock > :deep(.replay) {
   flex: none;
+}
+
+/* At the head of the log: the button that shows or hides the replay's scale, and the way back to the live map. */
+.dock-replay,
+.dock-live {
+  flex: none;
+  align-self: center;
+  box-sizing: border-box;
+  height: 22px;
+  margin: 0;
+  border: 1px solid rgba(214, 170, 96, 0.35);
+  border-radius: 2px;
+  background: rgba(20, 22, 28, 0.9);
+  color: #b8ad98;
+  cursor: pointer;
+}
+
+.dock-replay {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  padding: 0;
+}
+
+.dock-replay:hover,
+.dock-live:hover {
+  border-color: rgba(243, 198, 78, 0.8);
+}
+
+.dock-replay.on {
+  color: #f3c64e;
+}
+
+.dock-replay[aria-expanded="true"] {
+  border-color: rgba(243, 198, 78, 0.9);
+  background: rgba(243, 198, 78, 0.22);
+  color: #f3c64e;
+}
+
+.dock-live {
+  padding: 0 6px;
+  border-color: rgba(255, 141, 122, 0.7);
+  color: #ffb3a3;
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.dock-replay:focus-visible,
+.dock-live:focus-visible {
+  outline: 2px solid #f3c64e;
+  outline-offset: 1px;
 }
 
 /* Over the map while it replays; the sky's own labels stay clear under it. */
@@ -1309,6 +1436,15 @@ onBeforeUnmount(() => {
 
   .plate.in-dock {
     display: block;
+  }
+
+  .dock-replay,
+  .dock-live {
+    height: 32px;
+  }
+
+  .dock-replay {
+    width: 32px;
   }
 
   .picker select {
