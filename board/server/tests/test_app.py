@@ -18,7 +18,7 @@ SUMMARY_FIELDS = {
     "slug", "kind", "repo", "branch", "task_type", "executor", "account", "reviewer",
     "model", "effort", "column", "phase", "phase_started_at", "alive", "turn", "fix_round",
     "outcome", "result_status", "summary", "pr", "ci", "sleeping_until", "created", "updated_at",
-    "activity", "title", "link",
+    "activity", "title", "link", "scheduled",
 }
 
 
@@ -95,6 +95,7 @@ def test_rest_contract_files_and_unknown_paths(board):
     assert set(snapshot["tasks"][0]) == SUMMARY_FIELDS
     assert snapshot["tasks"][0]["title"] is None
     assert snapshot["tasks"][0]["link"] is None
+    assert snapshot["tasks"][0]["scheduled"] is None
     assert set(snapshot["accounts"]) == {"fetched_at", "error", "data"}
     for name, filename in (("brief", "brief.md"), ("last", "last.md"),
                            ("review", "review.md"), ("check", "check.log")):
@@ -107,6 +108,7 @@ def test_rest_contract_files_and_unknown_paths(board):
     detail = client.get("/api/tasks/demo").json()
     assert set(detail) == SUMMARY_FIELDS | {"timeline", "files"}
     assert set(detail["files"]) == {"brief", "last", "review", "check"}
+    assert detail["scheduled"] is None
     assert len(detail["timeline"]) <= 200
     (directory / "last.md").unlink()
     for path in (
@@ -577,3 +579,23 @@ def test_art_needs_a_localhost_host_header(board):
     write_art(settings)
     assert client.get("/api/art", headers={"Host": "example.com"}).status_code == 403
     assert client.get("/api/art/alpha/sky.jpg", headers={"Host": "example.com"}).status_code == 403
+
+
+def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeypatch):
+    client, _, _, _, settings = board
+    assert client.get("/api/research").json() == {
+        "lessons": [], "batch": None,
+        "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
+        "reflection_task": "codex-batch-reflection"}
+    assert client.post("/api/research").status_code == 405
+    assert client.delete("/api/research").status_code == 405
+    assert client.get("/api/research", headers={"Host": "evil.example"}).status_code == 403
+    for name in ("BOARD_RESEARCH_SECONDS", "BOARD_REFLECTION_TASK"):
+        monkeypatch.delenv(name, raising=False)
+    defaults = Settings.from_env()
+    assert (defaults.research_seconds, defaults.reflection_task) == (30, "codex-batch-reflection")
+    monkeypatch.setenv("BOARD_RESEARCH_SECONDS", "5")
+    monkeypatch.setenv("BOARD_REFLECTION_TASK", "weekly-review")
+    research = create_app(Settings.from_env()).state.board.research
+    assert (research.seconds, research.reflection_task) == (5, "weekly-review")
+    assert research.tasks_path == tmp_path / "claude-tasks"

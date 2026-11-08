@@ -34,7 +34,8 @@ stops or changes work, and never writes under either source's home.
 - Desktop sessions: `$BOARD_CLAUDE_DESKTOP_DIR/claude-code-sessions/*/*/local_*.json` (default desktop
   directory `~/Library/Application Support/Claude`). These are internal application files, not a public
   API. Only `sessionId`, `cliSessionId`, `title`, `cwd`, `originCwd`, `model`, `effort`, `isArchived`,
-  `createdAt`, `lastActivityAt`, `completedTurns`, `interruptedAwaitingPerson`, and `prs` are retained.
+  `createdAt`, `lastActivityAt`, `completedTurns`, `interruptedAwaitingPerson`, `scheduledTaskId`, and `prs`
+  are retained.
   For each PR, only `url`, `state`, `branch`, and `own` are retained. Other fields are never exposed.
 - Live sessions: `$BOARD_CLAUDE_HOME/sessions/<pid>.json` (default home `~/.claude`), with numeric filenames
   only. The fields used are `pid`, `sessionId` (the metadata's `cliSessionId`), `cwd`, `status`,
@@ -47,6 +48,9 @@ stops or changes work, and never writes under either source's home.
   path. Assistant events may carry ISO `timestamp` values.
 - Map art: `board-art/<repo>/` in the task home, holding any of `sky.jpg`, `planet.png` and `emblem.png`. It stays
   outside the repository because project names and themes can be private, and is written by hand.
+- Reflection: `tasks/.archive/INDEX.md` (the lesson table), `tasks/.archive/batch-<YYYY-MM-DD>[suffix].md`
+  (batch reviews, each with a `through: <stamp>` line) and the archived records' `state.json`, read for
+  `GET /api/research` as described below.
 - The server never reads `auth.json`, credentials or account homes.
 
 Missing directories are skipped. Malformed metadata or live-state files preserve their last valid
@@ -127,6 +131,7 @@ interface TaskSummary {
   created: number | null;
   updated_at: number;         // task state mtime, or session lastActivityAt / 1000
   activity: Activity | null;  // latest activity, only while alive
+  scheduled: string | null;   // session scheduledTaskId; null for tasks
 }
 
 interface TaskDetail extends TaskSummary {
@@ -211,6 +216,43 @@ interface Snapshot {
   tasks: TaskSummary[];       // all non-closed tasks, plus at most 50 closed records with the newest updated_at
   accounts: Accounts;
   machines: Machines;
+}
+
+type LessonStatus = "proposed" | "applied" | "declined" | "other";
+type Signal = "blocked" | "refused" | "needs_decision" | "escalate" | "round_cap"
+  | "fix_rounds" | "check_failed" | "ci_repair" | "budget_exhausted";
+
+interface Lesson {             // one row of INDEX.md, in file order
+  date: string;                // first column as written
+  entry: string;
+  scope: "invariant" | "domain" | "other";
+  scope_text: string;          // the scope column as written
+  repos: string[];             // for domain: the names after "domain", split on commas and spaces; otherwise []
+  cue: string;
+  status: LessonStatus;        // from the first word of the status column: proposed / applied / declined, else other
+  status_text: string;         // the status column as written
+}
+
+interface ResearchBatch {      // the batch file with the greatest `through:` stamp
+  name: string;                // file name, e.g. "batch-2026-11-07b.md"
+  date: string | null;         // YYYY-MM-DD from the file name
+  through: string | null;
+  records: number;             // archived records with previous batch's through < stamp <= through
+  repos: Record<string, number>;  // the same records counted by repository directory name
+}
+
+interface PendingRecord { slug: string; repo: string; stamp: string; signals: Signal[]; }
+
+interface ResearchView {
+  lessons: Lesson[];
+  batch: ResearchBatch | null;
+  pending: {
+    records: number;           // archived records with stamp > batch.through (all records when batch is null)
+    signals: number;           // how many of them have at least one signal
+    repos: Record<string, number>;  // records with a signal, by repository directory name
+    items: PendingRecord[];    // records with a signal, newest first, at most 50
+  };
+  reflection_task: string;     // scheduled task id of reflection sessions, from BOARD_REFLECTION_TASK
 }
 ```
 
@@ -322,6 +364,8 @@ Sessions use the same `TaskSummary`, with these values:
   `at` is at least the current busy state's `statusUpdatedAt` (in seconds). Leaving busy clears it.
 - `created` and `updated_at` are metadata `createdAt` and `lastActivityAt`. Metadata and live-state
   millisecond timestamps are converted to Unix seconds.
+- `scheduled` is the metadata `scheduledTaskId` when it is a nonempty string, otherwise `null`. The daily
+  batch reflection runs as a scheduled session whose id equals `ResearchView.reflection_task`.
 
 Session columns use the first matching rule:
 
@@ -334,6 +378,33 @@ Session columns use the first matching rule:
 
 Closed sessions and tasks share the limit of 50 records, ranked by `updated_at`.
 The additional fields are additive; existing clients may ignore `title` and `link`.
+
+### Research
+
+`ResearchView` describes what reflection (`src/teamster/docs/reflection.md`) has learned and what waits for
+the next batch. The data lives in `tasks/.archive/`:
+
+- `lessons`: the rows of the markdown table in `INDEX.md`, skipping the header and separator rows. A row needs
+  at least five cells; cells after the fourth (a `|` inside the text) are joined back into `status_text`.
+  Shorter or empty rows are skipped.
+- `batch`: among the `batch-*.md` files, the one with the greatest stamp on its first `through:` line; a file
+  without one ranks lowest. Its `records` are the archived records whose stamp is greater than the next lower
+  batch's `through` and at most its own.
+- Records are directories `<slug>-<stamp>` with `stamp` like `20261107T051647Z`. A record's repository is the
+  last path component of `state.json`'s `repo`, or `"(unknown)"`. Only `state.json` is used for signals:
+  - `blocked`, `needs_decision`: `result.status`; `refused`: `result.status` or `outcome` is `refused`;
+  - `escalate`: `auto_fix_stop` is `escalate`; `round_cap`: `auto_fix_stop` is `rounds_exhausted`,
+    `check <outcome>` or `base conflict` (the round cap reached while the check failed or the base branch
+    conflicted);
+  - `fix_rounds`: `rounds` holds two or more entries;
+  - `check_failed`: an entry of `checks` has an integer `exit` other than 0;
+  - `ci_repair`: `ci.rounds` is greater than 0;
+  - `budget_exhausted`: `outcome` or an entry of `turn_stops` has the outcome `budget_exhausted`.
+
+Only the `state.json` files of records newer than the previous batch's `through` are read, and each again only
+when its mtime or size changes. The view is rebuilt at most once per `BOARD_RESEARCH_SECONDS` (default 30).
+Malformed rows, files and JSON are skipped. When `tasks/` or `.archive/` is a symbolic link or missing, the
+view is empty; linked record directories, `state.json`, `INDEX.md` and batch files are skipped.
 
 ## REST
 
@@ -357,6 +428,7 @@ The additional fields are additive; existing clients may ignore `title` and `lin
   Session paths come only from scanned records, never from a requested slug; path-like slugs return 404.
 - `GET /api/tasks/{slug}/files/{name}` with `name` in `brief`, `last`, `review`, `check` → `text/plain;
   charset=utf-8`, at most the last 256 KiB; 404 when missing or for a session. No other names, no paths.
+- `GET /api/research` → `ResearchView`; other methods get 405.
 - `GET /api/art` → `ArtIndex`, empty when `board-art/` is missing. URLs carry the file's mtime as `?v=`, so a
   replaced picture gets a new URL.
 - `GET /api/art/{repo}/{file}` with `file` in `sky.jpg` (`image/jpeg`), `planet.png`, `emblem.png` (`image/png`) →
