@@ -461,9 +461,41 @@ function placeStarLabels() {
 watch([starLabels, repo], () => void nextTick(measureLabels), { flush: "post" });
 watch(hoveredStar, scheduleLabels);
 
-/** Measures, for the window, the part of the world under the ship's log, where no star stands, and the full view's zoom. */
+// The dock on a narrow window -----------------------------------------------------------------------
+
+/** A phone-sized window, as the `@media (max-width: 760px)` rules see it: the dock folds there to one line. */
+const narrowQuery = matchMedia("(max-width: 760px)");
+const narrow = ref(narrowQuery.matches);
+const onNarrow = (event: MediaQueryListEvent) => {
+  narrow.value = event.matches;
+};
+/** On a narrow window, the replay's scale and the whole log open over the map on demand. */
+const replayOpen = ref(false);
+const logOpen = ref(false);
+const dockFolded = computed(() => !narrow.value || (!replayOpen.value && !logOpen.value));
+// Across the breakpoint the dock changes its shape: it folds and is measured again.
+watch(narrow, () => {
+  replayOpen.value = false;
+  logOpen.value = false;
+  coveredFor = "";
+  void nextTick(measureCovered);
+});
+// The open dock covers the map. Once it folds, a resize made meanwhile is measured and the star labels come back.
+watch(dockFolded, (folded) => {
+  if (!folded) return;
+  void nextTick(() => {
+    measureCovered();
+    scheduleLabels();
+  });
+});
+
+/**
+ * Measures, for the window, the part of the world under the ship's log, where no star stands, and the full view's zoom.
+ * A narrow dock is measured folded: what opens over the map does not move the stars.
+ */
 let coveredFor = "";
 function measureCovered() {
+  if (!dockFolded.value) return;
   const stage = host.value?.getBoundingClientRect();
   const dock = host.value?.querySelector<HTMLElement>(".dock")?.getBoundingClientRect();
   if (!stage || !dock || !stage.width || !stage.height) return;
@@ -586,6 +618,7 @@ const RESEARCH_REFRESH_MS = 60_000;
 let researchTimer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   window.addEventListener("keydown", onKey);
+  narrowQuery.addEventListener("change", onNarrow);
   if (host.value) {
     stageObserver = new ResizeObserver(() => measureCovered());
     stageObserver.observe(host.value);
@@ -600,6 +633,7 @@ onBeforeUnmount(() => {
   clearInterval(researchTimer);
   clearTimeout(flightTimer);
   window.removeEventListener("keydown", onKey);
+  narrowQuery.removeEventListener("change", onNarrow);
   stageObserver?.disconnect();
   cancelAnimationFrame(labelFrame);
   scene?.dispose();
@@ -720,8 +754,9 @@ onBeforeUnmount(() => {
       </div>
       <div class="dock">
         <p v-if="replayTime" class="plate in-dock num" aria-hidden="true">Перемотка · {{ replayTime }}</p>
-        <ReplayBar :replay="replay" :frame="frameLight" :now="now" />
+        <ReplayBar v-show="!narrow || replayOpen" id="replay-scale" :replay="replay" :frame="frameLight" :now="now" />
         <ShipLog
+          v-model:open="logOpen"
           :events="logEvents"
           :error="replay.at === null ? eventsError : replay.error"
           :repo="repo"
@@ -729,9 +764,29 @@ onBeforeUnmount(() => {
           :systems="systemNames"
           :emblem-of="emblemOf"
           :at="replay.at"
+          :compact="narrow"
           @go="goTo"
           @seek="seekTo"
-        />
+        >
+          <template v-if="narrow" #head>
+            <button
+              type="button"
+              class="dock-replay"
+              :class="{ on: replay.active }"
+              aria-controls="replay-scale"
+              :aria-expanded="replayOpen"
+              aria-label="Перемотка дня"
+              title="Перемотка дня"
+              @click="replayOpen = !replayOpen"
+            >
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9" />
+                <path d="M1 6.4l1.5 1.8L4 6.4" />
+                <path d="M8 5v3.2l2.2 1.4" />
+              </svg>
+            </button>
+          </template>
+        </ShipLog>
       </div>
       <p v-if="replayTime" class="plate on-sky num" role="status">Перемотка · {{ replayTime }}</p>
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
@@ -881,6 +936,37 @@ onBeforeUnmount(() => {
 
 .dock > :deep(.replay) {
   flex: none;
+}
+
+/* On a narrow window, the button at the head of the folded log that opens the replay's scale. */
+.dock-replay {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(214, 170, 96, 0.35);
+  border-radius: 2px;
+  background: rgba(20, 22, 28, 0.9);
+  color: #b8ad98;
+  cursor: pointer;
+}
+
+.dock-replay.on {
+  color: #f3c64e;
+}
+
+.dock-replay[aria-expanded="true"] {
+  border-color: rgba(243, 198, 78, 0.9);
+  background: rgba(243, 198, 78, 0.22);
+  color: #f3c64e;
+}
+
+.dock-replay:focus-visible {
+  outline: 2px solid #f3c64e;
+  outline-offset: 1px;
 }
 
 /* Over the map while it replays; the sky's own labels stay clear under it. */
