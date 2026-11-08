@@ -34,6 +34,12 @@ export const SPACE = {
   research: "#5fd6c8",
 } as const;
 
+/**
+ * The rings around a machine's reactor while they are calm, outside in; a busy ring turns gold and an overloaded one
+ * red. The label's dots before the free resources take the same colours.
+ */
+export const RINGS = { cpu: "#9fd0ff", memory: "#5fd6c8", gpu: "#c39bff" } as const;
+
 /** `escort` tints the reviewer's drone: the family's hue, light enough that the art's paint still shows. */
 export const FLEET: Record<Family, { hull: string; engine: string; escort: string }> = {
   codex: { hull: "#7ea6f5", engine: "#ffb648", escort: "#b4ccff" },

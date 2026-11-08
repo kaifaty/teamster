@@ -33,7 +33,7 @@ SPRITES = {
     "station-command": ("key", 384),
     "station-yard": ("key", 384),
     "station-research": ("key", 384),
-    "station-power": ("key", 256),
+    "reactor-core": ("trim", 192),
     "gate": ("key", 320),
     "fuel-tank": ("trim", 256),
     "fuel-cell": ("trim", 96),

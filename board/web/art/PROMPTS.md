@@ -37,9 +37,8 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 8. station-research (square, 1024x1024): One large orbital research observatory seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A round central hub carrying one huge dish antenna made of a pale steel lattice, turned up towards the viewer, with a bright teal sensor eye at its centre. Around the hub runs a slender ring of glass laboratory domes glowing soft teal, and three long thin sensor booms reach outwards with small amber lamps at their tips. Dark steel and pale brass plating. Pre-rendered look with metallic highlights. No shadow on the background.
 
-9. station-power (landscape, 1536x1024): One orbital power station seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A hexagonal reactor hub with one round glass dome in the middle over a bright pale white reactor core, and four long straight radiator wings made of dark ribbed panels reaching out in a cross, joined to the hub by thick copper power conduits. Dark steel and brass plating, small amber lamps along the wings. Pre-rendered look with metallic highlights. No shadow on the background.
 
-10. station-yard (square, 1024x1024): One large orbital shipyard seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A massive square dry dock made of an open girder framework: a thick armoured backbone along its left side with three long parallel slipways reaching out to the right, open at their right ends. Two slipways hold half-built ship hulls with bare ribs and patches of copper plating; the third slipway is empty. Two heavy gantry cranes bridge the slipways. Bright white welding sparks and amber floodlights shine on the hulls, and small warm lamps line the girders. Dark steel and copper plating; the open spaces between the girders show the flat magenta background. Pre-rendered look with metallic highlights. No shadow on the background.
+9. station-yard (square, 1024x1024): One large orbital shipyard seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A massive square dry dock made of an open girder framework: a thick armoured backbone along its left side with three long parallel slipways reaching out to the right, open at their right ends. Two slipways hold half-built ship hulls with bare ribs and patches of copper plating; the third slipway is empty. Two heavy gantry cranes bridge the slipways. Bright white welding sparks and amber floodlights shine on the hulls, and small warm lamps line the girders. Dark steel and copper plating; the open spaces between the girders show the flat magenta background. Pre-rendered look with metallic highlights. No shadow on the background.
 
 The shipyard is a dock over the limb of the system's home world; `planet-yard` is that home world for a repository without its own planet. A single new picture is prepared alone: `python3 art/prepare.py SOURCE_DIR --only station-yard`.
 
@@ -56,6 +55,13 @@ Same STYLE as the first list. Frigates and cruisers carry tasks with more reason
 4. ship-copper-cruiser (square, 1024x1024): One heavy battlecruiser seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A broad rounded hull like a fat teardrop, thick copper and terracotta armour rings, cream superstructure domes and four large glowing engines at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
 
 5. escort (square, 1024x1024): One tiny escort drone seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A compact round body with a single lens eye, two small stubby wings and one glowing engine, pale steel and violet paint. Pre-rendered look with metallic highlights. No shadow on the background.
+
+## Machines
+
+Same STYLE as the first list. Every machine is a reactor in the galaxy; the map draws the rings of its load around it and
+lights its pale core in the colour of its status. A "trim" sprite: `python3 art/prepare.py SOURCE_DIR --only reactor-core`.
+
+1. reactor-core (square, 1024x1024): One compact round orbital reactor seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it, with a wide clear margin of magenta all around it. A thick circular armoured housing of dark steel and brass with six evenly spaced heavy clamps and small amber lamps around its rim, and in its middle one round glass dome over a bright pale white glowing reactor core. The outline is a clean circle: no wings, no arms, no antennas, nothing reaching out of the circle. Pre-rendered look with metallic highlights. No shadow on the background.
 
 ## Subscriptions
 

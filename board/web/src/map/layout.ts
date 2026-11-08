@@ -383,11 +383,11 @@ export function researchPosition(size: Size, machines: MachineColumn | null = nu
 export const RESEARCH_SIZE = 150;
 
 /**
- * A machine's power station: the long side of its sprite in world units, larger in a tall world, which a phone shows at a
+ * A machine's reactor with its rings: their outer diameter in world units, larger in a tall world, which a phone shows at a
  * smaller zoom; and the least it shrinks to in a long column.
  */
-export const MACHINE_SIZE = { wide: 116, tall: 150 } as const;
-export const MACHINE_MIN_SIZE = 72;
+export const MACHINE_SIZE = { wide: 108, tall: 150 } as const;
+export const MACHINE_MIN_SIZE = 64;
 
 /** A rectangle in world units. */
 export interface Rect {
@@ -471,7 +471,7 @@ export function stormRadius(live: number, lattice: Lattice): number {
 }
 
 /**
- * The parts of the galaxy where no star stands: the research station, the fuel tanks and the machines' power stations
+ * The parts of the galaxy where no star stands: the research station, the fuel tanks and the machines' reactors
  * with their labels, and the parts `covered` by the map's own panels.
  */
 export function galaxyKeepOuts(size: Size, covered: readonly Rect[], machines: MachineColumn | null = null, fuel: FuelColumn | null = null): Rect[] {
@@ -822,19 +822,22 @@ export function starRadius(live: number): number {
 // Machines ------------------------------------------------------------------------------------------
 
 /** The widest machine label, in pixels; MapView's CSS keeps it to this. */
-export const MACHINE_LABEL_WIDTH_PX = 150;
-/** A machine label's height in pixels: its name and its status in a wide world, its name alone in a tall one. */
+export const MACHINE_LABEL_WIDTH_PX = 180;
+/** A machine label's height in pixels: its name and what is free in a wide world, its name alone in a tall one. */
 const MACHINE_LABEL_HEIGHT_PX = { wide: 34, tall: 20 } as const;
 /** The line over the column that tells the machines' config could not be read, in pixels. */
 export const MACHINE_NOTE_PX = { width: 280, height: 20 } as const;
-/** The power station's art is wider than tall by this ratio. */
-const MACHINE_ASPECT = 170 / 256;
+/** The reactor with its rings is round: as tall as it is wide. */
+const MACHINE_ASPECT = 1;
 /** World units between the column's right side and the world's edge, between a station and its label, and between rows. */
 const MACHINE_EDGE = 20;
 const MACHINE_GAP = 6;
 const MACHINE_ROW_GAP = 10;
 
-/** What the column knows of a machine: its id, and the name and status its label shows. */
+/**
+ * What the column knows of a machine: its id, and the name and second line its label shows, what is free or why nothing
+ * is known; a dot before each free resource counts as one character of the line.
+ */
 export interface MachineShape {
   id: string;
   name: string;
@@ -842,8 +845,8 @@ export interface MachineShape {
 }
 
 /**
- * A machine's label in pixels, from its text: the name, and in a wide world the status under it, at most
- * MACHINE_LABEL_WIDTH_PX wide, where a long status ends with an ellipsis.
+ * A machine's label in pixels, from its text: the name, and in a wide world the second line under it, at most
+ * MACHINE_LABEL_WIDTH_PX wide, where a long line ends with an ellipsis.
  */
 export function machineLabelSize(machine: MachineShape, withStatus: boolean): Size {
   const text = Math.max(machine.name.length * 7.4, withStatus ? machine.status.length * 6.4 : 0);
@@ -853,7 +856,7 @@ export function machineLabelSize(machine: MachineShape, withStatus: boolean): Si
   };
 }
 
-/** The power stations of the machines: one column along the right edge of the galaxy. */
+/** The machines' reactors: one column along the right edge of the galaxy. */
 export interface MachineColumn {
   places: Map<string, Point>;
   /** Each label's size in pixels: see machineLabelSize. */
@@ -876,7 +879,7 @@ export function machineSpan(size: Size, covered: readonly Rect[] = defaultCovere
 }
 
 /**
- * Puts a power station for each machine, in the order given, in one column along the right edge of the world, evenly
+ * Puts a reactor for each machine, in the order given, in one column along the right edge of the world, evenly
  * over the part of it no panel covers (see machineSpan), each with its label on its left at the height of its centre. A
  * row is as tall as the station or its label, whichever is taller. A long column draws its stations smaller, down to
  * MACHINE_MIN_SIZE, and then stays as it is: that is its limit. `note` reserves a line over the column for a broken

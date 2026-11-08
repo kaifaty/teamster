@@ -6,7 +6,7 @@ import { ADMIRAL_NOTE } from "../lib/accounts";
 import { formatClock, formatDuration, formatUntil } from "../lib/format";
 import { loadJson, saveJson } from "../lib/storage";
 import { EXECUTORS, PHASES, problemLabel, shipLine, taskTitle } from "../lib/labels";
-import { dataAge, errorLabel, statusLevel, statusText } from "../lib/machines";
+import { dataAge, errorLabel, freeItems, machineRings, statusLevel, statusText, type FreeItem, type Rings } from "../lib/machines";
 import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
 import fuelCell from "./art/fuel-cell.png";
@@ -51,13 +51,14 @@ import ResearchPanel from "./ResearchPanel.vue";
 import { isReflection, research, shortDate } from "./research";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
 import { replayExits, replayFleet } from "./replay";
-import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type ShipEntry, type TankMark } from "./scene";
+import { RINGS } from "./palette";
+import { FLIGHT_SECONDS, createFleetScene, type FleetScene, type MachineMark, type ShipEntry, type TankMark } from "./scene";
 import { useReplay } from "./useReplay";
 
 /** `machine`: the machine whose card is open over the map, or null. */
 const props = defineProps<{ board: Board; active: boolean; machine?: string | null }>();
 /**
- * `machine`: a machine's power station was clicked, with the label to give the focus back to; `panel`: the map opened a
+ * `machine`: a machine's reactor was clicked, with the label to give the focus back to; `panel`: the map opened a
  * task's card or the research station's panel, which replace the machine's card.
  */
 const emit = defineEmits<{ board: []; machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
@@ -278,21 +279,25 @@ const STATION_TEXT: Record<Place, { name: string; note: string }> = {
 /** Where a label stands in the world; the camera's --tx, --ty and --zoom on the overlay turn it into pixels. */
 const at = (x: number, y: number) => ({ "--x": Math.round(x), "--y": Math.round(y) });
 
-// Machines stand as power stations along the right edge. They are the board's own and stay live in a replay and a
+// Machines stand as reactors along the right edge. They are the board's own and stay live in a replay and a
 // scenario: the machines' past is not recorded.
 const machinesData = computed(() => props.board.state.value.machines ?? null);
-let lastMachines: { id: string; status: Machine["status"] }[] = [];
-const machineMarks = computed(() => {
-  const next = (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, status: machine.status }));
-  if (JSON.stringify(next) === JSON.stringify(lastMachines)) return lastMachines;
-  lastMachines = next;
-  return next;
-});
+const machineMarks = computed(
+  steady<MachineMark[]>(() => (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, status: machine.status, rings: machineRings(machine.metrics) }))),
+);
+/** What a machine's label tells under its name: what is free, ring by ring; why nothing is known when it is offline. */
+function freeOf(machine: Machine): FreeItem[] {
+  return machine.status === "offline" || machine.status === "unknown" ? [] : freeItems(machine.metrics);
+}
 const machineNote = computed(() => machinesData.value?.config_error || null);
 // What the labels show, so that the column knows their sizes; the same list while it does not change.
 let lastShapes: MachineShape[] = [];
 const machineShapes = computed(() => {
-  const next = (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, name: machine.name, status: statusText(machine) }));
+  const next = (machinesData.value?.items ?? []).map((machine) => {
+    const free = freeOf(machine);
+    // A dot before each free resource counts as one character of the line.
+    return { id: machine.id, name: machine.name, status: free.length ? free.map((item) => `● ${item.text}`).join(" ") : statusText(machine) };
+  });
   if (JSON.stringify(next) === JSON.stringify(lastShapes)) return lastShapes;
   lastShapes = next;
   return next;
@@ -437,16 +442,36 @@ const machineLabels = computed(() => {
     // A failed probe that has not yet made the machine offline, and data that is not fresh: in the title, as the card has them.
     const mark = machine.error && machine.status !== "offline" ? `⚠ ${errorLabel(machine.error)}` : null;
     const extra = [mark, dataAge(machine, now.value)].filter(Boolean).join(" · ") || null;
+    const rings = machineRings(machine.metrics);
+    const free = freeOf(machine).map((item) => ({ ...item, color: RINGS[item.key], level: ringLevel(rings, item.key) }));
     return [{
       machine,
       status,
+      free,
       level: statusLevel(machine.status) ?? "muted",
       showStatus: column.status,
-      title: [machine.role ? `${machine.name} · ${machine.role}` : machine.name, status, extra].filter(Boolean).join("\n"),
+      title: [machine.role ? `${machine.name} · ${machine.role}` : machine.name, status, freeTitle(free), RING_NOTE, extra].filter(Boolean).join("\n"),
       style: at(anchor.x, anchor.y),
     }];
   });
 });
+/** How pressing the ring of a free resource is, for the colour of its figure: none when calm. */
+function ringLevel(rings: Rings, key: FreeItem["key"]): "warn" | "bad" | null {
+  const level = rings[key]?.level;
+  return level === "warn" || level === "bad" ? level : null;
+}
+/** "Свободно: 28 ядер, памяти 24 ГБ, видеопамяти 8 ГБ" for a label's title. */
+function freeTitle(free: readonly FreeItem[]): string | null {
+  if (!free.length) return null;
+  const words: Record<FreeItem["key"], (text: string) => string> = {
+    cpu: (text) => text,
+    memory: (text) => `памяти ${text}`,
+    gpu: (text) => (text.endsWith("%") ? `GPU ${text}` : `видеопамяти ${text}`),
+  };
+  return `Свободно: ${free.map((item) => words[item.key](item.text)).join(", ")}`;
+}
+const RING_NOTE = "Кольца снаружи внутрь: CPU, память, GPU; дуга — занято";
+
 const machineNoteStyle = computed(() => {
   const note = machineColumn.value?.note;
   return note ? at(note.x, note.y) : null;
@@ -1091,7 +1116,10 @@ onBeforeUnmount(() => {
               @click="openMachine(label.machine.id, $event.currentTarget as HTMLElement)"
             >
               <span class="m-name">{{ label.machine.name }}</span>
-              <span v-if="label.showStatus" class="m-status" :class="label.level">{{ label.status }}</span>
+              <span v-if="label.showStatus && label.free.length" class="m-free num">
+                <span v-for="item in label.free" :key="item.key" class="m-item" :class="item.level"><i class="m-dot" :style="{ background: item.color }" aria-hidden="true" />{{ item.text }}</span>
+              </span>
+              <span v-else-if="label.showStatus" class="m-status" :class="label.level">{{ label.status }}</span>
             </button>
           </div>
           <p v-if="machineNoteStyle" class="machine-note" :style="machineNoteStyle" :title="machineNote ?? ''">
@@ -1668,7 +1696,7 @@ onBeforeUnmount(() => {
 }
 
 /*
- * A machine's label on the left of its power station, at the height of its centre. The status takes the board's level
+ * A machine's label on the left of its reactor, at the height of its centre. The status takes the board's level
  * colours at their dark values: the sky is dark in both themes. The line about a broken config stands over the column.
  */
 .machine,
@@ -1689,7 +1717,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: flex-end;
   box-sizing: border-box;
-  max-width: 150px;
+  max-width: 180px;
   margin: 0;
   padding: 1px 7px;
   border: 1px solid rgba(214, 170, 96, 0.28);
@@ -1755,6 +1783,37 @@ onBeforeUnmount(() => {
 
 .m-status.muted {
   color: var(--muted);
+}
+
+/* What is free on the machine, each figure after a dot of its ring's colour; gold or red while its ring is pressed. */
+.m-free {
+  display: flex;
+  gap: 7px;
+  max-width: 100%;
+  overflow: hidden;
+  color: #c9c1b0;
+}
+
+.m-item {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+}
+
+.m-item.warn {
+  color: var(--warn);
+}
+
+.m-item.bad {
+  color: var(--bad);
+}
+
+.m-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
 }
 
 .machine-note {
