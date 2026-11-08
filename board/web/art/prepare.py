@@ -32,6 +32,7 @@ SPRITES = {
     "escort": ("key", 96),
     "station-command": ("key", 384),
     "station-research": ("key", 384),
+    "station-power": ("key", 256),
     "gate": ("key", 320),
     "depot": ("key", 224),
     "planet-yard": ("ball", 448),

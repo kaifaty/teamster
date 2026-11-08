@@ -105,7 +105,8 @@ function open(slug: string) {
   selected.value = slug;
 }
 
-// The machine card works on both tabs; it and the task card replace each other on the board.
+// The machine card works on both tabs; it and the task card replace each other on the board, and on the map it and the
+// map's own panels do.
 const machineId = ref<string | null>(null);
 const selectedMachine = computed(
   () => board.state.value.machines?.items.find((machine) => machine.id === machineId.value) ?? null,
@@ -230,7 +231,9 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
+    <!-- On the map the machines stand in the galaxy as power stations. -->
     <MachinesStrip
+      v-show="view === 'board'"
       :machines="board.state.value.machines"
       :now="now"
       :collapsed="machinesCollapsed"
@@ -277,7 +280,17 @@ onBeforeUnmount(() => {
     />
 
     <template v-if="view === 'map' || MapView">
-      <component :is="MapView" v-if="MapView" v-show="view === 'map'" :board="board" :active="view === 'map'" @board="view = 'board'" />
+      <component
+        :is="MapView"
+        v-if="MapView"
+        v-show="view === 'map'"
+        :board="board"
+        :active="view === 'map'"
+        :machine="machineId"
+        @board="view = 'board'"
+        @machine="openMachine"
+        @panel="machineId = null"
+      />
       <p v-else-if="mapError" class="map-note">
         Не удалось загрузить карту. <a href="#" @click.prevent="loadMap">Повторить</a> ·
         <a href="#" @click.prevent="view = 'board'">Открыть доску</a>
