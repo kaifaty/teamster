@@ -84,6 +84,8 @@ def account_rpc(account, cancelled=lambda: False):
                             msg = json.loads(line)
                         except ValueError:
                             continue
+                        if not isinstance(msg, dict):
+                            raise RPCError(f"unexpected app-server response: {type(msg).__name__}")
                         if "id" in msg:
                             replies[msg["id"]] = msg
                 reply = replies.pop(wanted)
@@ -119,13 +121,20 @@ def account_read(account, cancelled=lambda: False):
     try:
         with account_rpc(account, cancelled) as call:
             result = call("account/read", {})
+            if not isinstance(result, dict):
+                raise RPCError("unexpected account/read response")
             if result["account"] is None:
                 info["logged_in"] = False
                 return info
             info.update(logged_in=True, account=result["account"],
                         account_id=(result.get("workspaceRouting") or {}).get("chatgptAccountId"))
             result = call("account/rateLimits/read", None)
-            info.update(limits=normalize_limits(result.get("rateLimits") or {}),
+            if not isinstance(result, dict):
+                raise RPCError("unexpected account/rateLimits/read response")
+            limits = result.get("rateLimits")
+            if limits is not None and not isinstance(limits, dict):
+                raise RPCError("unexpected account/rateLimits/read response")
+            info.update(limits=normalize_limits(limits or {}),
                         reset_credits=result.get("rateLimitResetCredits") or {},
                         ordinary=result.get("ordinaryUsageAllowed"),
                         account_id=result.get("accountId") or info.get("account_id"))

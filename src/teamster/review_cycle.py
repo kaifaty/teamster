@@ -171,6 +171,8 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
                     break
                 reviewer = reviewers.get(reviewer.fallback)
                 st["review_account"] = None
+            if outcome == "failed" and reviewer is not reviewers.from_entry(st) and st.get("error"):
+                st["error"] = f"Review fallback to {reviewer.name} failed: {st['error']}"
             reviews = [entry for entry in st.get("reviews", [])[start:] if not entry.get("unavailable")]
             outcome = task_state.stop_outcome(st, stopped) or st["outcome"]
             result = reviews[-1].get("result") if reviews else None

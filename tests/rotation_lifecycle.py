@@ -1669,6 +1669,27 @@ worker.notifications.reap_notifications = reap
                     self.assertFalse(info.get("error"))
         self.assertFalse(self.trace())
 
+    def test_account_read_handles_non_object_responses(self):
+        worker = self.worker()
+        account = {"name": "main", "home": str(self.home)}
+        logged_in = {"account": {"type": "chatgpt"}}
+        cases = (("account-null", [None], "unexpected account/read response"),
+                 ("account-list", [[]], "unexpected account/read response"),
+                 ("quota-null", [logged_in, None], "unexpected account/rateLimits/read response"),
+                 ("quota-list", [logged_in, []], "unexpected account/rateLimits/read response"),
+                 ("limits-list", [logged_in, {"rateLimits": []}], "unexpected account/rateLimits/read response"),
+                 ("limits-null", [logged_in, {"rateLimits": None}], None))
+        for name, replies, error in cases:
+            with self.subTest(case=name):
+                with mock.patch.object(worker.accounts, "account_rpc") as account_rpc:
+                    account_rpc.return_value.__enter__.return_value.side_effect = replies
+                    info = worker.accounts.account_read(account)
+                self.assertIs(info["logged_in"], None if error else True)
+                self.assertEqual(info.get("error"), error)
+                if error is None:
+                    self.assertEqual(info["limits"], {"reached": None, "credits": {}})
+        self.assertFalse(self.trace())
+
     def test_unknown_account_rpc_status_sleeps_then_recovers_without_requiring_login(self):
         self.env["CODEX_TASK_ACCOUNT_RETRY_SECONDS"] = "4"
         self.configure()

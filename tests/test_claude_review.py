@@ -836,10 +836,10 @@ class ClaudeReviewTests(RotationTestCase):
                 self.claude_fixture_path.with_suffix(".count").unlink(missing_ok=True)
                 self.claude_trace_path.unlink(missing_ok=True)
                 self.trace_path.unlink(missing_ok=True)
-                self.env["CODEX_FAKE_RPC_FAILURE"] = "null"
+                self.env.update(CODEX_FAKE_RPC_FAILURE="null", CODEX_TASK_ACCOUNT_RETRY_SECONDS="0.01")
                 slug = "codex-status-required-" + executor
                 self.start(slug, "--executor", executor, "--reviewer", reviewer, "--review", "--no-push")
-                self.cli("wait", slug)
+                self.cli("wait", slug, "--through-sleep", "--timeout", "30", timeout=45)
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "failed")
                 self.assertIsNone(state["pid"])
