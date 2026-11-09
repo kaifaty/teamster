@@ -40,10 +40,10 @@ export const SPACE = {
  */
 export const RINGS = { cpu: "#9fd0ff", memory: "#5fd6c8", gpu: "#c39bff" } as const;
 
-/** `escort` tints the reviewer's drone: the family's hue, light enough that the art's paint still shows. */
-export const FLEET: Record<Family, { hull: string; engine: string; escort: string }> = {
-  codex: { hull: "#7ea6f5", engine: "#ffb648", escort: "#b4ccff" },
-  claude: { hull: "#e59472", engine: "#74d6e8", escort: "#ffc2a6" },
+/** `hull` also colours the inspection's scanner over a ship that the family reviews. */
+export const FLEET: Record<Family, { hull: string; engine: string }> = {
+  codex: { hull: "#7ea6f5", engine: "#ffb648" },
+  claude: { hull: "#e59472", engine: "#74d6e8" },
 };
 
 /**

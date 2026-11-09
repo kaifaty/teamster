@@ -256,7 +256,9 @@ function phaseText(task: TaskSummary): string {
       return problemLabel(task) ?? "нужно внимание";
     default: {
       const ticking = task.alive && task.phase_started_at !== null;
-      return ticking ? `${PHASES[task.phase]} · ${formatDuration(mapNow.value - task.phase_started_at!)}` : PHASES[task.phase];
+      // A ship back from the inspection tells how many findings it fixes, as its red marks do.
+      const phase = task.phase === "fix" && task.findings_left > 0 ? `${PHASES.fix} · ${task.findings_left} замеч.` : PHASES[task.phase];
+      return ticking ? `${phase} · ${formatDuration(mapNow.value - task.phase_started_at!)}` : phase;
     }
   }
 }

@@ -163,7 +163,7 @@ export type PlateSide = "below" | "above" | "left";
 export const STATIONS: Record<Place, { orbit: number; angle: number; radius: number; side: number; plate: PlateSide; berths: number }> = {
   yard: { orbit: 0.9, angle: 180, radius: 120, side: 0, plate: "below", berths: 10 },
   range: { orbit: 0.74, angle: 238, radius: 84, side: 270, plate: "below", berths: 6 },
-  inspection: { orbit: 0.64, angle: 320, radius: 116, side: 270, plate: "below", berths: 6 },
+  inspection: { orbit: 0.64, angle: 320, radius: 138, side: 180, plate: "above", berths: 6 },
   gate: { orbit: 0.46, angle: 62, radius: 70, side: 0, plate: "below", berths: 5 },
   roadstead: { orbit: 0.3, angle: 170, radius: 54, side: 120, plate: "above", berths: 5 },
   cryo: { orbit: 0.97, angle: 345, radius: 88, side: 90, plate: "above", berths: 6 },
@@ -258,7 +258,43 @@ export interface Parking {
  * name and turns off it until its first ship clears the name's room, so that the ships and the count stay clear of it.
  */
 export function parkingOf(place: Place, sizes: readonly number[], frame: SystemFrame): Parking {
-  const { radius, side, berths, plate } = stationOf(place, frame);
+  const { berths } = stationOf(place, frame);
+  if (place !== "inspection") return arcParking(place, sizes, berths, frame);
+  // The checkpoint fills its lanes first; the rest queue on its side.
+  const lanes = lanesOf(frame).slice(0, sizes.length);
+  const queue = arcParking(place, sizes.slice(lanes.length), berths - lanes.length, frame);
+  return { berths: [...lanes, ...queue.berths], count: queue.count };
+}
+
+/**
+ * The inspection is a checkpoint: an open frame, taller than wide, whose lanes run across it one above another. Its
+ * ships stand in the lanes nose to the exit while they are inspected, and the rest queue before its entrance, on its
+ * left, with its name over it like a sign. The station's
+ * radius is half the art's height, mast to mast. `inside` is the frame's open middle between its scanner heads, as
+ * shares of that radius, a little inside them, and `body` the frame's girders without the masts; a lane is at least
+ * `lane` world units high.
+ */
+export const CHECKPOINT = { inside: { x: 0.33, y: 0.68 }, body: { x: 0.57, y: 0.87 }, lane: 60 } as const;
+
+/** Whether `point` falls within the girders of the inspection's frame, masts left out: see CHECKPOINT. */
+export function inCheckpoint(point: Point, frame: SystemFrame): boolean {
+  const station = stationAt("inspection", frame);
+  const { radius } = stationOf("inspection", frame);
+  return Math.abs(point.x - station.x) <= radius * CHECKPOINT.body.x && Math.abs(point.y - station.y) <= radius * CHECKPOINT.body.y;
+}
+
+/** The lanes of the inspection's frame, as offsets from its centre, top first: as many as its open middle holds. */
+export function lanesOf(frame: SystemFrame): Point[] {
+  const height = 2 * stationOf("inspection", frame).radius * CHECKPOINT.inside.y;
+  const count = Math.max(1, Math.floor(height / CHECKPOINT.lane));
+  const pitch = height / count;
+  return Array.from({ length: count }, (_, index) => ({ x: 0, y: -height / 2 + pitch * (index + 0.5) }));
+}
+
+/** The berths on an arc on the station's side for `sizes`, at most `berths` of them: see parkingOf. */
+function arcParking(place: Place, sizes: readonly number[], berths: number, frame: SystemFrame): Parking {
+  const { radius, side, plate } = stationOf(place, frame);
+  if (sizes.length === 0) return { berths: [], count: null };
   const crowded = sizes.length > berths;
   const shown = crowded ? berths - 1 : sizes.length;
   const items = crowded ? [...sizes.slice(0, shown), COUNT_ROOM] : [...sizes];
@@ -311,17 +347,18 @@ export function parkingOf(place: Place, sizes: readonly number[], frame: SystemF
 
 /**
  * The order of a station's ships on its berths: a ship in trouble first, then by arrival; the selected ship never
- * waits behind the count.
+ * waits behind the count. At the inspection the ships under review come first, so that they get its lanes.
  */
 export function parkingOrder<T>(
   ships: readonly T[],
-  keyOf: (ship: T) => { slug: string; beacon: boolean; slot: number },
+  keyOf: (ship: T) => { slug: string; beacon: boolean; slot: number; placeWorking?: boolean },
   place: Place,
   selected: string | null,
 ): T[] {
   const order = [...ships].sort((a, b) => {
     const [x, y] = [keyOf(a), keyOf(b)];
-    return Number(y.beacon) - Number(x.beacon) || x.slot - y.slot;
+    const inspected = place === "inspection" ? Number(!!y.placeWorking) - Number(!!x.placeWorking) : 0;
+    return inspected || Number(y.beacon) - Number(x.beacon) || x.slot - y.slot;
   });
   const { berths } = STATIONS[place];
   const index = order.findIndex((ship) => keyOf(ship).slug === selected);

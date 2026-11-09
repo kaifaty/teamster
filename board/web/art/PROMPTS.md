@@ -9,17 +9,15 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 2. planet-yard (square, 1024x1024): One whole planet centred on a flat pure black background, with a clear margin around it. A steel-grey industrial world, its surface covered in dark plates, trenches and a grid of tiny warm city lights on the night side. Lit from the upper left, with a soft terminator and a thin pale blue atmosphere rim.
 
-3. planet-inspection (square, 1024x1024): One whole planet centred on a flat pure black background, with a clear margin around it. A violet gas giant with soft swirling bands of plum, lilac and dusty rose, and one large pale storm. Lit from the upper left, with a soft terminator and a thin glowing atmosphere rim.
+3. planet-cryo (square, 1024x1024): One whole planet centred on a flat pure black background, with a clear margin around it. A frozen pale blue world with cracked ice plains, white polar caps and faint turquoise fissures. Lit from the upper left, with a soft terminator and a thin cold atmosphere rim.
 
-4. planet-cryo (square, 1024x1024): One whole planet centred on a flat pure black background, with a clear margin around it. A frozen pale blue world with cracked ice plains, white polar caps and faint turquoise fissures. Lit from the upper left, with a soft terminator and a thin cold atmosphere rim.
+4. ship-blue (square, 1024x1024): One small spacecraft seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A narrow angular dart with swept wings, cobalt blue hull plates, dark steel panels, a pale cockpit and two glowing engine nozzles at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
 
-5. ship-blue (square, 1024x1024): One small spacecraft seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A narrow angular dart with swept wings, cobalt blue hull plates, dark steel panels, a pale cockpit and two glowing engine nozzles at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
+5. ship-copper (square, 1024x1024): One small spacecraft seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A rounded disc-shaped hull with a short prow and twin rear engine pods, warm copper and terracotta plating, cream panels and a pale cockpit. Pre-rendered look with metallic highlights. No shadow on the background.
 
-6. ship-copper (square, 1024x1024): One small spacecraft seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A rounded disc-shaped hull with a short prow and twin rear engine pods, warm copper and terracotta plating, cream panels and a pale cockpit. Pre-rendered look with metallic highlights. No shadow on the background.
+6. flagship (square, 1024x1024): One large capital ship seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A long heavy cruiser with a stepped superstructure, copper and dark steel armour, rows of small lit windows and a cluster of large engines at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
 
-7. flagship (square, 1024x1024): One large capital ship seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A long heavy cruiser with a stepped superstructure, copper and dark steel armour, rows of small lit windows and a cluster of large engines at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
-
-8. ui-frame (landscape, 1536x1024): A flat front view of an empty rectangular control-panel frame made of brushed dark metal, with riveted corner brackets, bevelled edges and small warm amber indicator lamps. The frame is symmetrical, runs close to the edges of the image, and its whole centre is a plain flat near-black area. No screens, no buttons with symbols, no text.
+7. ui-frame (landscape, 1536x1024): A flat front view of an empty rectangular control-panel frame made of brushed dark metal, with riveted corner brackets, bevelled edges and small warm amber indicator lamps. The frame is symmetrical, runs close to the edges of the image, and its whole centre is a plain flat near-black area. No screens, no buttons with symbols, no text.
 
 1. sun (square, 1024x1024): One whole star centred on a flat pure black background, with a clear margin around it. A blazing amber and gold sun with a granular boiling surface, darker sunspots, thin arcing prominences along the rim and a soft fiery corona fading into the black. Evenly lit from within, with no dark side.
 
@@ -40,11 +38,15 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 9. station-yard (square, 1024x1024): One large orbital shipyard seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A massive square dry dock made of an open girder framework: a thick armoured backbone along its left side with three long parallel slipways reaching out to the right, open at their right ends. Two slipways hold half-built ship hulls with bare ribs and patches of copper plating; the third slipway is empty. Two heavy gantry cranes bridge the slipways. Bright white welding sparks and amber floodlights shine on the hulls, and small warm lamps line the girders. Dark steel and copper plating; the open spaces between the girders show the flat magenta background. Pre-rendered look with metallic highlights. No shadow on the background.
 
+10. station-inspection (portrait, 1024x1536): One orbital inspection checkpoint seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A tall open frame shaped like a rectangle with cut corners, about two thirds as wide as it is tall and filling most of the image's height, built of heavy dark steel girders with pale brass trim. Along the inner edge of its left and right girders sit rows of small scanner heads with glowing violet lenses that face into the frame. Small amber lamps mark the four cut corners, and two short antenna masts stand out from the middle of the top and the bottom. The whole inside of the frame is empty and shows the same flat magenta background. Pre-rendered look with metallic highlights. No shadow on the background.
+
+The inspection is that checkpoint: the ships under review stand in lanes across its open middle. `CHECKPOINT` in `src/map/layout.ts` holds the share of the art the open middle takes, measured on this picture; a new picture needs it measured again.
+
 The shipyard is a dock over the limb of the system's home world; `planet-yard` is that home world for a repository without its own planet. A single new picture is prepared alone: `python3 art/prepare.py SOURCE_DIR --only station-yard`.
 
-## Ship classes and convoys
+## Ship classes
 
-Same STYLE as the first list. Frigates and cruisers carry tasks with more reasoning effort; the escort flies with a ship under review.
+Same STYLE as the first list. Frigates and cruisers carry tasks with more reasoning effort.
 
 1. ship-blue-frigate (square, 1024x1024): One medium warship seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A long angular frigate with swept forward wings and a spine of armour plates, cobalt blue hull, dark steel panels, a pale cockpit and three glowing engine nozzles at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
 
@@ -53,8 +55,6 @@ Same STYLE as the first list. Frigates and cruisers carry tasks with more reason
 3. ship-copper-frigate (square, 1024x1024): One medium warship seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A rounded oval hull with a long prow, side engine pods on short pylons, warm copper and terracotta plating, cream panels and a pale cockpit. Pre-rendered look with metallic highlights. No shadow on the background.
 
 4. ship-copper-cruiser (square, 1024x1024): One heavy battlecruiser seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A broad rounded hull like a fat teardrop, thick copper and terracotta armour rings, cream superstructure domes and four large glowing engines at the tail. Pre-rendered look with metallic highlights. No shadow on the background.
-
-5. escort (square, 1024x1024): One tiny escort drone seen exactly from above, nose pointing straight up, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A compact round body with a single lens eye, two small stubby wings and one glowing engine, pale steel and violet paint. Pre-rendered look with metallic highlights. No shadow on the background.
 
 ## Machines
 

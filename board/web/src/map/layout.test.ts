@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HULL_SIZE } from "./fleet";
 import { PLACES } from "./placement";
 import {
-  COUNT_ROOM, MAX_ZOOM, ROUTE, STATIONS, SUN_RADIUS, backdropOf, clampCamera, defaultCovered, fitCamera, freeView, parkingOf, parkingOrder,
+  CHECKPOINT, COUNT_ROOM, MAX_ZOOM, ROUTE, inCheckpoint, lanesOf, STATIONS, SUN_RADIUS, backdropOf, clampCamera, defaultCovered, fitCamera, freeView, parkingOf, parkingOrder,
   homeWorld, plateAt, plateRoom, skyChoices, stationOf, systemWorldSize, toolbarBand, columnSpan,
   TANK_ASPECT, TANK_MIN_SIZE, TANK_SIZE, BADGE_RISE, fuelColumnRect, fuelPositions, fuelRoom, tankGear, tankLabelSize, type TankShape,
   RESEARCH_SIZE, LABEL_MAX_WIDTH, MACHINE_LABEL_WIDTH_PX, MACHINE_MIN_SIZE, MACHINE_SIZE, machineColumnRect, machineLabelAnchor, machinePositions, machineRoom, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
@@ -179,14 +179,15 @@ describe("system", () => {
 
   it("parks full stations clear of every station, the sun, the names, the world's edge and each other", () => {
     for (const { size, frame } of frames) {
-      const ships: { x: number; y: number; r: number; place: string }[] = [];
+      const ships: { x: number; y: number; r: number; place: string; lane: boolean }[] = [];
       for (const place of PLACES) {
         const station = stationAt(place, frame);
         const hulls = place === "command" ? [HULL_SIZE.flagship] : [HULL_SIZE.cruiser, HULL_SIZE.light, HULL_SIZE.frigate];
         const sizes = Array.from({ length: 20 }, (_, slot) => hulls[slot % hulls.length]!);
         const { berths, count } = parkingOf(place, sizes, frame);
-        const items = [...berths.map((berth, slot) => ({ ...berth, size: sizes[slot]! })), { ...count!.at, size: COUNT_ROOM }];
-        for (const item of items) ships.push({ x: station.x + item.x, y: station.y + item.y, r: item.size * 0.4, place });
+        const lanes = place === "inspection" ? lanesOf(frame).length : 0;
+        const items = [...berths.map((berth, slot) => ({ ...berth, size: sizes[slot]!, lane: slot < lanes })), { ...count!.at, size: COUNT_ROOM, lane: false }];
+        for (const item of items) ships.push({ x: station.x + item.x, y: station.y + item.y, r: item.size * 0.4, place, lane: item.lane });
       }
       const where = (ship: (typeof ships)[number]) => `${size.width}x${size.height} ${ship.place} at ${Math.round(ship.x)},${Math.round(ship.y)}`;
       for (const ship of ships) {
@@ -197,6 +198,13 @@ describe("system", () => {
         expect(Math.hypot(ship.x - frame.cx, ship.y - frame.cy), where(ship)).toBeGreaterThan(SUN_RADIUS * 1.3 + ship.r);
         for (const place of PLACES) {
           const station = stationAt(place, frame);
+          if (ship.lane && place === ship.place) {
+            // A ship in a lane of the checkpoint stands inside its open middle, between the scanners.
+            const radius = stationOf(place, frame).radius;
+            expect(Math.abs(ship.x - station.x) + ship.r, `${where(ship)} across the frame`).toBeLessThanOrEqual(radius * CHECKPOINT.inside.x);
+            expect(Math.abs(ship.y - station.y) + ship.r, `${where(ship)} along the frame`).toBeLessThanOrEqual(radius * CHECKPOINT.inside.y);
+            continue;
+          }
           expect(Math.hypot(ship.x - station.x, ship.y - station.y), `${where(ship)} near ${place}`).toBeGreaterThan(stationOf(place, frame).radius + ship.r);
           const plate = plateRect(place, frame);
           const covers = ship.x + ship.r > plate.x0 && ship.x - ship.r < plate.x1 && ship.y + ship.r > plate.y0 && ship.y - ship.r < plate.y1;
@@ -255,6 +263,40 @@ describe("system", () => {
     expect(order).toHaveLength(ships.length);
     // A selected ship that already has a berth keeps it.
     expect(parkingOrder(ships, key, "range", "s1").map((ship) => ship.slug)).toEqual(parkingOrder(ships, key, "range", null).map((ship) => ship.slug));
+  });
+
+  it("stands the ships under review in the checkpoint's lanes and queues the rest before its entrance", () => {
+    const wide = systemFrame(SYSTEM_SIZES[1]!);
+    const tall = systemFrame(SYSTEM_SIZES[3]!);
+    expect(lanesOf(wide)).toHaveLength(3);
+    expect(lanesOf(tall)).toHaveLength(2);
+    const lanes = lanesOf(wide);
+    // One above another through the middle of the frame, top first.
+    expect(lanes.every((lane) => lane.x === 0)).toBe(true);
+    expect(lanes.map((lane) => lane.y)).toEqual(lanes.map((lane) => lane.y).sort((a, b) => a - b));
+    expect(parkingOf("inspection", [HULL_SIZE.light, HULL_SIZE.cruiser], wide)).toEqual({ berths: lanes.slice(0, 2), count: null });
+    const { berths, radius } = STATIONS.inspection;
+    const crowded = parkingOf("inspection", Array.from({ length: berths + 3 }, () => HULL_SIZE.light), wide);
+    expect(crowded.berths.slice(0, lanes.length)).toEqual(lanes);
+    expect(crowded.berths).toHaveLength(berths - 1);
+    expect(crowded.count!.ships).toBe(4);
+    for (const berth of [...crowded.berths.slice(lanes.length), crowded.count!.at]) expect(berth.x).toBeLessThan(-radius);
+    // The routes hide inside the frame: its lanes are in it, the queue and the masts' tips are not.
+    const station = stationAt("inspection", wide);
+    const at = (point: { x: number; y: number }) => ({ x: station.x + point.x, y: station.y + point.y });
+    expect(lanes.every((lane) => inCheckpoint(at(lane), wide))).toBe(true);
+    expect(crowded.berths.slice(lanes.length).some((berth) => inCheckpoint(at(berth), wide))).toBe(false);
+    expect(inCheckpoint(at({ x: 0, y: -radius }), wide)).toBe(false);
+  });
+
+  it("gives the checkpoint's lanes to the ships under review first, ahead of a ship in trouble", () => {
+    const ships = [
+      { slug: "trouble", beacon: true, slot: 0, placeWorking: false },
+      { slug: "reviewed", beacon: false, slot: 1, placeWorking: true },
+      { slug: "stopped", beacon: false, slot: 2, placeWorking: false },
+    ];
+    expect(parkingOrder(ships, (ship) => ship, "inspection", null).map((ship) => ship.slug)).toEqual(["reviewed", "trouble", "stopped"]);
+    expect(parkingOrder(ships, (ship) => ship, "range", null).map((ship) => ship.slug)).toEqual(["trouble", "reviewed", "stopped"]);
   });
 
   it("draws a phone's stations smaller and parks the yard's ships on its outer side", () => {
