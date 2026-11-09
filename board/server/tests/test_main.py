@@ -140,3 +140,29 @@ def test_plist_program_serves_snapshot(tmp_path, monkeypatch, command):
     with socket.socket() as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("127.0.0.1", port))
+
+
+def test_station_cli_options_and_plist(tmp_path, monkeypatch, capsys):
+    import uvicorn
+
+    clean_environment(monkeypatch, tmp_path / "data")
+    fake = tmp_path / "teamster"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    seen = []
+    monkeypatch.setattr(uvicorn, "run", lambda application, **kwargs: seen.append(application.state.board))
+    board_main.main([])
+    assert seen[-1].actions.value == {"enabled": True, "reason": None}
+    assert seen[-1].actions.command == str(fake)
+    board_main.main(["--teamster", str(fake), "--read-only"])
+    assert seen[-1].settings.read_only is True
+    assert seen[-1].actions.value == {"enabled": False, "reason": "read_only"}
+    board_main.main(["--teamster", str(tmp_path / "absent")])
+    assert seen[-1].actions.value == {"enabled": False, "reason": "no_teamster"}
+    fake.unlink()
+    board_main.main([])
+    assert seen[-1].actions.value == {"enabled": False, "reason": "no_teamster"}
+    board_main.main(["plist", "--teamster", str(fake), "--read-only"])
+    options = plistlib.loads(capsys.readouterr().out.encode())["ProgramArguments"]
+    assert options[-3:] == ["--teamster", str(fake), "--read-only"]

@@ -1,8 +1,9 @@
 # Board data contract (v1)
 
-The board is a read-only, local web view of teamster tasks and Claude Code sessions from the Claude
-desktop app. The server reads existing files and pushes changes over a WebSocket. It never starts,
-stops or changes work, and never writes under either source's home.
+The board is a local web view of teamster tasks and Claude Code sessions from the Claude
+desktop app. The server reads existing files and pushes changes over a WebSocket. Its sole write
+exception is the science station: lesson decisions, replies to reflection tasks and new reflection
+orders run the installed `teamster` command. Ordinary task control remains unavailable.
 
 ## Sources
 
@@ -278,6 +279,11 @@ interface Lesson {             // one row of INDEX.md, in file order
   cue: string;
   status: LessonStatus;        // first word: proposed / accepted / applied / declined, else other
   status_text: string;         // the status column as written
+  title: string | null;        // own archive file's lesson heading
+  lesson: string | null;       // own section's fields, trimmed, ≤ 2000 chars each
+  proposal: string | null;
+  evidence: string | null;     // preserves line breaks, including evidence lists
+  caveats: string | null;
 }
 
 interface ResearchBatch {      // the batch file with the greatest `through:` stamp
@@ -337,6 +343,7 @@ interface ReflectionSchedule {
 }
 
 interface ResearchView {
+  actions: { enabled: boolean; reason: "read_only" | "no_teamster" | null };
   lessons: Lesson[];
   studies: Study[];           // live and recent archived reflect tasks, newest created first, at most 20
   batch: ResearchBatch | null;
@@ -513,6 +520,16 @@ what waits for the next batch, including its planned schedule. Material and less
   at least five cells; cells after the fourth (a `|` inside the text) are joined back into `status_text`.
   Shorter or empty rows are skipped.
   `accepted` means the lead agreed with a lesson but has not applied it yet.
+- Each lesson's `entry` is `<file> <id>`, such as `batch-2026-11-09.md W2`. The five text fields
+  `title`, `lesson`, `proposal`, `evidence` and `caveats` come only from that lesson's own
+  `batch-*.md` or `study-*.md` file in the archive. The first heading of level 2–4 beginning with
+  `<id>.` or `<id> ` opens the section; the next heading of the same or higher level closes it.
+  `title` is the trimmed heading remainder. Fields begin at lines starting with `cue:`, `lesson:`,
+  `evidence:`, `scope:`, `earlier:`, `caveats:` or `proposal:`. A value includes the text after the
+  colon and every following line up to another field or the section's end, preserving line breaks.
+  Values are trimmed and cut to 2000 characters; empty or missing fields, files or sections give `null`.
+  Later files' additions are ignored. Lesson files share the batch file signature cache and 64 KiB
+  read limit, and symbolic links are skipped.
 - `batch`: among the `batch-*.md` files, the one with the greatest stamp on its first `through:` line; a file
   without one ranks lowest. Its `records` are the archived records whose stamp is greater than the next lower
   batch's `through` and at most its own.
@@ -583,10 +600,46 @@ The web model treats reflect tasks and legacy sessions matching `reflection_task
 them from the fleet. `Research.studies` holds the conversations, `waiting` counts studies waiting for a
 reply, and `running` includes both alive studies and legacy sessions. Probes use an alive study's known
 batch repositories when its file matches the current batch; otherwise they retain the pending-then-batch
-fallback. The board only copies commands: `reflectSlug` uses UTC, `reflectCommand` builds orders with
-either repeated `--task` or `--since`/`--repo`, `lessonCommand` builds lesson decisions, `answerText` numbers
-nonempty answers with question text shortened to 80 characters for `sayCommand`, and `transmission` joins
-nonempty commands with ` && `. These helpers never execute commands or write task data.
+fallback.
+
+#### Science station actions
+
+`actions.enabled` is true when the server starts without `--read-only` and an installed `teamster`
+executable is available. `--teamster PATH` selects it; the default is `shutil.which("teamster")` at
+startup, independently of the accounts/report script. Otherwise `actions.reason` is `read_only`
+(taking precedence) or `no_teamster`; an enabled station has `reason: null`.
+
+Only these POST endpoints execute commands:
+
+- `/api/actions/lesson`: `{entry: string, status: "accepted" | "declined" | "applied" | "proposed", note?: string}`
+  runs `teamster lesson <entry> <status>`, adding `--note=<note>` only for a nonempty trimmed note.
+  The trimmed entry must equal a lesson entry in the current view (404 otherwise); entry ≤ 200
+  characters, note ≤ 1000.
+- `/api/actions/say`: `{slug: string, text: string}` runs `teamster say <slug> --file <temporary file>`
+  for a study in `studies`. Unknown slugs get 404; alive or archived studies get 409. Trimmed text
+  must contain 1–8000 characters and is written to the temporary file, never passed as an argv word.
+- `/api/actions/reflect`: `{order?: string, tasks?: string[], since?: string, repos?: string[]}`
+  runs `teamster reflect <slug>`, then repeated `--task T`, `--since S`, repeated `--repo R`, and
+  `--file <temporary file>` for a nonempty trimmed order. Tasks cannot be combined with since or repos
+  (400). Task and repository names match `[A-Za-z0-9._-]{1,100}`, with at most 20 of each; `since` is
+  `[0-9]{1,3}d` or a valid `YYYY-MM-DD` date, and order ≤ 8000 characters. The server chooses
+  `reflect-MMDD-HHMMSS` in UTC, adding `-2`, `-3`, … while a name exists in the configured tasks
+  directory (normally `~/.teamster/tasks`). Successful responses include this `slug`.
+
+All responses are JSON: `{ok: true, output: string, slug?: string}` or `{ok: false, error: string}`.
+Success is 200. `output` is trimmed stdout's last 2000 characters. Invalid input is 400; a nonzero
+command exit is 422, with trimmed stderr's last 2000 characters (stdout if stderr is empty).
+Disabled actions return 403 with `error: "read_only"` or `"no_teamster"`. Commands exceeding 120 seconds
+are killed and awaited, returning 504 with `error: "timeout"`.
+
+Every action requires the existing localhost Host check, exactly one `Origin` matching the request's
+scheme, host and port, `Content-Type: application/json` and `X-Teamster-Board: 1`. A failed check returns
+403 with `error: "forbidden"`; bodies over 64 KiB return 413. The server never sends CORS headers.
+Commands run one at a time under a shared lock, outside the event loop, as argv lists without a shell,
+with stdin closed, inherited environment and the user's home as working directory. Temporary files are
+deleted after execution. Each execution logs one line with its route, argv (without say/order text) and
+exit code. Success invalidates the research view, so the next GET sees changes immediately regardless
+of `BOARD_RESEARCH_SECONDS`. There are no stop, clean, verdict or merge endpoints for ordinary tasks.
 
 ## REST
 
@@ -612,6 +665,7 @@ nonempty commands with ` && `. These helpers never execute commands or write tas
 - `GET /api/tasks/{slug}/files/{name}` with `name` in `brief`, `last`, `review`, `check` → `text/plain;
   charset=utf-8`, at most the last 256 KiB; 404 when missing or for a session. No other names, no paths.
 - `GET /api/research` → `ResearchView`; other methods get 405.
+- `POST /api/actions/lesson`, `/api/actions/say`, `/api/actions/reflect` → the science station actions above.
 - `GET /api/constellations` → `{"constellations": [{"name": string, "repos": string[]}], "error": string | null}`.
   At most 32 constellations; a name is 1 to 60 characters and unique; `repos` lists 1 to 64 repository names or
   patterns, each at most 100 characters without slashes, where `*` stands for any run of characters. Names and
