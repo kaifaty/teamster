@@ -98,8 +98,8 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
 - «Ядро станции»: the station inside a chronometer ring that fills from the last planned run to the next one
   (`schedule` in `GET /api/research`, read from the Claude desktop scheduled task; `board/web/src/map/schedule.ts` puts the
   cron into words), a teal sweep while a run works, the last run and batch, «Внеочередной разбор» and «Вопрос к архиву».
-- «Приказ»: a new study — an extra batch, named tasks, or a question to the archive over a period or projects.
-  «Отдать приказ» starts it, and its channel opens in the comms room; «Команда» shows the equivalent `teamster reflect`.
+- «Приказ», under the comms room: a new study — an extra batch, named tasks, or a question to the archive over a period
+  or projects. «Отдать приказ» starts it, and its channel opens in the comms room above; «Команда» shows the equivalent `teamster reflect`.
 - «Экипаж»: the analyst (at work, waiting for your answer, stopped by a failed turn, or free; a click opens its channel) and
   the archive keeper with the hold's count.
 - «Рубка связи»: one channel per study and the open channel's conversation — your order, the analyst's reports with dockets
