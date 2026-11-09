@@ -301,6 +301,7 @@ def create_app(settings=None):
         return {**await asyncio.to_thread(board.research.view), "actions": board.actions.value}
 
     @app.post("/api/actions/lesson")
+    @app.post("/api/actions/implement")
     @app.post("/api/actions/say")
     @app.post("/api/actions/reflect")
     async def action(request: Request):

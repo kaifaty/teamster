@@ -284,6 +284,20 @@ interface Lesson {             // one row of INDEX.md, in file order
   proposal: string | null;
   evidence: string | null;     // preserves line breaks, including evidence lists
   caveats: string | null;
+  implementation: Implementation | null;
+}
+
+interface Implementation {
+  slug: string;               // teamster slug, without the archive timestamp suffix
+  archived: boolean;
+  alive: boolean;             // supervisor PID is alive
+  repo: string;               // repository directory name, as in TaskSummary
+  result_status: string | null; // as in TaskSummary
+  pr: string | null;          // as in TaskSummary
+  questions: string[];       // cargo.questions, at most 20
+  summary: string | null;     // last result's heading or summary, at most 600 chars
+  created: number;
+  updated_at: number;
 }
 
 interface ResearchBatch {      // the batch file with the greatest `through:` stamp
@@ -345,6 +359,7 @@ interface ReflectionSchedule {
 interface ResearchView {
   actions: { enabled: boolean; reason: "read_only" | "no_teamster" | null };
   lessons: Lesson[];
+  repos: { name: string; path: string }[]; // known local git repositories, at most 100
   studies: Study[];           // live and recent archived reflect tasks, newest created first, at most 20
   batch: ResearchBatch | null;
   pending: {
@@ -530,6 +545,16 @@ what waits for the next batch, including its planned schedule. Material and less
   Values are trimmed and cut to 2000 characters; empty or missing fields, files or sections give `null`.
   Later files' additions are ignored. Lesson files share the batch file signature cache and 64 KiB
   read limit, and symbolic links are skipped.
+- `repos`: `state.json`'s `repo` from all live task and archive directories, excluding `kind: "reflect"`
+  and the archive directory itself. Only existing directories with a `.git` directory or file remain.
+  Paths are resolved and deduplicated; `name` is the resolved directory's name. Sort by `name`, then
+  `path`, retaining at most 100. This list is independent of the batch and study age windows.
+- `implementation`: the task with the greatest `created` across live tasks and all archive records whose
+  slug starts with `lesson-` and whose first `brief.md` line matches `^Внедрить урок «([^»]+)»`.
+  The captured text, trimmed at both ends, must equal the lesson's `entry`; otherwise the field is `null`.
+  Archived slugs omit their timestamp suffix. Fields use the same calculation as `TaskSummary` and
+  `cargo.questions`, including PR precedence and string limits. `created` falls back to the state's
+  file mtime when missing; `updated_at` is that mtime. Brief files that are symbolic links are skipped.
 - `batch`: among the `batch-*.md` files, the one with the greatest stamp on its first `through:` line; a file
   without one ranks lowest. Its `records` are the archived records whose stamp is greater than the next lower
   batch's `through` and at most its own.
@@ -561,12 +586,12 @@ order, all messages are sorted by `at`. Lead messages have `status: null`, empty
 and `file: null`. A study waits only while its supervisor is not alive and its last message is an analyst
 message with `status: "needs_decision"`; a later lead reply clears `waiting` immediately.
 
-Material reads records newer than the previous batch's `through`; detecting recent archived studies also
-reads records within the 30-day window. Each `state.json` and `messages.jsonl` is reread only when its mtime
+Material uses records newer than the previous batch's `through`; archived studies use the 30-day window.
+Repository and implementation discovery reads all task states. Each `state.json` and `messages.jsonl` is reread only when its mtime
 or size changes. The view is rebuilt at most once per `BOARD_RESEARCH_SECONDS` (default 30). Invalid text,
 numbers, lists and rows are skipped or treated as missing under the existing field rules; malformed JSON
-states are skipped. Symbolic links are never followed, including task/archive directories and study message
-files. A missing archive leaves material empty and still permits live studies.
+states are skipped. Task/archive directories and study message files that are symbolic links are never
+followed. A missing archive leaves material empty and still permits live studies, repositories and implementations.
 
 `schedule` reads the Claude desktop app's
 `$BOARD_CLAUDE_DESKTOP_DIR/claude-code-sessions/*/*/scheduled-tasks.json` files (desktop directory defaults to
@@ -615,8 +640,31 @@ Only these POST endpoints execute commands:
   runs `teamster lesson <entry> <status>`, adding `--note=<note>` only for a nonempty trimmed note.
   The trimmed entry must equal a lesson entry in the current view (404 otherwise); entry ≤ 200
   characters, note ≤ 1000.
+- `/api/actions/implement`: `{entry: string, repo: string, note?: string}` starts implementation of a lesson.
+  The trimmed entry must equal a current lesson entry (404 otherwise); entry ≤ 200 characters,
+  trimmed note ≤ 4000. Only `proposed` and `accepted` lessons are allowed; other statuses get 409 with
+  `error: "Урок уже внедрён или отклонён"`. `repo` must exactly equal a `repos[].path` (400 otherwise).
+  A lesson with a non-archived implementation gets 409 with `error: "Урок уже внедряется: <slug>"`,
+  even when its supervisor is idle.
+  The slug is `lesson-<id>-MMDD` in UTC: `<id>` is the entry's last word, lowercased, with every character
+  outside `[a-z0-9]` replaced by `-`. Add `-2`, `-3`, … while the task directory exists. The final slug
+  must match `[a-z0-9][a-z0-9-]{1,40}` (400 otherwise).
+  The temporary brief begins `Внедрить урок «<entry>»: <title, falling back to cue>.`, identifies the
+  lesson's archive file and includes cue, lesson, proposal, evidence, caveats and the user's note in
+  that order, omitting empty fields and their labels. Its fixed completion criteria require implementing
+  the proposal in the selected repository, tests and affected documentation, reporting work outside
+  the repository in `remaining`, and `needs_decision` with questions when a choice is needed.
+  Only for a `proposed` lesson, first run
+  `teamster lesson <entry> accepted --note=внедряется: <slug>` (the note is one argv word).
+  A nonzero exit returns 422 and prevents the start step. Then run
+  `teamster start <slug> --brief <temporary file> --repo <path> --executor claude --sandbox off --effort high --task-type feature --max-minutes 60 --review --fix-rounds 2 --parallel`.
+  Append `--ci` when `git -C <path> remote get-url origin`, with stdin closed and a 10-second timeout,
+  succeeds and its stdout contains `github.com`. A missing origin, failed probe or timeout omits `--ci`.
+  Success returns the start step's output and `slug`; a nonzero start exit returns 422, leaving the
+  lesson `accepted`. A successful acceptance invalidates research even if the start step fails.
 - `/api/actions/say`: `{slug: string, text: string}` runs `teamster say <slug> --file <temporary file>`
-  for a study in `studies`. Unknown slugs get 404; alive or archived studies get 409. Trimmed text
+  for a study in `studies` or the task in any lesson's `implementation`. Unknown slugs get 404;
+  alive or archived studies and implementations get 409. Trimmed text
   must contain 1–8000 characters and is written to the temporary file, never passed as an argv word.
 - `/api/actions/reflect`: `{order?: string, tasks?: string[], since?: string, repos?: string[]}`
   runs `teamster reflect <slug>`, then repeated `--task T`, `--since S`, repeated `--repo R`, and
@@ -665,7 +713,8 @@ of `BOARD_RESEARCH_SECONDS`. There are no stop, clean, verdict or merge endpoint
 - `GET /api/tasks/{slug}/files/{name}` with `name` in `brief`, `last`, `review`, `check` → `text/plain;
   charset=utf-8`, at most the last 256 KiB; 404 when missing or for a session. No other names, no paths.
 - `GET /api/research` → `ResearchView`; other methods get 405.
-- `POST /api/actions/lesson`, `/api/actions/say`, `/api/actions/reflect` → the science station actions above.
+- `POST /api/actions/lesson`, `/api/actions/implement`, `/api/actions/say`, `/api/actions/reflect`
+  → the science station actions above.
 - `GET /api/constellations` → `{"constellations": [{"name": string, "repos": string[]}], "error": string | null}`.
   At most 32 constellations; a name is 1 to 60 characters and unique; `repos` lists 1 to 64 repository names or
   patterns, each at most 100 characters without slashes, where `*` stands for any run of characters. Names and
