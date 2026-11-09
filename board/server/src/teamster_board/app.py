@@ -144,7 +144,7 @@ class Board:
             telemetry_path=settings.path("telemetry"),
         )
         self.research = Research(settings.path("tasks"), settings.reflection_task,
-                                 settings.research_seconds)
+                                 settings.research_seconds, claude_desktop_dir=settings.claude_desktop_dir)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
         self.reports = Reports(settings.teamster)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),

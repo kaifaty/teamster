@@ -675,7 +675,7 @@ def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeyp
     assert client.get("/api/research").json() == {
         "lessons": [], "batch": None,
         "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
-        "studies": [], "reflection_task": "codex-batch-reflection"}
+        "studies": [], "reflection_task": "codex-batch-reflection", "schedule": None}
     assert client.post("/api/research").status_code == 405
     assert client.delete("/api/research").status_code == 405
     assert client.get("/api/research", headers={"Host": "evil.example"}).status_code == 403
@@ -685,9 +685,11 @@ def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeyp
     assert (defaults.research_seconds, defaults.reflection_task) == (30, "codex-batch-reflection")
     monkeypatch.setenv("BOARD_RESEARCH_SECONDS", "5")
     monkeypatch.setenv("BOARD_REFLECTION_TASK", "weekly-review")
+    monkeypatch.setenv("BOARD_CLAUDE_DESKTOP_DIR", str(tmp_path / "desktop"))
     research = create_app(Settings.from_env()).state.board.research
     assert (research.seconds, research.reflection_task) == (5, "weekly-review")
     assert research.tasks_path == tmp_path / "claude-tasks"
+    assert research.claude_desktop_dir == tmp_path / "desktop"
 
 
 def test_constellations_come_from_the_data_home(board):

@@ -326,6 +326,16 @@ interface Study {
   messages: StudyMessage[];  // initial order first, then lead say and analyst turns in ascending at
 }
 
+interface ReflectionSchedule {
+  source: "desktop";
+  name: string | null;         // displayName
+  cron: string;                // cronExpression, trimmed at both ends
+  enabled: boolean;
+  last_run_at: number | null;   // lastRunAt, Unix seconds
+  last_scheduled_for: number | null; // lastScheduledFor, Unix seconds
+  next_at: number | null;       // next instant strictly after now, or null
+}
+
 interface ResearchView {
   lessons: Lesson[];
   studies: Study[];           // live and recent archived reflect tasks, newest created first, at most 20
@@ -337,6 +347,7 @@ interface ResearchView {
     items: PendingRecord[];    // records with a signal, newest first, at most 50
   };
   reflection_task: string;     // scheduled task id of reflection sessions, from BOARD_REFLECTION_TASK
+  schedule: ReflectionSchedule | null; // desktop schedule; optional in the web type for older servers
 }
 ```
 
@@ -496,7 +507,7 @@ The additional fields are additive; existing clients may ignore `title` and `lin
 ### Research
 
 `ResearchView` describes reflection conversations (`src/teamster/docs/reflection.md`), what they learned and
-what waits for the next batch. Material and lessons live in `tasks/.archive/`:
+what waits for the next batch, including its planned schedule. Material and lessons live in `tasks/.archive/`:
 
 - `lessons`: the rows of the markdown table in `INDEX.md`, skipping the header and separator rows. A row needs
   at least five cells; cells after the fourth (a `|` inside the text) are joined back into `status_text`.
@@ -539,6 +550,34 @@ or size changes. The view is rebuilt at most once per `BOARD_RESEARCH_SECONDS` (
 numbers, lists and rows are skipped or treated as missing under the existing field rules; malformed JSON
 states are skipped. Symbolic links are never followed, including task/archive directories and study message
 files. A missing archive leaves material empty and still permits live studies.
+
+`schedule` reads the Claude desktop app's
+`$BOARD_CLAUDE_DESKTOP_DIR/claude-code-sessions/*/*/scheduled-tasks.json` files (desktop directory defaults to
+`~/Library/Application Support/Claude`). Each file is an object with a `scheduledTasks` array. Only entries
+whose `id` equals `reflection_task` (`BOARD_REFLECTION_TASK`, default `codex-batch-reflection`) are considered.
+Across all files, the greatest valid `lastRunAt` wins; a missing or invalid timestamp ranks lowest, and an
+enabled entry wins a tie. `source` is `"desktop"`, `name` is `displayName`, and `cron` is `cronExpression`
+trimmed at both ends. `last_run_at` and `last_scheduled_for` convert the timezone-bearing ISO timestamps
+`lastRunAt` and `lastScheduledFor` to Unix seconds; missing or invalid optional fields are `null`. Entries
+without a string `cronExpression` or boolean `enabled` are skipped. Files larger than 1 MiB, malformed JSON
+and invalid object/array shapes are skipped without failing the request. Symbolic links at the configured
+desktop root, session/account/organization directories or the file itself are never followed. `schedule`
+is `null` when no valid matching entry exists, the directory or file is missing, or the desktop directory
+is not configured. It is independent of the archive and live study files.
+
+`next_at` is the earliest instant strictly after the view's rebuild time that matches the cron in the
+server machine's local time zone. It is `null` for disabled tasks, unsupported expressions or no match
+within 366 days. Cron has exactly five fields (minute 0–59, hour 0–23, day of month 1–31, month 1–12,
+weekday 0–7, where both 0 and 7 mean Sunday). Supported forms are `*`, numbers, inclusive ranges `a-b`,
+comma-separated lists, and steps `*/n` or `a-b/n` with a positive integer step. Names such as `MON`/`JAN`,
+macros such as `@daily`, six fields and out-of-range values are unsupported; their trimmed `cron` is still
+returned. When both day fields are restricted, either day-of-month or weekday may match (Vixie cron OR);
+if either field starts with `*`, both must match. The search skips unsuitable days and hours rather than
+scanning every minute of the year, rejects nonexistent local times during daylight saving transitions,
+and considers both occurrences of repeated local times. For example, `0 9 * * *` on a UTC+3 machine
+fires at 06:00 UTC. The schedule, including `next_at`, is rebuilt with every research view (at most once
+per `BOARD_RESEARCH_SECONDS`); schedule files are reread only when their mtime or size changes. Older
+servers omit `schedule`, so the web's `ResearchView.schedule` is optional.
 
 The web model treats reflect tasks and legacy sessions matching `reflection_task` as research, excluding
 them from the fleet. `Research.studies` holds the conversations, `waiting` counts studies waiting for a
