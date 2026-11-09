@@ -6,7 +6,8 @@ import { fixtureSource } from "../../fixtures/source";
 import type { ResearchActions, ResearchView } from "../../types";
 import { research } from "../research";
 import { discussOrder, isSendKey } from "../station";
-import { createConsole, HOLD_MS, IMPLEMENT_OFF, type Deck } from "./console";
+import { createConsole, HOLD_MS, type Deck } from "./console";
+import { IMPLEMENT_OFF } from "./implement";
 
 const NOW = Date.UTC(2026, 10, 9, 4, 12) / 1000;
 const T1 = "batch-2026-11-05.md T1"; // proposed, filed by no study

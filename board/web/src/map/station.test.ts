@@ -281,7 +281,7 @@ describe("a lesson's implementation", () => {
 
 describe("nextStep", () => {
   const clock = { state: "counting" as const, when: "завтра в 09:00" };
-  const lesson = (status: Lesson["status"], implementation: Implementation | null = null, id = status): Lesson => ({
+  const lesson = (status: Lesson["status"], implementation: Implementation | null = null, id: string = status): Lesson => ({
     date: "2026-11-09", entry: `batch-2026-11-09.md ${id}`, scope: "invariant", scope_text: "invariant", repos: [], cue: "cue", status, status_text: status, implementation,
   });
 
