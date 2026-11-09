@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The science station's own screen. Clicking the station on the map opens it over the galaxy: a resource bar on
-// top with the line «what next», then the decks — the core with the chronometer, the order and the crew, the comms
-// room, the lab with the lessons and the archive hold. The station's buttons act at once through the board server;
+// top with the line «what next», then the decks — the core with the chronometer and the crew, the comms room with
+// the order under it, the lab with the lessons and the archive hold. The station's buttons act at once through the board server;
 // a board that only reads copies the equivalent command instead.
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, toRef } from "vue";
 import { postAction } from "../../lib/actions";
@@ -181,7 +181,6 @@ onBeforeUnmount(() => {
       <div class="side">
         <div class="col left">
           <StationCore :research="research" :clock="clock" :now="now" @open="emit('open', $event)" />
-          <StationOrder />
           <StationCrew :research="research" :now="now" />
         </div>
         <div class="col right">
@@ -191,6 +190,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="col center">
         <StationComms :research="research" :now="now" />
+        <StationOrder />
       </div>
     </div>
   </section>
@@ -399,11 +399,12 @@ h2 {
   color: #ffb39e;
 }
 
-/* The decks: core, order and crew; the comms room in the middle at full height; lab and hold. */
+/* The decks: core and crew; the comms room in the middle with the order under it, since an order opens a channel
+   there; lab and hold. */
 .decks {
   display: grid;
   flex: 1;
-  grid-template-columns: minmax(270px, 300px) minmax(0, 1fr) minmax(320px, 390px);
+  grid-template-columns: minmax(270px, 300px) minmax(0, 1fr) minmax(320px, 460px);
   grid-template-rows: minmax(0, 1fr);
   gap: 10px;
   min-height: 0;
@@ -425,11 +426,11 @@ h2 {
   grid-column: 1;
   grid-row: 1;
   overflow-y: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(214, 170, 96, 0.35) transparent;
 }
 
-.left > :deep(.core),
-.left > :deep(.order) {
+.left > :deep(.core) {
   flex: none;
 }
 
@@ -445,6 +446,10 @@ h2 {
 .center > :deep(.comms) {
   flex: 1 1 auto;
   min-height: 260px;
+}
+
+.center > :deep(.order) {
+  flex: none;
 }
 
 .right {
