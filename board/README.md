@@ -28,7 +28,7 @@ The header switches between two views of the same data: «Доска», the colu
 in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy shows every repository as a star, and nothing joins them: no supply lines and no
 tankers. The stars stand on a hexagonal lattice whose step follows their count, so a few stand wide apart and many fill
 the galaxy evenly, clear of the science station, the columns at the edges, the toolbar and the ship's log; a star keeps
-its place while it fits there (`galaxyLayout` in `board/web/src/map/layout.ts`).
+its place while it fits there (`galaxyLayout` in `board/web/src/map/layout/stars.ts`).
 Every subscription stands as a fuel tank in a column on the left edge of the galaxy, Codex above Claude, under the toolbar
 and above the ship's log (`fuelPositions`); on a phone the tanks stand in a row under the toolbar. The fuel in a tank's
 glass is the week's limit left, in the family's colour and red at 20% or less, where a warning light blinks; an
@@ -54,13 +54,13 @@ sun is the main branch, and each task is a ship that moves towards it, from the 
 inspection and the hypergate to the roadstead, where it waits for you. The yard is an orbital dock over the limb of
 the system's home world, a large planet at its left edge from which new ships fly in. The inspection is a checkpoint, an
 open frame with its name over it like a sign: the ships under review stand in its lanes, each under a scanner beam of its
-reviewer's colour, and the rest queue before its entrance (`lanesOf` in `board/web/src/map/layout.ts`). A ship leaves it
+reviewer's colour, and the rest queue before its entrance (`lanesOf` in `board/web/src/map/layout/parking.ts`). A ship leaves it
 with a green tick over a clean review, or with a red ring back to the yard, where it carries a red mark per finding while
 it fixes them, and «Корабли системы» tells their count. Sleeping ships drift in the
 cryofield, the lead's sessions stay at the command station. A system is laid out in the part of the window the toolbar, the list of
 its ships and the folded log leave free, and its world takes that part's shape. Each station parks its ships on one
 arc on its own side, away from its name, the ships in trouble first; a station shows a few ships, and a count «+N»
-stands for the rest and opens the list at that station (`parkingOf` in `board/web/src/map/layout.ts`). The list
+stands for the rest and opens the list at that station (`parkingOf` in `board/web/src/map/layout/parking.ts`). The list
 «Корабли системы» names every ship by station at the right of the map, and «Корабли» in the toolbar hides it; on a
 phone it opens over the map. The galaxy and a system move alike: a mouse wheel zooms around the
 pointer, two fingers on a trackpad move the camera in any direction and a pinch zooms, dragging moves the camera, and

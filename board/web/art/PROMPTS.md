@@ -40,7 +40,7 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 10. station-inspection (portrait, 1024x1536): One orbital inspection checkpoint seen exactly from above, centred on a flat solid magenta background (#FF00FF) with nothing else on it. A tall open frame shaped like a rectangle with cut corners, about two thirds as wide as it is tall and filling most of the image's height, built of heavy dark steel girders with pale brass trim. Along the inner edge of its left and right girders sit rows of small scanner heads with glowing violet lenses that face into the frame. Small amber lamps mark the four cut corners, and two short antenna masts stand out from the middle of the top and the bottom. The whole inside of the frame is empty and shows the same flat magenta background. Pre-rendered look with metallic highlights. No shadow on the background.
 
-The inspection is that checkpoint: the ships under review stand in lanes across its open middle. `CHECKPOINT` in `src/map/layout.ts` holds the share of the art the open middle takes, measured on this picture; a new picture needs it measured again.
+The inspection is that checkpoint: the ships under review stand in lanes across its open middle. `CHECKPOINT` in `src/map/layout/parking.ts` holds the share of the art the open middle takes, measured on this picture; a new picture needs it measured again.
 
 The shipyard is a dock over the limb of the system's home world; `planet-yard` is that home world for a repository without its own planet. A single new picture is prepared alone: `python3 art/prepare.py SOURCE_DIR --only station-yard`.
 
@@ -67,7 +67,7 @@ lights its pale core in the colour of its status. A "trim" sprite: `python3 art/
 
 Same STYLE as the first list. Every subscription is a fuel tank in the galaxy; the map draws the fuel in the tank's
 empty glass, the day lamps beside it and the admiral's badge on top. These three are "trim" sprites: `prepare.py` crops
-them to what shows, so that `TANK_GLASS` in `layout.ts`, the glass as shares of the sprite, holds for the picture.
+them to what shows, so that `TANK_GLASS` in `layout/fuel.ts`, the glass as shares of the sprite, holds for the picture.
 Measure it again after a new tank: `python3 art/prepare.py SOURCE_DIR --only fuel-tank fuel-cell admiral`.
 
 1. fuel-tank (portrait, 1024x1536): One upright orbital fuel tank seen exactly from the front, centred on a flat solid magenta background (#FF00FF) with nothing else on it, with a clear margin of magenta all around it. A tall cylinder with domed ends standing in a low cradle of dark steel girders, weathered steel and teal paint, thick riveted bands near the top and the bottom, and a few small amber lamps on the bands. Down the middle of its front runs one wide straight vertical glass sight window, from just below the top band to just above the bottom band, about a third of the tank's width. The window is completely empty: smooth deep near-black glass with only faint reflections, nothing inside it. Pre-rendered look with metallic highlights. No shadow on the background.
