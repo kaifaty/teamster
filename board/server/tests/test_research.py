@@ -151,33 +151,64 @@ def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp
     alpha = tmp_path / "alpha"
     other_alpha = tmp_path / "other" / "alpha"
     beta = tmp_path / "beta"
-    for path in (alpha, other_alpha):
+    origin = '[remote "origin"]\n\turl = git@example.com:owner/project.git\n'
+    for path in (alpha, other_alpha, beta):
         (path / ".git").mkdir(parents=True)
-    beta.mkdir()
-    (beta / ".git").write_text("gitdir: /some/worktree\n")
+        (path / ".git" / "config").write_text(origin)
+    worktree = tmp_path / "desktop-worktree"
+    worktree.mkdir()
+    gitdir = tmp_path / "worktree-metadata"
+    gitdir.mkdir()
+    (gitdir / "commondir").write_text(os.path.relpath(beta / ".git", gitdir) + "\n")
+    (worktree / ".git").write_text(f"gitdir: {os.path.relpath(gitdir, worktree)}\n")
     alias = tmp_path / "alias"
     alias.symlink_to(alpha, target_is_directory=True)
     no_git = tmp_path / "no-git"
     no_git.mkdir()
-    reflect_repo = tmp_path / "reflect-only"
-    (reflect_repo / ".git").mkdir(parents=True)
-    for index, repo in enumerate((alpha, alias, alpha / ".." / "alpha", no_git, tmp_path / "absent")):
+    no_origin = tmp_path / "no-origin"
+    (no_origin / ".git").mkdir(parents=True)
+    (no_origin / ".git" / "config").write_text('[remote "upstream"]\nurl = https://example.com/repo\n')
+    broken = tmp_path / "broken-worktree"
+    broken.mkdir()
+    (broken / ".git").write_text(f"gitdir: {tmp_path / 'absent-gitdir'}\n")
+    for index, repo in enumerate((alpha, alias, alpha / ".." / "alpha", no_git, no_origin,
+                                  broken, tmp_path / "absent")):
         write_record(tasks, f"live-{index}", {"repo": str(repo)})
-    write_record(archive, "old-20200101T000000Z", {"repo": str(beta)})
+    write_record(archive, "old-20200101T000000Z", {"repo": str(worktree)})
     write_record(archive, "no-timestamp", {"repo": str(other_alpha)})
-    for root in (tasks, archive):
-        write_record(root, "reflection", {"kind": "reflect", "repo": str(reflect_repo)})
+    for kind in ("scout", "reflect"):
+        excluded = tmp_path / f"{kind}-only"
+        (excluded / ".git").mkdir(parents=True)
+        (excluded / ".git" / "config").write_text(origin)
+        for root in (tasks, archive):
+            write_record(root, kind, {"kind": kind, "repo": str(excluded)})
     (archive / ".git").mkdir()
+    (archive / ".git" / "config").write_text(origin)
     write_record(tasks, "archive-repo", {"repo": str(archive)})
     research = Research(tasks, seconds=0)
-    assert research.view()["repos"] == [
+    expected = [
         {"name": "alpha", "path": str(alpha)},
         {"name": "alpha", "path": str(other_alpha)},
         {"name": "beta", "path": str(beta)},
     ]
+    assert research.view()["repos"] == expected
+    second = tmp_path / "second-worktree"
+    second.mkdir()
+    gitdir = beta / ".git" / "worktrees" / "second"
+    gitdir.mkdir(parents=True)
+    (second / ".git").write_text(f"gitdir: {gitdir}\n")
+    write_record(tasks, "second-worktree", {"kind": "work", "repo": str(second)})
+    assert research.view()["repos"] == expected
+    (no_origin / ".git" / "config").unlink()
+    (no_origin / ".git" / "config").symlink_to(alpha / ".git" / "config")
+    assert research.view()["repos"] == expected
+    (no_origin / ".git" / "config").unlink()
+    (no_origin / ".git" / "config").write_text(origin + "#" * research_module.GIT_LIMIT)
+    assert research.view()["repos"] == expected
     for index in range(101):
         repo = tmp_path / f"repo-{index:03}"
         (repo / ".git").mkdir(parents=True)
+        (repo / ".git" / "config").write_text(origin)
         write_record(tasks, f"extra-{index}", {"repo": str(repo)})
     repos = research.view()["repos"]
     assert len(repos) == 100
@@ -353,7 +384,17 @@ def test_unchanged_records_are_not_read_again_and_cache_lasts_its_interval(tmp_p
     clock = [100.0]
     monkeypatch.setattr(research_module.time, "monotonic", lambda: clock[0])
     research = Research(tmp_path, seconds=30)
+    scan = research._scan
+
+    def slow_scan():
+        view = scan()
+        clock[0] += 31
+        return view
+
+    monkeypatch.setattr(research, "_scan", slow_scan)
     first = research.view()
+    monkeypatch.setattr(research, "_scan", scan)
+    assert research.view() is first
     assert reads == ["one-20261108T000000Z"]
     clock[0] += 31
     assert research.view() == first

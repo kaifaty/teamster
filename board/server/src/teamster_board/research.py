@@ -4,6 +4,7 @@ The board never imports the worker: the state fields used for signals mirror
 src/teamster/task_state.py, review_cycle.py, supervisor.py and result_schema.py.
 """
 
+import configparser
 import json
 import re
 import threading
@@ -29,6 +30,60 @@ PENDING_ITEMS = 50
 STUDY_LIMIT = 20
 STUDY_SECONDS = 30 * 24 * 3600
 SCHEDULE_LIMIT = 1024 * 1024
+GIT_LIMIT = 64 * 1024
+
+
+def git_file(directory, name):
+    path = Store._file(directory, name)
+    if path is None or path.stat().st_size > GIT_LIMIT:
+        return None
+    with path.open("rb") as stream:
+        content = stream.read(GIT_LIMIT + 1)
+    return content.decode("utf-8") if len(content) <= GIT_LIMIT else None
+
+
+def repository(repo):
+    """Resolve a worktree to its main repository, requiring a local origin URL."""
+    try:
+        path = Path(repo).resolve()
+        git = path / ".git"
+        if git.is_symlink() or not path.is_dir():
+            return None
+        if not git.is_dir():
+            content = git_file(path, ".git")
+            if content is None or not content.startswith("gitdir:"):
+                return None
+            target = content[len("gitdir:"):].strip()
+            if not target:
+                return None
+            gitdir = path / target
+            if gitdir.is_symlink() or not gitdir.is_dir():
+                return None
+            gitdir = gitdir.resolve()
+            common = gitdir / "commondir"
+            if common.exists() or common.is_symlink():
+                target = git_file(gitdir, "commondir")
+                if target is None or not target.strip():
+                    return None
+                git = gitdir / target.strip()
+                if git.is_symlink():
+                    return None
+                git = git.resolve()
+            elif gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
+                git = gitdir.parent.parent
+            else:
+                return None
+            path = git.parent
+        content = git_file(git, "config")
+        if content is None:
+            return None
+        config = configparser.ConfigParser(interpolation=None, strict=False, allow_no_value=True,
+                                           delimiters=("=",))
+        config.read_string(content)
+        url = config.get('remote "origin"', "url", fallback=None)
+        return path if url and url.strip().strip('"') else None
+    except (OSError, ValueError, RuntimeError, configparser.Error):
+        return None
 
 
 def load_json(path):
@@ -301,7 +356,7 @@ class Research:
             now = time.monotonic()
             if self._view is None or now >= self._next_scan:
                 self._view = self._scan()
-                self._next_scan = now + self.seconds
+                self._next_scan = time.monotonic() + self.seconds
             return self._view
 
     def invalidate(self):
@@ -371,7 +426,7 @@ class Research:
                 items.append({"slug": slug, "repo": repo, "stamp": stamp, "signals": found})
         pending["items"] = sorted(items, key=lambda item: (item["stamp"], item["slug"]),
                                   reverse=True)[:PENDING_ITEMS]
-        repos = set()
+        repo_paths = set()
         implementations = {}
         directories = [(path, False) for path in Store._directories(self.tasks_path)]
         directories.extend((path, True) for path in Store._directories(archive))
@@ -380,16 +435,10 @@ class Research:
             state = self._record(directory)
             if state is None:
                 continue
-            if state.get("kind") != "reflect":
+            if state.get("kind") not in ("scout", "reflect"):
                 repo = text(state.get("repo"))
                 if repo:
-                    try:
-                        path = Path(repo).resolve()
-                        git = path / ".git"
-                        if path != archive.resolve() and path.is_dir() and (git.is_dir() or git.is_file()):
-                            repos.add(path)
-                    except (OSError, ValueError, RuntimeError):
-                        pass
+                    repo_paths.add(repo)
             match = RECORD.fullmatch(directory.name) if archived else None
             slug = match[1] if match else directory.name
             implementation = self._implementation(directory, slug, state, archived)
@@ -400,6 +449,14 @@ class Research:
             if not archived and state.get("kind") == "reflect":
                 study_paths.add(directory)
                 view["studies"].append(self._study(directory, directory.name, state, archived=False))
+        repos = set()
+        for repo in repo_paths:
+            path = repository(repo)
+            try:
+                if path is not None and path != archive.resolve():
+                    repos.add(path)
+            except (OSError, ValueError, RuntimeError):
+                pass
         view["repos"] = sorted(({"name": path.name, "path": str(path)} for path in repos),
                                key=lambda repo: (repo["name"], repo["path"]))[:100]
         for lesson in view["lessons"]:

@@ -545,10 +545,19 @@ what waits for the next batch, including its planned schedule. Material and less
   Values are trimmed and cut to 2000 characters; empty or missing fields, files or sections give `null`.
   Later files' additions are ignored. Lesson files share the batch file signature cache and 64 KiB
   read limit, and symbolic links are skipped.
-- `repos`: `state.json`'s `repo` from all live task and archive directories, excluding `kind: "reflect"`
-  and the archive directory itself. Only existing directories with a `.git` directory or file remain.
-  Paths are resolved and deduplicated; `name` is the resolved directory's name. Sort by `name`, then
-  `path`, retaining at most 100. This list is independent of the batch and study age windows.
+- `repos`: `state.json`'s `repo` from all live task and archive directories, excluding `kind: "scout"`,
+  `kind: "reflect"` and the archive directory itself. A missing `kind` counts as work.
+  Only existing repositories whose common git directory's `config` contains a `[remote "origin"]`
+  section with a nonempty `url` remain, so they can be used by `teamster start`.
+  A linked worktree's `.git` file supplies `gitdir: <path>` (relative paths start at the worktree).
+  When that git directory has `commondir`, resolve its value relative to the git directory and use
+  the common git directory's parent as the main repository. Otherwise, a git directory ending in
+  `/.git/worktrees/<name>` identifies the main repository before `/.git`. Missing or invalid targets
+  are skipped. Discovery reads files only; it runs neither git nor subprocesses. Git metadata files
+  and their immediate directories that are symbolic links are skipped; metadata reads are limited
+  to 64 KiB per file. Main repository paths are resolved and deduplicated; `name` is the resolved
+  directory's name. Sort by `name`, then `path`, retaining at most 100. This list is independent of
+  the batch and study age windows.
 - `implementation`: the task with the greatest `created` across live tasks and all archive records whose
   slug starts with `lesson-` and whose first `brief.md` line matches `^Внедрить урок «([^»]+)»`.
   The captured text, trimmed at both ends, must equal the lesson's `entry`; otherwise the field is `null`.
@@ -588,7 +597,9 @@ message with `status: "needs_decision"`; a later lead reply clears `waiting` imm
 
 Material uses records newer than the previous batch's `through`; archived studies use the 30-day window.
 Repository and implementation discovery reads all task states. Each `state.json` and `messages.jsonl` is reread only when its mtime
-or size changes. The view is rebuilt at most once per `BOARD_RESEARCH_SECONDS` (default 30). Invalid text,
+or size changes. At server startup, the view is warmed once in a background thread without delaying
+readiness. Requests use the ready cache or wait for the same in-progress build. The view is rebuilt
+at most once per `BOARD_RESEARCH_SECONDS` (default 30), counted from build completion. Invalid text,
 numbers, lists and rows are skipped or treated as missing under the existing field rules; malformed JSON
 states are skipped. Task/archive directories and study message files that are symbolic links are never
 followed. A missing archive leaves material empty and still permits live studies, repositories and implementations.
