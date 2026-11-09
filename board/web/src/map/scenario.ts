@@ -1,7 +1,7 @@
 // Demo for `npm run dev:fixture`: three agents (Codex, Claude and a reviewer) go round every station of a
 // system. One of them changes every SCENARIO_STEP_SECONDS, in turn, so every place and every walk shows up
 // without real tasks. A standing fleet keeps the rest in view: every hull of both families, a damaged ship with
-// patches, a ship under review with its escort, and a second system in trouble.
+// patches, a ship in the inspection's lane under its scanner, and a second system in trouble.
 
 import { demoEvents, demoReport, logEvent, type DemoEvent } from "../fixtures/events";
 import type { BoardSource } from "../lib/source";
@@ -25,6 +25,9 @@ interface Stage {
   result_status?: string;
   outcome?: string;
   summary?: string;
+  /** The saved review's verdict and its findings. */
+  review?: TaskSummary["review"];
+  findings_left?: number;
   /** Seconds from the start of the stage to the wake-up. */
   sleep?: number;
 }
@@ -93,24 +96,37 @@ function stages(words: Agent["words"]): Stage[] {
     { ...running, phase: "turn", turn: 1, note: "сообщение", activity: { kind: "message", text: "Готово, отдаю на проверку" } },
     { ...running, phase: "check", turn: 1, note: "проверка", activity: { kind: "message", text: "Готово, отдаю на проверку", age: 4 } },
     { ...running, phase: "review", turn: 1, note: "ревью", activity: { kind: "message", text: "Проверка прошла, жду ревью", age: 2 } },
-    { ...running, phase: "fix", turn: 2, fix_round: 1, note: "исправление", activity: { kind: "edit", text: `Edit ${words.file}: замечания ревью` } },
-    { ...running, phase: "check", turn: 2, fix_round: 1, note: "проверка", activity: { kind: "message", text: "Исправил замечания", age: 3 } },
-    { ...running, phase: "ci", turn: 2, pr: true, ci: "pending", note: "CI", activity: { kind: "message", text: "Запушил ветку, жду CI", age: 2 } },
     {
-      column: "review_me", phase: "idle", alive: false, turn: 2, pr: true, ci: "passed", note: "ждёт ревью",
+      ...running, phase: "fix", turn: 2, fix_round: 1, note: "исправление", review: "defects", findings_left: 3,
+      activity: { kind: "edit", text: `Edit ${words.file}: замечания ревью` },
+    },
+    {
+      ...running, phase: "check", turn: 2, fix_round: 1, note: "проверка", review: "defects", findings_left: 3,
+      activity: { kind: "message", text: "Исправил замечания", age: 3 },
+    },
+    {
+      ...running, phase: "review", turn: 2, fix_round: 1, note: "повторное ревью", review: "defects", findings_left: 3,
+      activity: { kind: "message", text: "Проверка прошла, жду повторного ревью", age: 2 },
+    },
+    {
+      ...running, phase: "ci", turn: 2, pr: true, ci: "pending", note: "CI", review: "clean",
+      activity: { kind: "message", text: "Запушил ветку, жду CI", age: 2 },
+    },
+    {
+      column: "review_me", phase: "idle", alive: false, turn: 2, pr: true, ci: "passed", note: "ждёт ревью", review: "clean",
       result_status: "done", outcome: "done", summary: "Готово, PR ждёт ревью", activity: null,
     },
-    { ...running, phase: "turn", turn: 3, pr: true, ci: "passed", note: "ход 3", activity: { kind: "tool", text: "Read src/types.ts" } },
+    { ...running, phase: "turn", turn: 3, pr: true, ci: "passed", note: "ход 3", review: "clean", activity: { kind: "tool", text: "Read src/types.ts" } },
     {
-      ...running, phase: "turn", turn: 3, pr: true, ci: "passed", note: "ход 3 молчит",
+      ...running, phase: "turn", turn: 3, pr: true, ci: "passed", note: "ход 3 молчит", review: "clean",
       activity: { kind: "message", text: "Жду ответа от сервера", age: 200 },
     },
     {
-      column: "sleeping", phase: "sleeping", alive: true, turn: 3, pr: true, outcome: "sleeping", sleep: 25 * 60,
+      column: "sleeping", phase: "sleeping", alive: true, turn: 3, pr: true, outcome: "sleeping", sleep: 25 * 60, review: "clean",
       note: "сон до сброса лимита", activity: { kind: "message", text: "Лимит аккаунта, сплю до сброса", age: 5 },
     },
     {
-      column: "attention", phase: "idle", alive: false, turn: 3, pr: true, note: "нужно решение",
+      column: "attention", phase: "idle", alive: false, turn: 3, pr: true, note: "нужно решение", review: "clean",
       result_status: "needs_decision", outcome: "done", summary: "Нужно решение: где показывать закрытые задачи", activity: null,
     },
   ];
@@ -167,8 +183,8 @@ function build(index: number, stageIndex: number, changedAt: number, start: numb
         ? { at: changedAt - (stage.activity.age ?? 0), kind: stage.activity.kind, text: stage.activity.text }
         : null,
     check: null,
-    review: null,
-    findings_left: 0,
+    review: stage.review ?? null,
+    findings_left: stage.findings_left ?? 0,
     stop: null,
     left: 0,
   };
@@ -178,7 +194,7 @@ function build(index: number, stageIndex: number, changedAt: number, start: numb
 const STANDING: readonly (Partial<TaskSummary> & Pick<TaskSummary, "slug" | "executor" | "effort">)[] = [
   {
     slug: "ci-burns-after-fixes", executor: "claude", account: "claude-pool-1", effort: "xhigh", reviewer: "codex",
-    phase: "fix", fix_round: 2, ci: "failed", pr: "https://github.com/example/demo-system/pull/131",
+    phase: "fix", fix_round: 2, ci: "failed", pr: "https://github.com/example/demo-system/pull/131", review: "defects", findings_left: 2,
     activity: { at: null, kind: "edit", text: "Edit src/store/reduce.ts: третий заход на падающий CI" },
   },
   {

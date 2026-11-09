@@ -54,7 +54,7 @@ describe("scenario", () => {
     expect(frames.every(({ tasks }) => tasks.every((task, index) => task.created === frames[0]!.tasks[index]!.created))).toBe(true);
   });
 
-  it("keeps every hull, a damaged and patched ship, an escorted review and a system in trouble in view", () => {
+  it("keeps every hull, a damaged and patched ship, a scanned review and a system in trouble in view", () => {
     const tasks = [...scenarioTasks(0, START), ...scenarioFleet(START)];
     const hulls = new Set(tasks.map((task) => `${task.executor}/${hullOf(task)}`));
     for (const family of ["codex", "claude"]) {

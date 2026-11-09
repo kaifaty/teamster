@@ -52,7 +52,11 @@ Labels stand around their stars without overlapping, alarms first (`board/web/sr
 and a quiet star's name, shows on zooming in or under the pointer. A click on a star flies into its system: the
 sun is the main branch, and each task is a ship that moves towards it, from the yard through the range, the
 inspection and the hypergate to the roadstead, where it waits for you. The yard is an orbital dock over the limb of
-the system's home world, a large planet at its left edge from which new ships fly in. Sleeping ships drift in the
+the system's home world, a large planet at its left edge from which new ships fly in. The inspection is a checkpoint, an
+open frame with its name over it like a sign: the ships under review stand in its lanes, each under a scanner beam of its
+reviewer's colour, and the rest queue before its entrance (`lanesOf` in `board/web/src/map/layout.ts`). A ship leaves it
+with a green tick over a clean review, or with a red ring back to the yard, where it carries a red mark per finding while
+it fixes them, and «Корабли системы» tells their count. Sleeping ships drift in the
 cryofield, the lead's sessions stay at the command station. A system is laid out in the part of the window the toolbar, the list of
 its ships and the folded log leave free, and its world takes that part's shape. Each station parks its ships on one
 arc on its own side, away from its name, the ships in trouble first; a station shows a few ships, and a count «+N»

@@ -11,6 +11,7 @@ import type { Family, Hull, Star } from "./fleet";
 import { DAY_LAMPS, HULL_SIZE, hullOf, patchSpots } from "./fleet";
 import {
   BADGE_RISE,
+  CHECKPOINT,
   LAMP_GAP,
   LAMP_WIDTH,
   NO_INSETS,
@@ -26,6 +27,8 @@ import {
   freeView,
   hashName,
   homeWorld,
+  inCheckpoint,
+  lanesOf,
   limitZoom,
   parkingOf,
   parkingOrder,
@@ -166,7 +169,10 @@ const MACHINE_GLOW: Partial<Record<MachineStatus, { halo: number; core: number }
   busy: { halo: 0.8, core: 0.85 },
   overloaded: { halo: 1, core: 1 },
 };
-const ESCORT_SIZE = 30;
+/** How long a ship shows the inspection's verdict as it leaves, in seconds. */
+const VERDICT_SECONDS = 1.8;
+/** A ship that goes back to the yard with findings carries one red mark per finding, at most this many. */
+const MAX_FINDING_MARKS = 5;
 const PROBE_SIZE = 40;
 /** Gold rings around the research station while its analyst waits for an answer. */
 const WAVE_RINGS = 3;
@@ -254,17 +260,6 @@ function softCloud(): HTMLCanvasElement {
   return canvas;
 }
 
-/** A drone that circles a ship while it is under review, tinted for the reviewer's family. */
-interface Escort {
-  sprite: Sprite;
-  angle: number;
-  /** 0 to 1: the drone fades in, and out when the review ends. */
-  shown: number;
-  /** World units the drone has drifted out after the review ended. */
-  out: number;
-  leaving: boolean;
-}
-
 interface Ship {
   slug: string;
   body: Container;
@@ -298,10 +293,20 @@ interface Ship {
   arrive: boolean;
   /** Seconds to the next smoke puff. */
   smoke: number;
-  escort: Escort | null;
+  /** The ship stands in a lane of the inspection's frame, under its scanner. */
+  lane: boolean;
+  /** What the inspection found, shown for VERDICT_SECONDS as the ship leaves it; null after. */
+  verdict: Verdict | null;
   entry: ShipEntry;
   /** Set for a ship that left the map: it dives into the sun or fades out. */
   leaving: "dive" | "fade" | null;
+}
+
+/** The inspection's verdict on a ship that leaves it: clean, or back to the yard with findings. */
+interface Verdict {
+  clean: boolean;
+  /** Seconds since the ship left the inspection. */
+  age: number;
 }
 
 interface Puff {
@@ -476,9 +481,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const beams = new Graphics();
   const shipLayer = new Container();
   const smokeLayer = new Container();
-  const escortLayer = new Container();
   const systemFx = new Graphics();
-  system.addChild(homeBody, charts, corona, sun, stationLayer, gateGlow, gate, beams, shipLayer, smokeLayer, escortLayer, systemFx);
+  system.addChild(homeBody, charts, corona, sun, stationLayer, gateGlow, gate, beams, shipLayer, smokeLayer, systemFx);
   const puffs: Puff[] = Array.from({ length: SMOKE_PUFFS }, () => {
     const made = sprite(glowTexture, 10);
     made.tint = SPACE.smoke;
@@ -891,12 +895,14 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     const name: Record<typeof place, ArtName> = {
       yard: "stationYard",
       range: "planetRange",
-      inspection: "planetInspection",
+      inspection: "stationInspection",
       roadstead: "planetRoadstead",
       cryo: "planetCryo",
       command: "stationCommand",
     };
-    return sprite(art(name[place]), stationOf(place, frame).radius * 2 * BALL_MARGIN);
+    // The checkpoint's radius is half its art's height; the other stations' art is cropped a little wider.
+    const size = stationOf(place, frame).radius * 2;
+    return sprite(art(name[place]), place === "inspection" ? size : size * BALL_MARGIN);
   }
 
   function drawStations() {
@@ -908,7 +914,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       if (place === "yard") {
         // The dock's slipways open towards its ships.
         if (Math.cos((stationOf(place, frame).side * Math.PI) / 180) < 0) body.scale.x *= -1;
-      } else if (place !== "command") {
+      } else if (place !== "command" && place !== "inspection") {
         // The art is lit from the upper left: mirror each planet so that its bright side faces the sun.
         if (point.x < frame.cx) body.scale.x *= -1;
         if (point.y < frame.cy) body.scale.y *= -1;
@@ -933,11 +939,12 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     for (const orbit of orbits) charts.ellipse(frame.cx, frame.cy, orbit * frame.rx, orbit * frame.ry);
     charts.stroke({ width: 1.2, color: SPACE.orbit, alpha: 0.16 });
 
+    // The routes run to the stations' centres; the open frame of the inspection would show them inside it.
     const dots = (a: Point, b: Point, bend: number, gap: number, radius: number) => {
       const steps = Math.round(Math.hypot(b.x - a.x, b.y - a.y) / gap);
       for (let i = 1; i < steps; i++) {
         const point = curvePoint(a, b, bend, i / steps);
-        charts.circle(point.x, point.y, radius);
+        if (!inCheckpoint(point, frame)) charts.circle(point.x, point.y, radius);
       }
     };
     ROUTE.slice(1).forEach((place, index) => dots(stationAt(ROUTE[index]!, frame), stationAt(place, frame), ROUTE_BEND, 15, 1.7));
@@ -1016,8 +1023,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     return { x: station.x + item.berth.x, y: station.y + item.berth.y };
   }
 
-  /** Parked ships face their station's side, all one way, like a fleet in formation. */
-  const headingOf = (place: Place) => ((stationOf(place, frame).side + 90) * Math.PI) / 180;
+  /**
+   * Parked ships face their station's side, all one way, like a fleet in formation; at the inspection they face its
+   * exit, to the right, in its lanes and in the queue.
+   */
+  const headingOf = (place: Place) => (place === "inspection" ? Math.PI / 2 : ((stationOf(place, frame).side + 90) * Math.PI) / 180);
 
   /** Fits the ship's art to its task: the hull of its effort and family, and a patch per fix round. */
   function dress(item: Ship) {
@@ -1095,7 +1105,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       travelling: arrive,
       arrive,
       smoke: 0,
-      escort: null,
+      lane: false,
+      verdict: null,
       entry,
       leaving: null,
     };
@@ -1104,13 +1115,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     return item;
   }
 
-  function dropEscort(item: Ship) {
-    item.escort?.sprite.destroy();
-    item.escort = null;
-  }
-
   function removeShip(item: Ship) {
-    dropEscort(item);
     item.body.destroy({ children: true });
     ships.delete(item.slug);
   }
@@ -1131,7 +1136,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     for (const [place, list] of byPlace) {
       const order = parkingOrder(list, (item) => ({ slug: item.slug, ...item.entry.placement }), place, selected);
       const parking = parkingOf(place, order.map((item) => item.size), frame);
+      const lanes = place === "inspection" ? lanesOf(frame).length : 0;
       order.forEach((item, index) => {
+        item.lane = index < lanes;
         item.stowed = index >= parking.berths.length;
         item.berth = item.stowed ? parking.count!.at : parking.berths[index]!;
         if (item.placed) return;
@@ -1161,6 +1168,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       if (!item) {
         addShip(entry, !first && !still);
         continue;
+      }
+      if (item.entry.placement.place === "inspection" && entry.placement.place !== "inspection" && entry.task.review !== null) {
+        item.verdict = { clean: entry.task.review === "clean", age: 0 };
       }
       item.entry = entry;
       item.leaving = null;
@@ -1236,7 +1246,6 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       item.burn.alpha = 0.35 + 0.5 * flicker;
       if (!still && !item.leaving && seen) sparks(item);
     }
-    escort(item, dt);
     if (item.leaving !== "fade") body.alpha = (where.action === "sleep" ? 0.75 : 1) * item.shown;
     body.visible = item.shown > 0;
     const burning = where.working || speed > 30;
@@ -1257,6 +1266,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       systemFx.circle(item.x, item.y, item.size * (0.55 + pulse * 0.4));
       systemFx.stroke({ width: 2, color: SPACE.alarm, alpha: 1 - pulse });
     }
+    const { task } = entry;
+    if (where.fixing && task.review === "defects" && task.findings_left > 0 && seen) findingMarks(item, Math.min(task.findings_left, MAX_FINDING_MARKS));
+    if (item.verdict) verdictFx(item, dt);
     if ((item.slug === selected || item.slug === hovered) && seen) {
       const half = item.size * 0.72;
       const arm = half * 0.4;
@@ -1267,6 +1279,71 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       }
       systemFx.stroke({ width: 2.2, color: item.slug === selected ? SPACE.select : SPACE.hover, alpha: 0.95 });
     }
+  }
+
+  /**
+   * The checkpoint's scanner over a ship in its lane, in the reviewer's colour: the lane lit faintly, and a beam from
+   * the lenses on one side of the frame to those on the other that sweeps up and down the hull.
+   */
+  function scan(item: Ship) {
+    const { companion } = item.entry.placement;
+    const color = companion ? FLEET[companion].hull : SPACE.route;
+    const station = stationAt("inspection", frame);
+    const radius = stationOf("inspection", frame).radius;
+    const pitch = (2 * radius * CHECKPOINT.inside.y) / lanesOf(frame).length;
+    const reach = radius * CHECKPOINT.inside.x;
+    const lane = station.y + item.berth.y;
+    systemFx.rect(station.x - reach, lane - pitch / 2 + 2, reach * 2, pitch - 4);
+    systemFx.fill({ color, alpha: 0.08 });
+    const phase = time * 2.2 + item.seed;
+    const y = lane + (still ? 0.3 : Math.sin(phase)) * pitch * 0.36;
+    // A short fading trail behind the beam, against its way.
+    const back = still ? 0 : -Math.sign(Math.cos(phase));
+    for (let i = 1; i <= 3; i++) {
+      systemFx.moveTo(station.x - reach, y + back * i * 2.4).lineTo(station.x + reach, y + back * i * 2.4);
+      systemFx.stroke({ width: 1.2, color, alpha: 0.4 - i * 0.1 });
+    }
+    systemFx.moveTo(station.x - reach, y).lineTo(station.x + reach, y);
+    systemFx.stroke({ width: 2, color, alpha: 0.95 });
+    systemFx.circle(station.x - reach, y, 2.6).circle(station.x + reach, y, 2.6);
+    systemFx.fill({ color: "#ffffff", alpha: 0.9 });
+  }
+
+  /** Red marks over a ship that goes back to the yard with findings, one per finding, in a row over its hull. */
+  function findingMarks(item: Ship, count: number) {
+    const gap = 12;
+    const y = item.y - item.size * 0.62 - 3;
+    const first = item.x - ((count - 1) * gap) / 2;
+    for (let i = 0; i < count; i++) {
+      const x = first + i * gap;
+      systemFx.poly([x, y - 5.6, x + 4.4, y, x, y + 5.6, x - 4.4, y]);
+    }
+    systemFx.fill({ color: SPACE.alarm, alpha: 0.95 }).stroke({ width: 1, color: "#3a0d08", alpha: 0.9 });
+  }
+
+  /**
+   * The inspection's verdict as a ship leaves it: a ring that widens and fades, green with a tick over the hull when the
+   * review is clean, red when the ship goes back with findings.
+   */
+  function verdictFx(item: Ship, dt: number) {
+    const verdict = item.verdict!;
+    verdict.age += dt;
+    if (verdict.age > VERDICT_SECONDS) {
+      item.verdict = null;
+      return;
+    }
+    const share = verdict.age / VERDICT_SECONDS;
+    const color = verdict.clean ? SPACE.ok : SPACE.alarm;
+    const fade = 1 - share * share;
+    systemFx.circle(item.x, item.y, item.size * (0.6 + (still ? 0.2 : share * 0.7)));
+    systemFx.stroke({ width: 2.4, color, alpha: fade });
+    if (!verdict.clean) return;
+    const r = item.size * 0.24;
+    const cx = item.x;
+    const cy = item.y - item.size * 0.78;
+    systemFx.circle(cx, cy, r).fill({ color, alpha: fade });
+    systemFx.moveTo(cx - r * 0.5, cy + r * 0.02).lineTo(cx - r * 0.12, cy + r * 0.4).lineTo(cx + r * 0.52, cy - r * 0.36);
+    systemFx.stroke({ width: 2.4, color: "#0d2a1a", alpha: fade, cap: "round", join: "round" });
   }
 
   /** Now and then a short burst of sparks from a damaged hull. */
@@ -1284,38 +1361,6 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       systemFx.lineTo(spot.x + Math.cos(angle) * reach, spot.y + Math.sin(angle) * reach);
     }
     systemFx.stroke({ width: 1.4, color: SPACE.spark, alpha: 1 - age / 0.16 });
-  }
-
-  /** The reviewer's drone: it circles a ship under review and drifts off fading when the review ends. */
-  function escort(item: Ship, dt: number) {
-    const { place, placeWorking, companion } = item.entry.placement;
-    const reviewing = !item.leaving && place === "inspection" && placeWorking;
-    if (reviewing && (!item.escort || item.escort.leaving)) {
-      dropEscort(item);
-      const body = sprite(art("escort"), ESCORT_SIZE);
-      escortLayer.addChild(body);
-      item.escort = { sprite: body, angle: noise(item.seed + 9) * Math.PI * 2, shown: still ? 1 : 0, out: 0, leaving: false };
-    }
-    const drone = item.escort;
-    if (!drone) return;
-    if (!reviewing && !drone.leaving) drone.leaving = true;
-    if (drone.leaving) {
-      if (still) return dropEscort(item);
-      drone.shown -= dt * 1.1;
-      drone.out += dt * 70;
-      if (drone.shown <= 0) return dropEscort(item);
-    } else {
-      drone.shown = Math.min(1, drone.shown + dt * 2);
-    }
-    if (!still) drone.angle += dt * 1.4;
-    const orbit = item.size * 0.62 + 16 + drone.out;
-    const cos = Math.cos(drone.angle);
-    const sin = Math.sin(drone.angle);
-    drone.sprite.position.set(item.x + cos * orbit, item.y + sin * orbit * 0.8);
-    // Nose along its path round the ship.
-    drone.sprite.rotation = Math.atan2(cos * 0.8, -sin) + Math.PI / 2;
-    drone.sprite.alpha = drone.shown * item.body.alpha;
-    drone.sprite.tint = companion ? FLEET[companion].escort : "#ffffff";
   }
 
   /** Smoke from the damaged ships, from one pool of puffs; with reduced motion it hangs still. */
@@ -1545,15 +1590,11 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       beams.moveTo(range.x, range.y).lineTo(item.x, item.y);
       beams.stroke({ width: 1.6, color: SPACE.fix, alpha: on ? 0.75 : 0.25 });
     }
-    const inspection = stationAt("inspection", frame);
-    for (const item of here("inspection")) {
-      const { companion, placeWorking } = item.entry.placement;
-      if (!placeWorking) continue;
-      beams.moveTo(inspection.x, inspection.y).lineTo(item.x, item.y);
-      beams.stroke({ width: 1.6, color: companion ? FLEET[companion].hull : SPACE.route, alpha: on ? 0.75 : 0.3 });
-    }
 
     systemFx.clear();
+    for (const item of here("inspection")) {
+      if (item.entry.placement.placeWorking && item.lane && !item.travelling) scan(item);
+    }
     for (const item of entries) {
       moveShip(item, dt);
       if (ships.has(item.slug)) drawShip(item, dt);
