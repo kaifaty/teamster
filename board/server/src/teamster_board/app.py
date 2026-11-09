@@ -243,7 +243,8 @@ def create_app(settings=None):
     async def lifespan(app):
         await board.poll()
         jobs = [asyncio.create_task(board.poll_tasks()), asyncio.create_task(board.poll_accounts()),
-                asyncio.create_task(board.poll_machines())]
+                asyncio.create_task(board.poll_machines()),
+                asyncio.create_task(asyncio.to_thread(board.research.view))]
         try:
             yield
         finally:

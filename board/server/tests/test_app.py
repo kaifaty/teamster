@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 from teamster_board import actions as actions_module
 from teamster_board import app as board_app
 from teamster_board.app import Settings, create_app
+from teamster_board.research import Research
 
 
 SUMMARY_FIELDS = {
@@ -696,6 +698,49 @@ def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeyp
     assert research.claude_desktop_dir == tmp_path / "desktop"
 
 
+def test_research_startup_warms_once_and_first_request_waits(tmp_path, monkeypatch):
+    started, requested, finish = threading.Event(), threading.Event(), threading.Event()
+    calls, scans = [], []
+    original_view, original_scan = Research.view, Research._scan
+
+    def view(self):
+        calls.append(threading.get_ident())
+        if len(calls) == 2:
+            requested.set()
+        return original_view(self)
+
+    def scan(self):
+        scans.append(threading.get_ident())
+        started.set()
+        assert finish.wait(5)
+        return original_scan(self)
+
+    monkeypatch.setattr(Research, "view", view)
+    monkeypatch.setattr(Research, "_scan", scan)
+    fake = tmp_path / "accounts.py"
+    fake.write_text("print('{}')\n")
+    application = create_app(Settings(tmp_path, fake, web_dist=tmp_path / "dist"))
+    with TestClient(application, base_url="http://localhost") as client:
+        try:
+            assert started.wait(5)
+            assert len(calls) == len(scans) == 1
+            assert scans[0] != client.portal.call(threading.get_ident)
+            assert client.get("/api/snapshot").status_code == 200
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                response = pool.submit(client.get, "/api/research")
+                try:
+                    assert requested.wait(5)
+                    assert len(calls) == 2 and len(scans) == 1
+                    assert not response.done()
+                finally:
+                    finish.set()
+                assert response.result(timeout=5).status_code == 200
+            assert client.get("/api/research").status_code == 200
+            assert len(calls) == 3 and len(scans) == 1
+        finally:
+            finish.set()
+
+
 def test_constellations_come_from_the_data_home(board):
     client, _, _, _, settings = board
     assert client.get("/api/constellations").json() == {"constellations": [], "error": None}
@@ -849,6 +894,8 @@ def lesson_repo(station):
     _, application, settings, _, _, _ = station
     repo = settings.task_home.parent / "repository"
     subprocess.run(["git", "init", "--quiet", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "https://forge.example/repo.git"],
+                   check=True, capture_output=True)
     directory = settings.path("tasks") / "known-repository"
     directory.mkdir()
     (directory / "state.json").write_text(json.dumps({"repo": str(repo)}))
@@ -859,7 +906,6 @@ def lesson_repo(station):
 @pytest.mark.parametrize("status,origin,full", [
     ("proposed", "git@github.com:owner/project.git", True),
     ("accepted", "https://forge.example/owner/project.git", False),
-    ("accepted", None, False),
 ])
 def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, monkeypatch, caplog,
                                                       status, origin, full):
@@ -880,9 +926,8 @@ def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, mo
         ("## W2. Keep the latest check\n" if full else "## W2. \n") +
         "lesson: Wait for the current commit.\nKeep its run id.\nproposal: Add a guard in the waiter.\n" +
         ("evidence:\n- task one, round 2\n- task two, finding R1\ncaveats: Only CI waits.\n" if full else ""))
-    if origin:
-        subprocess.run(["git", "-C", str(lesson_repo), "remote", "add", "origin", origin],
-                       check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(lesson_repo), "remote", "set-url", "origin", origin],
+                   check=True, capture_output=True)
     control.write_text(json.dumps({"lesson_stdout": "Accepted the lesson", "start_stdout": "  Started work  "}))
     before = client.get("/api/research").json()
     assert before["repos"] == [{"name": lesson_repo.name, "path": str(lesson_repo)}]
