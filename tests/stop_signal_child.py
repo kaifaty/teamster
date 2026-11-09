@@ -53,12 +53,15 @@ def timed(sleep, seconds):
 def traced(sleep, seconds, position=None):
     """Call sleep(seconds) under a line tracer for the frames it enters.
 
-    With a position, raise SIGINT at that line event. Without one, count the
-    line events before sleep blocks; a SIGINT from another thread then ends it.
+    A handled SIGUSR1 at 0.5 s wakes sleep once, so the lines that run after a
+    wakeup are swept too. With a position, raise SIGINT at that line event.
+    Without one, count the line events until sleep blocks again; a SIGINT from
+    another thread then ends it.
     """
     lines = [0]
     fired = []
-    timer = None
+    handled = []
+    signal.signal(signal.SIGUSR1, lambda signum, frame: handled.append(signum))
 
     def local(frame, event, arg):
         if fired:
@@ -70,12 +73,17 @@ def traced(sleep, seconds, position=None):
                 signal.raise_signal(signal.SIGINT)
         return local
 
-    if position is None:
-        def send():
+    def send():
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGUSR1)
+        if position is None:
+            while not handled:
+                time.sleep(0.01)
+            time.sleep(1.0)
             fired.append(None)
             os.kill(os.getpid(), signal.SIGINT)
-        timer = threading.Timer(1.0, send)
-        timer.start()
+    sender = threading.Thread(target=send)
+    sender.start()
     started = time.monotonic()
     # Only frames entered after this call are traced: sleep and its callees.
     sys.settrace(lambda frame, event, arg: None if fired else local)
@@ -84,8 +92,7 @@ def traced(sleep, seconds, position=None):
     finally:
         sys.settrace(None)
     elapsed = time.monotonic() - started
-    if timer is not None:
-        timer.join()
+    sender.join()
     return {"position": position, "lines": lines[0], "fired": bool(fired), "result": result, "elapsed": elapsed}
 
 
