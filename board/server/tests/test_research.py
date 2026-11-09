@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -166,7 +167,7 @@ def test_missing_empty_and_linked_archives_give_an_empty_view(tmp_path, make):
     view = Research(tasks, reflection_task="weekly").view()
     assert view == {"lessons": [], "batch": None,
                     "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
-                    "studies": [], "reflection_task": "weekly"}
+                    "studies": [], "reflection_task": "weekly", "schedule": None}
 
 
 def test_linked_and_broken_index_and_batch_files_are_skipped(tmp_path):
@@ -313,3 +314,149 @@ def test_studies_are_capped_newest_first_without_an_archive(tmp_path):
     assert studies[0]["messages"] == [{"at": 22, "from": "lead", "text": None, "status": None,
                                        "questions": [], "lessons": [], "file": None}]
     assert (studies[0]["mode"], studies[0]["records"], studies[0]["waiting"], studies[0]["error"]) == ("batch", 0, False, None)
+
+
+@pytest.fixture
+def local_timezone(monkeypatch):
+    with monkeypatch.context() as environment:
+        def use(zone):
+            environment.setenv("TZ", zone)
+            time.tzset()
+
+        use("Etc/GMT-3")
+        yield use
+    time.tzset()
+
+
+def write_schedule(root, rows, directory="account/org"):
+    path = root / "claude-code-sessions" / directory / "scheduled-tasks.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"scheduledTasks": rows}))
+    return path
+
+
+def test_schedule_selects_id_latest_run_and_enabled_tie(tmp_path, monkeypatch, local_timezone):
+    now = datetime(2026, 11, 9, 6, 10, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(research_module.time, "time", lambda: now)
+    desktop = tmp_path / "desktop"
+    row = {"id": "weekly", "cronExpression": "  0 9 * * *  ", "enabled": True,
+           "displayName": "Daily reflection", "lastRunAt": "2026-11-09T06:09:39.700Z",
+           "lastScheduledFor": "2026-11-09T06:00:00.000Z"}
+    write_schedule(desktop, [dict(row, lastRunAt="2026-11-08T06:00:00Z")], "a/org")
+    write_schedule(desktop, [dict(row, enabled=False)], "b/org")
+    write_schedule(desktop, [dict(row, id="unrelated", lastRunAt="2026-11-10T06:00:00Z"),
+                             dict(row, cronExpression=42), dict(row, enabled=1), row], "b/other-org")
+    schedule = Research(tmp_path / "tasks", reflection_task="weekly", claude_desktop_dir=desktop).view()["schedule"]
+    assert schedule == {
+        "source": "desktop", "name": "Daily reflection", "cron": "0 9 * * *", "enabled": True,
+        "last_run_at": datetime(2026, 11, 9, 6, 9, 39, 700000, tzinfo=timezone.utc).timestamp(),
+        "last_scheduled_for": datetime(2026, 11, 9, 6, tzinfo=timezone.utc).timestamp(),
+        "next_at": datetime(2026, 11, 10, 6, tzinfo=timezone.utc).timestamp(),
+    }
+
+
+def test_disabled_schedule_keeps_cron_and_invalid_optional_fields_are_null(tmp_path):
+    write_schedule(tmp_path, [{"id": "codex-batch-reflection", "cronExpression": "0 9 * * *", "enabled": False,
+                               "displayName": [], "lastRunAt": 42, "lastScheduledFor": "invalid"}])
+    assert Research(tmp_path / "tasks", claude_desktop_dir=tmp_path).view()["schedule"] == {
+        "source": "desktop", "name": None, "cron": "0 9 * * *", "enabled": False,
+        "last_run_at": None, "last_scheduled_for": None, "next_at": None,
+    }
+
+
+@pytest.mark.parametrize("make", ["unconfigured", "missing directory", "missing file", "other id",
+                                  "broken json", "oversized", "wrong shape"])
+def test_missing_and_invalid_schedule_files_give_null(tmp_path, make):
+    desktop = tmp_path / "desktop"
+    if make not in ("unconfigured", "missing directory"):
+        path = write_schedule(desktop, [{"id": "other", "cronExpression": "* * * * *", "enabled": True}])
+        if make == "missing file":
+            path.unlink()
+        elif make == "broken json":
+            path.write_text("{broken")
+        elif make == "oversized":
+            path.write_text(" " * (1024 * 1024) + path.read_text().replace('"other"', '"codex-batch-reflection"'))
+        elif make == "wrong shape":
+            path.write_text('{"scheduledTasks": {"id": "codex-batch-reflection"}}')
+    research = Research(tmp_path / "tasks", claude_desktop_dir=None if make == "unconfigured" else desktop)
+    assert research.view()["schedule"] is None
+
+
+@pytest.mark.parametrize("component", ["desktop", "claude-code-sessions", "account", "org", "scheduled-tasks.json"])
+def test_schedule_symlinks_are_not_read(tmp_path, component, monkeypatch):
+    desktop = tmp_path / "desktop"
+    path = write_schedule(desktop, [{"id": "codex-batch-reflection", "cronExpression": "* * * * *", "enabled": True}])
+    target = next(part for part in (path, *path.parents) if part.name == component)
+    outside = tmp_path / "outside"
+    target.rename(outside)
+    target.symlink_to(outside, target_is_directory=outside.is_dir())
+    reads = counting(monkeypatch)
+    assert Research(tmp_path / "tasks", claude_desktop_dir=desktop).view()["schedule"] is None
+    assert reads == []
+
+
+@pytest.mark.parametrize("cron,now,expected", [
+    ("0 9 * * *", "2026-11-09T06:00:00+00:00", "2026-11-10T06:00:00+00:00"),
+    ("*/15 * * * *", "2026-11-09T06:09:39.700+00:00", "2026-11-09T06:15:00+00:00"),
+    ("30 8 * * 1-5", "2026-11-13T05:30:00+00:00", "2026-11-16T05:30:00+00:00"),
+    ("0 10 1 * 1", "2026-11-09T06:00:00+00:00", "2026-11-09T07:00:00+00:00"),
+    ("0 10 1 * 1", "2026-11-30T08:00:00+00:00", "2026-12-01T07:00:00+00:00"),
+    ("5,20-40/10 8-10/2 * 11 1-5", "2026-11-09T05:30:00+00:00", "2026-11-09T05:40:00+00:00"),
+    ("0 10 * * 0,7", "2026-11-09T06:00:00+00:00", "2026-11-15T07:00:00+00:00"),
+    ("0 9 31 2 *", "2026-11-09T06:00:00+00:00", None),
+    ("@daily", "2026-11-09T06:00:00+00:00", None),
+    ("0 9 * * MON", "2026-11-09T06:00:00+00:00", None),
+    ("0 9 * JAN *", "2026-11-09T06:00:00+00:00", None),
+    ("0 0 9 * * *", "2026-11-09T06:00:00+00:00", None),
+    ("60 9 * * *", "2026-11-09T06:00:00+00:00", None),
+    ("*/0 * * * *", "2026-11-09T06:00:00+00:00", None),
+])
+def test_schedule_next_at_in_local_time(tmp_path, monkeypatch, local_timezone, cron, now, expected):
+    monkeypatch.setattr(research_module.time, "time", lambda: datetime.fromisoformat(now).timestamp())
+    write_schedule(tmp_path, [{"id": "codex-batch-reflection", "cronExpression": cron, "enabled": True}])
+    schedule = Research(tmp_path / "tasks", claude_desktop_dir=tmp_path).view()["schedule"]
+    assert schedule["cron"] == cron
+    assert schedule["next_at"] == (datetime.fromisoformat(expected).timestamp() if expected else None)
+
+
+@pytest.mark.parametrize("cron,now,expected", [
+    ("30 2 * * *", "2026-03-08T05:00:00+00:00", "2026-03-09T06:30:00+00:00"),
+    ("*/15 * * * *", "2026-11-01T05:20:00+00:00", "2026-11-01T05:30:00+00:00"),
+    ("*/15 * * * *", "2026-11-01T06:05:00+00:00", "2026-11-01T06:15:00+00:00"),
+])
+def test_schedule_dst_gaps_and_repeated_times(local_timezone, cron, now, expected):
+    local_timezone("EST5EDT,M3.2.0/2,M11.1.0/2")
+    assert research_module.next_cron(cron, datetime.fromisoformat(now).timestamp()) == datetime.fromisoformat(expected).timestamp()
+
+
+def test_schedule_rebuilds_next_at_but_reads_only_changed_files(tmp_path, monkeypatch, local_timezone):
+    wall = [datetime(2026, 11, 9, 5, 59, tzinfo=timezone.utc).timestamp()]
+    clock = [100.0]
+    monkeypatch.setattr(research_module.time, "time", lambda: wall[0])
+    monkeypatch.setattr(research_module.time, "monotonic", lambda: clock[0])
+    row = {"id": "codex-batch-reflection", "cronExpression": "0 9 * * *", "enabled": True}
+    path = write_schedule(tmp_path, [row])
+    reads = counting(monkeypatch)
+    research = Research(tmp_path / "tasks", seconds=30, claude_desktop_dir=tmp_path)
+    first = research.view()
+    assert first["schedule"]["next_at"] == wall[0] + 60
+    wall[0] += 120
+    clock[0] += 29
+    assert research.view() is first
+    clock[0] += 1
+    assert research.view()["schedule"]["next_at"] == first["schedule"]["next_at"] + 24 * 3600
+    assert reads == ["org"]
+    row["cronExpression"] = "0 8 * * *"
+    write_schedule(tmp_path, [row])
+    os.utime(path, ns=(1, 1))
+    clock[0] += 30
+    assert research.view()["schedule"]["next_at"] == first["schedule"]["next_at"] + 23 * 3600
+    row["cronExpression"] = "*/15 * * * *"
+    write_schedule(tmp_path, [row])
+    os.utime(path, ns=(1, 1))
+    clock[0] += 30
+    assert research.view()["schedule"]["next_at"] == wall[0] + 14 * 60
+    assert reads == ["org", "org", "org"]
+    path.unlink()
+    clock[0] += 30
+    assert research.view()["schedule"] is None

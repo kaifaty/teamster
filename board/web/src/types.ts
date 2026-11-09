@@ -188,6 +188,17 @@ export interface Study {
   messages: StudyMessage[]; // the order first, then reports and replies by at
 }
 
+/** The Claude desktop task that schedules batch reflection, in the server's local time zone. */
+export interface ReflectionSchedule {
+  source: "desktop";
+  name: string | null;
+  cron: string;
+  enabled: boolean;
+  last_run_at: number | null;
+  last_scheduled_for: number | null;
+  next_at: number | null;
+}
+
 export interface ResearchView {
   lessons: Lesson[];
   studies: Study[];
@@ -196,6 +207,8 @@ export interface ResearchView {
   pending: { records: number; signals: number; repos: Record<string, number>; items: PendingRecord[] };
   /** Sessions whose `scheduled` is this id are runs of the reflection. */
   reflection_task: string;
+  /** Absent on older servers; null when no matching desktop task exists. */
+  schedule?: ReflectionSchedule | null;
 }
 
 export interface CargoCheck {

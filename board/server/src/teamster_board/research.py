@@ -8,6 +8,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .store import Store, alive, number, objects, text
@@ -24,6 +25,7 @@ BATCH_LIMIT = 64 * 1024
 PENDING_ITEMS = 50
 STUDY_LIMIT = 20
 STUDY_SECONDS = 30 * 24 * 3600
+SCHEDULE_LIMIT = 1024 * 1024
 
 
 def load_json(path):
@@ -168,9 +170,90 @@ def batch_through(content):
     return None
 
 
+def schedule_timestamp(value):
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.timestamp() if parsed.tzinfo is not None else None
+        except (ValueError, OverflowError, OSError):
+            pass
+    return None
+
+
+def reflection_schedule(row):
+    cron, enabled = row.get("cronExpression"), row.get("enabled")
+    if not isinstance(cron, str) or type(enabled) is not bool:
+        return None
+    name = row.get("displayName")
+    return {"source": "desktop", "name": name if isinstance(name, str) else None,
+            "cron": cron.strip(), "enabled": enabled,
+            "last_run_at": schedule_timestamp(row.get("lastRunAt")),
+            "last_scheduled_for": schedule_timestamp(row.get("lastScheduledFor"))}
+
+
+def cron_field(value, low, high):
+    result = set()
+    for part in value.split(","):
+        match = re.fullmatch(r"(\*|[0-9]+(?:-[0-9]+)?)(?:/([0-9]+))?", part)
+        if match is None:
+            raise ValueError("Invalid cron field")
+        span, step = match.groups()
+        if step is not None and span != "*" and "-" not in span:
+            raise ValueError("Cron steps require a wildcard or range")
+        step = int(step) if step is not None else 1
+        if span == "*":
+            start, end = low, high
+        else:
+            bounds = span.split("-")
+            start, end = int(bounds[0]), int(bounds[-1])
+        if not low <= start <= end <= high or step < 1:
+            raise ValueError("Cron field out of range")
+        result.update(range(start, end + 1, step))
+    return sorted(result)
+
+
+def next_cron(cron, now):
+    fields = cron.split()
+    if len(fields) != 5:
+        return None
+    try:
+        minutes, hours, days, months, weekdays = [
+            cron_field(value, low, high)
+            for value, (low, high) in zip(fields, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7)))
+        ]
+    except ValueError:
+        return None
+    weekdays = {day % 7 for day in weekdays}
+    # Vixie cron uses AND when either day field starts with a wildcard, otherwise OR.
+    wildcard_day = fields[2].startswith("*") or fields[4].startswith("*")
+    deadline = now + 366 * 24 * 3600
+    day = datetime.fromtimestamp(now).date()
+    last_day = datetime.fromtimestamp(deadline).date()
+    while day <= last_day:
+        dom, dow = day.day in days, (day.weekday() + 1) % 7 in weekdays
+        matches_day = dom and dow if wildcard_day else dom or dow
+        if day.month in months and matches_day:
+            nearest = None
+            for hour in hours:
+                for minute in minutes:
+                    local = (day.year, day.month, day.day, hour, minute, 0)
+                    # Round trips reject DST gaps; both folds can contain the next instant.
+                    for is_dst in (-1, 0, 1):
+                        at = time.mktime((*local, 0, 0, is_dst))
+                        if (now < at <= deadline and time.localtime(at)[:6] == local
+                                and (nearest is None or at < nearest)):
+                            nearest = at
+            if nearest is not None:
+                return nearest
+        day += timedelta(days=1)
+    return None
+
+
 class Research:
-    def __init__(self, tasks_path, reflection_task="codex-batch-reflection", seconds=30):
+    def __init__(self, tasks_path, reflection_task="codex-batch-reflection", seconds=30,
+                 claude_desktop_dir=None):
         self.tasks_path = Path(tasks_path)
+        self.claude_desktop_dir = Path(claude_desktop_dir) if claude_desktop_dir is not None else None
         self.reflection_task = reflection_task
         self.seconds = seconds
         self.lock = threading.Lock()
@@ -178,6 +261,7 @@ class Research:
         self._batches = {}
         self._records = {}
         self._messages = {}
+        self._schedules = {}
         self._view = None
         self._next_scan = 0.0
 
@@ -192,17 +276,18 @@ class Research:
     def _empty(self):
         return {"lessons": [], "batch": None,
                 "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
-                "studies": [], "reflection_task": self.reflection_task}
+                "studies": [], "reflection_task": self.reflection_task, "schedule": None}
 
     def _scan(self):
+        view = self._empty()
+        view["schedule"] = self._schedule()
         archive = self.tasks_path / ".archive"
         if self.tasks_path.is_symlink():
-            return self._empty()
+            return view
         try:
             names = [] if archive.is_symlink() else sorted(path.name for path in archive.iterdir())
         except OSError:
             names = []
-        view = self._empty()
         view["lessons"] = self._lessons(archive)
         batches = sorted(self._batch_files(archive, names), key=lambda item: (item[1] or "", item[0]))
         records = [(match.group(1), match.group(2), name)
@@ -262,6 +347,45 @@ class Research:
                                  key=lambda study: (study["created"], study["updated_at"], study["slug"]),
                                  reverse=True)[:STUDY_LIMIT]
         return view
+
+    def _schedule(self):
+        root = self.claude_desktop_dir
+        if root is None or root.is_symlink():
+            self._schedules.clear()
+            return None
+        found = []
+        present = set()
+        for account in Store._directories(root / "claude-code-sessions"):
+            for directory in Store._directories(account):
+                path = Store._file(directory, "scheduled-tasks.json")
+                if path is None:
+                    continue
+                try:
+                    current = signature(path)
+                except OSError:
+                    continue
+                present.add(path)
+                cached = self._schedules.get(path)
+                if cached is None or cached[0] != current:
+                    values = []
+                    if current[1] <= SCHEDULE_LIMIT:
+                        try:
+                            raw = load_json(path)
+                            if isinstance(raw, dict):
+                                values = [schedule for row in objects(raw.get("scheduledTasks"))
+                                          if row.get("id") == self.reflection_task
+                                          and (schedule := reflection_schedule(row)) is not None]
+                        except (OSError, ValueError, RecursionError):
+                            pass
+                    cached = (current, values)
+                    self._schedules[path] = cached
+                found.extend(cached[1])
+        self._schedules = {path: value for path, value in self._schedules.items() if path in present}
+        if not found:
+            return None
+        schedule = max(found, key=lambda row: (row["last_run_at"] if row["last_run_at"] is not None
+                                              else float("-inf"), row["enabled"]))
+        return {**schedule, "next_at": next_cron(schedule["cron"], time.time()) if schedule["enabled"] else None}
 
     def _lessons(self, archive):
         path = Store._file(archive, "INDEX.md")
