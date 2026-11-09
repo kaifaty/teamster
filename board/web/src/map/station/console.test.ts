@@ -91,6 +91,24 @@ describe("a lesson's card", () => {
     desk.dispose();
   });
 
+  it("keeps the tab when the last lesson to decide is declined", async () => {
+    const { desk, act, lesson, update } = setup();
+    update((view) => view.lessons.forEach((item) => item.entry !== T1 && item.status === "proposed" && (item.status = "accepted")));
+    const t1 = lesson(T1);
+    // The refresh inside the action moves the lesson, and the watchers run before the card holds it.
+    act.mockImplementationOnce(async () => {
+      update((view) => (view.lessons.find((item) => item.entry === T1)!.status = "declined"));
+      await nextTick();
+      return { ok: true, output: "" };
+    });
+    desk.openForm(t1, "decline");
+    await desk.decline(t1);
+    await nextTick();
+    expect(desk.labStage.value).toBe("proposed");
+    expect(desk.shown.value.map((item) => item.entry)).toEqual([T1]);
+    desk.dispose();
+  });
+
   it("marks an accepted lesson applied, and «Отменить» takes it back to accepted", async () => {
     const { desk, act, lesson } = setup();
     const u1 = lesson(U1);

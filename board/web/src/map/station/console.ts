@@ -231,7 +231,6 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
 
   // ---- the lessons' cards
 
-  const lessonId = (lesson: Lesson) => filed.value.get(lesson.entry.trim())?.id ?? lesson.entry.trim().split(/\s+/).pop() ?? lesson.entry;
 
   const cards = reactive<Record<string, CardState>>({});
   const cardOf = (lesson: Lesson): Readonly<CardState> => cards[lesson.entry.trim()] ?? BLANK_CARD;
@@ -355,11 +354,13 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     }
     return list;
   });
-  // New proposals bring the lab back to the decisions, unless the human looks at another stage that has lessons.
+  // New proposals bring the lab back to the decisions, unless the human looks at another stage that has lessons. A
+  // card's own action empties its tab before the card holds the lesson: the tab stays for its «Отменить».
   watch(
     () => research.value.proposed.length,
     (count, before) => {
-      if (count > (before ?? 0) || !shown.value.length) labStage.value = firstStage();
+      const acting = Object.values(cards).some((card) => card.busy);
+      if (count > (before ?? 0) || (!shown.value.length && !acting)) labStage.value = firstStage();
     },
   );
   function showStage(stage: Stage) {
@@ -439,7 +440,6 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     echoOf,
     replyReach,
     sendReply,
-    lessonId,
     cardOf,
     openForm,
     setNote,
