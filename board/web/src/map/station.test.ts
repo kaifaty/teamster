@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { Lesson, Study, StudyMessage } from "../types";
+import type { Implementation, Lesson, Study, StudyMessage } from "../types";
 import { fixtureSource } from "../fixtures/source";
 import { research } from "./research";
 import {
   analystOnDuty,
+  canImplement,
+  defaultRepo,
   filedLessons,
+  implementBody,
+  implementationLine,
   signalTally,
   stationCounts,
   workingSince,
@@ -176,7 +180,7 @@ describe("stationCounts", () => {
   it("counts the open questions of every waiting study and the material in the hold", async () => {
     const station = research(await fixtureSource().fetchResearch(), [], [])!;
     expect(stationCounts(station)).toEqual({
-      questions: 1, waiting: 1, proposed: 3, accepted: 1, applied: 2, declined: 1, records: 7, signals: 4,
+      questions: 1, waiting: 1, proposed: 3, accepted: 6, applied: 2, declined: 1, records: 7, signals: 4,
     });
   });
 });
@@ -222,10 +226,63 @@ describe("workingSince", () => {
   });
 });
 
+const task = (patch: Partial<Implementation> = {}): Implementation => ({
+  slug: "lesson-u1", archived: false, alive: false, repo: "teamster", result_status: null, pr: null, questions: [], summary: null, created: 100, updated_at: 200,
+  ...patch,
+});
+
+describe("a lesson's implementation", () => {
+  const repos = [
+    { name: "teamster", path: "/dev/teamster" },
+    { name: "demo-game", path: "/dev/demo-game" },
+  ];
+
+  it("sends the entry and the repository's path, and the note only when there is one", () => {
+    expect(implementBody(" batch.md U1 ", "/dev/teamster", "  ")).toEqual({ entry: "batch.md U1", repo: "/dev/teamster" });
+    expect(implementBody("batch.md U1", "/dev/teamster", " only the docs ")).toEqual({ entry: "batch.md U1", repo: "/dev/teamster", note: "only the docs" });
+  });
+
+  it("starts «Где внедрять» at a domain lesson's own repository, at teamster for a shared one, or empty", () => {
+    expect(defaultRepo({ scope: "domain", repos: ["gone", "demo-game"] }, repos)).toBe("/dev/demo-game");
+    expect(defaultRepo({ scope: "invariant", repos: [] }, repos)).toBe("/dev/teamster");
+    expect(defaultRepo({ scope: "domain", repos: ["gone"] }, repos)).toBe("");
+    expect(defaultRepo({ scope: "other", repos: [] }, [repos[1]!])).toBe("");
+  });
+
+  it("offers «Внедрить» only without an implementation or after a closed one", () => {
+    expect(canImplement({})).toBe(true);
+    expect(canImplement({ implementation: null })).toBe(true);
+    expect(canImplement({ implementation: task({ result_status: "done" }) })).toBe(false);
+    expect(canImplement({ implementation: task({ archived: true }) })).toBe(true);
+  });
+
+  it("tells how the implementation goes by the first state that fits", () => {
+    expect(implementationLine(null)).toBeNull();
+    expect(implementationLine(null, { slug: "lesson-u1", repo: "teamster" })).toMatchObject({ kind: "started", text: "Внедряется: lesson-u1 · teamster" });
+    expect(implementationLine(task({ alive: true, result_status: "needs_decision", repo: "demo-game" }))).toMatchObject({ kind: "working", text: "Агент работает · demo-game", answer: false });
+    expect(implementationLine(task({ result_status: "needs_decision", questions: ["Where?"] }))).toEqual({
+      kind: "decision", text: "Агенту нужно решение", questions: ["Where?"], answer: true,
+    });
+    expect(implementationLine(task({ result_status: "done", pr: "https://github.com/o/r/pull/41", archived: true }))).toEqual({
+      kind: "pr", pr: "https://github.com/o/r/pull/41", label: "PR #41", before: "PR готов: ", after: ". Проверь и смёржи, затем отметь «Внедрено».", answer: false,
+    });
+    expect(implementationLine(task({ result_status: "done" }))).toMatchObject({ kind: "stopped", text: "Агент остановился (done)" });
+    expect(implementationLine(task({ result_status: "blocked", summary: "No dump" }))).toEqual({
+      kind: "stopped", text: "Агент остановился (blocked)", summary: "No dump", answer: true,
+    });
+    expect(implementationLine(task({ archived: true, result_status: "partial", pr: "https://github.com/o/r/pull/7" }))).toEqual({
+      kind: "closed", text: "Задача закрыта", pr: "https://github.com/o/r/pull/7", label: "PR #7", answer: false,
+    });
+    expect(implementationLine(task({ archived: true, result_status: "needs_decision" }))).toMatchObject({ kind: "closed", pr: null });
+    // The research carries the task the card started: its own state wins.
+    expect(implementationLine(task({ alive: true }), { slug: "lesson-u1", repo: "teamster" })).toMatchObject({ kind: "working" });
+  });
+});
+
 describe("nextStep", () => {
   const clock = { state: "counting" as const, when: "завтра в 09:00" };
-  const lesson = (status: Lesson["status"]): Lesson => ({
-    date: "2026-11-09", entry: `batch-2026-11-09.md ${status}`, scope: "invariant", scope_text: "invariant", repos: [], cue: "cue", status, status_text: status,
+  const lesson = (status: Lesson["status"], implementation: Implementation | null = null, id = status): Lesson => ({
+    date: "2026-11-09", entry: `batch-2026-11-09.md ${id}`, scope: "invariant", scope_text: "invariant", repos: [], cue: "cue", status, status_text: status, implementation,
   });
 
   it("asks for an answer, then decisions, then shows the work, then the lessons to apply, then the plan", async () => {
@@ -242,6 +299,31 @@ describe("nextStep", () => {
     const quiet = { ...busy, studies: [], running: false };
     expect(nextStep(quiet, 1000, clock)).toMatchObject({ text: "Приняты и ждут внедрения: 1", action: { kind: "accepted", label: "Показать" } });
     expect(nextStep({ ...quiet, accepted: [] }, 1000, clock)).toEqual({ text: "Всё разобрано. Плановый разбор завтра в 09:00", action: null, tone: "" });
+  });
+
+  it("puts the implementations' agents in their places: a decision after the analyst, the work and the PR after the analyst's work", async () => {
+    const base = research(await fixtureSource().fetchResearch(), [], [])!;
+    const waiting = study({ slug: "q", waiting: true, messages: [lead(100, "Why do checks repeat?"), asking] });
+    const working = study({ slug: "w", alive: true, messages: [lead(100, "Compare CI"), analyst(400)] });
+    const asks = lesson("accepted", task({ result_status: "needs_decision" }), "U2");
+    const ready = lesson("accepted", task({ result_status: "done", pr: "https://github.com/o/r/pull/9" }), "U3");
+    const live = lesson("accepted", task({ alive: true }), "U4");
+    const station = { ...base, studies: [working, waiting], running: true, proposed: [lesson("proposed")], accepted: [ready, live, asks, lesson("accepted")] };
+
+    expect(nextStep(station, 1000, clock).text).toBe("Аналитик ждёт ответа: Why do checks repeat?");
+    const deciding = { ...station, studies: [working] };
+    expect(nextStep(deciding, 1000, clock)).toMatchObject({ text: "Агенту нужно решение: урок U2", action: { kind: "agent", label: "Ответить", lesson: asks } });
+    const proposing = { ...deciding, accepted: [ready, live, lesson("accepted")] };
+    expect(nextStep(proposing, 1000, clock).text).toBe("Уроков ждут решения: 1");
+    const busy = { ...proposing, proposed: [] };
+    expect(nextStep(busy, 1000, clock).text).toBe("Аналитик работает: Compare CI · 10 мин");
+    const agents = { ...busy, studies: [], running: false };
+    expect(nextStep(agents, 1000, clock)).toEqual({ text: "Агент внедряет урок U4", action: null, tone: "live" });
+    const many = { ...agents, accepted: [...agents.accepted, lesson("accepted", task({ alive: true }), "U5")] };
+    expect(nextStep(many, 1000, clock).text).toBe("Агенты внедряют уроки: 2");
+    const done = { ...agents, accepted: [ready, lesson("accepted")] };
+    expect(nextStep(done, 1000, clock)).toMatchObject({ text: "PR готов по уроку U3", action: { kind: "pr", label: "Показать", lesson: ready } });
+    expect(nextStep({ ...done, accepted: [lesson("accepted")] }, 1000, clock).text).toBe("Приняты и ждут внедрения: 1");
   });
 });
 

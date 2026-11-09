@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// A lesson's buttons, the same on its lab card and its docket: a proposed lesson is accepted, declined or
-// discussed, an accepted one is marked applied. Each button acts at once; for a few seconds after it the card
-// offers to take the decision back.
+// A lesson's buttons, the same on its lab card and its docket: a proposed lesson is implemented, accepted, declined
+// or discussed, an accepted one is implemented or marked applied. «Внедрить» asks where and starts a task at once;
+// the other buttons act at once too, and for a few seconds after them the card offers to take the decision back.
 import { computed } from "vue";
 import type { Lesson } from "../../types";
 import { useConsole, type CardBusy } from "./console";
@@ -9,6 +9,7 @@ import CopiedNote from "./CopiedNote.vue";
 
 const props = defineProps<{ lesson: Lesson; stage: "proposed" | "accepted" }>();
 const desk = useConsole();
+const repos = computed(() => desk.repos.value);
 
 const card = computed(() => desk.cardOf(props.lesson));
 const busy = (what: CardBusy) => card.value.busy === what;
@@ -19,12 +20,19 @@ const note = computed({
   get: () => card.value.note,
   set: (text: string) => desk.setNote(props.lesson, text),
 });
+/** «Где внедрять», two-way: the picked repository's path. */
+const repo = computed({
+  get: () => card.value.repo,
+  set: (path: string) => desk.setRepo(props.lesson, path),
+});
+const implementTitle = computed(() => desk.implementOff.value ?? "Агент сделает изменение урока и откроет PR");
 
 function submit() {
   const form = card.value.form;
   if (form === "decline") void desk.decline(props.lesson);
   else if (form === "apply") void desk.apply(props.lesson);
   else if (form === "discuss") void desk.startDiscussion(props.lesson);
+  else if (form === "implement") void desk.implement(props.lesson, props.stage);
 }
 </script>
 
@@ -34,6 +42,22 @@ function submit() {
       {{ DONE[card.done.status] }} ·
       <button type="button" class="link" :class="{ busy: busy('undo') }" :disabled="!!card.busy" @click="desk.undo(lesson)">Отменить</button>
     </p>
+
+    <form v-else-if="card.form === 'implement'" class="form" @submit.prevent="submit" @keydown.esc.stop="desk.closeForm(lesson)">
+      <label class="field">
+        <span class="label">Где внедрять</span>
+        <select v-model="repo" :title="repo || 'Выбери репозиторий'" :disabled="!!card.busy">
+          <option value="" disabled>Выбери репозиторий</option>
+          <option v-for="item in repos" :key="item.path" :value="item.path" :title="item.path">{{ item.name }}</option>
+        </select>
+      </label>
+      <p class="hint">Правки вне репозиториев (~/.codex/AGENTS.md, ~/.claude/…) агент не делает — он перечислит их в отчёте.</p>
+      <textarea v-model="note" rows="2" placeholder="Уточнение — необязательно" aria-label="Уточнение" :disabled="!!card.busy"></textarea>
+      <span class="buttons">
+        <button type="submit" class="key gold" :class="{ busy: busy('implement') }" :disabled="!!card.busy || !repo">Запустить</button>
+        <button type="button" class="chip" :disabled="!!card.busy" @click="desk.closeForm(lesson)">Отмена</button>
+      </span>
+    </form>
 
     <form v-else-if="card.form" class="form" @submit.prevent="submit" @keydown.esc.stop="desk.closeForm(lesson)">
       <textarea
@@ -61,12 +85,33 @@ function submit() {
       </span>
     </form>
 
-    <div v-else-if="stage === 'proposed'" class="buttons">
-      <button type="button" class="key gold" :class="{ busy: busy('accept') }" :disabled="!!card.busy" @click="desk.accept(lesson)">Принять</button>
+    <!-- A proposed card that started its implementation waits to leave the tab. -->
+    <div v-else-if="stage === 'proposed' && !card.started" class="buttons">
+      <button
+        v-if="desk.offersImplement(lesson)"
+        type="button"
+        class="key gold"
+        :title="implementTitle"
+        :disabled="!!card.busy || !!desk.implementOff.value"
+        @click="desk.openForm(lesson, 'implement')"
+      >
+        Внедрить
+      </button>
+      <button type="button" class="key" title="Принять без запуска" :class="{ busy: busy('accept') }" :disabled="!!card.busy" @click="desk.accept(lesson)">Принять</button>
       <button type="button" class="chip" :disabled="!!card.busy" @click="desk.openForm(lesson, 'decline')">Отклонить</button>
       <button type="button" class="chip" :disabled="!!card.busy" @click="desk.discuss(lesson)">Обсудить</button>
     </div>
-    <div v-else class="buttons">
+    <div v-else-if="stage === 'accepted'" class="buttons">
+      <button
+        v-if="desk.offersImplement(lesson)"
+        type="button"
+        class="key gold"
+        :title="implementTitle"
+        :disabled="!!card.busy || !!desk.implementOff.value"
+        @click="desk.openForm(lesson, 'implement')"
+      >
+        Внедрить
+      </button>
       <button type="button" class="chip applied" title="Изменение уже сделано: отметить урок внедрённым" :disabled="!!card.busy" @click="desk.openForm(lesson, 'apply')">
         Внедрено
       </button>
@@ -98,6 +143,29 @@ function submit() {
 .form textarea {
   width: 100%;
   resize: vertical;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.field .label {
+  flex: none;
+  color: var(--st-dim);
+}
+
+.field select {
+  flex: 1;
+  min-width: 0;
+}
+
+.hint {
+  margin: 0;
+  color: var(--st-dim);
+  font-size: 12px;
 }
 
 .form .note {

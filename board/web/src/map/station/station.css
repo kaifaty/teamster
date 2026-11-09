@@ -161,6 +161,12 @@
   background: rgba(243, 198, 78, 0.26);
 }
 
+.station-screen .key.gold:disabled:not(.busy) {
+  border-color: rgba(155, 144, 124, 0.4);
+  background: none;
+  color: var(--st-faint);
+}
+
 .station-screen .link {
   padding: 0;
   border: 0;

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // The lab: every lesson the analyst proposed moves along one line — proposed, accepted, applied — or drops out
-// declined. The stages are the lab's tabs; a card's buttons act at once.
+// declined. The stages are the lab's tabs; a card's buttons act at once, and a card whose lesson an agent implements
+// shows how that goes.
 import type { Lesson } from "../../types";
 import { plural, shortDate, type Research } from "../research";
 import { useConsole, type Stage } from "./console";
 import LessonActions from "./LessonActions.vue";
+import LessonImplementation from "./LessonImplementation.vue";
 
 defineProps<{ research: Research }>();
 const emit = defineEmits<{ jump: [deck: "comms"] }>();
@@ -65,7 +67,7 @@ function toDocket(lesson: Lesson) {
       </p>
 
       <ul v-else class="cards">
-        <li v-for="lesson in desk.shown.value" :key="lesson.entry" class="card" :class="desk.labStage.value === 'declined' ? lesson.status : desk.labStage.value">
+        <li v-for="lesson in desk.shown.value" :key="lesson.entry" :data-entry="lesson.entry.trim()" class="card" :class="desk.labStage.value === 'declined' ? lesson.status : desk.labStage.value">
           <p class="title">{{ lesson.title || lesson.cue }}</p>
           <p v-if="lesson.title" class="cue">{{ lesson.cue }}</p>
           <p class="meta">
@@ -88,7 +90,10 @@ function toDocket(lesson: Lesson) {
           </template>
           <p v-if="desk.labStage.value !== 'proposed' && lesson.status_text && lesson.status_text !== lesson.status" class="status">{{ lesson.status_text }}</p>
 
-          <LessonActions v-if="desk.labStage.value === 'proposed' || desk.labStage.value === 'accepted'" :lesson="lesson" :stage="desk.labStage.value" />
+          <template v-if="desk.labStage.value === 'proposed' || desk.labStage.value === 'accepted'">
+            <LessonImplementation :lesson="lesson" />
+            <LessonActions :lesson="lesson" :stage="desk.labStage.value" />
+          </template>
         </li>
       </ul>
     </div>

@@ -135,6 +135,28 @@ export interface Lesson {
   proposal?: string | null;
   evidence?: string | null;
   caveats?: string | null;
+  /** The task that implements the lesson, the newest one; absent on older servers. */
+  implementation?: Implementation | null;
+}
+
+/** A teamster task started by «Внедрить» to make a lesson's change and open its PR. */
+export interface Implementation {
+  slug: string;
+  archived: boolean;
+  alive: boolean;
+  repo: string; // the repository's directory name
+  result_status: string | null; // "done" | "partial" | "needs_decision" | "blocked" | null
+  pr: string | null; // the PR's URL
+  questions: string[];
+  summary: string | null;
+  created: number;
+  updated_at: number;
+}
+
+/** A repository a lesson can be implemented in. */
+export interface ResearchRepo {
+  name: string;
+  path: string;
 }
 
 /** The newest batch reflection. */
@@ -207,6 +229,8 @@ export interface ReflectionSchedule {
 
 export interface ResearchView {
   lessons: Lesson[];
+  /** Where «Внедрить» can start a task; absent on older servers. */
+  repos?: ResearchRepo[];
   studies: Study[];
   batch: ResearchBatch | null;
   /** Archived records after the newest batch: the next batch's material. */

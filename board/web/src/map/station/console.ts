@@ -8,9 +8,12 @@ import { lessonCommand, sayCommand } from "../../lib/commands";
 import type { Lesson, Study } from "../../types";
 import type { Research } from "../research";
 import {
+  canImplement,
+  defaultRepo,
   discussOrder,
   filedLessons,
   firstStudy,
+  implementBody,
   lessonsByEntry,
   openQuestionsAt,
   orderAction,
@@ -39,8 +42,11 @@ export interface Copied {
   reason: string;
 }
 
-export type CardForm = "decline" | "apply" | "discuss";
+export type CardForm = "decline" | "apply" | "discuss" | "implement";
 export type CardBusy = CardForm | "accept" | "undo";
+
+/** Why «Внедрить» is off on a board that only reads: it has no command to copy. */
+export const IMPLEMENT_OFF = "Доска только читает: внедрение запускается только с доски, где действия включены";
 
 /** A lesson's card: its open form, the request in flight, and what came of the last one. */
 export interface CardState {
@@ -51,6 +57,20 @@ export interface CardState {
   /** The decision just taken, which «Отменить» takes back to `undo`. */
   done: { status: "accepted" | "declined" | "applied"; undo: "proposed" | "accepted" } | null;
   copied: Copied | null;
+  /** «Где внедрять»: a repository's path, empty until one is picked. */
+  repo: string;
+  /** The implementation this card started, shown until the research carries it. */
+  started: { slug: string; repo: string } | null;
+}
+
+/** The card's reply to its implementation's agent. */
+export interface AgentReplyState {
+  text: string;
+  busy: boolean;
+  error: string;
+  copied: Copied | null;
+  /** The task's turn the reply went to: the field stays off until the task moves on. */
+  sent: { slug: string; updated_at: number } | null;
 }
 
 /** The reply composer of one channel. */
@@ -83,7 +103,8 @@ async function clipboard(text: string): Promise<boolean> {
   }
 }
 
-const BLANK_CARD: Readonly<CardState> = Object.freeze({ form: null, note: "", busy: null, error: "", done: null, copied: null });
+const BLANK_CARD: Readonly<CardState> = Object.freeze({ form: null, note: "", busy: null, error: "", done: null, copied: null, repo: "", started: null });
+const BLANK_AGENT: Readonly<AgentReplyState> = Object.freeze({ text: "", busy: false, error: "", copied: null, sent: null });
 const BLANK_REPLY: Readonly<ReplyState> = Object.freeze({ busy: false, error: "", copied: null, echo: null });
 
 export function createConsole(research: Ref<Research>, now: Ref<number>, options: ConsoleOptions) {
@@ -244,7 +265,15 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
   function openForm(lesson: Lesson, form: CardForm) {
     const state = edit(lesson);
     if (state.busy) return;
-    Object.assign(state, { form, note: "", error: "", copied: null });
+    if (form === "implement" && !live.value) return;
+    // «Внедрено» after the agent's PR names the PR.
+    const note = form === "apply" ? (lesson.implementation?.pr ?? "") : "";
+    Object.assign(state, { form, note, error: "", copied: null });
+    if (form === "implement") state.repo = defaultRepo(lesson, research.value.repos);
+  }
+  function setRepo(lesson: Lesson, path: string) {
+    const state = edit(lesson);
+    if (state.form === "implement") state.repo = path;
   }
   function setNote(lesson: Lesson, text: string) {
     const state = edit(lesson);
@@ -314,6 +343,68 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     state.busy = null;
     if (outcome.kind === "error") state.error = outcome.error;
     else release(entry);
+  }
+
+  /** «Внедрить» is off on a board that only reads, with the reason as its hint. */
+  const implementOff = computed(() => (live.value ? null : IMPLEMENT_OFF));
+  /** Whether the card offers «Внедрить»: not while its implementation goes, nor while the one it started does not show yet. */
+  const offersImplement = (lesson: Lesson) => canImplement(lesson) && !(cardOf(lesson).started && cardOf(lesson).started!.slug !== lesson.implementation?.slug);
+
+  /** «Запустить»: the server builds the task from the lesson; a proposed lesson becomes accepted on the way. */
+  async function implement(lesson: Lesson, stage: "proposed" | "accepted") {
+    const state = edit(lesson);
+    if (state.busy || !live.value || !state.repo) return;
+    const entry = lesson.entry.trim();
+    const index = listOf(stage).findIndex((item) => item.entry.trim() === entry);
+    const repo = research.value.repos.find((item) => item.path === state.repo);
+    Object.assign(state, { busy: "implement", error: "", copied: null });
+    const result = await options.act("implement", implementBody(entry, state.repo, state.note));
+    state.busy = null;
+    if (!result.ok) {
+      state.error = result.error;
+      return;
+    }
+    Object.assign(state, { form: null, note: "", started: { slug: result.slug ?? "", repo: repo?.name ?? state.repo } });
+    // A proposed lesson moves to «к внедрению»: it stays on its tab a moment, like an accepted one.
+    if (stage === "proposed") hold(lesson, stage, index);
+  }
+
+  // ---- replies to an implementation's agent
+
+  const agents = reactive<Record<string, AgentReplyState>>({});
+  const agentOf = (lesson: Lesson): Readonly<AgentReplyState> => agents[lesson.entry.trim()] ?? BLANK_AGENT;
+  function agentEdit(lesson: Lesson): AgentReplyState {
+    const key = lesson.entry.trim();
+    if (!agents[key]) agents[key] = { ...BLANK_AGENT };
+    return agents[key]!;
+  }
+  function setAgentText(lesson: Lesson, text: string) {
+    agentEdit(lesson).text = text;
+  }
+  /** The reply went to the agent's present turn: nothing more to send until the task moves on. */
+  function agentSent(lesson: Lesson): boolean {
+    const sent = agentOf(lesson).sent;
+    const task = lesson.implementation;
+    return !!sent && !!task && !task.alive && task.slug === sent.slug && task.updated_at === sent.updated_at;
+  }
+
+  /** «Ответить» the implementation's agent: its task takes a say like a study. */
+  async function sayToAgent(lesson: Lesson) {
+    const task = lesson.implementation;
+    const state = agentEdit(lesson);
+    const text = state.text.trim();
+    if (!task || !text || state.busy || agentSent(lesson)) return;
+    const sent = { slug: task.slug, updated_at: task.updated_at };
+    Object.assign(state, { busy: true, error: "", copied: null });
+    const outcome = await run("say", { slug: task.slug, text }, sayCommand(task.slug, text));
+    state.busy = false;
+    if (outcome.kind === "error") {
+      state.error = outcome.error;
+      return;
+    }
+    state.text = "";
+    if (outcome.kind === "copied") state.copied = outcome.copied;
+    else state.sent = sent;
   }
 
   /** «Обсудить»: in the study that filed the lesson when it can take a reply, otherwise a new study. */
@@ -417,8 +508,11 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     timers.clear();
   }
 
+  const repos = computed(() => research.value.repos);
+
   return {
     studies,
+    repos,
     index,
     filed,
     live,
@@ -443,11 +537,19 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     cardOf,
     openForm,
     setNote,
+    setRepo,
     closeForm,
     accept,
     decline,
     apply,
     undo,
+    implementOff,
+    offersImplement,
+    implement,
+    agentOf,
+    setAgentText,
+    agentSent,
+    sayToAgent,
     discuss,
     startDiscussion,
     labStage,
