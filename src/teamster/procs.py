@@ -1,5 +1,6 @@
 """Process execution, signaling and bounded termination."""
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -59,3 +60,46 @@ def alive(pid):
     except PermissionError:
         return True
     return True
+
+
+class StopSignal:
+    """A stop request that a signal handler can set without taking any lock.
+
+    threading.Event guards its flag with a non-reentrant lock that Event.wait
+    holds briefly, so a handler calling set() during that window deadlocks.
+    Here the handler only assigns a boolean, and the wakeup fd wakes the sleep:
+    the C-level handler writes to it before any Python code runs.
+    """
+
+    def __init__(self):
+        self.requested = False
+        self._read, self._write = os.pipe()
+        os.set_blocking(self._read, False)
+        os.set_blocking(self._write, False)
+
+    def arm(self):
+        """Route signal wakeups to the pipe; call from the main thread before installing handlers."""
+        signal.set_wakeup_fd(self._write, warn_on_full_buffer=False)
+
+    def request(self):
+        self.requested = True
+
+    def sleep(self, seconds):
+        """Wait until seconds pass or a stop is requested; return whether one was."""
+        deadline = time.monotonic() + max(0, seconds)
+        while not self.requested:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            if select.select([self._read], [], [], left)[0]:
+                # Another handled signal, or a stop whose handler has run by
+                # the time the loop condition is read again: drain and recheck.
+                self._drain()
+        return self.requested
+
+    def _drain(self):
+        try:
+            while os.read(self._read, 512):
+                pass
+        except BlockingIOError:
+            pass
