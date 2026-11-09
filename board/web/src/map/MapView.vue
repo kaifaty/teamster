@@ -47,7 +47,7 @@ import {
   type Size,
   type TankShape,
 } from "./layout";
-import ResearchPanel from "./ResearchPanel.vue";
+import StationView from "./station/StationView.vue";
 import { isReflection, research, shortDate } from "./research";
 import { PLACES, placement, systemTasks, type Place, type Placement } from "./placement";
 import { replayExits, replayFleet } from "./replay";
@@ -59,7 +59,7 @@ import { useReplay } from "./useReplay";
 const props = defineProps<{ board: Board; active: boolean; machine?: string | null }>();
 /**
  * `machine`: a machine's reactor was clicked, with the label to give the focus back to; `panel`: the map opened a
- * task's card or the research station's panel, which replace the machine's card.
+ * task's card or the science station's screen, which replace the machine's card.
  */
 const emit = defineEmits<{ board: []; machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
 
@@ -87,7 +87,7 @@ watch(sourceKind, async (kind) => {
   }
 });
 const source = computed(() => (sourceKind.value === "scenario" && scenario.value ? scenario.value : props.board));
-// What the reflection learned. Runs of the reflection are the research station's own work, not a system's.
+// What the reflection learned. Runs of the reflection are the science station's own work, not a system's.
 const researchView = shallowRef<ResearchView | null>(null);
 async function loadResearch() {
   const from = source.value.source;
@@ -219,15 +219,12 @@ const hideImage = (event: Event) => {
 };
 
 const station = computed(() => research(researchView.value, allTasks.value, starList.value.map((star) => star.repo)));
-// The beams to the systems with records for the next reflection show only while its panel is open: the galaxy itself
-// keeps to its stars.
 const researchMarks = computed(() =>
   station.value
     ? {
         running: station.value.running,
         proposed: station.value.proposed.length,
         waiting: station.value.waiting,
-        watched: researchOpen.value ? station.value.watched : [],
         probes: station.value.probes,
       }
     : null,
@@ -343,7 +340,7 @@ const starLabels = computed(() => {
 
 /**
  * A constellation's name beside its stars, centred on them: above them, or else below, left or right of them, on the
- * first side where it meets neither the research station nor the columns and panels, nor leaves the world.
+ * first side where it meets neither the science station nor the columns and panels, nor leaves the world.
  */
 const constellationLabels = computed(() => {
   const layout = galaxy.value;
@@ -388,7 +385,7 @@ const stationLabel = computed(() => {
   const last = marks.batch ? `разбор ${shortDate(marks.batch.date)}` : "разборов не было";
   const proposed = marks.proposed.length;
   const asks = marks.waiting;
-  // One note under the name, the most pressing one; the panel has the rest. A question waits on the human
+  // One note under the name, the most pressing one; the station's screen has the rest. A question waits on the human
   // before anything else.
   const note = asks ? `ждёт ответа ${asks}` : marks.running ? "идёт разбор" : proposed ? `ждут решения ${proposed}` : last;
   const title = [
@@ -547,8 +544,8 @@ const selected = ref<string | null>(null);
 const hovered = ref<string | null>(null);
 const selectedTask = computed(() => (selected.value ? (source.value.state.value.tasks[selected.value] ?? null) : null));
 
+/** A task's card; over the station's screen it stands on top, and closing it returns there. */
 function open(slug: string) {
-  researchOpen.value = false;
   selected.value = slug;
   emit("panel");
 }
@@ -577,6 +574,10 @@ function closeResearch() {
 function close() {
   const slug = selected.value;
   selected.value = null;
+  if (researchOpen.value) {
+    void nextTick(() => document.querySelector<HTMLElement>(".station-screen .back")?.focus());
+    return;
+  }
   void nextTick(() => {
     const row = slug ? host.value?.querySelector<HTMLElement>(`.fleet [data-ship="${CSS.escape(slug)}"]`) : null;
     (row ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus();
@@ -893,7 +894,7 @@ function feed() {
   scene.setSelected(selected.value);
   scene.setMachine(props.machine ?? null);
   scene.setHovered(hovered.value);
-  scene.setActive(props.active);
+  scene.setActive(props.active && !researchOpen.value);
 }
 
 function applyCamera(camera: Camera) {
@@ -968,6 +969,8 @@ function galaxyModel() {
 watch([starList, galaxy, tankMarks, fuelColumn, constellationList, researchMarks, machineMarks, machineColumn], () => scene?.setGalaxy(galaxyModel()));
 watch(() => props.machine, (id) => scene?.setMachine(id ?? null));
 watch(repoArt, (art) => scene?.setArt(art));
+// The station's screen covers the whole map: the galaxy under it stops drawing until it closes.
+watch(researchOpen, (open) => scene?.setActive(props.active && !open));
 watch(repo, (name) => scene?.setView(name), { flush: "sync" });
 watch(entries, setShips);
 watch(selected, (slug) => scene?.setSelected(slug));
@@ -981,7 +984,7 @@ watch(
       void loadConstellations();
       void loadResearch();
     }
-    scene?.setActive(active);
+    scene?.setActive(active && !researchOpen.value);
     if (!active) {
       replay.pause();
       selected.value = null;
@@ -1110,7 +1113,7 @@ onBeforeUnmount(() => {
             :aria-expanded="researchOpen"
             @click="openResearch"
           >
-            <span class="st-name">Исследовательский центр</span>
+            <span class="st-name">Научная станция</span>
             <span class="st-notes">{{ stationLabel.note }}</span>
           </button>
           <div
@@ -1234,7 +1237,15 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <ResearchPanel v-if="researchOpen && active && station" :research="station" :now="now" :frame="frameLight" @close="closeResearch" @open="open" />
+    <StationView
+      v-if="researchOpen && active && station"
+      :research="station"
+      :now="now"
+      :frame="frameLight"
+      :covered="!!selected || !!machine"
+      @close="closeResearch"
+      @open="open"
+    />
     <TaskPanel
       v-if="selected && active"
       :slug="selected"
@@ -1662,7 +1673,7 @@ onBeforeUnmount(() => {
   color: #b8ad98;
 }
 
-/* The research station's label: teal, like its glow; a gold note while lessons wait for a decision. */
+/* The science station's label: teal, like its glow; a gold note while lessons wait for a decision. */
 .station {
   display: flex;
   flex-direction: column;

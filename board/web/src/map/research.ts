@@ -1,7 +1,7 @@
-// The research station: what the reflection learned from finished tasks, what waits for a decision, and which
-// systems it watches. Pure data for the scene, the label and the panel.
+// The science station: what the reflection learned from finished tasks, what waits for a decision, and which
+// systems it watches. Pure data for the scene, the label and the station's screen.
 
-import type { Lesson, PendingRecord, ResearchBatch, ResearchView, Signal, Study, TaskSummary } from "../types";
+import type { Lesson, PendingRecord, ReflectionSchedule, ResearchBatch, ResearchView, Signal, Study, TaskSummary } from "../types";
 
 /** The scheduled task of the reflection when the server does not name it. */
 export const REFLECTION_TASK = "codex-batch-reflection";
@@ -34,7 +34,10 @@ export interface Research {
   declined: Lesson[];
   other: Lesson[];
   batch: ResearchBatch | null;
-  pending: { records: number; signals: number; items: PendingRecord[] };
+  /** The planned reflection; null when the server names none. */
+  schedule: ReflectionSchedule | null;
+  /** `repos`: every repository with material, most first, also those without a star on the map. */
+  pending: { records: number; signals: number; repos: { repo: string; count: number }[]; items: PendingRecord[] };
   /** The reflection's session: the one running now, else the latest. */
   run: TaskSummary | null;
   studies: Study[];
@@ -74,7 +77,13 @@ export function research(view: ResearchView | null, tasks: readonly TaskSummary[
     declined: newest.filter((lesson) => lesson.status === "declined"),
     other: newest.filter((lesson) => lesson.status === "other"),
     batch: view.batch,
-    pending: { records: view.pending.records, signals: view.pending.signals, items: view.pending.items },
+    schedule: view.schedule ?? null,
+    pending: {
+      records: view.pending.records,
+      signals: view.pending.signals,
+      repos: byCount(view.pending.repos, new Set(Object.keys(view.pending.repos))),
+      items: view.pending.items,
+    },
     run,
     studies: view.studies,
     waiting: view.studies.filter((study) => study.waiting).length,
@@ -89,4 +98,13 @@ export function shortDate(date: string | null): string {
   if (!date) return "—";
   const match = /^\d{4}-(\d{2})-(\d{2})/.exec(date);
   return match ? `${match[2]}.${match[1]}` : date;
+}
+
+/** The Russian word for a count: plural(1, "запись", "записи", "записей") = "запись". */
+export function plural(count: number, one: string, few: string, many: string): string {
+  const tens = Math.abs(count) % 100;
+  const units = tens % 10;
+  if (tens > 10 && tens < 20) return many;
+  if (units === 1) return one;
+  return units >= 2 && units <= 4 ? few : many;
 }

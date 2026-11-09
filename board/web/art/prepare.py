@@ -8,7 +8,7 @@ and macOS `sips` scales the results into src/map/art. Files named backdrop-*.png
 With --only NAME ... it prepares only those sprites, so that one new picture needs no other sources.
 With --project TARGET_DIR it prepares the art of one repository instead: sky.png, planet.png and emblem.png,
 whichever exist, go into TARGET_DIR, which lies outside this repository (see PROMPTS.md).
-With --portraits it prepares only the research station's staff portraits.
+With --portraits it prepares only the science station's staff portraits.
 """
 
 import argparse
@@ -47,7 +47,7 @@ SPRITES = {
     "sun": ("sun", 512),
 }
 
-# The research station's staff: square paintings, only scaled, as JPEG.
+# The science station's staff: square paintings, only scaled, as JPEG.
 PORTRAITS = {
     "portrait-analyst": 192,
     "portrait-archivist": 192,

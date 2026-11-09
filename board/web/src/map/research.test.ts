@@ -3,7 +3,7 @@ import { fixtureSource } from "../fixtures/source";
 import type { Lesson, ResearchView, Study, TaskSummary } from "../types";
 import { stars } from "./fleet";
 import { systemTasks } from "./placement";
-import { MAX_PROBES, REFLECTION_TASK, isReflection, research, shortDate } from "./research";
+import { MAX_PROBES, REFLECTION_TASK, isReflection, plural, research, shortDate } from "./research";
 
 const lesson = (entry: string, status: Lesson["status"]): Lesson => ({
   date: "2026-11-07",
@@ -192,5 +192,22 @@ describe("shortDate", () => {
     expect(shortDate("2026-11-07")).toBe("07.11");
     expect(shortDate("yesterday")).toBe("yesterday");
     expect(shortDate(null)).toBe("—");
+  });
+});
+
+describe("plural", () => {
+  it("picks the Russian form by the last digits", () => {
+    const word = (n: number) => plural(n, "запись", "записи", "записей");
+    expect([1, 2, 5, 11, 12, 21, 22, 25, 101, 111, 0].map(word)).toEqual([
+      "запись", "записи", "записей", "записей", "записей", "запись", "записи", "записей", "запись", "записей", "записей",
+    ]);
+  });
+});
+
+describe("pending repositories", () => {
+  it("keeps every repository with material, also one without a star", async () => {
+    const made = research(view({ pending: { records: 3, signals: 0, repos: { gone: 2, alpha: 1 }, items: [] } }), [], ["alpha"])!;
+    expect(made.pending.repos).toEqual([{ repo: "gone", count: 2 }, { repo: "alpha", count: 1 }]);
+    expect(made.watched).toEqual([{ repo: "alpha", count: 1 }]);
   });
 });

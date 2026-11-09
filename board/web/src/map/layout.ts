@@ -343,13 +343,13 @@ export function plateAt(place: Place, frame: SystemFrame): Point & { side: Plate
 
 // Galaxy ------------------------------------------------------------------------------------------
 
-/** The research station's label in pixels: on a wide window, and on a narrow one, where its font is smaller. */
+/** The science station's label in pixels: on a wide window, and on a narrow one, where its font is smaller. */
 const RESEARCH_LABEL_PX = { wide: { width: 200, height: 40 }, tall: { width: 176, height: 36 } } as const;
-/** World units from the research station's centre down to its label: see MapView. */
+/** World units from the science station's centre down to its label: see MapView. */
 export const RESEARCH_LABEL_DROP = 93;
 
 /**
- * The research station watches every system, so it stands in the middle of the galaxy. When a machine's label would
+ * The science station watches every system, so it stands in the middle of the galaxy. When a machine's label would
  * meet the station or its label there, as it can on a narrow window, it moves left just far enough to keep clear, and
  * right of a tank's label the same way.
  */
@@ -471,7 +471,7 @@ export function stormRadius(live: number, lattice: Lattice): number {
 }
 
 /**
- * The parts of the galaxy where no star stands: the research station, the fuel tanks and the machines' reactors
+ * The parts of the galaxy where no star stands: the science station, the fuel tanks and the machines' reactors
  * with their labels, and the parts `covered` by the map's own panels.
  */
 export function galaxyKeepOuts(size: Size, covered: readonly Rect[], machines: MachineColumn | null = null, fuel: FuelColumn | null = null): Rect[] {
@@ -589,7 +589,7 @@ const reachOf = (count: number, spacing: number) => spacing * (1.2 + Math.sqrt(c
 /**
  * Where constellation `name` of `count` stars may have its middle, the most open first, at most `limit` of them: free
  * nodes with the most free room around them within its reach, the nearest nodes counting most, so that it settles in open
- * sky rather than around the research station, along a column or at the edge; and away from the middles in `taken`, so
+ * sky rather than around the science station, along a column or at the edge; and away from the middles in `taken`, so
  * that two constellations do not run into each other. Equal nodes go by the constellation's name.
  */
 export function centreChoices(
@@ -683,7 +683,7 @@ function placeStars(
     if (before && fits(star, before)) put(star, before, true);
   }
   /**
-   * A constellation's star with its label stands this far from what stands inside the galaxy, the research station, so
+   * A constellation's star with its label stands this far from what stands inside the galaxy, the science station, so
    * that the cloud does not take it in; the panels and the columns along the edges need no more than the label's room.
    */
   const margin = spacing * 0.6;
@@ -695,7 +695,7 @@ function placeStars(
   };
   /**
    * Puts `list` around `centre`, each star on the free spot of the fine lattice nearest it, and tells how far they spread:
-   * the sum of their squared distances from their own middle, more for every star close to the research station, and a
+   * the sum of their squared distances from their own middle, more for every star close to the science station, and a
    * great deal for every star left without a spot.
    */
   const gather = (list: readonly StarShape[], centre: Point): number => {

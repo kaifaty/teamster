@@ -359,7 +359,7 @@ describe("galaxy", () => {
     expect(kept.length).toBeGreaterThanOrEqual(stars.length - 3);
   });
 
-  it("leaves the middle to the research station, with room for its label below", () => {
+  it("leaves the middle to the science station, with room for its label below", () => {
     for (const world of SIZES) {
       for (const count of [1, 6, 12, 25, 60, 120]) {
         const station = researchPosition(world);
@@ -513,7 +513,7 @@ describe("machines", () => {
     for (const room of machineRooms(machinePositions(FIXTURE, TALL, 0.39))) expect(room.y1).toBeLessThanOrEqual(logCorner(TALL).y0);
   });
 
-  it("moves the research station only as far as a machine's label makes it", () => {
+  it("moves the science station only as far as a machine's label makes it", () => {
     expect(researchPosition(WIDE, machinePositions(FIXTURE, WIDE, 0.855))).toEqual(researchPosition(WIDE));
     expect(researchPosition(TALL, machinePositions([{ id: "x", name: "kedr", status: "" }], TALL, 0.39))).toEqual(researchPosition(TALL));
     const column = machinePositions(FIXTURE, TALL, 0.39);
@@ -633,7 +633,7 @@ describe("fuel tanks", () => {
     expect(tankLabelSize({ ...tank("x".repeat(60)) }).width).toBe(150);
   });
 
-  it("lets no star stand among the tanks, and moves the research station clear of their labels", () => {
+  it("lets no star stand among the tanks, and moves the science station clear of their labels", () => {
     const inside = (at: { x: number; y: number }, r: Rect) => at.x >= r.x0 && at.x <= r.x1 && at.y >= r.y0 && at.y <= r.y1;
     for (const [world, zoom] of [[WIDE, 0.855], [TALL, 0.375]] as const) {
       const fuel = fuelPositions(BOARD, world, zoom);

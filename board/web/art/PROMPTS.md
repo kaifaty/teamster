@@ -100,9 +100,9 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 10. backdrop-marsh: Murky olive and copper clouds, heavy and slow, with sickly pale green glows in the distance.
 
-## The research station's staff
+## The science station's staff
 
-Two portraits speak in the research station's panel: the analyst, the reflection itself, and the archive keeper, who tells
+Two portraits speak in the science station's panel: the analyst, the reflection itself, and the archive keeper, who tells
 what the board knows without an agent. Each has one dominant colour and one big feature, so that it still reads at
 22 pixels. Each prompt follows the first STYLE line of this file, without its "pre-rendered" and "industrial" words.
 `python3 art/prepare.py SOURCE_DIR --portraits` scales `portrait-analyst.png` and `portrait-archivist.png` into JPEGs.

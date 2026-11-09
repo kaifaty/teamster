@@ -60,14 +60,13 @@ export interface ShipEntry {
   placement: Placement;
 }
 
-/** What the research station shows: see research.ts. */
+/** What the science station shows: see research.ts. */
 export interface ResearchMarks {
   running: boolean;
   /** Lessons that wait for a decision. */
   proposed: number;
   /** Studies whose analyst waits for the human's answer: the dish sends out rings. */
   waiting: number;
-  watched: { repo: string; count: number }[];
   probes: string[];
 }
 
@@ -120,7 +119,7 @@ export interface SceneOptions {
   onHover: (slug: string | null) => void;
   /** The star under the pointer in the galaxy, so that its label shows even while it waits for the zoom. */
   onHoverStar?: (repo: string | null) => void;
-  /** The research station was clicked. */
+  /** The science station was clicked. */
   onResearch: () => void;
   /** A machine's reactor was clicked. */
   onMachine?: (id: string) => void;
@@ -168,7 +167,7 @@ const MACHINE_GLOW: Partial<Record<MachineStatus, { halo: number; core: number }
 };
 const ESCORT_SIZE = 30;
 const PROBE_SIZE = 40;
-/** Gold rings around the research station while its analyst waits for an answer. */
+/** Gold rings around the science station while its analyst waits for an answer. */
 const WAVE_RINGS = 3;
 /** World units a probe covers in a second. */
 const PROBE_SPEED = 120;
@@ -843,7 +842,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
   }
 
-  /** The research station in the middle of the galaxy: a teal glow, and a gold light while lessons wait. */
+  /** The science station in the middle of the galaxy: a teal glow, and a gold light while lessons wait. */
   function drawResearch() {
     researchLayer.removeChildren().forEach((child) => child.destroy());
     station = null;
@@ -1432,8 +1431,8 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   }
 
   /**
-   * The station breathes while the reflection runs, its gold light blinks while lessons wait, a pulse runs
-   * along a beam to every system with records for the next reflection, and probes fly to the systems it reads.
+   * The station breathes while the reflection runs, its gold light blinks while lessons wait, gold rings run out
+   * while the analyst waits for an answer, and probes fly to the systems it reads.
    */
   function frameResearch() {
     watchFx.clear();
@@ -1450,24 +1449,6 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
         const phase = still ? (k + 0.5) / WAVE_RINGS : (time * 0.42 + k / WAVE_RINGS) % 1;
         watchFx.circle(center.x, center.y, RESEARCH_SIZE * (0.55 + 1.45 * phase));
         watchFx.stroke({ width: 1.4 + 3.2 * (1 - phase), color: SPACE.gold, alpha: (still ? 0.55 : 0.9) * (1 - phase) ** 1.1 });
-      }
-    }
-    for (const { repo: name, count } of marks.watched) {
-      const to = stars.get(name);
-      if (!to) continue;
-      const length = Math.hypot(to.x - center.x, to.y - center.y);
-      const end = length - starSize(model.stars.find((star) => star.repo === name)?.live ?? 0, model.layout) * 1.25 - 18;
-      const size = 2.2 + Math.min(count, 4) * 0.45;
-      const start = RESEARCH_SIZE * 0.55;
-      if (end <= start) continue;
-      watchFx.moveTo(center.x + ((to.x - center.x) * start) / length, center.y + ((to.y - center.y) * start) / length);
-      watchFx.lineTo(center.x + ((to.x - center.x) * end) / length, center.y + ((to.y - center.y) * end) / length);
-      watchFx.stroke({ width: 1.4, color: SPACE.research, alpha: 0.22 });
-      for (let d = start; d < end; d += 13) {
-        // A wave runs outwards along the beam, from the station to the star.
-        const wave = still ? 0.5 : Math.max(0, Math.sin(d / 46 - time * 2.6)) ** 3;
-        watchFx.circle(center.x + ((to.x - center.x) * d) / length, center.y + ((to.y - center.y) * d) / length, size * (0.7 + 0.5 * wave));
-        watchFx.fill({ color: SPACE.research, alpha: 0.3 + 0.65 * wave });
       }
     }
     for (const [name, { sprite: probe, seed }] of probes) {
