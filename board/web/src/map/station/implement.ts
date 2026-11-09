@@ -1,12 +1,12 @@
 // The lessons' implementations: «Внедрить» starts a teamster task that makes a lesson's change and opens its PR,
 // and the card answers that task's agent when it waits. Part of the station's console.
 
-import { computed, reactive, type Ref } from "vue";
+import { computed, reactive, watch, type Ref } from "vue";
 import type { ActionSender, SayBody } from "../../lib/actions";
 import { sayCommand } from "../../lib/commands";
 import type { Lesson } from "../../types";
 import type { Research } from "../research";
-import { canImplement, implementBody } from "../station";
+import { canImplement, implementBody, startPending } from "../station";
 import type { CardState, Copied, Outcome, Stage } from "./console";
 
 /** Why «Внедрить» is off on a board that only reads: it has no command to copy. */
@@ -40,7 +40,17 @@ export function createImplementation({ research, live, act, run, cardOf, edit, l
   /** «Внедрить» is off on a board that only reads, with the reason as its hint. */
   const implementOff = computed(() => (live.value ? null : IMPLEMENT_OFF));
   /** Whether the card offers «Внедрить»: not while its implementation goes, nor while the one it started does not show yet. */
-  const offersImplement = (lesson: Lesson) => canImplement(lesson) && !(cardOf(lesson).started && cardOf(lesson).started!.slug !== lesson.implementation?.slug);
+  const offersImplement = (lesson: Lesson) => canImplement(lesson) && !startPending(lesson.implementation, cardOf(lesson).started);
+
+  // A start the server named no slug for takes its task's slug once the lesson shows it, so that the card keeps
+  // following that task after it closes.
+  watch(research, () => {
+    for (const lesson of [...listOf("proposed"), ...listOf("accepted")]) {
+      const started = cardOf(lesson).started;
+      const task = lesson.implementation;
+      if (started && !started.slug && task && !task.archived) edit(lesson).started = { ...started, slug: task.slug };
+    }
+  });
 
   /** «Запустить»: the server builds the task from the lesson; a proposed lesson becomes accepted on the way. */
   async function implement(lesson: Lesson, stage: "proposed" | "accepted") {

@@ -3,9 +3,9 @@ import { nextTick, ref } from "vue";
 import type { ActionResult } from "../../lib/actions";
 import { fixtureResearch } from "../../fixtures/research";
 import { fixtureSource } from "../../fixtures/source";
-import type { ResearchActions, ResearchView } from "../../types";
+import type { Implementation, ResearchActions, ResearchView } from "../../types";
 import { research } from "../research";
-import { discussOrder, isSendKey } from "../station";
+import { discussOrder, docketParts, implementationLine, isSendKey } from "../station";
 import { createConsole, HOLD_MS, type Deck } from "./console";
 import { IMPLEMENT_OFF } from "./implement";
 
@@ -178,6 +178,50 @@ describe("«Внедрить»", () => {
     await desk.implement(u2, "proposed");
     expect(act).toHaveBeenCalledWith("implement", { entry: U2, repo: "/Users/demo/dev/demo-game" });
     expect(desk.cardOf(u2)).toMatchObject({ busy: null, form: "implement", error: "lesson is already being implemented", started: null });
+  });
+
+  it("shows the implementation under the lesson's docket too, also once the lesson is accepted", async () => {
+    const { desk, lesson, update, answer } = setup();
+    const l1 = lesson(L1);
+    const docket = () => docketParts(desk.index.value.get(L1), desk.cardOf(desk.index.value.get(L1)!));
+    expect(docket()).toEqual({ actions: true, implementation: false });
+    desk.openForm(l1, "implement");
+    answer({ ok: true, output: "", slug: "lesson-l1" });
+    await desk.implement(l1, "proposed");
+    expect(docket()).toEqual({ actions: true, implementation: true });
+
+    const task: Implementation = {
+      slug: "lesson-l1", archived: false, alive: false, repo: "teamster", result_status: "needs_decision", pr: null,
+      questions: ["Where?"], summary: null, created: NOW, updated_at: NOW,
+    };
+    update((view) => Object.assign(view.lessons.find((item) => item.entry === L1)!, { status: "accepted", implementation: task }));
+    expect(docket()).toEqual({ actions: false, implementation: true });
+    const shown = desk.index.value.get(L1)!;
+    expect(implementationLine(shown.implementation, desk.cardOf(shown).started)).toMatchObject({ kind: "decision", answer: true });
+    desk.dispose();
+  });
+
+  it("gives way to the lesson's implementation when the server named no slug, and keeps following it once closed", async () => {
+    const { desk, lesson, update, answer } = setup();
+    const u1 = lesson(U1);
+    desk.openForm(u1, "implement");
+    answer({ ok: true, output: "started" });
+    await desk.implement(u1, "accepted");
+    expect(implementationLine(lesson(U1).implementation, desk.cardOf(u1).started)).toMatchObject({ kind: "started", text: "Внедряется: teamster" });
+    expect(desk.offersImplement(lesson(U1))).toBe(false);
+
+    const task: Implementation = {
+      slug: "lesson-u1", archived: false, alive: true, repo: "teamster", result_status: null, pr: null, questions: [], summary: null, created: NOW, updated_at: NOW,
+    };
+    update((view) => (view.lessons.find((item) => item.entry === U1)!.implementation = task));
+    await nextTick();
+    expect(implementationLine(lesson(U1).implementation, desk.cardOf(u1).started)).toMatchObject({ kind: "working", text: "Агент работает · teamster" });
+
+    update((view) => Object.assign(view.lessons.find((item) => item.entry === U1)!.implementation!, { alive: false, archived: true, result_status: "partial" }));
+    await nextTick();
+    expect(implementationLine(lesson(U1).implementation, desk.cardOf(u1).started)).toMatchObject({ kind: "closed" });
+    expect(desk.offersImplement(lesson(U1))).toBe(true);
+    desk.dispose();
   });
 
   it("is not offered while the lesson's implementation goes, and «Внедрено» names the agent's PR", () => {

@@ -23,6 +23,7 @@ import {
   type OrderDraft,
   type OrderKind,
   type Reach,
+  type Started,
 } from "../station";
 import { createImplementation } from "./implement";
 
@@ -57,7 +58,7 @@ export interface CardState {
   /** «Где внедрять»: a repository's path, empty until one is picked. */
   repo: string;
   /** The implementation this card started, shown until the research carries it. */
-  started: { slug: string; repo: string } | null;
+  started: Started | null;
 }
 
 

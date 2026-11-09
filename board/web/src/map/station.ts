@@ -280,6 +280,21 @@ export function prLabel(url: string): string {
   return number ? `PR #${number}` : "PR";
 }
 
+/** The task a card just started, while the lesson's research shows no open implementation for it yet. */
+export interface Started {
+  /** Empty when the server's answer named none. */
+  slug: string;
+  repo: string;
+}
+
+/**
+ * Whether the task a card started has yet to show up. The lesson's own implementation is its task — matched by the
+ * lesson, not by the slug, which the server may not name; only a closed earlier one does not count.
+ */
+export function startPending(implementation: Implementation | null | undefined, started: Started | null): boolean {
+  return !!started && (!implementation || (implementation.archived && implementation.slug !== started.slug));
+}
+
 /** The line of a lesson's implementation on its card; `answer`: the card takes a reply for the agent. */
 export type ImplementationLine =
   | { kind: "started"; text: string; answer: false }
@@ -293,9 +308,11 @@ export type ImplementationLine =
  * How the implementation goes, by the first state that fits: the agent works, needs a decision, opened a PR, stopped,
  * or the task is closed. `started`: the task the card just started, shown until the research carries it.
  */
-export function implementationLine(implementation: Implementation | null | undefined, started: { slug: string; repo: string } | null = null): ImplementationLine | null {
+export function implementationLine(implementation: Implementation | null | undefined, started: Started | null = null): ImplementationLine | null {
   const task = implementation ?? null;
-  if (started && task?.slug !== started.slug) return { kind: "started", text: `Внедряется: ${started.slug} · ${started.repo}`, answer: false };
+  if (started && startPending(task, started)) {
+    return { kind: "started", text: started.slug ? `Внедряется: ${started.slug} · ${started.repo}` : `Внедряется: ${started.repo}`, answer: false };
+  }
   if (!task) return null;
   if (task.alive) return { kind: "working", text: `Агент работает · ${task.repo}`, answer: false };
   // A closed task takes no reply: its questions stay unanswered.
@@ -364,4 +381,14 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
   }
   const when = clock.when ?? (clock.state === "off" ? "выключен" : "не назначен");
   return { text: `Всё разобрано. Плановый разбор ${when}`, action: null, tone: "" };
+}
+
+/**
+ * What a docket in the comms room shows under its lesson: the buttons while the lesson waits for a decision or was
+ * decided a moment ago, and the implementation's line, as on the lab's card, while the lesson is proposed or accepted.
+ */
+export function docketParts(lesson: Lesson | undefined, card: { done: unknown; started: Started | null }): { actions: boolean; implementation: boolean } {
+  if (!lesson) return { actions: false, implementation: false };
+  const open = lesson.status === "proposed" || lesson.status === "accepted";
+  return { actions: lesson.status === "proposed" || !!card.done, implementation: open && !!implementationLine(lesson.implementation, card.started) };
 }
