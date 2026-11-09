@@ -262,9 +262,10 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
   /** Lessons decided a moment ago stay on their tab while «Отменить» is offered. */
   const held = reactive<Record<string, { lesson: Lesson; stage: Stage; index: number }>>({});
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
-  function hold(lesson: Lesson, stage: Stage) {
+  /** `index`: where the lesson stood on its tab before the action, whose refresh has already moved it. */
+  function hold(lesson: Lesson, stage: Stage, index: number) {
     const key = lesson.entry.trim();
-    held[key] = { lesson, stage, index: Math.max(0, listOf(stage).findIndex((item) => item.entry.trim() === key)) };
+    held[key] = { lesson, stage, index: Math.max(0, index) };
     clearTimeout(timers.get(key));
     timers.set(key, setTimeout(() => release(key), HOLD_MS));
   }
@@ -279,6 +280,7 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     const state = edit(lesson);
     if (state.busy) return;
     const entry = lesson.entry.trim();
+    const index = listOf(stage).findIndex((item) => item.entry.trim() === entry);
     const note = state.form ? state.note.trim() : "";
     const body: LessonBody = { entry, status };
     if (note) body.note = note;
@@ -295,7 +297,7 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
       return;
     }
     state.done = { status, undo: status === "applied" ? "accepted" : "proposed" };
-    hold(lesson, stage);
+    hold(lesson, stage, index);
   }
 
   const accept = (lesson: Lesson) => decide(lesson, "accept", "accepted", "proposed");

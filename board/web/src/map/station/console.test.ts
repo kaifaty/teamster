@@ -62,6 +62,16 @@ describe("a lesson's card", () => {
     vi.advanceTimersByTime(HOLD_MS);
     expect(desk.cardOf(t1).done).toBeNull();
     expect(desk.shown.value.map((item) => item.entry)).not.toContain(T1);
+
+    // The refresh inside the action already moved the lesson: it keeps its place on the tab anyway.
+    const U2 = "batch-2026-11-06.md U2";
+    const before = desk.shown.value.map((item) => item.entry);
+    act.mockImplementationOnce(async () => {
+      update((view) => (view.lessons.find((item) => item.entry === U2)!.status = "accepted"));
+      return { ok: true, output: "" };
+    });
+    await desk.accept(lesson(U2));
+    expect(desk.shown.value.map((item) => item.entry)).toEqual(before);
     desk.dispose();
   });
 
