@@ -11,13 +11,14 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .store import Store, alive, number, objects, text
+from .store import Record, Store, alive, cargo, number, objects, text
 
 
 STAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z")
 RECORD = re.compile(r"(.+)-([0-9]{8}T[0-9]{6}Z)")
 BATCH = re.compile(r"batch-([0-9]{4}-[0-9]{2}-[0-9]{2})?.*\.md", re.S)
 ARCHIVE_FILE = re.compile(r"(?:batch|study)-[^/\\]+\.md")
+IMPLEMENTATION = re.compile(r"^Внедрить урок «([^»]+)»")
 LESSON_FIELDS = ("title", "lesson", "proposal", "evidence", "caveats")
 SEPARATOR = re.compile(r":?-+:?")
 STATUSES = ("proposed", "accepted", "applied", "declined")
@@ -293,6 +294,7 @@ class Research:
         self._schedules = {}
         self._view = None
         self._next_scan = 0.0
+        self._store = Store(self.tasks_path)
 
     def view(self):
         with self.lock:
@@ -307,7 +309,7 @@ class Research:
             self._view = None
 
     def _empty(self):
-        return {"lessons": [], "batch": None,
+        return {"lessons": [], "repos": [], "batch": None,
                 "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
                 "studies": [], "reflection_task": self.reflection_task, "schedule": None}
 
@@ -369,18 +371,68 @@ class Research:
                 items.append({"slug": slug, "repo": repo, "stamp": stamp, "signals": found})
         pending["items"] = sorted(items, key=lambda item: (item["stamp"], item["slug"]),
                                   reverse=True)[:PENDING_ITEMS]
-        for directory in Store._directories(self.tasks_path):
+        repos = set()
+        implementations = {}
+        directories = [(path, False) for path in Store._directories(self.tasks_path)]
+        directories.extend((path, True) for path in Store._directories(archive))
+        for directory, archived in directories:
             wanted.add(directory)
             state = self._record(directory)
-            if state is not None and state.get("kind") == "reflect":
+            if state is None:
+                continue
+            if state.get("kind") != "reflect":
+                repo = text(state.get("repo"))
+                if repo:
+                    try:
+                        path = Path(repo).resolve()
+                        git = path / ".git"
+                        if path != archive.resolve() and path.is_dir() and (git.is_dir() or git.is_file()):
+                            repos.add(path)
+                    except (OSError, ValueError, RuntimeError):
+                        pass
+            match = RECORD.fullmatch(directory.name) if archived else None
+            slug = match[1] if match else directory.name
+            implementation = self._implementation(directory, slug, state, archived)
+            if implementation is not None:
+                entry, value = implementation
+                if entry not in implementations or value["created"] > implementations[entry]["created"]:
+                    implementations[entry] = value
+            if not archived and state.get("kind") == "reflect":
                 study_paths.add(directory)
                 view["studies"].append(self._study(directory, directory.name, state, archived=False))
+        view["repos"] = sorted(({"name": path.name, "path": str(path)} for path in repos),
+                               key=lambda repo: (repo["name"], repo["path"]))[:100]
+        for lesson in view["lessons"]:
+            lesson["implementation"] = implementations.get(lesson["entry"])
         self._records = {path: value for path, value in self._records.items() if path in wanted}
         self._messages = {path: value for path, value in self._messages.items() if path in study_paths}
         view["studies"] = sorted(view["studies"],
                                  key=lambda study: (study["created"], study["updated_at"], study["slug"]),
                                  reverse=True)[:STUDY_LIMIT]
         return view
+
+    def _implementation(self, directory, slug, state, archived):
+        if not slug.startswith("lesson-"):
+            return None
+        brief = Store._file(directory, "brief.md")
+        if brief is None:
+            return None
+        try:
+            with brief.open(encoding="utf-8", errors="replace") as stream:
+                match = IMPLEMENTATION.match(stream.readline())
+        except OSError:
+            return None
+        if match is None:
+            return None
+        updated_at = self._records[directory][0][0] / 1_000_000_000
+        record = Record(directory, archived, state, updated_at=updated_at)
+        summary = self._store._summary(slug, record)
+        value = {key: summary[key] for key in (
+            "slug", "alive", "repo", "result_status", "pr", "summary", "updated_at",
+        )}
+        value.update(archived=archived, questions=cargo(state)["questions"],
+                     created=summary["created"] if summary["created"] is not None else updated_at)
+        return match[1].strip(), value
 
     def _schedule(self):
         root = self.claude_desktop_dir

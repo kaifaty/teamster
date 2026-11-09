@@ -61,7 +61,8 @@ def test_index_rows_scopes_statuses_and_extra_cells(tmp_path):
     assert lessons[1] == {"date": "2026-11-02", "entry": "beta-20261102T000000Z", "scope": "domain",
                           "scope_text": "domain a, b", "repos": ["a", "b"], "cue": "a flaky check",
                           "status": "applied", "status_text": "applied AGENTS.md in a",
-                          "title": None, "lesson": None, "proposal": None, "evidence": None, "caveats": None}
+                          "title": None, "lesson": None, "proposal": None, "evidence": None, "caveats": None,
+                          "implementation": None}
 
 
 def test_lesson_sections_batch_study_and_signature_cache(tmp_path, monkeypatch):
@@ -144,6 +145,84 @@ lesson: Never read this for W3.
     assert fields(research.view()["lessons"][0]) == dict.fromkeys(research_module.LESSON_FIELDS)
 
 
+def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp_path):
+    tasks = tmp_path / "tasks"
+    archive = tasks / ".archive"
+    alpha = tmp_path / "alpha"
+    other_alpha = tmp_path / "other" / "alpha"
+    beta = tmp_path / "beta"
+    for path in (alpha, other_alpha):
+        (path / ".git").mkdir(parents=True)
+    beta.mkdir()
+    (beta / ".git").write_text("gitdir: /some/worktree\n")
+    alias = tmp_path / "alias"
+    alias.symlink_to(alpha, target_is_directory=True)
+    no_git = tmp_path / "no-git"
+    no_git.mkdir()
+    reflect_repo = tmp_path / "reflect-only"
+    (reflect_repo / ".git").mkdir(parents=True)
+    for index, repo in enumerate((alpha, alias, alpha / ".." / "alpha", no_git, tmp_path / "absent")):
+        write_record(tasks, f"live-{index}", {"repo": str(repo)})
+    write_record(archive, "old-20200101T000000Z", {"repo": str(beta)})
+    write_record(archive, "no-timestamp", {"repo": str(other_alpha)})
+    for root in (tasks, archive):
+        write_record(root, "reflection", {"kind": "reflect", "repo": str(reflect_repo)})
+    (archive / ".git").mkdir()
+    write_record(tasks, "archive-repo", {"repo": str(archive)})
+    research = Research(tasks, seconds=0)
+    assert research.view()["repos"] == [
+        {"name": "alpha", "path": str(alpha)},
+        {"name": "alpha", "path": str(other_alpha)},
+        {"name": "beta", "path": str(beta)},
+    ]
+    for index in range(101):
+        repo = tmp_path / f"repo-{index:03}"
+        (repo / ".git").mkdir(parents=True)
+        write_record(tasks, f"extra-{index}", {"repo": str(repo)})
+    repos = research.view()["repos"]
+    assert len(repos) == 100
+    assert repos == sorted(repos, key=lambda row: (row["name"], row["path"]))
+    assert repos[-1]["name"] == "repo-096"
+
+
+def test_implementation_matches_first_line_and_uses_newest_live_or_archived_state(tmp_path):
+    archive = tmp_path / ".archive"
+    archive.mkdir()
+    entry = "batch-2026-11-09.md W2"
+    (archive / "INDEX.md").write_text(
+        f"| 2026-11-09 | {entry} | invariant | CI | accepted |\n"
+        "| 2026-11-09 | batch-2026-11-09.md W3 | invariant | missing | proposed |\n")
+    state = {"created": 20, "repo": "/repos/project", "pid": os.getpid(),
+             "publish": {"pr": "https://github.com/owner/project/pull/42"},
+             "result": {"status": "needs_decision", "pr": "unused", "summary": "Latest result\nDetails",
+                        "questions": [False, "  Which check?\nKeep both?  ", *["q" * 250] * 22]}}
+    brief = f"Внедрить урок «  {entry}  »: Keep the check.\n"
+    write_record(tmp_path, "lesson-live", state).with_name("brief.md").write_text(brief)
+    archived = write_record(archive, "lesson-older-name-20200101T000000Z", dict(state, created=40, pid=None))
+    archived.with_name("brief.md").write_text(brief)
+    for slug, content in (("lesson-wrong-line", "Other work\n" + brief),
+                          ("regular-task", brief),
+                          ("lesson-other-entry", "Внедрить урок «unrelated»: Other lesson.\n")):
+        write_record(tmp_path, slug, dict(state, created=100)).with_name("brief.md").write_text(content)
+    write_record(tmp_path, "lesson-no-brief", dict(state, created=200))
+    research = Research(tmp_path, seconds=0)
+    lessons = research.view()["lessons"]
+    assert lessons[1]["implementation"] is None
+    implementation = lessons[0]["implementation"]
+    assert implementation == {
+        "slug": "lesson-older-name", "archived": True, "alive": False, "repo": "project",
+        "result_status": "needs_decision", "pr": "https://github.com/owner/project/pull/42",
+        "questions": ["Which check? Keep both?", *["q" * 200] * 19], "summary": "Latest result",
+        "created": 40, "updated_at": archived.stat().st_mtime_ns / 1_000_000_000,
+    }
+    latest = write_record(tmp_path, "lesson-newest", dict(state, created=50))
+    latest.with_name("brief.md").write_text(brief)
+    assert research.view()["lessons"][0]["implementation"] == {
+        **implementation, "slug": "lesson-newest", "created": 50,
+        "updated_at": latest.stat().st_mtime_ns / 1_000_000_000, "alive": True, "archived": False,
+    }
+
+
 def test_batch_selection_counts_pending_and_bounded_reads(tmp_path, monkeypatch):
     now = datetime(2026, 11, 9, tzinfo=timezone.utc).timestamp()
     monkeypatch.setattr(research_module.time, "time", lambda: now)
@@ -189,8 +268,8 @@ def test_batch_selection_counts_pending_and_bounded_reads(tmp_path, monkeypatch)
             {"slug": "late", "repo": "beta", "stamp": "20261108T020000Z", "signals": ["refused"]},
         ],
     }
-    # Recent records before the material floor may be read to discover studies.
-    assert "ancient-20261001T000000Z" not in reads
+    # All records are read for repository discovery, regardless of the material floor.
+    assert "ancient-20261001T000000Z" in reads
     assert len(reads) == len(set(reads))
     assert not {name for name in reads if "link" in name}
 
@@ -246,7 +325,7 @@ def test_missing_empty_and_linked_archives_give_an_empty_view(tmp_path, make):
         tasks.mkdir()
         (tasks / ".archive").symlink_to(real / ".archive", target_is_directory=True)
     view = Research(tasks, reflection_task="weekly").view()
-    assert view == {"lessons": [], "batch": None,
+    assert view == {"lessons": [], "repos": [], "batch": None,
                     "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
                     "studies": [], "reflection_task": "weekly", "schedule": None}
 

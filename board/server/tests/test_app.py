@@ -676,7 +676,7 @@ def test_art_needs_a_localhost_host_header(board):
 def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeypatch):
     client, application, _, _, settings = board
     assert client.get("/api/research").json() == {
-        "lessons": [], "batch": None,
+        "lessons": [], "repos": [], "batch": None,
         "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
         "studies": [], "reflection_task": "codex-batch-reflection", "schedule": None,
         "actions": application.state.board.actions.value}
@@ -737,19 +737,29 @@ control = json.loads(Path(os.environ["STATION_CONTROL"]).read_text())
 record = {"argv": args, "cwd": os.getcwd(), "stdin": sys.stdin.read(), "pid": os.getpid()}
 if "--file" in args:
     record["file"] = Path(args[args.index("--file") + 1]).read_text()
+if "--brief" in args:
+    record["brief"] = Path(args[args.index("--brief") + 1]).read_text()
+    (Path(os.environ["STATION_CALLS"]).parent / (args[1] + ".brief.md")).write_text(record["brief"])
 with Path(os.environ["STATION_CALLS"]).open("a") as stream:
     stream.write(json.dumps(record) + "\\n")
 time.sleep(control.get("sleep", 0))
 tasks = Path(os.environ["TEAMSTER_HOME"]) / "tasks"
-if not control.get("exit", 0):
+exit_code = control.get(args[0] + "_exit", control.get("exit", 0))
+if not exit_code:
     if args[0] == "lesson":
         index = tasks / ".archive" / "INDEX.md"
         index.write_text(index.read_text().replace("proposed", args[2]))
     if args[0] == "reflect":
         (tasks / args[1]).mkdir()
-print(control.get("stdout", "  finished  "))
+    if args[0] == "start":
+        directory = tasks / args[1]
+        directory.mkdir()
+        (directory / "brief.md").write_text(record["brief"])
+        (directory / "state.json").write_text(json.dumps({"repo": args[args.index("--repo") + 1],
+                                                       "created": time.time()}))
+print(control.get(args[0] + "_stdout", control.get("stdout", "  finished  ")))
 print(control.get("stderr", ""), file=sys.stderr)
-sys.exit(control.get("exit", 0))
+sys.exit(exit_code)
 ''')
     fake.chmod(0o755)
     accounts = tmp_path / "accounts.py"
@@ -832,6 +842,209 @@ def test_station_reflect_argv_utc_slug_and_collisions(station, monkeypatch, capl
     assert records[2]["argv"] == ["reflect", slugs[2], "--since", "2026-11-09"]
     assert records[3]["argv"] == ["reflect", slugs[3]]
     assert "--inspect" not in caplog.text
+
+
+@pytest.fixture
+def lesson_repo(station):
+    _, application, settings, _, _, _ = station
+    repo = settings.task_home.parent / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True, capture_output=True)
+    directory = settings.path("tasks") / "known-repository"
+    directory.mkdir()
+    (directory / "state.json").write_text(json.dumps({"repo": str(repo)}))
+    application.state.board.research.invalidate()
+    return repo
+
+
+@pytest.mark.parametrize("status,origin,full", [
+    ("proposed", "git@github.com:owner/project.git", True),
+    ("accepted", "https://forge.example/owner/project.git", False),
+    ("accepted", None, False),
+])
+def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, monkeypatch, caplog,
+                                                      status, origin, full):
+    client, application, settings, entry, calls, control = station
+    caplog.set_level("INFO", logger="uvicorn.error")
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, zone):
+            assert zone is timezone.utc
+            return cls(2026, 11, 9, 23, 4, 5, tzinfo=zone)
+
+    monkeypatch.setattr(actions_module, "datetime", FixedDatetime)
+    archive = settings.path("tasks") / ".archive"
+    index = archive / "INDEX.md"
+    index.write_text(index.read_text().replace("proposed", status))
+    (archive / "batch-2026-11-09.md").write_text(
+        ("## W2. Keep the latest check\n" if full else "## W2. \n") +
+        "lesson: Wait for the current commit.\nKeep its run id.\nproposal: Add a guard in the waiter.\n" +
+        ("evidence:\n- task one, round 2\n- task two, finding R1\ncaveats: Only CI waits.\n" if full else ""))
+    if origin:
+        subprocess.run(["git", "-C", str(lesson_repo), "remote", "add", "origin", origin],
+                       check=True, capture_output=True)
+    control.write_text(json.dumps({"lesson_stdout": "Accepted the lesson", "start_stdout": "  Started work  "}))
+    before = client.get("/api/research").json()
+    assert before["repos"] == [{"name": lesson_repo.name, "path": str(lesson_repo)}]
+    assert before["lessons"][0]["implementation"] is None
+    response = client.post("/api/actions/implement", json={
+        "entry": f" {entry} ", "repo": str(lesson_repo), "note": "  Keep it focused.  " if full else "  ",
+    })
+    slug = "lesson-w2-1109"
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "output": "Started work", "slug": slug}
+    records = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(records) == (2 if status == "proposed" else 1)
+    if status == "proposed":
+        assert records[0]["argv"] == ["lesson", entry, "accepted", f"--note=внедряется: {slug}"]
+    start = records[-1]
+    brief_path = start["argv"][3]
+    assert start["argv"] == [
+        "start", slug, "--brief", brief_path, "--repo", str(lesson_repo), "--executor", "claude",
+        "--sandbox", "off", "--effort", "high", "--task-type", "feature", "--max-minutes", "60",
+        "--review", "--fix-rounds", "2", "--parallel", *(["--ci"] if origin and "github.com" in origin else []),
+    ]
+    expected = ("""Внедрить урок «batch-2026-11-09.md W2»: Keep the latest check.
+
+Зачем: пользователь принял этот урок рефлексии на научной станции и попросил его внедрить. Урок из файла batch-2026-11-09.md в архиве задач.
+
+Признак: CI
+Что делать: Wait for the current commit.
+Keep its run id.
+Предложение: Add a guard in the waiter.
+Доказательства:
+- task one, round 2
+- task two, finding R1
+Оговорки: Only CI waits.
+
+Уточнение пользователя: Keep it focused.
+
+""" if full else """Внедрить урок «batch-2026-11-09.md W2»: CI.
+
+Зачем: пользователь принял этот урок рефлексии на научной станции и попросил его внедрить. Урок из файла batch-2026-11-09.md в архиве задач.
+
+Признак: CI
+Что делать: Wait for the current commit.
+Keep its run id.
+Предложение: Add a guard in the waiter.
+
+""") + """Готово, когда:
+- предложение урока внедрено в этом репозитории в той форме, которую оно называет; если эта форма не подходит к коду — в ближайшей, которая даёт тот же результат, предпочитая проверку или защиту в коде правилу в тексте;
+- изменённое поведение закреплено тестом;
+- документация репозитория, которую задевает изменение, обновлена;
+- части предложения для другого репозитория или для файлов вне репозитория (например ~/.codex/AGENTS.md или ~/.claude/…) не сделаны, а перечислены в отчёте в remaining.
+
+Проверки: тесты и проверки, которые требуют AGENTS.md и README этого репозитория.
+Не трогать: ничего, что не нужно для этого урока; записи задач и INDEX.md в архиве teamster.
+Если предложение неясно или для него нужен выбор пользователя — закончи ход со статусом needs_decision и задай вопросы.
+"""
+    assert start["brief"] == expected
+    assert (calls.parent / f"{slug}.brief.md").read_text() == expected
+    assert not Path(brief_path).exists()
+    assert all(row["cwd"] == str(Path.home()) and row["stdin"] == "" for row in records)
+    after = client.get("/api/research").json()["lessons"][0]
+    assert application.state.board.research.seconds == 3600
+    assert after["status"] == "accepted"
+    assert after["implementation"]["slug"] == slug
+    logs = [row.message for row in caplog.records if row.message.startswith("/api/actions/implement")]
+    assert len(logs) == len(records)
+    assert all("argv=" in row and "exit=0" in row for row in logs)
+    assert "Keep it focused" not in caplog.text
+
+
+@pytest.mark.parametrize("lesson_id,expected", [("W2", "w2"), ("W_Ä.2", "w---2")])
+def test_station_implement_slug_characters_and_collisions(station, lesson_repo, lesson_id, expected):
+    client, application, settings, entry, _, _ = station
+    entry = entry.rsplit(" ", 1)[0] + " " + lesson_id
+    index = settings.path("tasks") / ".archive" / "INDEX.md"
+    index.write_text(f"| 2026-11-09 | {entry} | invariant | CI | accepted |\n")
+    base = f"lesson-{expected}-{datetime.now(timezone.utc):%m%d}"
+    for slug in (base, base + "-2"):
+        (settings.path("tasks") / slug).mkdir()
+    application.state.board.research.invalidate()
+    response = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
+    assert response.status_code == 200
+    assert response.json()["slug"] == base + "-3"
+
+
+@pytest.mark.parametrize("case,status,message", [
+    ("unknown", 404, "Unknown lesson"),
+    ("applied", 409, "Урок уже внедрён или отклонён"),
+    ("declined", 409, "Урок уже внедрён или отклонён"),
+    ("repo", 400, "Unknown repository"),
+    ("note", 400, "Invalid note"),
+    ("implementation", 409, "Урок уже внедряется: lesson-existing"),
+    ("slug", 400, "Invalid slug"),
+])
+def test_station_implement_rejections(station, lesson_repo, case, status, message):
+    client, application, settings, entry, calls, _ = station
+    body = {"entry": entry, "repo": str(lesson_repo)}
+    index = settings.path("tasks") / ".archive" / "INDEX.md"
+    if case == "unknown":
+        body["entry"] = "unknown"
+    elif case in ("applied", "declined"):
+        index.write_text(index.read_text().replace("proposed", case))
+    elif case == "repo":
+        body["repo"] = str(lesson_repo.parent)
+    elif case == "note":
+        body["note"] = "  " + "n" * 4001 + "  "
+    elif case == "implementation":
+        directory = settings.path("tasks") / "lesson-existing"
+        directory.mkdir()
+        (directory / "brief.md").write_text(f"Внедрить урок «{entry}»: CI.\n")
+        (directory / "state.json").write_text(json.dumps({"repo": str(lesson_repo), "created": 10}))
+    elif case == "slug":
+        body["entry"] = entry.rsplit(" ", 1)[0] + " " + "W" * 40
+        index.write_text(index.read_text().replace(entry, body["entry"]))
+    application.state.board.research.invalidate()
+    response = client.post("/api/actions/implement", json=body)
+    assert response.status_code == status
+    assert response.json() == {"ok": False, "error": message}
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("step,count,status", [("lesson", 1, "proposed"), ("start", 2, "accepted")])
+def test_station_implement_failed_step_and_accepted_lesson_refresh(station, lesson_repo, step, count, status):
+    client, _, _, entry, calls, control = station
+    assert client.get("/api/research").json()["lessons"][0]["status"] == "proposed"
+    control.write_text(json.dumps({step + "_exit": 7, "stderr": "Failed step"}))
+    response = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
+    assert response.status_code == 422
+    assert response.json() == {"ok": False, "error": "Failed step"}
+    records = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(records) == count
+    assert records[0]["argv"][0] == "lesson"
+    if step == "start":
+        assert records[1]["argv"][0] == "start"
+        assert not Path(records[1]["argv"][3]).exists()
+    assert client.get("/api/research").json()["lessons"][0]["status"] == status
+
+
+@pytest.mark.parametrize("alive,archived,status", [(False, False, 200), (True, False, 409), (False, True, 409)])
+def test_station_say_to_implementation(station, lesson_repo, alive, archived, status):
+    client, application, settings, entry, calls, _ = station
+    slug = "lesson-existing"
+    directory = settings.path("tasks")
+    if archived:
+        directory /= ".archive"
+    directory /= slug + ("-20200101T000000Z" if archived else "")
+    directory.mkdir()
+    (directory / "state.json").write_text(json.dumps({"repo": str(lesson_repo), "created": 10,
+                                                     "pid": os.getpid() if alive else None}))
+    (directory / "brief.md").write_text(f"Внедрить урок «{entry}»: CI.\n")
+    application.state.board.research.invalidate()
+    response = client.post("/api/actions/say", json={"slug": slug, "text": "  Keep the check.  "})
+    assert response.status_code == status
+    if status == 200:
+        assert response.json() == {"ok": True, "output": "finished"}
+        record = json.loads(calls.read_text())
+        assert record["argv"][:3] == ["say", slug, "--file"]
+        assert len(record["argv"]) == 4
+        assert record["file"] == "Keep the check."
+        assert not Path(record["argv"][3]).exists()
+    else:
+        assert response.json()["ok"] is False
+        assert not calls.exists()
 
 
 @pytest.mark.parametrize("headers,body,status", [
