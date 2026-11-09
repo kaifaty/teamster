@@ -4,7 +4,7 @@ import type { ArtIndex, MachineStatus, TaskSummary } from "../../types";
 import type { Rings } from "../../lib/machines";
 import type { Constellation } from "../constellations";
 import type { Family, Star } from "../fleet";
-import type { Camera, FuelColumn, Galaxy, Insets, MachineColumn, Size } from "../layout";
+import type { Camera, FuelColumn, Galaxy, Insets, MachineColumn, Point, Size } from "../layout";
 import type { Placement } from "../placement";
 
 export interface ShipEntry {
@@ -17,9 +17,11 @@ export interface ResearchMarks {
   running: boolean;
   /** Lessons that wait for a decision. */
   proposed: number;
-  /** Studies whose analyst waits for the human's answer: the dish sends out rings. */
+  /** Studies whose analyst waits for the human's answer: the station sends out rings. */
   waiting: number;
   probes: string[];
+  /** Where the station stands in the world: see researchPosition. */
+  at: Point;
 }
 
 /** A machine's reactor: its glow tells the machine's status, its rings how much of each resource is in use. */

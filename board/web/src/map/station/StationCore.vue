@@ -233,7 +233,7 @@ const run = computed(() => props.research.run);
   animation: turn 3.2s linear infinite;
 }
 
-/* The analyst waits: gold waves run out from the dish. */
+/* The analyst waits: gold waves run out from the core. */
 .wave {
   position: absolute;
   top: 50%;

@@ -28,7 +28,7 @@ const NODE_JITTER = 0.12;
  * with their labels, and the parts `covered` by the map's own panels.
  */
 export function galaxyKeepOuts(size: Size, covered: readonly Rect[], machines: MachineColumn | null = null, fuel: FuelColumn | null = null): Rect[] {
-  const station = researchPosition(size, machines, fuel);
+  const station = researchPosition(size, covered, machines, fuel);
   const result: Rect[] = [
     { x0: station.x - 150, y0: station.y - RESEARCH_SIZE / 2 - 40, x1: station.x + 150, y1: station.y + RESEARCH_SIZE / 2 + 85 },
   ];

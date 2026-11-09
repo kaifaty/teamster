@@ -26,7 +26,6 @@ import {
   lanesOf,
   parkingOf,
   parkingOrder,
-  researchPosition,
   skyChoices,
   starSize,
   stormRadius,
@@ -584,12 +583,12 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     }
   }
 
-  /** The science station in the middle of the galaxy: a teal glow, and a gold light while lessons wait. */
+  /** The science station in its corner of the galaxy: a violet glow, and a gold light while lessons wait. */
   function drawResearch() {
     researchLayer.removeChildren().forEach((child) => child.destroy());
     station = null;
     if (!model.research) return;
-    const point = researchPosition(camera.world, model.machineColumn, model.fuel);
+    const point = model.research.at;
     const halo = glow(SPACE.research, RESEARCH_SIZE * 2.6);
     const body = sprite(art("stationResearch"), RESEARCH_SIZE);
     const beacon = glow(SPACE.gold, RESEARCH_SIZE * 0.9);
@@ -1208,13 +1207,14 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     watchFx.clear();
     const marks = model.research;
     if (!marks || !station) return;
-    const center = researchPosition(camera.world, model.machineColumn, model.fuel);
+    const center = marks.at;
     const { body, halo, beacon } = station;
-    if (marks.running && !still) body.rotation = time * 0.12;
+    // A long hull does not spin: it rocks slowly in place while the reflection runs.
+    body.rotation = marks.running && !still ? 0.06 * Math.sin(time * 0.7) : 0;
     halo.alpha = marks.running ? (still ? 0.5 : 0.38 + 0.18 * Math.sin(time * 2.4)) : 0.16;
     beacon.alpha = still ? 0.35 : 0.08 + 0.4 * Math.max(0, Math.sin(time * 1.8)) ** 2;
     if (marks.waiting > 0) {
-      // A question waits for the human: gold rings run out from the dish, like a call on the air.
+      // A question waits for the human: gold rings run out from the station, like a call on the air.
       for (let k = 0; k < WAVE_RINGS; k++) {
         const phase = still ? (k + 0.5) / WAVE_RINGS : (time * 0.42 + k / WAVE_RINGS) % 1;
         watchFx.circle(center.x, center.y, RESEARCH_SIZE * (0.55 + 1.45 * phase));
@@ -1378,7 +1378,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   function researchAt(point: Point): boolean {
     if (!model.research) return false;
-    const center = researchPosition(camera.world, model.machineColumn, model.fuel);
+    const center = model.research.at;
     return Math.hypot(center.x - point.x, center.y - point.y) < RESEARCH_SIZE * 0.5;
   }
 

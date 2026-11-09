@@ -401,7 +401,7 @@ describe("galaxy", () => {
     expect(kept.length).toBeGreaterThanOrEqual(stars.length - 3);
   });
 
-  it("leaves the middle to the science station, with room for its label below", () => {
+  it("leaves the science station's corner to it, with room for its label below", () => {
     for (const world of SIZES) {
       for (const count of [1, 6, 12, 25, 60, 120]) {
         const station = researchPosition(world);
@@ -555,19 +555,32 @@ describe("machines", () => {
     for (const room of machineRooms(machinePositions(FIXTURE, TALL, 0.39))) expect(room.y1).toBeLessThanOrEqual(logCorner(TALL).y0);
   });
 
-  it("moves the science station only as far as a machine's label makes it", () => {
-    expect(researchPosition(WIDE, machinePositions(FIXTURE, WIDE, 0.855))).toEqual(researchPosition(WIDE));
-    expect(researchPosition(TALL, machinePositions([{ id: "x", name: "kedr", status: "" }], TALL, 0.39))).toEqual(researchPosition(TALL));
-    const column = machinePositions(FIXTURE, TALL, 0.39);
-    const station = researchPosition(TALL, column);
-    expect(station.x).toBeLessThan(researchPosition(TALL).x);
-    const sprite = { x0: station.x - RESEARCH_SIZE / 2, y0: station.y - RESEARCH_SIZE / 2, x1: station.x + RESEARCH_SIZE / 2, y1: station.y + RESEARCH_SIZE / 2 };
-    const label = { x0: station.x - 88 / 0.39, y0: station.y + 93, x1: station.x + 88 / 0.39, y1: station.y + 93 + 36 / 0.39 };
-    expect(label.x0).toBeGreaterThanOrEqual(0);
-    for (const room of machineRooms(column)) {
-      expect(hit(label, room)).toBe(false);
-      expect(hit(sprite, room)).toBe(false);
+  it("puts the science station in the lower right corner, left of the machines and above the log", () => {
+    const alone = researchPosition(WIDE);
+    expect(alone.x).toBeGreaterThan(WIDE.width * 0.8);
+    expect(alone.x + 200 / 0.75 / 2).toBeLessThanOrEqual(WIDE.width - 20);
+    expect(alone.y + 93 + 40 / 0.75).toBeLessThanOrEqual(WIDE.height - 20);
+    expect(alone.y).toBeGreaterThan(WIDE.height * 0.7);
+    for (const [world, zoom, label] of [[WIDE, 0.855, { width: 200, height: 40 }], [TALL, 0.39, { width: 176, height: 36 }]] as const) {
+      const column = machinePositions(FIXTURE, world, zoom);
+      const station = researchPosition(world, defaultCovered(world), column);
+      expect(station.x).toBeLessThan(researchPosition(world).x);
+      const sprite = { x0: station.x - RESEARCH_SIZE / 2, y0: station.y - RESEARCH_SIZE / 2, x1: station.x + RESEARCH_SIZE / 2, y1: station.y + RESEARCH_SIZE / 2 };
+      const box = { x0: station.x - label.width / zoom / 2, y0: station.y + 93, x1: station.x + label.width / zoom / 2, y1: station.y + 93 + label.height / zoom };
+      expect(box.x0).toBeGreaterThanOrEqual(0);
+      expect(sprite.y0).toBeGreaterThanOrEqual(0);
+      for (const covered of defaultCovered(world)) {
+        expect(hit(box, covered)).toBe(false);
+        expect(hit(sprite, covered)).toBe(false);
+      }
+      for (const room of machineRooms(column)) {
+        expect(hit(box, room)).toBe(false);
+        expect(hit(sprite, room)).toBe(false);
+      }
     }
+    // On a phone the log spans the bottom: the station stands above it.
+    const phone = researchPosition(TALL);
+    expect(phone.y + 93 + 36 / 0.75).toBeLessThanOrEqual(logCorner(TALL).y0);
   });
 
   it("lets no star stand in the machines' column, the gaps between its rows included", () => {
@@ -690,7 +703,7 @@ describe("fuel tanks", () => {
         const stars = Array.from({ length: count }, (_, i) => ({ repo: `repo-${i}`, live: i % 3 ? 0 : 1 + (i % 7), attention: 0, ready: 0, sleeping: 0 }));
         for (const at of galaxyLayout(stars, world, blocked, null, zoom).places.values()) expect(inside(at, rect)).toBe(false);
       }
-      const station = researchPosition(world, null, fuel);
+      const station = researchPosition(world, defaultCovered(world), null, fuel);
       const sprite = { x0: station.x - RESEARCH_SIZE / 2, y0: station.y - RESEARCH_SIZE / 2, x1: station.x + RESEARCH_SIZE / 2, y1: station.y + RESEARCH_SIZE / 2 };
       for (const shape of BOARD) expect(hit(sprite, fuelRoom(shape.key, fuel))).toBe(false);
     }

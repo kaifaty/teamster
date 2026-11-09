@@ -31,7 +31,7 @@ export const SPACE = {
   /** The dim warning light of an empty fuel tank. */
   empty: "#ff7a50",
   /** The science station's glow and its probes. */
-  research: "#5fd6c8",
+  research: "#a77bff",
 } as const;
 
 /**

@@ -226,6 +226,7 @@ const researchMarks = computed(() =>
         proposed: station.value.proposed.length,
         waiting: station.value.waiting,
         probes: station.value.probes,
+        at: stationPoint.value,
       }
     : null,
 );
@@ -317,6 +318,8 @@ const machineColumn = computed(() => {
   const fuel = fuelColumn.value?.row ? fuelColumnRect(fuelColumn.value) : null;
   return machinePositions(machineShapes.value, world.value, fullZoom.value, !!machineNote.value, fuel ? [...coveredNow.value, { ...fuel, y0: 0 }] : coveredNow.value);
 });
+/** Where the science station stands: in the galaxy's lower right corner, see researchPosition. */
+const stationPoint = computed(() => researchPosition(world.value, coveredNow.value, machineColumn.value, fuelColumn.value));
 let previousGalaxy: Galaxy | null = null;
 const galaxy = computed(() => {
   const blocked = galaxyKeepOuts(world.value, coveredNow.value, machineColumn.value, fuelColumn.value);
@@ -346,7 +349,7 @@ const starLabels = computed(() => {
  */
 const constellationLabels = computed(() => {
   const layout = galaxy.value;
-  const station = researchPosition(world.value, machineColumn.value, fuelColumn.value);
+  const station = stationPoint.value;
   const keepOuts = [
     { x0: station.x - RESEARCH_SIZE / 2 - 20, y0: station.y - RESEARCH_SIZE / 2 - 20, x1: station.x + RESEARCH_SIZE / 2 + 20, y1: station.y + RESEARCH_SIZE / 2 + RESEARCH_LABEL_DROP + 50 },
     ...coveredNow.value,
@@ -383,7 +386,7 @@ const constellationLabels = computed(() => {
 const stationLabel = computed(() => {
   const marks = station.value;
   if (!marks) return null;
-  const point = researchPosition(world.value, machineColumn.value, fuelColumn.value);
+  const point = stationPoint.value;
   const last = marks.batch ? `разбор ${shortDate(marks.batch.date)}` : "разборов не было";
   const proposed = marks.proposed.length;
   const asks = marks.waiting;
