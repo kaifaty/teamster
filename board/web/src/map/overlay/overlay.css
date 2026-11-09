@@ -1,0 +1,60 @@
+/*
+ * What the map's labels, its toolbar and its legend share. Each component that needs it takes it scoped,
+ * <style scoped src>, so it reaches only that component's own elements, as its own rules do.
+ */
+
+/* A label stands at its point in the world, --x and --y, through the overlay's camera: --tx, --ty and --zoom. */
+.star,
+.station,
+.constellation,
+.tank,
+.machine,
+.machine-note,
+.plate-st,
+.count {
+  position: absolute;
+  left: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
+  top: calc(var(--ty) + var(--y) * var(--zoom) * 1px);
+  transform: translateX(-50%);
+}
+
+/* A count of ships in the colour of their dots: on a star's label and, as a dot, in the legend. */
+.badge {
+  box-sizing: border-box;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+  text-align: center;
+}
+
+.b-alarm {
+  background: #e0533c;
+  color: #fff4ef;
+}
+
+.b-ready {
+  background: #f3c64e;
+  color: #1a1408;
+}
+
+.b-sleep {
+  background: #a9cdf0;
+  color: #0b1626;
+}
+
+/* A repository's own mark. It stands on dark in both of the board's themes, like the rest of the map. */
+.emblem {
+  flex: none;
+  box-sizing: border-box;
+  width: 30px;
+  height: 30px;
+  padding: 1px;
+  border-radius: 3px;
+  background: #0b0e15;
+  object-fit: contain;
+}

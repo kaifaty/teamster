@@ -119,6 +119,16 @@ A finished task shows its «Груз» above the commands (the saved check, the 
 `npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
 every station; both fixture sources include a day of log events, with a ship that reaches the sun, one turned back at the gate and one in trouble, and a day's report.
 
+The map's code in `board/web/src/map/`:
+- `layout/` — the geometry, one module per subject: the stars, the systems' stations and parking, the machines, the tanks, the camera.
+- `scene/` — the Pixi scene: its camera, its input and its layers, `galaxy/` and `system/`; to add an object to the map,
+  see the comment at the top of `scene/layer.ts`.
+- `use/` — the composables `MapView.vue` is made of: the sources, the model, the panels, the labels, the scene.
+- `overlay/` — the labels over the canvas: the `.ts` builders make their texts and places, and a component for each
+  kind draws one (`StarLabel.vue`, `TankLabel.vue`…), with its own styles; `overlay.css` holds what they share. A new
+  object's label is a new component there, listed in `GalaxyLabels.vue` or `SystemLabels.vue`.
+- `src/size-budget.test.ts` fails when a `.ts` file under `board/web/src/` grows past 500 lines or a `.vue` file past 650.
+
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `TEAMSTER_HOME`, `CODEX_TASK_HOME` | `~/.teamster` | The worker's data home, found by the worker's rules (`teamster docs settings`). Read tasks from `tasks/` and archives from `tasks/.archive/` (`claude-tasks/` in a legacy home in `~/.codex`). Snapshots include at most 50 closed records together, ranked by state mtime. |

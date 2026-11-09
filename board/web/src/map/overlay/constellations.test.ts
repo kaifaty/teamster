@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Rect } from "../layout";
+import { fuelColumnRect, fuelPositions, machineColumnRect, machinePositions, researchPosition, type Rect } from "../layout";
 import { constellationKeepOuts, constellationLabels } from "./constellations";
 
 const WORLD = { width: 1000, height: 1000 };
@@ -36,6 +36,24 @@ describe("constellation labels", () => {
     // The stars stand under the station, close enough for the label above them to touch its keep-out.
     expect(side(keepOuts, keepOuts[0]!.y1 + 60, station.x - 50)).toBe("below");
     expect(constellationKeepOuts(station, null, null, [ABOVE])).toContainEqual(ABOVE);
+  });
+
+  it("keeps off the reactors' column and the tanks' column", () => {
+    const machines = machinePositions([{ id: "m", name: "m", status: "в порядке" }], WORLD);
+    const fuel = fuelPositions([{ key: "t", executor: "codex", name: "t", info: "83%", resets: 0 }], WORLD);
+    const cases = [
+      { rect: machineColumnRect(machines)!, keepOuts: constellationKeepOuts(researchPosition(WORLD, [], machines), machines, null, []) },
+      { rect: fuelColumnRect(fuel)!, keepOuts: constellationKeepOuts(researchPosition(WORLD, [], null, fuel), null, fuel, []) },
+    ];
+    for (const { rect, keepOuts } of cases) {
+      expect(keepOuts).toContainEqual(rect);
+      // The stars stand under the column's middle, so that the label above them would stand on it.
+      const x = Math.round((rect.x0 + rect.x1) / 2) - 50;
+      const y = Math.round((rect.y0 + rect.y1) / 2) + 69;
+      const others = keepOuts.filter((keepOut) => JSON.stringify(keepOut) !== JSON.stringify(rect));
+      expect(side(others, y, x)).toBe("above");
+      expect(side(keepOuts, y, x)).not.toBe("above");
+    }
   });
 
   it("stays above when no side is free, and skips a constellation without stars", () => {

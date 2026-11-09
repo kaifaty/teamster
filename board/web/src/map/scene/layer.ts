@@ -6,8 +6,8 @@
 //   1. a module in galaxy/ whose create function returns a GalaxyLayer: its own root, its Pixi objects and the state
 //      of its animation, freed by dispose();
 //   2. one line in the galaxy's list of layers in index.ts, where it stands among the others;
-//   3. a field of GalaxyModel in types.ts for what it shows, filled in by MapView;
-//   4. its label, if it has one, in MapView.
+//   3. a field of GalaxyModel in types.ts for what it shows, filled in by map/use/useGalaxyModel.ts;
+//   4. its label, if it has one: a builder in map/overlay/ and a component there, listed in GalaxyLabels.vue.
 
 import type { Container } from "pixi.js";
 import type { Point, Size, SystemFrame } from "../layout";
