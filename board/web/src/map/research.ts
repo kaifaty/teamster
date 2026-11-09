@@ -1,7 +1,7 @@
 // The research station: what the reflection learned from finished tasks, what waits for a decision, and which
 // systems it watches. Pure data for the scene, the label and the panel.
 
-import type { Lesson, PendingRecord, ResearchBatch, ResearchView, Signal, TaskSummary } from "../types";
+import type { Lesson, PendingRecord, ResearchBatch, ResearchView, Signal, Study, TaskSummary } from "../types";
 
 /** The scheduled task of the reflection when the server does not name it. */
 export const REFLECTION_TASK = "codex-batch-reflection";
@@ -21,14 +21,15 @@ export const SIGNALS: Record<Signal, string> = {
   budget_exhausted: "кончился бюджет",
 };
 
-/** A run of the reflection: a desktop session started by its scheduled task. */
+/** A reflection task, or a desktop session started by the legacy scheduled task. */
 export function isReflection(task: Pick<TaskSummary, "kind" | "scheduled">, view: ResearchView | null): boolean {
-  return task.kind === "session" && !!task.scheduled && task.scheduled === (view?.reflection_task ?? REFLECTION_TASK);
+  return task.kind === "reflect" || (task.kind === "session" && !!task.scheduled && task.scheduled === (view?.reflection_task ?? REFLECTION_TASK));
 }
 
 export interface Research {
   /** Lessons by status, newest first. */
   proposed: Lesson[];
+  accepted: Lesson[];
   applied: Lesson[];
   declined: Lesson[];
   other: Lesson[];
@@ -36,6 +37,8 @@ export interface Research {
   pending: { records: number; signals: number; items: PendingRecord[] };
   /** The reflection's session: the one running now, else the latest. */
   run: TaskSummary | null;
+  studies: Study[];
+  waiting: number;
   running: boolean;
   /** Systems on the map with records that wait for the next reflection, most first. */
   watched: { repo: string; count: number }[];
@@ -53,21 +56,28 @@ const byCount = (counts: Record<string, number>, known: ReadonlySet<string>) =>
 export function research(view: ResearchView | null, tasks: readonly TaskSummary[], starRepos: readonly string[]): Research | null {
   if (!view) return null;
   const newest = [...view.lessons].reverse();
-  const runs = tasks.filter((task) => isReflection(task, view)).sort((a, b) => Number(b.alive) - Number(a.alive) || b.updated_at - a.updated_at);
+  const runs = tasks.filter((task) => task.kind === "session" && isReflection(task, view))
+    .sort((a, b) => Number(b.alive) - Number(a.alive) || b.updated_at - a.updated_at);
   const run = runs[0] ?? null;
-  const running = run?.alive ?? false;
+  const activeStudy = view.studies.find((study) => study.alive);
+  const running = !!activeStudy || !!run?.alive;
   const known = new Set(starRepos);
   const watched = byCount(view.pending.repos, known);
-  // A run reads the records gathered since the last one; with none known, the systems it read last time.
-  const visited = watched.length ? watched : byCount(view.batch?.repos ?? {}, known);
+  // The report identifies a study's batch. Without that link, retain the pending/last-batch estimate.
+  const visited = activeStudy?.file && activeStudy.file === view.batch?.name
+    ? byCount(view.batch.repos, known)
+    : watched.length ? watched : byCount(view.batch?.repos ?? {}, known);
   return {
     proposed: newest.filter((lesson) => lesson.status === "proposed"),
+    accepted: newest.filter((lesson) => lesson.status === "accepted"),
     applied: newest.filter((lesson) => lesson.status === "applied"),
     declined: newest.filter((lesson) => lesson.status === "declined"),
     other: newest.filter((lesson) => lesson.status === "other"),
     batch: view.batch,
     pending: { records: view.pending.records, signals: view.pending.signals, items: view.pending.items },
     run,
+    studies: view.studies,
+    waiting: view.studies.filter((study) => study.waiting).length,
     running,
     watched,
     probes: running ? visited.slice(0, MAX_PROBES).map((item) => item.repo) : [],

@@ -3,7 +3,7 @@ import json
 import time
 from pathlib import Path
 
-from . import account_rotation, checking, ci_runs, clock, config, executors, procs, result_schema, reviewers, sandboxing, task_state, threads, turn_monitor
+from . import account_rotation, checking, ci_runs, clock, config, executors, procs, reflection, result_schema, reviewers, sandboxing, task_state, threads, turn_monitor
 
 
 def wait_rotation_lines(st):
@@ -101,7 +101,7 @@ def wait_reflect_lines(st, raw):
     yield "== result: " + ("NEEDS DECISION" if result["status"] == "needs_decision" else "done")
     yield result["summary"]
     if st.get("reflect_file"):
-        yield "== batch: " + str(Path(st["repo"]) / st["reflect_file"])
+        yield f"== {reflection.file_kind(st)}: " + str(Path(st["repo"]) / st["reflect_file"])
     if result["lessons"]:
         yield "Lessons:"
         yield from (f"- {lesson['id']}: {lesson['cue']}" for lesson in result["lessons"])

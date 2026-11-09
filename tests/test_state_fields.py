@@ -112,7 +112,7 @@ st[dynamic_key] = 1
         unused = registered - used
         self.assertFalse(missing, "Unregistered state keys: " + ", ".join(sorted(missing)))
         self.assertFalse(unused, "Unused state registry keys: " + ", ".join(sorted(unused)))
-        self.assertEqual(len(registered), 94)
+        self.assertEqual(len(registered), 96)
         for key, field in self.worker.task_state.STATE_FIELDS.items():
             with self.subTest(key=key):
                 self.assertIn(field.lifetime, {"task", "history", "cursor", "turn", "attempt", "runtime"})
@@ -161,6 +161,7 @@ st[dynamic_key] = 1
             "writable_dirs": [str(self.home / "writable")],
             "reflect_mode": "batch", "reflect_through": "20260101T000000Z",
             "reflect_records": ["old-20260101T000000Z"], "reflect_file": "batch-2026-01-01.md",
+            "reflect_order": "old-order", "reflect_turns": [{"status": "done", "file": "batch-2026-01-01.md"}],
         }
         self.assertEqual(set(st), set(self.worker.task_state.STATE_FIELDS))
         return st

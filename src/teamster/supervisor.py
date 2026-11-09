@@ -135,7 +135,10 @@ def cmd__run(a):
                 task_state.save(st)
             if (st.get("kind") == "reflect" and st.get("outcome") == "completed"
                     and st.get("result") is not None and not stopped()):
-                reflection.record_batch(st, stopped)
+                if st.get("reflect_mode") == "study":
+                    reflection.record_study(st, stopped)
+                else:
+                    reflection.record_batch(st, stopped)
                 task_state.save(st)
         work_result = st.get("result") if working else None
         if (work_result is not None and work_result["status"] != "done"
