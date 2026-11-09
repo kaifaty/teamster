@@ -35,8 +35,8 @@ describe("task commands", () => {
   });
 
   it("names a reflection by UTC month, day, hour and minute", () => {
-    expect(reflectSlug(new Date("2026-01-02T01:04:59+03:00"))).toBe("reflect-0101-2204");
-    expect(reflectSlug(new Date("2026-11-09T05:07:00Z"))).toBe("reflect-1109-0507");
+    expect(reflectSlug(new Date("2026-01-02T01:04:59+03:00"))).toBe("reflect-0101-220459");
+    expect(reflectSlug(new Date("2026-11-09T05:07:00Z"))).toBe("reflect-1109-050700");
   });
 
   it("builds reflection selections and quotes their arguments", () => {

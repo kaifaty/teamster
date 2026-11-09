@@ -62,10 +62,10 @@ export function sayCommand(slug: string, text: string): string {
   return `teamster say ${shellWord(commandSlug(slug))} ${shellQuote(text)}`;
 }
 
-/** A short study name based on the UTC date and time. */
+/** A short study name based on the UTC date and time, to the second: two orders in one minute stay apart. */
 export function reflectSlug(now: Date): string {
   const pair = (value: number) => String(value).padStart(2, "0");
-  return `reflect-${pair(now.getUTCMonth() + 1)}${pair(now.getUTCDate())}-${pair(now.getUTCHours())}${pair(now.getUTCMinutes())}`;
+  return `reflect-${pair(now.getUTCMonth() + 1)}${pair(now.getUTCDate())}-${pair(now.getUTCHours())}${pair(now.getUTCMinutes())}${pair(now.getUTCSeconds())}`;
 }
 
 /** Start a reflection of named tasks, or select its material by time and repositories. */

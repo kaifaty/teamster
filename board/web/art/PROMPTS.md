@@ -100,6 +100,17 @@ STYLE: Original science-fiction game art in the manner of late-1990s hand-painte
 
 10. backdrop-marsh: Murky olive and copper clouds, heavy and slow, with sickly pale green glows in the distance.
 
+## The research station's staff
+
+Two portraits speak in the research station's panel: the analyst, the reflection itself, and the archive keeper, who tells
+what the board knows without an agent. Each has one dominant colour and one big feature, so that it still reads at
+22 pixels. Each prompt follows the first STYLE line of this file, without its "pre-rendered" and "industrial" words.
+`python3 art/prepare.py SOURCE_DIR --portraits` scales `portrait-analyst.png` and `portrait-archivist.png` into JPEGs.
+
+1. portrait-analyst (square, 1024x1024): A head-and-shoulders portrait of a fictional research scientist aboard an orbital observatory, turned three-quarters towards the viewer, centred and filling most of the square frame. Deep teal is the dominant colour. One big, bold feature: a large round brass lens visor over the right eye that glows bright teal. Short silver hair, a high-collared dark teal lab coat with small brass clasps. Lit from below and in front by the soft teal glow of an unseen screen, with a warm amber rim light from behind. Calm, attentive, intelligent expression. A plain dark teal-black painted background with a soft vignette and nothing else in it. The silhouette and the glowing visor must read clearly even when the picture is shown very small.
+
+2. portrait-archivist (square, 1024x1024): A head-and-shoulders portrait of a fictional archive-keeper robot of an orbital observatory, facing the viewer, centred and filling most of the square frame. Warm amber is the dominant colour. One big, bold feature: a round domed brass head with a single large glowing amber lamp eye in its middle. Weathered brass and dark steel plates with a few rivets, a thick ribbed neck. Behind its shoulders, dark shelves of small glowing data cassettes, softly blurred. Lit warmly by the glow of its own eye, with a cool teal rim light from behind. Calm and patient bearing. A dark background with a soft vignette. The round head and the glowing eye must read clearly even when the picture is shown very small.
+
 ## The art of one project
 
 A repository may have its own sky, home planet and emblem. The home planet is the system's home world, drawn large at its left edge under the shipyard's dock. They live in `board-art/<repo>/` in the data home (`~/.teamster/board-art/<repo>/` by default), never in this repository: a project's name and theme can be private. Nothing here is generated automatically, and a project without art keeps the shared pictures.

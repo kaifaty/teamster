@@ -8,6 +8,7 @@ and macOS `sips` scales the results into src/map/art. Files named backdrop-*.png
 With --only NAME ... it prepares only those sprites, so that one new picture needs no other sources.
 With --project TARGET_DIR it prepares the art of one repository instead: sky.png, planet.png and emblem.png,
 whichever exist, go into TARGET_DIR, which lies outside this repository (see PROMPTS.md).
+With --portraits it prepares only the research station's staff portraits.
 """
 
 import argparse
@@ -44,6 +45,12 @@ SPRITES = {
     "planet-roadstead": ("ball", 288),
     "planet-cryo": ("ball", 352),
     "sun": ("sun", 512),
+}
+
+# The research station's staff: square paintings, only scaled, as JPEG.
+PORTRAITS = {
+    "portrait-analyst": 192,
+    "portrait-archivist": 192,
 }
 
 # The same for the art of one repository. Its sky goes through as a JPEG.
@@ -198,13 +205,27 @@ def prepare_project(source, target):
         )
 
 
+def prepare_portraits(source):
+    OUT.mkdir(parents=True, exist_ok=True)
+    for name, longest in PORTRAITS.items():
+        subprocess.run(
+            ["sips", "-Z", str(longest), "-s", "format", "jpeg", "-s", "formatOptions", "80",
+             str(source / f"{name}.png"), "--out", str(OUT / f"{name}.jpg")],
+            check=True, capture_output=True,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Turn generated art into the files the map loads.")
     parser.add_argument("source", type=Path)
     parser.add_argument("--project", type=Path, metavar="TARGET_DIR", help="prepare one repository's art into this directory")
     parser.add_argument("--only", nargs="+", metavar="NAME", help="prepare only these sprites, such as station-yard")
+    parser.add_argument("--portraits", action="store_true", help="prepare only the staff portraits")
     args = parser.parse_args()
     source = args.source
+    if args.portraits:
+        prepare_portraits(source)
+        return
     if args.project:
         prepare_project(source, args.project.expanduser())
         return

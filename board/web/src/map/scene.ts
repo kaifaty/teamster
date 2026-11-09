@@ -65,6 +65,8 @@ export interface ResearchMarks {
   running: boolean;
   /** Lessons that wait for a decision. */
   proposed: number;
+  /** Studies whose analyst waits for the human's answer: the dish sends out rings. */
+  waiting: number;
   watched: { repo: string; count: number }[];
   probes: string[];
 }
@@ -166,6 +168,8 @@ const MACHINE_GLOW: Partial<Record<MachineStatus, { halo: number; core: number }
 };
 const ESCORT_SIZE = 30;
 const PROBE_SIZE = 40;
+/** Gold rings around the research station while its analyst waits for an answer. */
+const WAVE_RINGS = 3;
 /** World units a probe covers in a second. */
 const PROBE_SPEED = 120;
 /** Smoke puffs shared by all damaged ships: no puff is made after the scene starts. */
@@ -1440,6 +1444,14 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     if (marks.running && !still) body.rotation = time * 0.12;
     halo.alpha = marks.running ? (still ? 0.5 : 0.38 + 0.18 * Math.sin(time * 2.4)) : 0.16;
     beacon.alpha = still ? 0.35 : 0.08 + 0.4 * Math.max(0, Math.sin(time * 1.8)) ** 2;
+    if (marks.waiting > 0) {
+      // A question waits for the human: gold rings run out from the dish, like a call on the air.
+      for (let k = 0; k < WAVE_RINGS; k++) {
+        const phase = still ? (k + 0.5) / WAVE_RINGS : (time * 0.42 + k / WAVE_RINGS) % 1;
+        watchFx.circle(center.x, center.y, RESEARCH_SIZE * (0.55 + 1.45 * phase));
+        watchFx.stroke({ width: 1.4 + 3.2 * (1 - phase), color: SPACE.gold, alpha: (still ? 0.55 : 0.9) * (1 - phase) ** 1.1 });
+      }
+    }
     for (const { repo: name, count } of marks.watched) {
       const to = stars.get(name);
       if (!to) continue;
