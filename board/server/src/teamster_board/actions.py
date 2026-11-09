@@ -106,7 +106,7 @@ class Actions:
                 return error(404, "Unknown lesson")
             argv.extend([entry, status])
             if note:
-                argv.extend(["--note", note])
+                argv.append(f"--note={note}")
         elif route == "say":
             slug = string(data, "slug", 100, required=True)
             file_text = string(data, "text", 8000, required=True)

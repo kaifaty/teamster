@@ -612,7 +612,7 @@ startup, independently of the accounts/report script. Otherwise `actions.reason`
 Only these POST endpoints execute commands:
 
 - `/api/actions/lesson`: `{entry: string, status: "accepted" | "declined" | "applied" | "proposed", note?: string}`
-  runs `teamster lesson <entry> <status>`, adding `--note <note>` only for a nonempty trimmed note.
+  runs `teamster lesson <entry> <status>`, adding `--note=<note>` only for a nonempty trimmed note.
   The trimmed entry must equal a lesson entry in the current view (404 otherwise); entry ≤ 200
   characters, note ≤ 1000.
 - `/api/actions/say`: `{slug: string, text: string}` runs `teamster say <slug> --file <temporary file>`

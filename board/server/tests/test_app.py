@@ -762,7 +762,8 @@ sys.exit(control.get("exit", 0))
         yield client, application, settings, entry, calls, control
 
 
-def test_station_action_argv_files_and_immediate_lesson_refresh(station, caplog):
+@pytest.mark.parametrize("note", ["  AGENTS.md  ", "--force applied"])
+def test_station_action_argv_files_and_immediate_lesson_refresh(station, caplog, note):
     client, application, _, entry, calls, _ = station
     caplog.set_level("INFO", logger="uvicorn.error")
     assert client.get("/api/research").json()["actions"] == {"enabled": True, "reason": None}
@@ -773,14 +774,14 @@ def test_station_action_argv_files_and_immediate_lesson_refresh(station, caplog)
     # The configured interval is one hour, and the preceding GET primed the view.
     assert application.state.board.research.seconds == 3600
     assert client.get("/api/research").json()["lessons"][0]["status"] == "accepted"
-    response = client.post("/api/actions/lesson", json={"entry": entry, "status": "applied", "note": "  AGENTS.md  "})
+    response = client.post("/api/actions/lesson", json={"entry": entry, "status": "applied", "note": note})
     assert response.status_code == 200
     response = client.post("/api/actions/say", json={"slug": "waiting", "text": "  --answer\nKeep the check.  "})
     assert response.status_code == 200
     assert response.json() == {"ok": True, "output": "finished"}
     records = [json.loads(line) for line in calls.read_text().splitlines()]
     assert records[0]["argv"] == ["lesson", entry, "accepted"]
-    assert records[1]["argv"] == ["lesson", entry, "applied", "--note", "AGENTS.md"]
+    assert records[1]["argv"] == ["lesson", entry, "applied", f"--note={note.strip()}"]
     assert records[2]["argv"][:3] == ["say", "waiting", "--file"]
     assert len(records[2]["argv"]) == 4
     assert records[2]["file"] == "--answer\nKeep the check."
