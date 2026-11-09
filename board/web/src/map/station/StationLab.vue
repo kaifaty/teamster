@@ -1,17 +1,15 @@
 <script setup lang="ts">
 // The lab: every lesson the analyst proposed moves along one line — proposed, accepted, applied — or drops out
-// declined. The stages are the lab's tabs; a decision taken on a card goes to the transmitter with the rest.
-import { computed, ref, watch } from "vue";
+// declined. The stages are the lab's tabs; a card's buttons act at once.
 import type { Lesson } from "../../types";
 import { plural, shortDate, type Research } from "../research";
-import { reach } from "../station";
-import { useConsole } from "./console";
+import { useConsole, type Stage } from "./console";
+import LessonActions from "./LessonActions.vue";
 
-const props = defineProps<{ research: Research }>();
+defineProps<{ research: Research }>();
 const emit = defineEmits<{ jump: [deck: "comms"] }>();
 const desk = useConsole();
 
-type Stage = "proposed" | "accepted" | "applied" | "declined";
 const STAGES: { stage: Stage; sigil: string; label: [string, string, string] }[] = [
   { stage: "proposed", sigil: "◆", label: ["на решение", "на решение", "на решение"] },
   { stage: "accepted", sigil: "◇", label: ["к внедрению", "к внедрению", "к внедрению"] },
@@ -19,36 +17,20 @@ const STAGES: { stage: Stage; sigil: string; label: [string, string, string] }[]
   { stage: "declined", sigil: "✕", label: ["отклонён", "отклонено", "отклонено"] },
 ];
 
-const listOf = (stage: Stage): Lesson[] =>
-  stage === "declined" ? [...props.research.declined, ...props.research.other] : props.research[stage];
-
-const firstStage = (): Stage => (["proposed", "accepted", "applied"] as const).find((stage) => listOf(stage).length) ?? "proposed";
-const stage = ref<Stage>(firstStage());
-// New proposals bring the lab back to the decisions, unless the human looks at another stage that has lessons.
-watch(
-  () => props.research.proposed.length,
-  (count, before) => {
-    if (count > (before ?? 0) || !listOf(stage.value).length) stage.value = firstStage();
-  },
-);
-
-const shown = computed(() => listOf(stage.value));
 const scopeText = (lesson: Lesson) =>
   lesson.scope === "invariant" ? "общий" : lesson.scope === "domain" ? lesson.repos.join(", ") || lesson.scope_text : lesson.scope_text;
 const filedOf = (lesson: Lesson) => desk.filed.value.get(lesson.entry.trim()) ?? null;
+
+/** The lesson's own section, or what the analyst's docket said when the index row has none. */
+const what = (lesson: Lesson) => lesson.lesson ?? filedOf(lesson)?.lesson ?? null;
+const proposal = (lesson: Lesson) => lesson.proposal ?? filedOf(lesson)?.proposal ?? null;
+const hasBody = (lesson: Lesson) => !!(what(lesson) || proposal(lesson) || lesson.evidence || lesson.caveats);
 
 function toDocket(lesson: Lesson) {
   const filed = filedOf(lesson);
   if (!filed) return;
   desk.select(filed.study);
   emit("jump", "comms");
-}
-
-function clarify(lesson: Lesson) {
-  const filed = filedOf(lesson);
-  if (!filed) return;
-  emit("jump", "comms");
-  void desk.clarify(filed.id, filed.study);
 }
 </script>
 
@@ -66,69 +48,47 @@ function clarify(lesson: Lesson) {
         <button
           type="button"
           class="stage"
-          :class="[item.stage, { on: stage === item.stage, lit: listOf(item.stage).length > 0, aside: item.stage === 'declined' }]"
-          :aria-pressed="stage === item.stage"
-          @click="stage = item.stage"
+          :class="[item.stage, { on: desk.labStage.value === item.stage, lit: desk.listOf(item.stage).length > 0, aside: item.stage === 'declined' }]"
+          :aria-pressed="desk.labStage.value === item.stage"
+          @click="desk.labStage.value = item.stage"
         >
           <span class="s-sigil" aria-hidden="true">{{ item.sigil }}</span>
-          <b class="s-count num">{{ listOf(item.stage).length }}</b>
-          <span class="s-label">{{ plural(listOf(item.stage).length, ...item.label) }}</span>
+          <b class="s-count num">{{ desk.listOf(item.stage).length }}</b>
+          <span class="s-label">{{ plural(desk.listOf(item.stage).length, ...item.label) }}</span>
         </button>
       </template>
     </nav>
 
     <div class="deck-body">
-      <p v-if="!shown.length" class="dim empty">
-        {{ stage === "proposed" ? "Ничего не ждёт решения." : stage === "accepted" ? "Принятых и не внедрённых уроков нет." : "Здесь пока пусто." }}
+      <p v-if="!desk.shown.value.length" class="dim empty">
+        {{ desk.labStage.value === "proposed" ? "Ничего не ждёт решения." : desk.labStage.value === "accepted" ? "Принятых и не внедрённых уроков нет." : "Здесь пока пусто." }}
       </p>
 
       <ul v-else class="cards">
-        <li v-for="lesson in shown" :key="lesson.entry" class="card" :class="lesson.status">
-          <p class="cue">{{ lesson.cue }}</p>
+        <li v-for="lesson in desk.shown.value" :key="lesson.entry" class="card" :class="desk.labStage.value === 'declined' ? lesson.status : desk.labStage.value">
+          <p class="title">{{ lesson.title || lesson.cue }}</p>
+          <p v-if="lesson.title" class="cue">{{ lesson.cue }}</p>
           <p class="meta">
             {{ shortDate(lesson.date) }} · {{ scopeText(lesson) }} ·
             <button v-if="filedOf(lesson)" type="button" class="link mono" title="Открыть докладную в рубке связи" @click="toDocket(lesson)">{{ lesson.entry }}</button>
             <span v-else class="mono">{{ lesson.entry }}</span>
           </p>
-          <dl v-if="stage === 'proposed' && (filedOf(lesson)?.lesson || filedOf(lesson)?.proposal)" class="details">
-            <template v-if="filedOf(lesson)?.lesson"><dt>Что делать</dt><dd>{{ filedOf(lesson)!.lesson }}</dd></template>
-            <template v-if="filedOf(lesson)?.proposal"><dt>Предложение</dt><dd>{{ filedOf(lesson)!.proposal }}</dd></template>
-          </dl>
-          <p v-if="stage !== 'proposed' && lesson.status_text && lesson.status_text !== lesson.status" class="status">{{ lesson.status_text }}</p>
+          <template v-if="(desk.labStage.value === 'proposed' || desk.labStage.value === 'accepted') && hasBody(lesson)">
+            <dl v-if="what(lesson) || proposal(lesson)" class="details">
+              <template v-if="what(lesson)"><dt>Что делать</dt><dd>{{ what(lesson) }}</dd></template>
+              <template v-if="proposal(lesson)"><dt>Предложение</dt><dd>{{ proposal(lesson) }}</dd></template>
+            </dl>
+            <details v-if="lesson.evidence || lesson.caveats" class="more">
+              <summary>Подробнее</summary>
+              <dl class="details">
+                <template v-if="lesson.evidence"><dt>Доказательства</dt><dd class="pre">{{ lesson.evidence }}</dd></template>
+                <template v-if="lesson.caveats"><dt>Оговорки</dt><dd class="pre">{{ lesson.caveats }}</dd></template>
+              </dl>
+            </details>
+          </template>
+          <p v-if="desk.labStage.value !== 'proposed' && lesson.status_text && lesson.status_text !== lesson.status" class="status">{{ lesson.status_text }}</p>
 
-          <div v-if="lesson.status === 'proposed'" class="actions">
-            <button type="button" class="chip" :class="{ picked: desk.decided(lesson.entry)?.status === 'accepted' }" :aria-pressed="desk.decided(lesson.entry)?.status === 'accepted'" @click="desk.decide(lesson.entry, desk.lessonId(lesson), 'accepted')">Принять</button>
-            <button type="button" class="chip" :class="{ picked: desk.decided(lesson.entry)?.status === 'declined' }" :aria-pressed="desk.decided(lesson.entry)?.status === 'declined'" @click="desk.decide(lesson.entry, desk.lessonId(lesson), 'declined')">Отклонить</button>
-            <button v-if="filedOf(lesson) && reach(filedOf(lesson)!.study) === 'ok'" type="button" class="chip" @click="clarify(lesson)">Уточнить</button>
-            <input
-              v-if="desk.decided(lesson.entry)?.status === 'declined'"
-              v-model="desk.decided(lesson.entry)!.note"
-              class="note"
-              type="text"
-              placeholder="Причина — необязательно"
-              aria-label="Причина отказа"
-            />
-          </div>
-          <div v-else-if="lesson.status === 'accepted'" class="actions">
-            <button
-              type="button"
-              class="chip applied"
-              :class="{ picked: desk.decided(lesson.entry)?.status === 'applied' }"
-              :aria-pressed="desk.decided(lesson.entry)?.status === 'applied'"
-              title="Изменение уже сделано: отметить урок внедрённым"
-              @click="desk.decide(lesson.entry, desk.lessonId(lesson), 'applied')"
-            >
-              Внедрено
-            </button>
-            <input
-              v-if="desk.decided(lesson.entry)?.status === 'applied'"
-              v-model="desk.decided(lesson.entry)!.note"
-              class="note"
-              type="text"
-              placeholder="Где: PR, файл — необязательно"
-              aria-label="Где внедрено"
-            />
-          </div>
+          <LessonActions v-if="desk.labStage.value === 'proposed' || desk.labStage.value === 'accepted'" :lesson="lesson" :stage="desk.labStage.value" />
         </li>
       </ul>
     </div>
@@ -228,6 +188,7 @@ function clarify(lesson: Lesson) {
 }
 
 .cards {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -256,9 +217,16 @@ function clarify(lesson: Lesson) {
   border-left-color: var(--st-green);
 }
 
-.cue {
+.title {
   margin: 0;
   font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cue {
+  margin: 1px 0 0;
+  color: var(--st-dim);
+  font-size: 12.5px;
   overflow-wrap: anywhere;
 }
 
@@ -292,11 +260,28 @@ function clarify(lesson: Lesson) {
   overflow-wrap: anywhere;
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
+.details dd.pre {
+  white-space: pre-wrap;
+}
+
+.more {
+  margin-top: 4px;
+  font-size: 12.5px;
+}
+
+.more summary {
+  color: #8fd8ff;
+  cursor: pointer;
+}
+
+/* On a narrow card the labels stand above their text. */
+@container (max-width: 340px) {
+  .details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .details dd {
+    margin-bottom: 4px;
+  }
 }
 </style>

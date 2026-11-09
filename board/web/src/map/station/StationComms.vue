@@ -1,14 +1,16 @@
 <script setup lang="ts">
 // The comms room: every study is a channel, and the open channel shows its conversation — the order, the
-// analyst's reports with dockets and questions, the human's replies. Picks made here go to the transmitter.
+// analyst's reports with dockets and questions, the human's replies, and under them the reply to send.
 import { nextTick, ref, watch } from "vue";
 import { formatClock } from "../../lib/format";
 import type { Study, StudyMessage } from "../../types";
 import analystPortrait from "../art/portrait-analyst.jpg";
 import archivistPortrait from "../art/portrait-archivist.jpg";
 import { plural, type Research } from "../research";
-import { LESSON_STATE, STATE_TEXT, docketPlacement, openQuestionsAt, reach, studyKey, studyState, studyTitle } from "../station";
+import { LESSON_STATE, STATE_TEXT, docketPlacement, openQuestionsAt, studyKey, studyState, studyTitle } from "../station";
 import { useConsole } from "./console";
+import LessonActions from "./LessonActions.vue";
+import StationReply from "./StationReply.vue";
 
 defineProps<{ research: Research; now: number }>();
 const desk = useConsole();
@@ -23,6 +25,11 @@ function speaker(study: Study, message: StudyMessage, at: number): string {
 }
 
 const docketsOf = (study: Study) => docketPlacement(study.messages);
+/** The index row of a docket that waits for a decision, or was decided a moment ago. */
+function decidable(entry: string) {
+  const lesson = desk.index.value.get(entry.trim());
+  return lesson && (lesson.status === "proposed" || desk.cardOf(lesson).done) ? lesson : null;
+}
 
 // A newly opened channel shows its latest turn, where the questions wait.
 const talk = ref<HTMLElement | null>(null);
@@ -51,7 +58,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
     <div class="room">
       <p v-if="!research.studies.length" class="keeper empty">
         <img :src="archivistPortrait" alt="" class="mini" />
-        <span><b>Хранитель архива:</b> каналов нет. Отдай приказ в передатчике — аналитик возьмётся за записи.</span>
+        <span>Каналов пока нет. Нажми «Обсудить» на уроке или отдай приказ — аналитик откроет канал.</span>
       </p>
 
       <ul v-else class="channels" aria-label="Каналы">
@@ -113,19 +120,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
                     <template v-if="lesson.lesson"><dt>Что делать</dt><dd>{{ lesson.lesson }}</dd></template>
                     <template v-if="lesson.proposal"><dt>Предложение</dt><dd>{{ lesson.proposal }}</dd></template>
                   </dl>
-                  <div v-if="desk.index.value.get(lesson.entry.trim())?.status === 'proposed'" class="d-actions">
-                    <button type="button" class="chip" :class="{ picked: desk.decided(lesson.entry)?.status === 'accepted' }" :aria-pressed="desk.decided(lesson.entry)?.status === 'accepted'" @click="desk.decide(lesson.entry, lesson.id, 'accepted')">Принять</button>
-                    <button type="button" class="chip" :class="{ picked: desk.decided(lesson.entry)?.status === 'declined' }" :aria-pressed="desk.decided(lesson.entry)?.status === 'declined'" @click="desk.decide(lesson.entry, lesson.id, 'declined')">Отклонить</button>
-                    <button v-if="reach(desk.openStudy.value) === 'ok'" type="button" class="chip" @click="desk.clarify(lesson.id)">Уточнить</button>
-                    <input
-                      v-if="desk.decided(lesson.entry)?.status === 'declined'"
-                      v-model="desk.decided(lesson.entry)!.note"
-                      class="note"
-                      type="text"
-                      placeholder="Причина — необязательно"
-                      aria-label="Причина отказа"
-                    />
-                  </div>
+                  <LessonActions v-if="decidable(lesson.entry)" :lesson="decidable(lesson.entry)!" stage="proposed" />
                 </article>
                 <span v-else class="d-moved">докладная {{ lesson.id }} — пересмотрена ниже</span>
               </template>
@@ -134,7 +129,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
               <div v-if="message.questions.length" class="questions" :class="{ live: openQuestionsAt(desk.openStudy.value) === at }">
                 <div v-for="(question, number) in message.questions" :key="number" class="question">
                   <p class="q-text"><span class="q-num">{{ number + 1 }}.</span> {{ question.text }}</p>
-                  <div v-if="openQuestionsAt(desk.openStudy.value) === at && reach(desk.openStudy.value) === 'ok'" class="q-answers">
+                  <div v-if="openQuestionsAt(desk.openStudy.value) === at && desk.replyReach(desk.openStudy.value) === 'ok'" class="q-answers">
                     <button
                       v-for="option in question.options"
                       :key="option"
@@ -160,15 +155,22 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
               </div>
             </div>
           </li>
-          <li v-if="desk.openStudy.value.alive" class="keeper inline">
+          <li v-if="desk.echoOf(desk.openStudy.value)" class="msg lead">
+            <div class="bubble-wrap">
+              <span class="who">Ты · ответ · только что</span>
+              <p class="bubble">{{ desk.echoOf(desk.openStudy.value)!.text }}</p>
+            </div>
+          </li>
+          <li v-if="desk.openStudy.value.alive || desk.echoOf(desk.openStudy.value)" class="keeper inline">
             <img :src="analystPortrait" alt="" class="mini" />
             <span>Аналитик читает записи<span class="dots" aria-hidden="true"></span></span>
           </li>
           <li v-else-if="studyState(desk.openStudy.value) === 'failed'" class="keeper inline bad">
             <img :src="archivistPortrait" alt="" class="mini" />
-            <span>Ход прервался{{ desk.openStudy.value.error ? `: ${desk.openStudy.value.error}` : "" }}. Повтори приказ или передай аналитику «продолжай».</span>
+            <span>Ход прервался{{ desk.openStudy.value.error ? `: ${desk.openStudy.value.error}` : "" }}. Повтори приказ или ответь аналитику «продолжай».</span>
           </li>
         </ol>
+        <StationReply :study="desk.openStudy.value" />
       </article>
       <p v-else-if="research.studies.length" class="pick dim">Выбери канал слева.</p>
     </div>
@@ -202,7 +204,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
     grid-template-rows: minmax(0, 1fr);
   }
 
-  .channels {
+  .room .channels {
     max-height: none;
   }
 }
@@ -492,13 +494,6 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
   overflow-wrap: anywhere;
 }
 
-.d-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-}
 
 .d-moved {
   color: var(--st-faint);

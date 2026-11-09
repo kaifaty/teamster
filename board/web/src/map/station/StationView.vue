@@ -1,22 +1,24 @@
 <script setup lang="ts">
 // The science station's own screen. Clicking the station on the map opens it over the galaxy: a resource bar on
-// top, then the decks — the core with the chronometer and the crew, the comms room with the transmitter, the lab
-// with the lessons and the archive hold. The board stays read-only: every action becomes a command to copy.
-import { computed, onBeforeUnmount, onMounted, provide, ref, toRef } from "vue";
-import { formatDuration } from "../../lib/format";
+// top with the line «what next», then the decks — the core with the chronometer, the order and the crew, the comms
+// room, the lab with the lessons and the archive hold. The station's buttons act at once through the board server;
+// a board that only reads copies the equivalent command instead.
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, toRef } from "vue";
+import { postAction } from "../../lib/actions";
+import type { BoardSource } from "../../lib/source";
 import nebula from "../art/nebula.jpg";
 import stationArt from "../art/station-research.png";
-import { plural, shortDate, type Research } from "../research";
+import { plural, type Research } from "../research";
 import { clockShort, stationClock } from "../schedule";
-import { stationCounts, workingSince } from "../station";
-import { CONSOLE, createConsole } from "./console";
+import { nextStep, stationCounts, workingSince } from "../station";
+import { CONSOLE, createConsole, type Deck } from "./console";
 import "./station.css";
 import StationComms from "./StationComms.vue";
 import StationCore from "./StationCore.vue";
 import StationCrew from "./StationCrew.vue";
 import StationHold from "./StationHold.vue";
 import StationLab from "./StationLab.vue";
-import StationTransmitter from "./StationTransmitter.vue";
+import StationOrder from "./StationOrder.vue";
 
 const props = defineProps<{
   research: Research;
@@ -24,31 +26,34 @@ const props = defineProps<{
   frame: string;
   /** A task's card stands over the screen: Escape belongs to it. */
   covered: boolean;
+  /** Where the station's actions go; the fixtures act on their own data. */
+  source: BoardSource;
+  /** Asks the server for the research again. */
+  refresh: () => Promise<void>;
 }>();
 const emit = defineEmits<{ close: []; open: [slug: string] }>();
 
-const desk = createConsole(toRef(props, "research"), toRef(props, "now"));
+const desk = createConsole(toRef(props, "research"), toRef(props, "now"), {
+  act: (route, body) => postAction(route, body, { send: props.source.act, refresh: props.refresh }),
+  jump: (deck) => jump(deck),
+});
 provide(CONSOLE, desk);
 
 const counts = computed(() => stationCounts(props.research));
 const clock = computed(() => stationClock(props.research.schedule, props.now, workingSince(props.research)));
 
-const headline = computed(() => {
-  const parts: string[] = [];
-  if (props.research.waiting) parts.push(`ждёт ответа: ${props.research.waiting}`);
-  const since = workingSince(props.research);
-  // A live study is the analyst's own work; a legacy desktop session is the planned run.
-  const who = props.research.studies.some((study) => study.alive) ? "аналитик работает" : "идёт плановый разбор";
-  if (since !== null) parts.push(`${who} ${formatDuration(props.now - since)}`);
-  else if (props.research.running) parts.push("идёт разбор");
-  if (!parts.length && counts.value.proposed) parts.push(`уроков ждут решения: ${counts.value.proposed}`);
-  if (!parts.length) parts.push(props.research.batch ? `на станции тихо · разбор ${shortDate(props.research.batch.date)}` : "на станции тихо");
-  const text = parts.join(" · ");
-  return text[0]!.toUpperCase() + text.slice(1);
-});
-const tone = computed(() => (props.research.waiting ? "wait" : props.research.running ? "live" : ""));
+const next = computed(() => nextStep(props.research, props.now, clock.value));
 
-type Deck = "core" | "crew" | "comms" | "radio" | "lab" | "hold";
+async function act() {
+  const action = next.value.action;
+  if (!action) return;
+  if (action.kind === "reply") return desk.answer(action.study);
+  desk.showStage(action.kind === "review" ? "proposed" : "accepted");
+  if (action.kind !== "review") return;
+  await nextTick();
+  root.value?.querySelector<HTMLElement>('[data-deck="lab"] .card')?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
 interface Gauge {
   id: string;
   sigil: string;
@@ -118,9 +123,19 @@ onMounted(() => {
   back.value?.focus();
   window.addEventListener("keydown", onKey);
 });
+// While the analyst works, or a study just ordered has not shown up yet, the screen asks for news more often.
+const WATCH_MS = 10_000;
+let watchTimer: ReturnType<typeof setInterval> | undefined;
+onMounted(() => {
+  watchTimer = setInterval(() => {
+    if (props.research.running || desk.awaiting.value) void props.refresh();
+  }, WATCH_MS);
+});
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKey);
   clearTimeout(flashTimer);
+  clearInterval(watchTimer);
+  desk.dispose();
 });
 </script>
 
@@ -139,7 +154,10 @@ onBeforeUnmount(() => {
         <img class="emblem" :src="stationArt" alt="" />
         <span class="titles">
           <h2 id="station-title">Научная станция</h2>
-          <span class="headline" :class="tone">{{ headline }}</span>
+          <span class="next" role="status">
+            <span class="headline" :class="next.tone">{{ next.text }}</span>
+            <button v-if="next.action" type="button" class="next-key" :class="next.tone" @click="act">{{ next.action.label }}</button>
+          </span>
         </span>
       </div>
       <nav class="gauges" aria-label="Показатели станции">
@@ -163,6 +181,7 @@ onBeforeUnmount(() => {
       <div class="side">
         <div class="col left">
           <StationCore :research="research" :clock="clock" :now="now" @open="emit('open', $event)" />
+          <StationOrder />
           <StationCrew :research="research" :now="now" />
         </div>
         <div class="col right">
@@ -172,7 +191,6 @@ onBeforeUnmount(() => {
       </div>
       <div class="col center">
         <StationComms :research="research" :now="now" />
-        <StationTransmitter />
       </div>
     </div>
   </section>
@@ -258,6 +276,13 @@ h2 {
   letter-spacing: 0.02em;
 }
 
+.next {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .headline {
   overflow: hidden;
   color: var(--st-dim);
@@ -265,12 +290,38 @@ h2 {
   white-space: nowrap;
 }
 
-.headline.live {
+.headline.live,
+.headline.teal {
   color: var(--st-teal);
 }
 
-.headline.wait {
+.headline.wait,
+.headline.gold {
   color: var(--st-wait);
+}
+
+.next-key {
+  flex: none;
+  padding: 1px 10px;
+  border: 1px solid var(--st-teal);
+  border-radius: 2px;
+  background: rgba(95, 214, 200, 0.16);
+  color: #dffaf5;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.next-key.wait,
+.next-key.gold {
+  border-color: var(--st-wait);
+  background: rgba(243, 198, 78, 0.16);
+  color: #ffe9a8;
+}
+
+.next-key:hover {
+  filter: brightness(1.25);
 }
 
 .gauges {
@@ -348,7 +399,7 @@ h2 {
   color: #ffb39e;
 }
 
-/* The decks: core and crew, comms and transmitter, lab and hold. */
+/* The decks: core, order and crew; the comms room in the middle at full height; lab and hold. */
 .decks {
   display: grid;
   flex: 1;
@@ -377,7 +428,8 @@ h2 {
   scrollbar-width: none;
 }
 
-.left > :deep(.core) {
+.left > :deep(.core),
+.left > :deep(.order) {
   flex: none;
 }
 
@@ -393,11 +445,6 @@ h2 {
 .center > :deep(.comms) {
   flex: 1 1 auto;
   min-height: 260px;
-}
-
-.center > :deep(.radio) {
-  flex: none;
-  max-height: 46%;
 }
 
 .right {
@@ -475,11 +522,7 @@ h2 {
   }
 
   .center > :deep(.comms) {
-    min-height: 480px;
-  }
-
-  .center > :deep(.radio) {
-    max-height: none;
+    min-height: 560px;
   }
 
   .gauges {

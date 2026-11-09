@@ -3,11 +3,12 @@
 import type { BoardSource } from "../lib/source";
 import { ART, BACKDROPS } from "../map/art";
 import { emptyState, reduce, type BoardState } from "../store/reduce";
-import type { Cargo, ResearchView, ServerMessage, Snapshot, TaskDetail, TaskFile } from "../types";
+import type { Cargo, ServerMessage, Snapshot, TaskDetail, TaskFile } from "../types";
 import snapshotJson from "./snapshot.json";
 import streamJson from "./stream.json";
 import detailsJson from "./details.json";
 import { FIXTURE_EVENTS, FIXTURE_LIVE, demoEvents, demoReport, logEvent } from "./events";
+import { fixtureActions, fixtureResearch } from "./research";
 
 interface FixtureDetail {
   timeline: { at: number; text: string }[];
@@ -25,90 +26,6 @@ const stream = streamJson as unknown as ServerMessage[];
 const details = detailsJson as unknown as Record<string, FixtureDetail>;
 const BASE = snapshot.generated_at;
 
-/** What the reflection learned, in made-up projects. */
-const RESEARCH: ResearchView = {
-  lessons: [
-    { date: "2026-10-28", entry: "batch-2026-10-28.md L1", scope: "invariant", scope_text: "invariant", repos: [], cue: "review diff against a moved base", status: "applied", status_text: "applied rules (PR #12)" },
-    { date: "2026-10-30", entry: "batch-2026-10-30.md L2", scope: "domain", scope_text: "domain demo-game", repos: ["demo-game"], cue: "full test suite times out while the machine is loaded", status: "applied", status_text: "applied demo-game AGENTS.md" },
-    { date: "2026-11-01", entry: "batch-2026-11-01.md L1", scope: "domain", scope_text: "domain demo-shop, demo-vault", repos: ["demo-shop", "demo-vault"], cue: "sibling PRs conflict on one shared changelog", status: "declined", status_text: "declined 2026-11-02: one merge round each" },
-    { date: "2026-11-05", entry: "batch-2026-11-05.md T1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a partial result with a pushed commit skips the first review", status: "proposed", status_text: "proposed" },
-    { date: "2026-11-06", entry: "batch-2026-11-06.md U1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a test named by the brief stays green when the guarded behaviour is removed; the reviewer finds it by breaking the code", status: "accepted", status_text: "accepted: add a targeted check in the next task" },
-    { date: "2026-11-06", entry: "batch-2026-11-06.md U2", scope: "domain", scope_text: "domain ml-lab", repos: ["ml-lab"], cue: "a smoke run starts the long training job inside the turn", status: "proposed", status_text: "proposed" },
-    { date: "2026-11-07", entry: "study-2026-11-07.md L1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a broad check repeats before the failure is reproduced", status: "proposed", status_text: "proposed" },
-  ],
-  studies: [
-    {
-      slug: "reflect-review-patterns", archived: false, mode: "study", alive: false,
-      outcome: "completed", error: null, executor: "claude", account: "claude-pool-2",
-      created: BASE - 3600, updated_at: BASE - 300, records: 2, file: "study-2026-11-07.md", waiting: true,
-      messages: [
-        { at: BASE - 3600, from: "lead", text: "Compare the failed checks in demo-wallet and demo-vault. Which lesson should guide the next task?", status: null, questions: [], lessons: [], file: null },
-        {
-          at: BASE - 300, from: "analyst", text: "Both records lost time repeating a broad check before reproducing the failing case.", status: "needs_decision",
-          questions: [{ text: "Where should we apply the focused-check rule first?", options: ["demo-wallet", "demo-vault", "Both projects"] }],
-          lessons: [{
-            id: "L1", cue: "a broad check repeats before the failure is reproduced", entry: "study-2026-11-07.md L1",
-            scope: "invariant", lesson: "Reproduce the failing case with a focused check before repeating the full suite.",
-            proposal: "Add the focused-check sequence to each project's task brief.",
-          }],
-          file: "study-2026-11-07.md",
-        },
-      ],
-    },
-    {
-      slug: "reflect-check-evidence", archived: true, mode: "batch", alive: false,
-      outcome: "completed", error: null, executor: "codex", account: "demo-codex",
-      created: BASE - 100000, updated_at: BASE - 86400, records: 11, file: "batch-2026-11-06.md", waiting: false,
-      messages: [
-        { at: BASE - 100000, from: "lead", text: "Review the check evidence from demo-game and ml-lab.", status: null, questions: [], lessons: [], file: null },
-        {
-          at: BASE - 98000, from: "analyst", text: "One check stayed green after the guarded behavior was removed. The long training smoke also ran inside a turn.", status: "needs_decision",
-          questions: [{ text: "Should the next task verify that the check catches the defect?", options: ["Yes, before implementation", "Defer until the next review"] }],
-          lessons: [{
-            id: "U1", cue: "the guarded behavior is removed while its check stays green", entry: "batch-2026-11-06.md U1",
-            scope: "invariant", lesson: "A check is useful evidence only if it fails when the guarded behavior is removed.",
-            proposal: "Before implementation, run the named check against a deliberately reproduced defect.",
-          }],
-          file: "batch-2026-11-06.md",
-        },
-        { at: BASE - 97000, from: "lead", text: "Yes. Accept U1 and add a targeted check in the next task; keep the training proposal separate.", status: null, questions: [], lessons: [], file: null },
-        {
-          at: BASE - 96000, from: "analyst", text: "The report now separates the accepted check lesson from the training proposal.", status: "done", questions: [],
-          lessons: [
-            {
-              id: "U1", cue: "the guarded behavior is removed while its check stays green", entry: "batch-2026-11-06.md U1",
-              scope: "invariant", lesson: "A check is useful evidence only if it fails when the guarded behavior is removed.",
-              proposal: "Before implementation, run the named check against a deliberately reproduced defect.",
-            },
-            {
-              id: "U2", cue: "the long training smoke runs inside the turn", entry: "batch-2026-11-06.md U2",
-              scope: "domain", lesson: "Keep the ml-lab training smoke outside the interactive task turn.", proposal: null,
-            },
-          ],
-          file: "batch-2026-11-06.md",
-        },
-      ],
-    },
-  ],
-  batch: { name: "batch-2026-11-07.md", date: "2026-11-07", through: "20261107T051647Z", records: 11, repos: { teamster: 4, "demo-game": 3, "ml-lab": 2, "demo-wallet": 2 } },
-  pending: {
-    records: 7,
-    signals: 4,
-    repos: { "demo-wallet": 2, "ml-lab": 1, "demo-vault": 1 },
-    items: [
-      { slug: "died-supervisor", repo: "demo-wallet", stamp: "20261107T221500Z", signals: ["blocked"] },
-      { slug: "budget-overrun", repo: "ml-lab", stamp: "20261107T201000Z", signals: ["budget_exhausted", "fix_rounds"] },
-      { slug: "merge-conflict-fix", repo: "demo-vault", stamp: "20261107T153000Z", signals: ["check_failed", "ci_repair"] },
-      { slug: "flaky-e2e", repo: "demo-wallet", stamp: "20261107T090000Z", signals: ["escalate"] },
-    ],
-  },
-  reflection_task: "codex-batch-reflection",
-  // Shifted with the other times: the planned run comes 21 hours after the snapshot, the last one 3 hours before it.
-  schedule: {
-    source: "desktop", name: "Рефлексия codex-worker (ежедневно)", cron: "0 9 * * *", enabled: true,
-    last_run_at: BASE - 3 * 3600 + 340, last_scheduled_for: BASE - 3 * 3600, next_at: BASE + 21 * 3600,
-  },
-};
 const STEP_MS = 1000;
 /** A new line in the ship's log this often. */
 const EVENT_MS = 9000;
@@ -145,8 +62,12 @@ export function fixtureSource(): BoardSource {
   let delta = 0;
   // The history is anchored once, so that a reload returns the same events rather than shifted copies.
   const origin = Date.now() / 1000;
+  // The station's actions change this copy; its times stay in the snapshot's, like the rest of the fixtures.
+  const research = fixtureResearch(BASE);
+  const act = fixtureActions(research, () => Date.now() / 1000 - delta);
   return {
     label: "фикстуры",
+    act,
     connect(onMessage, onState) {
       let index = -1; // -1 = the snapshot, then the stream; the cycle repeats like a reconnect.
       const emit = (message: ServerMessage) => {
@@ -204,7 +125,7 @@ export function fixtureSource(): BoardSource {
       return { constellations: [{ name: "Demo Wallet", repos: ["demo-wallet*", "demo-vault", "demo-shop"] }], error: null };
     },
     async fetchResearch() {
-      return shiftTimes(RESEARCH, delta);
+      return shiftTimes(research, delta);
     },
     async fetchEvents(since, until) {
       return demoEvents(FIXTURE_EVENTS, origin, since, until);

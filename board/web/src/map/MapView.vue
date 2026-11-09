@@ -38,7 +38,7 @@ const summaryButton = computed(() => toolbar.value?.summaryButton ?? null);
 
 // The order matters: each part reads the ones made before it, and the scene comes last, after everything it draws.
 const sources = useMapSources(props);
-const { now, demo, sourceKind, source, loaded, replay, emblemOf, events, eventsError } = sources;
+const { now, demo, sourceKind, source, loaded, replay, emblemOf, events, eventsError, loadResearch } = sources;
 
 const model = useGalaxyModel(props, sources);
 const { starList, systemNames, pickerGroups, station, machineNote } = model;
@@ -157,6 +157,8 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
       :now="now"
       :frame="frameLight"
       :covered="!!selected || !!machine"
+      :source="source.source"
+      :refresh="loadResearch"
       @close="closeResearch"
       @open="open"
     />

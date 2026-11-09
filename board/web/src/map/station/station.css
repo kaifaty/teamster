@@ -278,3 +278,35 @@
     transition: none;
   }
 }
+
+/* A button whose request is in flight. */
+.station-screen .busy::after {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-left: 6px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: st-spin 0.8s linear infinite;
+}
+
+.station-screen .chip:disabled,
+.station-screen .link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@keyframes st-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .station-screen .busy::after {
+    animation: none;
+  }
+}

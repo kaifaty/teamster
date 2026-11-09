@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerText, lessonCommand, reflectCommand, reflectSlug, sayCommand, shellQuote, takesWords, taskCommands, transmission, verdictCommand } from "./commands";
+import { answerText, lessonCommand, reflectCommand, reflectSlug, sayCommand, shellQuote, takesWords, taskCommands, verdictCommand } from "./commands";
 
 describe("task commands", () => {
   it("offers every command for a task, and none for a desktop session", () => {
@@ -57,13 +57,6 @@ describe("task commands", () => {
       "teamster lesson 'study'\\''s report.md L2' declined --note 'Don'\\''t change $HOME'",
     );
     expect(lessonCommand("report.md L1", "applied", "  ")).toBe("teamster lesson 'report.md L1' applied");
-  });
-
-  it("joins nonempty station commands in order", () => {
-    expect(transmission(["", "teamster lesson 'report.md L1' accepted", "  ", "teamster say study 'Proceed'"])).toBe(
-      "teamster lesson 'report.md L1' accepted && teamster say study 'Proceed'",
-    );
-    expect(transmission(["", " "])).toBe("");
   });
 
   it("numbers answered questions and shortens their text", () => {
