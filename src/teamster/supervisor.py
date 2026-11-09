@@ -3,7 +3,6 @@ import os
 import signal
 import subprocess
 import sys
-import threading
 import time
 
 from . import budgets, checking, ci_runs, clock, config, installs, notifications, procs, prompts, reflection, review_cycle, task_state, telemetry_log, turns
@@ -76,7 +75,7 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
 
 
 def cmd__run(a):
-    stopped_flag = threading.Event()
+    stop_signal = procs.StopSignal()
     received_signal = None
     finalized = False
     st = None
@@ -98,19 +97,21 @@ def cmd__run(a):
                 log.write(line.encode("utf-8"))
         finally:
             if not finalized:
-                stopped_flag.set()
+                stop_signal.request()
     def stopped():
         notifications.reap_notifications()
         # Snapshot the flag before copying metadata: True must never be
         # returned for a signal that arrived after the metadata check.
-        cancelled = stopped_flag.is_set()
+        cancelled = stop_signal.requested
         if received_signal is not None and st is not None:
             st.setdefault("signal", received_signal)
         return cancelled
+    # The handler takes no lock: a stop while sleep holds one would deadlock.
+    stop_signal.arm()
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     # Preserve interruptible real waits; file-clock waits advance logical time.
-    sleep = stopped_flag.wait if clock.CLOCK.path is None else clock.CLOCK.sleep
+    sleep = stop_signal.sleep if clock.CLOCK.path is None else clock.CLOCK.sleep
     # The launcher publishes pid and pending before the supervisor becomes the only writer.
     for _ in range(200):
         st = task_state.load(a.slug)

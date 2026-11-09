@@ -627,15 +627,19 @@ worker.notifications.reap_notifications = reap
         handlers = {}
         first = []
         current_signal = []
-        cancellation = threading.Event()
-        set_cancellation = cancellation.set
+        cancellation = worker.procs.StopSignal()
+        for fd in (cancellation._read, cancellation._write):
+            self.addCleanup(os.close, fd)
+        request_cancellation = cancellation.request
 
         def cancel_after_log():
             log = worker.config.TASKS / slug / "stderr.log"
             self.assertIn(signal.Signals(current_signal[0]).name, log.read_text().splitlines()[-1])
-            set_cancellation()
+            request_cancellation()
 
-        cancellation.set = cancel_after_log
+        cancellation.request = cancel_after_log
+        # The handlers are captured, not installed: keep this process's wakeup fd.
+        cancellation.arm = lambda: None
 
         def signal_handler(signum, handler):
             handlers[signum] = handler
@@ -652,7 +656,7 @@ worker.notifications.reap_notifications = reap
                 self.assertEqual(st["signal"], first[0])
 
         with mock.patch.object(worker.supervisor.signal, "signal", side_effect=signal_handler), \
-                mock.patch.object(worker.supervisor.threading, "Event", return_value=cancellation), \
+                mock.patch.object(worker.procs, "StopSignal", return_value=cancellation), \
                 mock.patch.object(worker.config, "accounts_config", return_value={"enabled": False}), \
                 mock.patch.object(worker.turns, "run_turn", side_effect=interrupt), \
                 mock.patch.object(worker.telemetry_log, "record_turn_result"), \
