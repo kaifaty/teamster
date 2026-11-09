@@ -3,17 +3,19 @@
 import asyncio
 import os
 import re
+import shutil
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import anyio
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from .accounts import Accounts, Reports
+from .actions import Actions, action_body, error
 from .art import MEDIA_TYPES, art_file, art_index
 from .constellations import read_constellations
 from .machines import Machines
@@ -74,6 +76,8 @@ class Settings:
     layout: str = "legacy"
     research_seconds: float = 30
     reflection_task: str = "codex-batch-reflection"
+    action_teamster: str | None = field(default_factory=lambda: shutil.which("teamster"))
+    read_only: bool = False
 
     def path(self, purpose):
         return self.task_home / LAYOUT_FILES[self.layout][purpose]
@@ -129,7 +133,9 @@ class LocalOnly:
                     socket = WebSocket(scope, receive, send)
                     await socket.send_denial_response(PlainTextResponse("Forbidden", status_code=403))
                 else:
-                    await PlainTextResponse("Forbidden", status_code=403)(scope, receive, send)
+                    response = (error(403, "forbidden") if scope["path"].startswith("/api/actions/")
+                                else PlainTextResponse("Forbidden", status_code=403))
+                    await response(scope, receive, send)
                 return
         await self.app(scope, receive, send)
 
@@ -145,6 +151,7 @@ class Board:
         )
         self.research = Research(settings.path("tasks"), settings.reflection_task,
                                  settings.research_seconds, claude_desktop_dir=settings.claude_desktop_dir)
+        self.actions = Actions(self.research, settings.action_teamster, settings.read_only)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
         self.reports = Reports(settings.teamster)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),
@@ -291,7 +298,16 @@ def create_app(settings=None):
 
     @app.get("/api/research")
     async def research():
-        return await asyncio.to_thread(board.research.view)
+        return {**await asyncio.to_thread(board.research.view), "actions": board.actions.value}
+
+    @app.post("/api/actions/lesson")
+    @app.post("/api/actions/say")
+    @app.post("/api/actions/reflect")
+    async def action(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        return await asyncio.to_thread(board.actions.run, request.url.path.rsplit("/", 1)[-1], data)
 
     @app.get("/api/art")
     async def art():

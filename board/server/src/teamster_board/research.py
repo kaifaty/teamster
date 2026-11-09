@@ -17,6 +17,8 @@ from .store import Store, alive, number, objects, text
 STAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z")
 RECORD = re.compile(r"(.+)-([0-9]{8}T[0-9]{6}Z)")
 BATCH = re.compile(r"batch-([0-9]{4}-[0-9]{2}-[0-9]{2})?.*\.md", re.S)
+ARCHIVE_FILE = re.compile(r"(?:batch|study)-[^/\\]+\.md")
+LESSON_FIELDS = ("title", "lesson", "proposal", "evidence", "caveats")
 SEPARATOR = re.compile(r":?-+:?")
 STATUSES = ("proposed", "accepted", "applied", "declined")
 SIGNALS = ("blocked", "refused", "needs_decision", "escalate", "round_cap",
@@ -170,6 +172,33 @@ def batch_through(content):
     return None
 
 
+def lesson_section(content, lesson_id):
+    result = dict.fromkeys(LESSON_FIELDS)
+    level = None
+    field = None
+    values = {}
+    for line in content.splitlines():
+        heading = re.match(r"^(#{1,6})[ \t]+(.*)$", line)
+        if level is None:
+            if heading is not None and 2 <= len(heading[1]) <= 4:
+                title = re.match(re.escape(lesson_id) + r"(?:\.[ \t]*|[ \t]+)(.*)$", heading[2])
+                if title is not None:
+                    level = len(heading[1])
+                    result["title"] = title[1].strip() or None
+            continue
+        if heading is not None and len(heading[1]) <= level:
+            break
+        marker = re.match(r"^(cue|lesson|evidence|scope|earlier|caveats|proposal):(.*)$", line)
+        if marker is not None:
+            field = marker[1]
+            values[field] = [marker[2]]
+        elif field is not None:
+            values[field].append(line)
+    for name in LESSON_FIELDS[1:]:
+        result[name] = "\n".join(values.get(name, [])).strip()[:2000] or None
+    return result
+
+
 def schedule_timestamp(value):
     if isinstance(value, str):
         try:
@@ -273,6 +302,10 @@ class Research:
                 self._next_scan = now + self.seconds
             return self._view
 
+    def invalidate(self):
+        with self.lock:
+            self._view = None
+
     def _empty(self):
         return {"lessons": [], "batch": None,
                 "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
@@ -288,6 +321,7 @@ class Research:
             names = [] if archive.is_symlink() else sorted(path.name for path in archive.iterdir())
         except OSError:
             names = []
+        self._batches = {name: value for name, value in self._batches.items() if name in names}
         view["lessons"] = self._lessons(archive)
         batches = sorted(self._batch_files(archive, names), key=lambda item: (item[1] or "", item[0]))
         records = [(match.group(1), match.group(2), name)
@@ -397,30 +431,41 @@ class Research:
                 self._index = (current, parse_index(path.read_text(encoding="utf-8", errors="replace")))
         except OSError:
             return []
-        return self._index[1]
+        lessons = []
+        for row in self._index[1]:
+            parts = row["entry"].split()
+            fields = dict.fromkeys(LESSON_FIELDS)
+            if len(parts) == 2 and ARCHIVE_FILE.fullmatch(parts[0]):
+                content = self._archive_file(archive, parts[0])
+                if content is not None:
+                    fields = lesson_section(content, parts[1])
+            lessons.append({**row, **fields})
+        return lessons
+
+    def _archive_file(self, archive, name):
+        path = Store._file(archive, name)
+        if path is None:
+            return None
+        try:
+            current = signature(path)
+            cached = self._batches.get(name)
+            if cached is None or cached[0] != current:
+                with path.open("rb") as stream:
+                    content = stream.read(BATCH_LIMIT).decode("utf-8", "replace")
+                cached = (current, content)
+                self._batches[name] = cached
+            return cached[1]
+        except OSError:
+            return None
 
     def _batch_files(self, archive, names):
         found = []
-        present = set()
         for name in names:
             if BATCH.fullmatch(name) is None:
                 continue
-            path = Store._file(archive, name)
-            if path is None:
-                continue
-            try:
-                current = signature(path)
-                cached = self._batches.get(name)
-                if cached is None or cached[0] != current:
-                    with path.open("rb") as stream:
-                        content = stream.read(BATCH_LIMIT).decode("utf-8", "replace")
-                    cached = (current, batch_through(content))
-                    self._batches[name] = cached
-            except OSError:
-                continue
-            present.add(name)
-            found.append((name, cached[1]))
-        self._batches = {name: value for name, value in self._batches.items() if name in present}
+            content = self._archive_file(archive, name)
+            if content is not None:
+                found.append((name, batch_through(content)))
         return found
 
     def _record(self, directory):

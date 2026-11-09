@@ -60,7 +60,88 @@ def test_index_rows_scopes_statuses_and_extra_cells(tmp_path):
     ]
     assert lessons[1] == {"date": "2026-11-02", "entry": "beta-20261102T000000Z", "scope": "domain",
                           "scope_text": "domain a, b", "repos": ["a", "b"], "cue": "a flaky check",
-                          "status": "applied", "status_text": "applied AGENTS.md in a"}
+                          "status": "applied", "status_text": "applied AGENTS.md in a",
+                          "title": None, "lesson": None, "proposal": None, "evidence": None, "caveats": None}
+
+
+def test_lesson_sections_batch_study_and_signature_cache(tmp_path, monkeypatch):
+    archive = tmp_path / ".archive"
+    archive.mkdir()
+    batch = archive / "batch-2026-11-09.md"
+    study = archive / "study-2026-11-09-checks.md"
+    (archive / "INDEX.md").write_text("""| date | entry | scope | cue | status |
+| --- | --- | --- | --- | --- |
+| 2026-11-09 | batch-2026-11-09.md W2 | invariant | CI | proposed |
+| 2026-11-09 | study-2026-11-09-checks.md T4 | domain gothic | checks | accepted |
+| 2026-11-09 | batch-2026-11-09.md W3 | invariant | absent | proposed |
+""")
+    batch.write_text("""# Batch 2026-11-09
+through: 20261109T000000Z
+## Proposed lessons
+### W20. Another lesson
+lesson: Ignore this.
+### W2. The CI waiter waits for the last run
+cue: a pending check
+lesson: Wait for the current commit.
+Keep its run id.
+evidence:
+- task one, check round 2
+- task two, finding R1
+scope: invariant
+earlier: no earlier lesson
+proposal: Change the CI waiter.
+### W4. A different lesson
+caveats: This belongs to W4.
+""")
+    study.write_text("""# Study 2026-11-09
+## Lessons
+#### T4. gothic: keep targeted checks
+cue: a changed module
+lesson: Run the module's checks.
+evidence: task gothic, check.log line 12
+caveats: One repository.
+proposal:
+""")
+    (archive / "batch-2026-11-10.md").write_text("""## Additions to proposed lessons
+### W3. This is in a later file
+lesson: Never read this for W3.
+""")
+    opened = []
+    original = type(batch).open
+
+    def track(path, *args, **kwargs):
+        if path in (batch, study):
+            opened.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(batch), "open", track)
+    research = Research(tmp_path, seconds=0)
+    lessons = research.view()["lessons"]
+    fields = lambda row: {key: row[key] for key in research_module.LESSON_FIELDS}
+    assert fields(lessons[0]) == {
+        "title": "The CI waiter waits for the last run",
+        "lesson": "Wait for the current commit.\nKeep its run id.",
+        "evidence": "- task one, check round 2\n- task two, finding R1",
+        "proposal": "Change the CI waiter.", "caveats": None,
+    }
+    assert fields(lessons[1]) == {
+        "title": "gothic: keep targeted checks", "lesson": "Run the module's checks.",
+        "evidence": "task gothic, check.log line 12", "caveats": "One repository.", "proposal": None,
+    }
+    assert fields(lessons[2]) == dict.fromkeys(research_module.LESSON_FIELDS)
+    assert research.view()["lessons"] == lessons
+    assert opened == [batch, study]
+    with original(study, "w") as stream:
+        stream.write("## T4 Keep checks\nlesson: " + "x" * 2100 + "\nscope: domain\n")
+    assert research.view()["lessons"][1]["lesson"] == "x" * 2000
+    assert opened == [batch, study, study]
+    study.unlink()
+    study.symlink_to(batch)
+    assert fields(research.view()["lessons"][1]) == dict.fromkeys(research_module.LESSON_FIELDS)
+    # A heading past the archive's existing 64 KiB read limit is not read.
+    with original(batch, "w") as stream:
+        stream.write(" " * research_module.BATCH_LIMIT + "\n## W2 Hidden\nlesson: hidden")
+    assert fields(research.view()["lessons"][0]) == dict.fromkeys(research_module.LESSON_FIELDS)
 
 
 def test_batch_selection_counts_pending_and_bounded_reads(tmp_path, monkeypatch):

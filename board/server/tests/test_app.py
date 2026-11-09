@@ -4,8 +4,10 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anyio
@@ -13,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 
+from teamster_board import actions as actions_module
 from teamster_board import app as board_app
 from teamster_board.app import Settings, create_app
 
@@ -671,11 +674,12 @@ def test_art_needs_a_localhost_host_header(board):
 
 
 def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeypatch):
-    client, _, _, _, settings = board
+    client, application, _, _, settings = board
     assert client.get("/api/research").json() == {
         "lessons": [], "batch": None,
         "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
-        "studies": [], "reflection_task": "codex-batch-reflection", "schedule": None}
+        "studies": [], "reflection_task": "codex-batch-reflection", "schedule": None,
+        "actions": application.state.board.actions.value}
     assert client.post("/api/research").status_code == 405
     assert client.delete("/api/research").status_code == 405
     assert client.get("/api/research", headers={"Host": "evil.example"}).status_code == 403
@@ -700,3 +704,225 @@ def test_constellations_come_from_the_data_home(board):
     assert client.get("/api/constellations").json() == {
         "constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*"]}], "error": None}
     assert client.put("/api/constellations", content=b"{}").status_code == 405
+
+
+@pytest.fixture
+def station(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    data = home / ".teamster"
+    monkeypatch.setenv("TEAMSTER_HOME", str(data))
+    tasks = data / "tasks"
+    archive = tasks / ".archive"
+    archive.mkdir(parents=True)
+    entry = "batch-2026-11-09.md W2"
+    (archive / "INDEX.md").write_text(f"| 2026-11-09 | {entry} | invariant | CI | proposed |\n")
+    for slug, parent, pid in (("waiting", tasks, None), ("running", tasks, os.getpid()),
+                              ("archived", archive, None)):
+        if parent == archive:
+            slug += datetime.now(timezone.utc).strftime("-%Y%m%dT%H%M%SZ")
+        directory = parent / slug
+        directory.mkdir()
+        (directory / "state.json").write_text(json.dumps({"kind": "reflect", "pid": pid}))
+    control, calls = tmp_path / "control.json", tmp_path / "calls.jsonl"
+    control.write_text("{}")
+    monkeypatch.setenv("STATION_CONTROL", str(control))
+    monkeypatch.setenv("STATION_CALLS", str(calls))
+    fake = tmp_path / "teamster"
+    fake.write_text(f"#!{sys.executable}\n" + '''import json, os, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+control = json.loads(Path(os.environ["STATION_CONTROL"]).read_text())
+record = {"argv": args, "cwd": os.getcwd(), "stdin": sys.stdin.read(), "pid": os.getpid()}
+if "--file" in args:
+    record["file"] = Path(args[args.index("--file") + 1]).read_text()
+with Path(os.environ["STATION_CALLS"]).open("a") as stream:
+    stream.write(json.dumps(record) + "\\n")
+time.sleep(control.get("sleep", 0))
+tasks = Path(os.environ["TEAMSTER_HOME"]) / "tasks"
+if not control.get("exit", 0):
+    if args[0] == "lesson":
+        index = tasks / ".archive" / "INDEX.md"
+        index.write_text(index.read_text().replace("proposed", args[2]))
+    if args[0] == "reflect":
+        (tasks / args[1]).mkdir()
+print(control.get("stdout", "  finished  "))
+print(control.get("stderr", ""), file=sys.stderr)
+sys.exit(control.get("exit", 0))
+''')
+    fake.chmod(0o755)
+    accounts = tmp_path / "accounts.py"
+    accounts.write_text("print('{}')\n")
+    settings = Settings(data, accounts, layout="new", action_teamster=str(fake),
+                        web_dist=tmp_path / "dist", research_seconds=3600)
+    application = create_app(settings)
+    with TestClient(application, base_url="http://localhost:8787",
+                    headers={"Origin": "http://localhost:8787", "X-Teamster-Board": "1"}) as client:
+        yield client, application, settings, entry, calls, control
+
+
+def test_station_action_argv_files_and_immediate_lesson_refresh(station, caplog):
+    client, application, _, entry, calls, _ = station
+    caplog.set_level("INFO", logger="uvicorn.error")
+    assert client.get("/api/research").json()["actions"] == {"enabled": True, "reason": None}
+    assert client.get("/api/research").json()["lessons"][0]["status"] == "proposed"
+    response = client.post("/api/actions/lesson", json={"entry": f" {entry} ", "status": "accepted", "note": "  "})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "output": "finished"}
+    # The configured interval is one hour, and the preceding GET primed the view.
+    assert application.state.board.research.seconds == 3600
+    assert client.get("/api/research").json()["lessons"][0]["status"] == "accepted"
+    response = client.post("/api/actions/lesson", json={"entry": entry, "status": "applied", "note": "  AGENTS.md  "})
+    assert response.status_code == 200
+    response = client.post("/api/actions/say", json={"slug": "waiting", "text": "  --answer\nKeep the check.  "})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "output": "finished"}
+    records = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert records[0]["argv"] == ["lesson", entry, "accepted"]
+    assert records[1]["argv"] == ["lesson", entry, "applied", "--note", "AGENTS.md"]
+    assert records[2]["argv"][:3] == ["say", "waiting", "--file"]
+    assert len(records[2]["argv"]) == 4
+    assert records[2]["file"] == "--answer\nKeep the check."
+    assert not Path(records[2]["argv"][3]).exists()
+    assert all(row["cwd"] == str(Path.home()) and row["stdin"] == "" for row in records)
+    logs = [row.message for row in caplog.records if row.message.startswith("/api/actions/")]
+    assert len(logs) == 3
+    assert all("argv=" in row and "exit=0" in row for row in logs)
+    assert "--answer" not in "\n".join(logs)
+
+
+def test_station_reflect_argv_utc_slug_and_collisions(station, monkeypatch, caplog):
+    client, _, settings, _, calls, _ = station
+    caplog.set_level("INFO", logger="uvicorn.error")
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, zone):
+            assert zone is timezone.utc
+            return cls(2026, 11, 9, 23, 4, 5, tzinfo=zone)
+
+    monkeypatch.setattr(actions_module, "datetime", FixedDatetime)
+    base = "reflect-1109-230405"
+    response = client.post("/api/actions/reflect", json={})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "output": "finished", "slug": base}
+    (settings.path("tasks") / (base + "-2")).mkdir()
+    bodies = [
+        {"tasks": ["task-a", "Task_2.0"], "order": "  --inspect\nCheck both.  "},
+        {"since": "14d", "repos": ["gothic", "teamster"]},
+        {"since": "2026-11-09"},
+        {"order": "  "},
+    ]
+    slugs = []
+    for index, body in enumerate(bodies, 3):
+        response = client.post("/api/actions/reflect", json=body)
+        assert response.status_code == 200
+        slug = f"{base}-{index}"
+        assert response.json() == {"ok": True, "output": "finished", "slug": slug}
+        slugs.append(slug)
+    records = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert records[0]["argv"] == ["reflect", base]
+    records = records[1:]
+    assert records[0]["argv"][:-1] == ["reflect", slugs[0], "--task", "task-a", "--task", "Task_2.0", "--file"]
+    assert records[0]["file"] == "--inspect\nCheck both."
+    assert not Path(records[0]["argv"][-1]).exists()
+    assert records[1]["argv"] == ["reflect", slugs[1], "--since", "14d", "--repo", "gothic", "--repo", "teamster"]
+    assert records[2]["argv"] == ["reflect", slugs[2], "--since", "2026-11-09"]
+    assert records[3]["argv"] == ["reflect", slugs[3]]
+    assert "--inspect" not in caplog.text
+
+
+@pytest.mark.parametrize("headers,body,status", [
+    ({"Origin": None}, {}, 403),
+    ({"Origin": "http://evil.example:8787"}, {}, 403),
+    ({"Origin": "http://localhost:8788"}, {}, 403),
+    ({"Origin": "https://localhost:8787"}, {}, 403),
+    ({"Origin": "http://127.0.0.1:8787"}, {}, 403),
+    ({"Host": "evil.example"}, {}, 403),
+    ({"X-Teamster-Board": None}, {}, 403),
+    ({"Content-Type": "text/plain"}, {}, 403),
+    ({}, b" " * (64 * 1024 + 1), 413),
+])
+def test_station_request_protection(station, headers, body, status):
+    client, _, _, _, calls, _ = station
+    request = client.build_request("POST", "/api/actions/reflect", json=body if isinstance(body, dict) else None,
+                                   content=body if isinstance(body, bytes) else None)
+    request.headers["Content-Type"] = "application/json"
+    for name, value in headers.items():
+        if value is None:
+            del request.headers[name]
+        else:
+            request.headers[name] = value
+    response = client.send(request)
+    assert response.status_code == status
+    assert response.json() == {"ok": False, "error": "forbidden" if status == 403 else "Body too large"}
+    assert not any(name.startswith("access-control-") for name in response.headers)
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("read_only,command,reason", [(True, "fake", "read_only"), (False, None, "no_teamster")])
+def test_station_disabled_actions(station, read_only, command, reason):
+    client, _, settings, _, calls, _ = station
+    settings.read_only = read_only
+    settings.action_teamster = settings.action_teamster if command else None
+    disabled = create_app(settings)
+    with TestClient(disabled, base_url=str(client.base_url), headers=dict(client.headers)) as other:
+        assert other.get("/api/research").json()["actions"] == {"enabled": False, "reason": reason}
+        response = other.post("/api/actions/reflect", json={})
+        assert response.status_code == 403
+        assert response.json() == {"ok": False, "error": reason}
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("route,body,status", [
+    ("lesson", {"entry": "unknown", "status": "accepted"}, 404),
+    ("say", {"slug": "unknown", "text": "Answer"}, 404),
+    ("say", {"slug": "running", "text": "Answer"}, 409),
+    ("say", {"slug": "archived", "text": "Answer"}, 409),
+    ("reflect", {"tasks": ["one"], "since": "14d"}, 400),
+    ("reflect", {"tasks": ["one"], "repos": ["repo"]}, 400),
+    ("reflect", {"since": "2026-02-30"}, 400),
+    ("reflect", {"since": "1000d"}, 400),
+    ("reflect", {"since": "yesterday"}, 400),
+    ("reflect", {"tasks": ["bad/name"]}, 400),
+    ("reflect", {"repos": ["r"] * 21}, 400),
+    ("reflect", {"order": "x" * 8001}, 400),
+    ("lesson", {"entry": "x" * 201, "status": "accepted"}, 400),
+    ("lesson", {"entry": "batch-2026-11-09.md W2", "status": "accepted", "note": "n" * 1001}, 400),
+    ("say", {"slug": "waiting", "text": " "}, 400),
+    ("say", {"slug": "waiting", "text": "x" * 8001}, 400),
+])
+def test_station_rejects_invalid_actions(station, route, body, status):
+    client, _, _, _, calls, _ = station
+    response = client.post(f"/api/actions/{route}", json=body)
+    assert response.status_code == status
+    assert response.json()["ok"] is False
+    assert set(response.json()) == {"ok", "error"}
+    assert not calls.exists()
+
+
+def test_station_nonzero_output_limits_and_timeout_cleanup(station, monkeypatch):
+    client, _, _, entry, calls, control = station
+    control.write_text(json.dumps({"exit": 7, "stderr": "  problem " + "x" * 2100 + "  "}))
+    response = client.post("/api/actions/lesson", json={"entry": entry, "status": "accepted"})
+    assert response.status_code == 422
+    assert response.json() == {"ok": False, "error": "x" * 2000}
+    control.write_text(json.dumps({"exit": 7, "stdout": "  fallback error  "}))
+    response = client.post("/api/actions/reflect", json={})
+    assert response.status_code == 422
+    assert response.json() == {"ok": False, "error": "fallback error"}
+    control.write_text(json.dumps({"stdout": "  " + "o" * 2100 + "  "}))
+    response = client.post("/api/actions/reflect", json={})
+    assert response.status_code == 200
+    assert response.json()["output"] == "o" * 2000
+    control.write_text(json.dumps({"sleep": 30}))
+    monkeypatch.setattr(actions_module, "COMMAND_TIMEOUT", 1)
+    response = client.post("/api/actions/say", json={"slug": "waiting", "text": "--wait"})
+    assert response.status_code == 504
+    assert response.json() == {"ok": False, "error": "timeout"}
+    last = json.loads(calls.read_text().splitlines()[-1])
+    assert last["argv"][:3] == ["say", "waiting", "--file"]
+    assert not Path(last["argv"][3]).exists()
+    with pytest.raises(ProcessLookupError):
+        os.kill(last["pid"], 0)

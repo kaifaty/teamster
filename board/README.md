@@ -1,6 +1,6 @@
 # teamster board
 
-A read-only local view of teamster tasks and Claude Code sessions from the Claude desktop app,
+A local view of teamster tasks and Claude Code sessions from the Claude desktop app,
 with phases, accounts, live activity and configured machine metrics. The server reads JSON and event logs from disk without
 importing the plugin or changing source files. REST and WebSocket
 payloads are defined in [CONTRACT.md](CONTRACT.md).
@@ -14,7 +14,12 @@ uv run --project board/server teamster-board
 Open http://localhost:8787. The server listens on `127.0.0.1` by default; CLI options are
 `--host` (default `127.0.0.1`) and `--port` (default `8787`). Requests must use a localhost Host header;
 WebSocket Origins, when present, must also be localhost. The server reads task files and machine
-metrics and listens on localhost; it has no task control endpoints.
+metrics and listens on localhost; it has no task control endpoints except science station actions:
+lesson decisions, `say` to reflection tasks, and new `reflect` orders. These run the installed `teamster`
+command, found on `PATH` at startup; `--teamster PATH` selects its executable explicitly, and
+`--read-only` disables all station actions. They require a matching same-origin `Origin`,
+`Content-Type: application/json` and `X-Teamster-Board: 1`. Ordinary task stop, clean, verdict and
+merge operations remain unavailable. The server never sends CORS headers.
 
 The frontend builds into `board/web/dist`, which the server serves with an SPA fallback:
 
@@ -159,8 +164,8 @@ across project directories run at most once per 60 seconds; a found path is cach
 ## Run as a service
 
 On macOS, launchd can keep the board running: it starts at login and restarts after a crash.
-`teamster-board plist` prints the job and installs nothing. It accepts `--host` and `--port` with
-the defaults above. It sets `TEAMSTER_HOME` to a new-layout data home (also setting `TEAMSTER_CODEX_HOME` from that variable or `CODEX_TASK_HOME`
+`teamster-board plist` prints the job and installs nothing. It accepts `--host`, `--port`, `--teamster`
+and `--read-only` with the defaults above and preserves those options in the job. It sets `TEAMSTER_HOME` to a new-layout data home (also setting `TEAMSTER_CODEX_HOME` from that variable or `CODEX_TASK_HOME`
 when set) or `CODEX_TASK_HOME` to a legacy one, and copies every `BOARD_*` variable set in the current
 environment into the job. Logs go to `<data home>/board-server.log`.
 
