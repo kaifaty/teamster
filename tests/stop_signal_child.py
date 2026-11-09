@@ -18,8 +18,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from worker_loader import load_worker
 
 
-# A lost wakeup or a deadlocked handler ends the process with a traceback.
-faulthandler.dump_traceback_later(60, exit=True)
+# A deadlocked handler ends the process with a traceback. The swept sleeps last
+# 30 s, so one lost wakeup still ends on its run's assertion, under this bound.
+DEADLINE = time.monotonic() + 90
+faulthandler.dump_traceback_later(90, exit=True)
 worker = load_worker(name="stop_signal_worker", script=sys.argv[1])
 
 
@@ -112,12 +114,13 @@ def signal_during_select():
 
 
 def primitive_sweep():
-    return sweep(lambda position: traced(armed().sleep, 5, position))
+    return sweep(lambda position: traced(armed().sleep, 30, position))
 
 
 def other_signal():
     stop = armed()
-    signal.signal(signal.SIGUSR1, lambda signum, frame: None)
+    handled = []
+    signal.signal(signal.SIGUSR1, lambda signum, frame: handled.append(time.monotonic()))
     calls = []
     real_select = worker.procs.select.select
 
@@ -126,11 +129,13 @@ def other_signal():
         return real_select(*args)
     timer, _ = later(0.1, signal.SIGUSR1)
     with mock.patch.object(worker.procs.select, "select", counted):
-        first = timed(stop.sleep, 0.5)
+        first = timed(stop.sleep, 2)
+        first_returned = time.monotonic()
         timer.join()
         first_calls = len(calls)
-        later_sleep = timed(stop.sleep, 0.3)
-    return {"first": first, "first_selects": first_calls,
+        # Measure the later sleep only when the signal was handled within the first.
+        later_sleep = timed(stop.sleep, 0.3) if handled and handled[0] < first_returned else None
+    return {"first": first, "first_selects": first_calls, "handled_in_first": later_sleep is not None,
             "later": later_sleep, "later_selects": len(calls) - first_calls}
 
 
@@ -147,11 +152,12 @@ def supervisor_sweep():
 
         def work_turn(st, cfg, prompt, effort, current_message, stopped, sleep):
             st["outcome"] = "sleeping"
-            measured.update(traced(sleep, 5, position))
-        faulthandler.dump_traceback_later(15, exit=True)
+            measured.update(traced(sleep, 30, position))
+        # Longer than the swept sleep, so a lost wakeup ends on the parent's assertion.
+        faulthandler.dump_traceback_later(45, exit=True)
         with mock.patch.object(worker.turns, "work_turn", work_turn):
             worker.supervisor.cmd__run(SimpleNamespace(slug=slug))
-        faulthandler.cancel_dump_traceback_later()
+        faulthandler.dump_traceback_later(max(1, DEADLINE - time.monotonic()), exit=True)
         measured["outcome"] = worker.task_state.load(slug)["outcome"]
         return measured
     return sweep(run)

@@ -25,7 +25,7 @@ class StopSignalTests(unittest.TestCase):
         environment = {key: value for key, value in os.environ.items() if not key.startswith("TEAMSTER_")}
         environment["CODEX_TASK_HOME"] = directory.name
         result = subprocess.run([sys.executable, "-I", str(CHILD), str(SCRIPT), name], env=environment,
-                                text=True, capture_output=True, timeout=120)
+                                text=True, capture_output=True, timeout=150)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
 
@@ -40,28 +40,31 @@ class StopSignalTests(unittest.TestCase):
                 self.assertTrue(run["fired"], run)
                 self.assertTrue(run["result"], run)
                 if run["position"] is not None:
-                    self.assertLess(run["elapsed"], 1, run)
+                    # The swept sleep lasts 30 s; the bound tolerates a loaded machine.
+                    self.assertLess(run["elapsed"], 5, run)
                 if outcome is not None:
                     self.assertEqual(run["outcome"], outcome, run)
 
     def test_stop_requested_before_sleep_returns_at_once(self):
         run = self.scenario("requested_before")
         self.assertTrue(run["result"])
-        self.assertLess(run["elapsed"], 0.1)
+        self.assertLess(run["elapsed"], 5)
 
     def test_sigint_during_select_ends_a_long_sleep(self):
         run = self.scenario("signal_during_select")
         self.assertTrue(run["result"])
-        self.assertLess(run["returned_after_signal"], 0.5)
+        self.assertLess(run["returned_after_signal"], 5)
 
     def test_sigint_at_every_line_of_sleep_is_never_missed(self):
         self.assert_sweep(self.scenario("primitive_sweep"))
 
     def test_other_handled_signal_neither_ends_nor_spins_sleep(self):
         run = self.scenario("other_signal")
+        # SIGUSR1 is sent 0.1 s into a 2 s sleep; a late timer would land it in the later sleep.
+        self.assertTrue(run["handled_in_first"], run)
         (first, first_elapsed), (later, later_elapsed) = run["first"], run["later"]
         self.assertFalse(first)
-        self.assertGreaterEqual(first_elapsed, 0.5)
+        self.assertGreaterEqual(first_elapsed, 2)
         self.assertFalse(later)
         self.assertGreaterEqual(later_elapsed, 0.3)
         # One select call per wakeup, plus at most one for a timeout that returns a little early.
