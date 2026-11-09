@@ -27,7 +27,7 @@ Until that directory exists, `/` returns a short build instruction. The API is a
 The header switches between two views of the same data: «Доска», the columns, and «Карта», a space fleet
 in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy shows every repository as a star, and nothing joins them: no supply lines and no
 tankers. The stars stand on a hexagonal lattice whose step follows their count, so a few stand wide apart and many fill
-the galaxy evenly, clear of the research station, the columns at the edges, the toolbar and the ship's log; a star keeps
+the galaxy evenly, clear of the science station, the columns at the edges, the toolbar and the ship's log; a star keeps
 its place while it fits there (`galaxyLayout` in `board/web/src/map/layout.ts`).
 Every subscription stands as a fuel tank in a column on the left edge of the galaxy, Codex above Claude, under the toolbar
 and above the ship's log (`fuelPositions`); on a phone the tanks stand in a row under the toolbar. The fuel in a tank's
@@ -74,17 +74,30 @@ constellation's name and its repositories, where `*` stands for any run of chara
 `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse", "my-support"]}]}`. The galaxy
 gathers their stars in one place under a faint cloud with the constellation's name, and the system picker groups them.
 The server reads the file on each request through `GET /api/constellations`; it stays outside this public repository.
-In the middle of the galaxy stands the research station, fed by `GET /api/research`. It shows the reflection
+In the middle of the galaxy stands the science station, fed by `GET /api/research`. It shows the reflection
 ([reflection.md](../src/teamster/docs/reflection.md)): a gold light while lessons wait for your decision, gold rings running out
-from its dish while the analyst waits for your answer, a beam to every system with archived records that the next reflection
-will read while its panel is open, and probes flying to those systems while a run is going. A run is a `teamster reflect` task (or, before it, a
-desktop session of the reflection's scheduled task); it stays at the station and is not counted in any system.
-A click on the station opens its panel, a conversation with the station's staff. «Связь» holds one thread per study: your
-order, the analyst's reports with dockets (a lesson to accept, decline or ask about) and questions with answer options, and
-your replies; the archive keeper adds what the board knows itself. «Уроки» lists the index by status, «Наблюдение» the records
-under watch, each of which can be ordered into a study. The transmitter at the bottom gathers a round's decisions and answers,
-or a new order, into one command (`teamster lesson … && teamster say …`, or `teamster reflect …`) and copies it: the board
-never runs it. Like the tanks, the station stays live during a replay.
+from its dish while the analyst waits for your answer, and probes flying to the systems with archived records while a run
+is going. A run is a `teamster reflect` task (or, before it, a desktop session of the reflection's scheduled task); it stays
+at the station and is not counted in any system.
+A click on the station opens its own screen over the map (`board/web/src/map/station/`; «← Галактика» or Esc goes back,
+and the galaxy stops drawing meanwhile). A resource bar on top counts the analyst's open questions, lessons to decide,
+accepted lessons waiting for their change, applied lessons, the records in the hold with how many carry a signal, and the
+time to the planned reflection; each gauge brings its deck into view. The decks:
+- «Ядро станции»: the station inside a chronometer ring that fills from the last planned run to the next one
+  (`schedule` in `GET /api/research`, read from the Claude desktop scheduled task; `board/web/src/map/schedule.ts` puts the
+  cron into words), a teal sweep while a run works, the last run and batch, «Внеочередной разбор» and «Вопрос к архиву».
+- «Экипаж»: the analyst (at work, waiting for your answer, stopped by a failed turn, or free; a click opens its channel) and
+  the archive keeper with the hold's count.
+- «Рубка связи»: one channel per study and the open channel's conversation — your order, the analyst's reports with dockets
+  (a lesson to accept, decline or ask about) and questions with answer options, and your replies.
+- «Лаборатория»: lessons on one line, «на решение» › «к внедрению» › «внедрено», with «отклонено» aside; a proposed lesson
+  is accepted, declined or asked about, and an accepted one is marked «Внедрено» with where it landed.
+- «Трюм архива»: one capsule per record the next planned reflection will read, lit when it carries a signal, the records per
+  project and per signal, and the signalled records, each of which can be ordered into a study.
+- «Передатчик» gathers a round's decisions and answers from every deck, or a new order, into one command
+  (`teamster lesson … && teamster say …`, or `teamster reflect …`) and copies it: the board never runs it.
+
+Like the tanks, the station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
 live `event` messages) in the map's words, newest first; in a system it shows only that system and folds to its newest
 line, as on a phone, opening over the map on demand together with the replay's scale. A line leads to its

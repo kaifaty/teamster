@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Study, StudyMessage } from "../types";
+import { fixtureSource } from "../fixtures/source";
+import { research } from "./research";
 import {
+  analystOnDuty,
+  filedLessons,
+  signalTally,
+  stationCounts,
+  workingSince,
   docketPlacement,
   studyKey,
   turnKey,
@@ -174,5 +181,62 @@ describe("keys", () => {
     expect(validSince("14d")).toBe(true);
     expect(validSince("2026-02-30")).toBe(false);
     expect(validSince("yesterday")).toBe(false);
+  });
+});
+
+describe("transmission with an applied lesson", () => {
+  it("marks it applied with the place as its note", () => {
+    const command = transmissionFor([{ entry: "batch-2026-11-06.md U1", id: "U1", status: "applied", note: "AGENTS.md" }], null, "");
+    expect(command).toBe("teamster lesson 'batch-2026-11-06.md U1' applied --note 'AGENTS.md'");
+  });
+});
+
+describe("stationCounts", () => {
+  it("counts the open questions of every waiting study and the material in the hold", async () => {
+    const station = research(await fixtureSource().fetchResearch(), [], [])!;
+    expect(stationCounts(station)).toEqual({
+      questions: 1, waiting: 1, proposed: 3, accepted: 1, applied: 2, declined: 1, records: 7, signals: 4,
+    });
+  });
+});
+
+describe("filedLessons", () => {
+  it("keeps the newest docket of each entry with the study it stands in", () => {
+    const old = study({ slug: "old", messages: [lead(100, null), asking] });
+    const revised = analyst(300, { lessons: [{ ...asking.lessons[0]!, lesson: "Resume the same session" }] });
+    const fresh = study({ slug: "fresh", created: 250, messages: [lead(250, null), asking, revised] });
+    const filed = filedLessons([fresh, old]);
+    expect(filed.get("batch-2026-11-09.md V1")).toMatchObject({ id: "V1", lesson: "Resume the same session", study: { slug: "fresh" } });
+  });
+});
+
+describe("signalTally", () => {
+  it("counts records per signal, a repeated signal once per record", () => {
+    expect(signalTally([
+      { slug: "a", repo: "x", stamp: "1", signals: ["blocked", "fix_rounds", "blocked"] },
+      { slug: "b", repo: "x", stamp: "2", signals: ["fix_rounds"] },
+    ])).toEqual([{ signal: "fix_rounds", count: 2 }, { signal: "blocked", count: 1 }]);
+  });
+});
+
+describe("analystOnDuty", () => {
+  it("works, then waits, then reports a failure only in the newest study", () => {
+    const working = study({ slug: "w", alive: true });
+    const waiting = study({ slug: "q", waiting: true, messages: [lead(100, null), asking] });
+    const failed = study({ slug: "f", outcome: "failed" });
+    expect(analystOnDuty([waiting, working]).state).toBe("working");
+    expect(analystOnDuty([failed, waiting])).toMatchObject({ state: "waiting", study: { slug: "q" } });
+    expect(analystOnDuty([failed, study()]).state).toBe("failed");
+    expect(analystOnDuty([study(), failed]).state).toBe("free");
+    expect(analystOnDuty([])).toEqual({ state: "free", study: null });
+  });
+});
+
+describe("workingSince", () => {
+  it("is the live study's last turn, and nothing when no study works", async () => {
+    const station = research(await fixtureSource().fetchResearch(), [], [])!;
+    expect(workingSince(station)).toBeNull();
+    const live = study({ alive: true, messages: [lead(100, null), analyst(180)] });
+    expect(workingSince({ ...station, studies: [live], running: true })).toBe(180);
   });
 });

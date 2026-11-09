@@ -103,6 +103,11 @@ const RESEARCH: ResearchView = {
     ],
   },
   reflection_task: "codex-batch-reflection",
+  // Shifted with the other times: the planned run comes 21 hours after the snapshot, the last one 3 hours before it.
+  schedule: {
+    source: "desktop", name: "Рефлексия codex-worker (ежедневно)", cron: "0 9 * * *", enabled: true,
+    last_run_at: BASE - 3 * 3600 + 340, last_scheduled_for: BASE - 3 * 3600, next_at: BASE + 21 * 3600,
+  },
 };
 const STEP_MS = 1000;
 /** A new line in the ship's log this often. */
@@ -111,6 +116,7 @@ const EVENT_MS = 9000;
 const TIME_KEYS = new Set([
   "generated_at", "phase_started_at", "sleeping_until", "created", "updated_at", "at", "fetched_at",
   "resets_at", "limited_until", "expires_at", "since", "checked_at", "sampled_at",
+  "last_run_at", "last_scheduled_for", "next_at",
 ]);
 
 function shiftValue(value: unknown, delta: number): unknown {

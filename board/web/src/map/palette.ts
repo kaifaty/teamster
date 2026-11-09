@@ -30,7 +30,7 @@ export const SPACE = {
   lightning: "#e6dcff",
   /** The dim warning light of an empty fuel tank. */
   empty: "#ff7a50",
-  /** The research station's glow, its watch beams and probes. */
+  /** The science station's glow and its probes. */
   research: "#5fd6c8",
 } as const;
 

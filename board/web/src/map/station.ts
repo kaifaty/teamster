@@ -1,9 +1,10 @@
-// The research station as a conversation: who speaks, which docket and which questions are live, and the one
-// transmission that carries the human's decisions and answers. Pure data for ResearchPanel; the board only
+// The science station as a conversation: who speaks, which docket and which questions are live, and the one
+// transmission that carries the human's decisions and answers. Pure data for the station's screen; the board only
 // copies the command, it never runs it.
 
 import { answerText, lessonCommand, reflectCommand, reflectSlug, sayCommand, transmission } from "../lib/commands";
-import type { Lesson, Study, StudyMessage, StudyQuestion } from "../types";
+import type { Lesson, PendingRecord, Signal, Study, StudyMessage, StudyQuestion } from "../types";
+import type { Research } from "./research";
 
 export type StudyState = "working" | "waiting" | "failed" | "idle" | "closed";
 
@@ -42,7 +43,7 @@ export function turnKey(study: Study): string {
   return `${studyKey(study)}@${at >= 0 ? study.messages[at]!.at : "none"}`;
 }
 
-/** The study the panel opens first: one that waits for the human, then one at work, then the newest. */
+/** The channel the station opens first: one that waits for the human, then one at work, then the newest. */
 export function firstStudy(studies: readonly Study[]): Study | null {
   return studies.find((study) => study.waiting) ?? studies.find((study) => study.alive) ?? studies[0] ?? null;
 }
@@ -71,14 +72,18 @@ export function reach(study: Study | null): Reach {
   return study.alive ? "working" : "ok";
 }
 
-export type DecisionStatus = "accepted" | "declined";
+/** A proposed lesson is accepted or declined; an accepted one is marked applied once its change landed. */
+export type DecisionStatus = "accepted" | "declined" | "applied";
 export interface Decision {
   entry: string;
   /** The lesson id, for the chip. */
   id: string;
   status: DecisionStatus;
+  /** Why it was declined, or where it was applied. */
   note: string;
 }
+
+export const DECISION_TEXT: Record<DecisionStatus, string> = { accepted: "принять", declined: "отклонить", applied: "внедрено" };
 
 /** What goes to the analyst: one numbered line per answered question, then the free text. */
 export function replyText(questions: readonly StudyQuestion[], answers: readonly string[], free: string): string {
@@ -153,3 +158,85 @@ export const LESSON_STATE: Record<Lesson["status"], string> = {
   declined: "отклонён",
   other: "",
 };
+
+/** What the station's top bar counts. */
+export interface StationCounts {
+  /** Questions the analyst waits to have answered, over every waiting study. */
+  questions: number;
+  waiting: number;
+  proposed: number;
+  accepted: number;
+  applied: number;
+  declined: number;
+  records: number;
+  signals: number;
+}
+
+export function stationCounts(research: Research): StationCounts {
+  const questions = research.studies.reduce((sum, study) => {
+    const at = openQuestionsAt(study);
+    return sum + (at >= 0 ? study.messages[at]!.questions.length : 0);
+  }, 0);
+  return {
+    questions,
+    waiting: research.waiting,
+    proposed: research.proposed.length,
+    accepted: research.accepted.length,
+    applied: research.applied.length,
+    declined: research.declined.length,
+    records: research.pending.records,
+    signals: research.pending.signals,
+  };
+}
+
+/** A lesson as the analyst filed it: the newest docket with this entry, and the study it stands in. */
+export interface Filed {
+  study: Study;
+  id: string;
+  lesson: string | null;
+  proposal: string | null;
+}
+
+/** For every lesson entry, the newest docket that carries it; studies come newest first. */
+export function filedLessons(studies: readonly Study[]): Map<string, Filed> {
+  const filed = new Map<string, Filed>();
+  for (const study of studies) {
+    for (let at = study.messages.length - 1; at >= 0; at--) {
+      for (const lesson of study.messages[at]!.lessons) {
+        const entry = lesson.entry.trim();
+        if (!filed.has(entry)) filed.set(entry, { study, id: lesson.id, lesson: lesson.lesson, proposal: lesson.proposal });
+      }
+    }
+  }
+  return filed;
+}
+
+/** How many records carry each signal, most first. */
+export function signalTally(items: readonly PendingRecord[]): { signal: Signal; count: number }[] {
+  const counts = new Map<Signal, number>();
+  for (const item of items) for (const signal of new Set(item.signals)) counts.set(signal, (counts.get(signal) ?? 0) + 1);
+  return [...counts].map(([signal, count]) => ({ signal, count })).sort((a, b) => b.count - a.count || a.signal.localeCompare(b.signal));
+}
+
+/** The analyst's post: at work in a study, waiting for an answer, stopped by a failed turn, or free. */
+export type AnalystState = "working" | "waiting" | "failed" | "free";
+
+export function analystOnDuty(studies: readonly Study[]): { state: AnalystState; study: Study | null } {
+  const working = studies.find((study) => study.alive);
+  if (working) return { state: "working", study: working };
+  const waiting = studies.find((study) => study.waiting);
+  if (waiting) return { state: "waiting", study: waiting };
+  // Only the newest study tells whether the analyst is stuck: an older failure was followed by other work.
+  const newest = studies[0] ?? null;
+  if (newest && studyState(newest) === "failed") return { state: "failed", study: newest };
+  return { state: "free", study: newest };
+}
+
+/** When the work going on at the station started: the live study's last turn, or the legacy session's phase. */
+export function workingSince(research: Research): number | null {
+  const study = research.studies.find((item) => item.alive);
+  if (study) return study.messages[study.messages.length - 1]?.at ?? study.created;
+  const run = research.run;
+  if (run?.alive) return run.phase_started_at ?? run.created ?? run.updated_at;
+  return null;
+}
