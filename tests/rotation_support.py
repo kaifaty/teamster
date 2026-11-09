@@ -106,6 +106,10 @@ def limits(value):
 
 def app_server():
     trace({"command": "app-server"})
+    if "CODEX_FAKE_RPC_FAILURE" in os.environ:
+        sys.stdin.readline()
+        print(os.environ["CODEX_FAKE_RPC_FAILURE"], flush=True)
+        sys.exit(1)
     for line in sys.stdin:
         request = json.loads(line)
         if "id" not in request:

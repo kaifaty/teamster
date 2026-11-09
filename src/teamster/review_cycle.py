@@ -160,12 +160,19 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
             focused = prompt + f"\n\nReview angle: {angle}. {prompts.REVIEW_ANGLES[angle]}" if angle else prompt
             reviewer = reviewers.from_entry(st)
             while True:
-                outcome = reviewer.run(st, cfg, focused, stopped, used_accounts,
-                                       effort=codex_effort, sleep=sleep, new_turn=new_turn)
+                try:
+                    outcome = reviewer.run(st, cfg, focused, stopped, used_accounts,
+                                           effort=codex_effort, sleep=sleep, new_turn=new_turn)
+                except (Exception, SystemExit) as exc:
+                    if reviewer is reviewers.from_entry(st):
+                        raise
+                    raise RuntimeError(f"Review fallback to {reviewer.name} failed: {exc}") from exc
                 if outcome != "unavailable" or stopped() or reviewer.fallback is None:
                     break
                 reviewer = reviewers.get(reviewer.fallback)
                 st["review_account"] = None
+            if outcome == "failed" and reviewer is not reviewers.from_entry(st) and st.get("error"):
+                st["error"] = f"Review fallback to {reviewer.name} failed: {st['error']}"
             reviews = [entry for entry in st.get("reviews", [])[start:] if not entry.get("unavailable")]
             outcome = task_state.stop_outcome(st, stopped) or st["outcome"]
             result = reviews[-1].get("result") if reviews else None
