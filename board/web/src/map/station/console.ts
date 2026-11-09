@@ -1,37 +1,110 @@
-// The station's console: what the human has picked on every deck of the screen — decisions on lessons, answers to
-// the analyst, an order — and the transmitter that copies it all as one command. The decks share one console, so
-// a decision taken in the lab and an answer typed in the comms room go out in the same transmission. The board
-// never runs the command.
+// The station's console: the state every deck of the screen shares — the open channel and its reply, the lessons'
+// cards, the order — and the actions their buttons run at once through the board server. A board that only reads
+// copies the equivalent `teamster` command instead.
 
 import { computed, inject, nextTick, reactive, ref, watch, type InjectionKey, type Ref } from "vue";
-import { transmission } from "../../lib/commands";
+import { readOnlyReason, type ActionBodies, type ActionResult, type ActionRoute, type ActionSender, type LessonBody } from "../../lib/actions";
+import { lessonCommand, sayCommand } from "../../lib/commands";
 import type { Lesson, Study } from "../../types";
 import type { Research } from "../research";
 import {
+  discussOrder,
   filedLessons,
   firstStudy,
   lessonsByEntry,
   openQuestionsAt,
-  orderCommand,
+  orderAction,
   reach,
+  reflectBodyCommand,
   replyText,
   studyKey,
-  transmissionFor,
   turnKey,
-  type Decision,
-  type DecisionStatus,
   type OrderDraft,
   type OrderKind,
+  type Reach,
 } from "../station";
 
-export type Composer = "reply" | "order";
+export type Deck = "core" | "crew" | "comms" | "order" | "lab" | "hold";
+export type Stage = "proposed" | "accepted" | "applied" | "declined";
 
-export function createConsole(research: Ref<Research>, now: Ref<number>) {
+/** How long a card shows «Принято · Отменить» before its lesson leaves the tab. */
+export const HOLD_MS = 8000;
+
+/** A command copied instead of run, because the board only reads. */
+export interface Copied {
+  command: string;
+  /** False when the clipboard refused: the command is then shown to copy by hand. */
+  copied: boolean;
+  /** Why the board only reads, in words. */
+  reason: string;
+}
+
+export type CardForm = "decline" | "apply" | "discuss";
+export type CardBusy = CardForm | "accept" | "undo";
+
+/** A lesson's card: its open form, the request in flight, and what came of the last one. */
+export interface CardState {
+  form: CardForm | null;
+  note: string;
+  busy: CardBusy | null;
+  error: string;
+  /** The decision just taken, which «Отменить» takes back to `undo`. */
+  done: { status: "accepted" | "declined" | "applied"; undo: "proposed" | "accepted" } | null;
+  copied: Copied | null;
+}
+
+/** The reply composer of one channel. */
+export interface ReplyState {
+  busy: boolean;
+  error: string;
+  copied: Copied | null;
+  /** The reply just sent, shown until the study's own messages carry it. */
+  echo: { text: string; count: number } | null;
+}
+
+export interface ConsoleOptions {
+  /** Runs an action on the board server and asks for the research again after it succeeded. */
+  act: ActionSender;
+  /** Copies a command for the terminal; false when the clipboard is not available. */
+  copy?: (text: string) => Promise<boolean>;
+  /** Brings a deck into view. */
+  jump?: (deck: Deck) => void;
+}
+
+type Outcome = { kind: "ok"; result: Extract<ActionResult, { ok: true }> } | { kind: "error"; error: string } | { kind: "copied"; copied: Copied };
+
+async function clipboard(text: string): Promise<boolean> {
+  try {
+    if (!navigator.clipboard) return false;
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const BLANK_CARD: Readonly<CardState> = Object.freeze({ form: null, note: "", busy: null, error: "", done: null, copied: null });
+const BLANK_REPLY: Readonly<ReplyState> = Object.freeze({ busy: false, error: "", copied: null, echo: null });
+
+export function createConsole(research: Ref<Research>, now: Ref<number>, options: ConsoleOptions) {
+  const copy = options.copy ?? clipboard;
+  const jump = (deck: Deck) => options.jump?.(deck);
   const studies = computed(() => research.value.studies);
   const index = computed(() =>
     lessonsByEntry([research.value.proposed, research.value.accepted, research.value.applied, research.value.declined, research.value.other]),
   );
   const filed = computed(() => filedLessons(studies.value));
+
+  // ---- actions: run on the server, or copied when the board only reads
+
+  const live = computed(() => research.value.actions?.enabled === true);
+  const offReason = computed(() => readOnlyReason(research.value.actions?.reason, !!research.value.actions));
+
+  async function run<R extends ActionRoute>(route: R, body: ActionBodies[R], command: string): Promise<Outcome> {
+    if (!live.value) return { kind: "copied", copied: { command, copied: await copy(command), reason: offReason.value } };
+    const result = await options.act(route, body);
+    return result.ok ? { kind: "ok", result } : { kind: "error", error: result.error };
+  }
 
   // ---- the channel that is open in the comms room
 
@@ -47,27 +120,21 @@ export function createConsole(research: Ref<Research>, now: Ref<number>) {
   );
   function select(study: Study) {
     openKey.value = studyKey(study);
-    if (composer.value === "order" && reach(study) === "ok") composer.value = "reply";
   }
 
-  // ---- decisions on lessons
-
-  const decisions = ref<Decision[]>([]);
-  const decided = (entry: string) => decisions.value.find((decision) => decision.entry === entry.trim()) ?? null;
-
-  /** Picks a decision, or takes it back when it is picked again. A note belongs to one decision only. */
-  function decide(entry: string, id: string, status: DecisionStatus) {
-    const key = entry.trim();
-    const current = decided(key);
-    decisions.value = decisions.value.filter((decision) => decision.entry !== key);
-    if (current?.status !== status) decisions.value = [...decisions.value, { entry: key, id, status, note: "" }];
+  /** A study an action just started: its channel opens as soon as the research shows it. */
+  const awaiting = ref<string | null>(null);
+  function follow(slug: string | undefined) {
+    awaiting.value = slug ?? null;
+    catchUp();
   }
-  const drop = (decision: Decision) => (decisions.value = decisions.value.filter((item) => item !== decision));
-  /** A lesson id names a staged decision, unless another one shares it: then the whole entry does. */
-  const chipName = (decision: Decision) =>
-    decisions.value.some((other) => other !== decision && other.id === decision.id) ? decision.entry : decision.id;
-  /** The lesson id at the end of an index entry. */
-  const lessonId = (lesson: Lesson) => filed.value.get(lesson.entry.trim())?.id ?? lesson.entry.trim().split(/\s+/).pop() ?? lesson.entry;
+  function catchUp() {
+    const study = awaiting.value ? studies.value.find((item) => item.slug === awaiting.value && !item.archived) : null;
+    if (!study) return;
+    awaiting.value = null;
+    select(study);
+  }
+  watch(studies, catchUp);
 
   // ---- answers to the analyst
 
@@ -81,7 +148,6 @@ export function createConsole(research: Ref<Research>, now: Ref<number>) {
     const list = answersOf(study);
     list[number] = list[number] === option ? "" : option;
     customOf(study)[number] = false;
-    composer.value = "reply";
   }
   function ownAnswer(study: Study, number: number) {
     customOf(study)[number] = true;
@@ -97,52 +163,222 @@ export function createConsole(research: Ref<Research>, now: Ref<number>) {
     },
   });
 
-  // ---- the transmitter
+  const replies = reactive<Record<string, ReplyState>>({});
+  const replyOf = (study: Study): Readonly<ReplyState> => replies[studyKey(study)] ?? BLANK_REPLY;
+  /** The reply just sent, while the study's messages do not carry it yet. */
+  function echoOf(study: Study) {
+    const echo = replies[studyKey(study)]?.echo;
+    return echo && study.messages.length <= echo.count ? echo : null;
+  }
+  /** Whether a reply can go to the study now: not while the analyst works on the last one. */
+  const replyReach = (study: Study | null): Reach => (study && echoOf(study) ? "working" : reach(study));
 
-  const composer = ref<Composer>(firstStudy(studies.value) ? "reply" : "order");
   const replyField = ref<HTMLTextAreaElement | null>(null);
   const orderField = ref<HTMLTextAreaElement | null>(null);
 
   async function focus(field: Ref<HTMLTextAreaElement | null>) {
     await nextTick();
     const area = field.value;
-    if (!area) return;
+    if (!area || area.disabled) return;
     area.scrollIntoView({ block: "nearest", behavior: "smooth" });
     area.focus();
     area.setSelectionRange(area.value.length, area.value.length);
   }
 
-  /** «Уточнить»: a line about the lesson in the reply to the study that filed it. */
-  async function clarify(id: string, study: Study | null = openStudy.value) {
-    if (study) openKey.value = studyKey(study);
-    composer.value = "reply";
+  /** «Ответить»: the channel opens and its reply field takes the focus. */
+  async function answer(study: Study) {
+    select(study);
+    jump("comms");
+    await focus(replyField);
+  }
+
+  /** «Обсудить» a lesson in the study that filed it: a line about the lesson starts the reply. */
+  async function clarify(id: string, study: Study) {
+    select(study);
+    jump("comms");
     const prefix = `По уроку ${id}: `;
     if (!free.value.includes(prefix)) free.value = (free.value.trim() ? `${free.value.trim()}\n` : "") + prefix;
     await focus(replyField);
   }
 
-  const target = openStudy;
-  const targetReach = computed(() => reach(target.value));
-  const questionsAt = computed(() => (target.value ? openQuestionsAt(target.value) : -1));
-  const openQuestions = computed(() => (target.value && questionsAt.value >= 0 ? (target.value.messages[questionsAt.value]?.questions ?? []) : []));
+  const questionsAt = computed(() => (openStudy.value ? openQuestionsAt(openStudy.value) : -1));
+  const openQuestions = computed(() => (openStudy.value && questionsAt.value >= 0 ? (openStudy.value.messages[questionsAt.value]?.questions ?? []) : []));
   const reply = computed(() =>
-    target.value && targetReach.value === "ok" ? replyText(openQuestions.value, answersOf(target.value), free.value) : "",
+    openStudy.value && replyReach(openStudy.value) === "ok" ? replyText(openQuestions.value, answersOf(openStudy.value), free.value) : "",
   );
-  const replyCommand = computed(() => transmissionFor(decisions.value, target.value, reply.value));
+
+  async function sendReply() {
+    const study = openStudy.value;
+    const text = reply.value;
+    if (!study || !text || replyReach(study) !== "ok" || replies[studyKey(study)]?.busy) return;
+    const key = studyKey(study);
+    const turn = turnKey(study);
+    const count = study.messages.length;
+    replies[key] = { busy: true, error: "", copied: null, echo: null };
+    const state = replies[key]!;
+    const outcome = await run("say", { slug: study.slug, text }, sayCommand(study.slug, text));
+    state.busy = false;
+    if (outcome.kind === "error") {
+      state.error = outcome.error;
+      return;
+    }
+    if (outcome.kind === "copied") state.copied = outcome.copied;
+    else state.echo = { text, count };
+    drafts[key] = "";
+    answers[turn] = [];
+    custom[turn] = [];
+  }
+
+  // ---- the lessons' cards
+
+
+  const cards = reactive<Record<string, CardState>>({});
+  const cardOf = (lesson: Lesson): Readonly<CardState> => cards[lesson.entry.trim()] ?? BLANK_CARD;
+  /** The card's state to change: the reactive one, created on first use. */
+  function edit(lesson: Lesson): CardState {
+    const key = lesson.entry.trim();
+    if (!cards[key]) cards[key] = { ...BLANK_CARD };
+    return cards[key]!;
+  }
+
+  function openForm(lesson: Lesson, form: CardForm) {
+    const state = edit(lesson);
+    if (state.busy) return;
+    Object.assign(state, { form, note: "", error: "", copied: null });
+  }
+  function setNote(lesson: Lesson, text: string) {
+    const state = edit(lesson);
+    if (state.form) state.note = text;
+  }
+  function closeForm(lesson: Lesson) {
+    const state = edit(lesson);
+    if (!state.busy) Object.assign(state, { form: null, note: "", error: "" });
+  }
+
+  const listOf = (stage: Stage): Lesson[] =>
+    stage === "declined" ? [...research.value.declined, ...research.value.other] : research.value[stage];
+
+  /** Lessons decided a moment ago stay on their tab while «Отменить» is offered. */
+  const held = reactive<Record<string, { lesson: Lesson; stage: Stage; index: number }>>({});
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** `index`: where the lesson stood on its tab before the action, whose refresh has already moved it. */
+  function hold(lesson: Lesson, stage: Stage, index: number) {
+    const key = lesson.entry.trim();
+    held[key] = { lesson, stage, index: Math.max(0, index) };
+    clearTimeout(timers.get(key));
+    timers.set(key, setTimeout(() => release(key), HOLD_MS));
+  }
+  function release(key: string) {
+    clearTimeout(timers.get(key));
+    timers.delete(key);
+    delete held[key];
+    if (cards[key]) cards[key].done = null;
+  }
+
+  async function decide(lesson: Lesson, busy: CardBusy, status: "accepted" | "declined" | "applied", stage: Stage) {
+    const state = edit(lesson);
+    if (state.busy) return;
+    const entry = lesson.entry.trim();
+    const index = listOf(stage).findIndex((item) => item.entry.trim() === entry);
+    const note = state.form ? state.note.trim() : "";
+    const body: LessonBody = { entry, status };
+    if (note) body.note = note;
+    Object.assign(state, { busy, error: "", copied: null });
+    const outcome = await run("lesson", body, lessonCommand(entry, status, note));
+    state.busy = null;
+    if (outcome.kind === "error") {
+      state.error = outcome.error;
+      return;
+    }
+    Object.assign(state, { form: null, note: "" });
+    if (outcome.kind === "copied") {
+      state.copied = outcome.copied;
+      return;
+    }
+    state.done = { status, undo: status === "applied" ? "accepted" : "proposed" };
+    hold(lesson, stage, index);
+  }
+
+  const accept = (lesson: Lesson) => decide(lesson, "accept", "accepted", "proposed");
+  const decline = (lesson: Lesson) => decide(lesson, "decline", "declined", "proposed");
+  const apply = (lesson: Lesson) => decide(lesson, "apply", "applied", "accepted");
+
+  /** «Отменить»: the lesson goes back to where it was. */
+  async function undo(lesson: Lesson) {
+    const state = edit(lesson);
+    if (!state.done || state.busy) return;
+    const entry = lesson.entry.trim();
+    const status = state.done.undo;
+    Object.assign(state, { busy: "undo", error: "" });
+    const outcome = await run("lesson", { entry, status }, lessonCommand(entry, status));
+    state.busy = null;
+    if (outcome.kind === "error") state.error = outcome.error;
+    else release(entry);
+  }
+
+  /** «Обсудить»: in the study that filed the lesson when it can take a reply, otherwise a new study. */
+  async function discuss(lesson: Lesson) {
+    const at = filed.value.get(lesson.entry.trim());
+    if (at && reach(at.study) === "ok") await clarify(at.id, at.study);
+    else openForm(lesson, "discuss");
+  }
+
+  async function startDiscussion(lesson: Lesson) {
+    const state = edit(lesson);
+    if (state.busy) return;
+    const body = { order: discussOrder(lesson, state.note), since: "30d" };
+    Object.assign(state, { busy: "discuss", error: "", copied: null });
+    const outcome = await run("reflect", body, reflectBodyCommand(body, new Date(now.value * 1000)));
+    state.busy = null;
+    if (outcome.kind === "error") {
+      state.error = outcome.error;
+      return;
+    }
+    Object.assign(state, { form: null, note: "" });
+    if (outcome.kind === "copied") {
+      state.copied = outcome.copied;
+      return;
+    }
+    follow(outcome.result.slug);
+    jump("comms");
+  }
+
+  // ---- the lab's tabs
+
+  const firstStage = (): Stage => (["proposed", "accepted", "applied"] as const).find((stage) => listOf(stage).length) ?? "proposed";
+  const labStage = ref<Stage>(firstStage());
+  const shown = computed(() => {
+    const list = [...listOf(labStage.value)];
+    for (const [key, item] of Object.entries(held)) {
+      if (item.stage === labStage.value && !list.some((lesson) => lesson.entry.trim() === key)) list.splice(Math.min(item.index, list.length), 0, item.lesson);
+    }
+    return list;
+  });
+  // New proposals bring the lab back to the decisions, unless the human looks at another stage that has lessons. A
+  // card's own action empties its tab before the card holds the lesson: the tab stays for its «Отменить».
+  watch(
+    () => research.value.proposed.length,
+    (count, before) => {
+      const acting = Object.values(cards).some((card) => card.busy);
+      if (count > (before ?? 0) || (!shown.value.length && !acting)) labStage.value = firstStage();
+    },
+  );
+  function showStage(stage: Stage) {
+    labStage.value = stage;
+    jump("lab");
+  }
+
+  // ---- the order deck
 
   const draft = reactive<OrderDraft>({ kind: "batch", tasks: "", since: "30d", repos: "", text: "" });
-  const ordered = computed(() => orderCommand(draft, new Date(now.value * 1000)));
-  /** Decisions staged on lessons go out with the order. */
-  const orderLine = computed(() =>
-    "command" in ordered.value ? transmission([transmissionFor(decisions.value, null, ""), ordered.value.command]) : "",
-  );
-  const orderError = ref("");
-  watch(() => ({ ...draft }), () => (orderError.value = ""));
+  const ordered = computed(() => orderAction(draft, new Date(now.value * 1000)));
+  const orderState = reactive({ busy: false, error: "", done: null as string | null, copied: null as Copied | null });
+  watch(() => ({ ...draft }), () => (orderState.error = ""));
 
   /** An order of the given kind, ready to be written. */
   async function order(kind: OrderKind) {
-    composer.value = "order";
     draft.kind = kind;
+    jump("order");
     await focus(orderField);
   }
 
@@ -153,92 +389,78 @@ export function createConsole(research: Ref<Research>, now: Ref<number>) {
     await order("tasks");
   }
 
-  const last = ref<{ command: string; copied: boolean } | null>(null);
-  const lastField = ref<HTMLTextAreaElement | null>(null);
-
-  async function send(command: string, after: () => void) {
-    if (!command) return;
-    let copied = false;
-    try {
-      if (!navigator.clipboard) throw new Error("no clipboard");
-      await navigator.clipboard.writeText(command);
-      copied = true;
-    } catch {
-      copied = false;
-    }
-    last.value = { command, copied };
-    after();
-    if (!copied) {
-      await nextTick();
-      lastField.value?.focus();
-      lastField.value?.select();
-    }
-  }
-
-  function sendReply() {
-    const study = target.value;
-    // The say goes out only when there is a text for a study that can take it; otherwise the draft stays.
-    const answered = !!reply.value && !!study && targetReach.value === "ok";
-    void send(replyCommand.value, () => {
-      decisions.value = [];
-      if (answered && study) {
-        drafts[studyKey(study)] = "";
-        answers[turnKey(study)] = [];
-        custom[turnKey(study)] = [];
-      }
-    });
-  }
-
-  function sendOrder() {
+  async function sendOrder() {
     const result = ordered.value;
+    if (orderState.busy) return;
     if ("error" in result) {
-      orderError.value = result.error;
+      orderState.error = result.error;
       return;
     }
-    orderError.value = "";
-    void send(orderLine.value, () => {
-      decisions.value = [];
-      draft.text = "";
-      draft.tasks = "";
-    });
+    Object.assign(orderState, { busy: true, error: "", done: null, copied: null });
+    const outcome = await run("reflect", result.body, result.command);
+    orderState.busy = false;
+    if (outcome.kind === "error") {
+      orderState.error = outcome.error;
+      return;
+    }
+    if (outcome.kind === "copied") orderState.copied = outcome.copied;
+    else {
+      orderState.done = outcome.result.slug ?? "";
+      follow(outcome.result.slug);
+    }
+    draft.text = "";
+    draft.tasks = "";
+  }
+
+  function dispose() {
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
   }
 
   return {
     studies,
     index,
     filed,
+    live,
     openKey,
     openStudy,
     select,
-    decisions,
-    decided,
-    decide,
-    drop,
-    chipName,
-    lessonId,
+    awaiting,
     answersOf,
     customOf,
     choose,
     ownAnswer,
     free,
-    composer,
     replyField,
     orderField,
+    answer,
     clarify,
-    target,
-    targetReach,
     reply,
-    replyCommand,
+    replyOf,
+    echoOf,
+    replyReach,
+    sendReply,
+    cardOf,
+    openForm,
+    setNote,
+    closeForm,
+    accept,
+    decline,
+    apply,
+    undo,
+    discuss,
+    startDiscussion,
+    labStage,
+    shown,
+    listOf,
+    showStage,
     draft,
     ordered,
-    orderLine,
-    orderError,
+    orderState,
     order,
     studyRecord,
-    last,
-    lastField,
-    sendReply,
     sendOrder,
+    dispose,
   };
 }
 
@@ -251,4 +473,3 @@ export function useConsole(): StationConsole {
   if (!console) throw new Error("A station deck stands outside the station screen");
   return console;
 }
-

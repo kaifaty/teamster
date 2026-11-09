@@ -1,7 +1,7 @@
 // The science station: what the reflection learned from finished tasks, what waits for a decision, and which
 // systems it watches. Pure data for the scene, the label and the station's screen.
 
-import type { Lesson, PendingRecord, ReflectionSchedule, ResearchBatch, ResearchView, Signal, Study, TaskSummary } from "../types";
+import type { Lesson, PendingRecord, ReflectionSchedule, ResearchActions, ResearchBatch, ResearchView, Signal, Study, TaskSummary } from "../types";
 
 /** The scheduled task of the reflection when the server does not name it. */
 export const REFLECTION_TASK = "codex-batch-reflection";
@@ -36,6 +36,8 @@ export interface Research {
   batch: ResearchBatch | null;
   /** The planned reflection; null when the server names none. */
   schedule: ReflectionSchedule | null;
+  /** Whether the board runs the station's actions; null for an older server, which only reads. */
+  actions: ResearchActions | null;
   /** `repos`: every repository with material, most first, also those without a star on the map. */
   pending: { records: number; signals: number; repos: { repo: string; count: number }[]; items: PendingRecord[] };
   /** The reflection's session: the one running now, else the latest. */
@@ -78,6 +80,7 @@ export function research(view: ResearchView | null, tasks: readonly TaskSummary[
     other: newest.filter((lesson) => lesson.status === "other"),
     batch: view.batch,
     schedule: view.schedule ?? null,
+    actions: view.actions ?? null,
     pending: {
       records: view.pending.records,
       signals: view.pending.signals,

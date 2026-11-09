@@ -129,6 +129,12 @@ export interface Lesson {
   cue: string;
   status: LessonStatus;
   status_text: string;
+  /** The lesson's own section in its report; absent on older servers. `evidence` keeps its line breaks. */
+  title?: string | null;
+  lesson?: string | null;
+  proposal?: string | null;
+  evidence?: string | null;
+  caveats?: string | null;
 }
 
 /** The newest batch reflection. */
@@ -209,6 +215,16 @@ export interface ResearchView {
   reflection_task: string;
   /** Absent on older servers; null when no matching desktop task exists. */
   schedule?: ReflectionSchedule | null;
+  /** Whether the board runs the station's actions; absent on older servers, which only read. */
+  actions?: ResearchActions;
+}
+
+/** Why the board only reads: started with --read-only, or no teamster command to run. */
+export type ActionsOff = "read_only" | "no_teamster";
+
+export interface ResearchActions {
+  enabled: boolean;
+  reason: ActionsOff | null;
 }
 
 export interface CargoCheck {

@@ -1,10 +1,11 @@
-// The science station as a conversation: who speaks, which docket and which questions are live, and the one
-// transmission that carries the human's decisions and answers. Pure data for the station's screen; the board only
-// copies the command, it never runs it.
+// The science station as a conversation: who speaks, which docket and which questions are live, what the human
+// should do next, and the bodies of the actions the station's buttons send. Pure data for the station's screen.
 
-import { answerText, lessonCommand, reflectCommand, reflectSlug, sayCommand, transmission } from "../lib/commands";
+import type { ReflectBody } from "../lib/actions";
+import { answerText, reflectCommand, reflectSlug } from "../lib/commands";
 import type { Lesson, PendingRecord, Signal, Study, StudyMessage, StudyQuestion } from "../types";
 import type { Research } from "./research";
+import type { Clock } from "./schedule";
 
 export type StudyState = "working" | "waiting" | "failed" | "idle" | "closed";
 
@@ -72,33 +73,14 @@ export function reach(study: Study | null): Reach {
   return study.alive ? "working" : "ok";
 }
 
-/** A proposed lesson is accepted or declined; an accepted one is marked applied once its change landed. */
-export type DecisionStatus = "accepted" | "declined" | "applied";
-export interface Decision {
-  entry: string;
-  /** The lesson id, for the chip. */
-  id: string;
-  status: DecisionStatus;
-  /** Why it was declined, or where it was applied. */
-  note: string;
-}
-
-export const DECISION_TEXT: Record<DecisionStatus, string> = { accepted: "принять", declined: "отклонить", applied: "внедрено" };
-
 /** What goes to the analyst: one numbered line per answered question, then the free text. */
 export function replyText(questions: readonly StudyQuestion[], answers: readonly string[], free: string): string {
   return [answerText([...questions], [...answers]), free.trim()].filter(Boolean).join("\n");
 }
 
-/**
- * One command for the terminal: every decision on a lesson, then the say to the open study. A say goes only to a
- * study that can take it; without a text there is no say.
- */
-export function transmissionFor(decisions: readonly Decision[], study: Study | null, text: string): string {
-  const commands = decisions.map((decision) => lessonCommand(decision.entry, decision.status, decision.note));
-  if (text.trim() && study && reach(study) === "ok") commands.push(sayCommand(study.slug, text));
-  return transmission(commands);
-}
+/** Cmd+Enter or Ctrl+Enter sends a reply. */
+export const isSendKey = (event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "isComposing">) =>
+  event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.isComposing;
 
 export type OrderKind = "batch" | "tasks" | "question";
 
@@ -123,25 +105,45 @@ export function validSince(value: string): boolean {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-/** The `teamster reflect` command of a new order, or why it cannot be built yet. */
-export function orderCommand(draft: OrderDraft, now: Date): { command: string } | { error: string } {
-  const slug = reflectSlug(now);
+/** A new order as the board server takes it, with the equivalent `teamster reflect` command, or why it cannot go yet. */
+export function orderAction(draft: OrderDraft, now: Date): { body: ReflectBody; command: string } | { error: string } {
   const order = draft.text.trim() || undefined;
+  let body: ReflectBody;
   if (draft.kind === "tasks") {
     const tasks = words(draft.tasks);
     if (!tasks.length) return { error: "Назови хотя бы одну задачу" };
-    return { command: reflectCommand({ slug, tasks, order }) };
-  }
-  if (draft.kind === "question") {
+    body = { tasks };
+  } else if (draft.kind === "question") {
     if (!order) return { error: "Сформулируй вопрос" };
     const since = draft.since.trim();
     const repos = words(draft.repos);
     if (since && !validSince(since)) return { error: "Срок — дата ГГГГ-ММ-ДД или число дней, например 14d" };
     // Without a period or projects teamster would run a batch and move its through: stamp.
     if (!since && !repos.length) return { error: "Укажи срок или проекты" };
-    return { command: reflectCommand({ slug, order, since: since || undefined, repos }) };
-  }
-  return { command: reflectCommand({ slug, order }) };
+    body = {};
+    if (since) body.since = since;
+    if (repos.length) body.repos = repos;
+  } else body = {};
+  if (order) body.order = order;
+  return { body, command: reflectBodyCommand(body, now) };
+}
+
+/** The `teamster reflect` command that does what the body asks. */
+export const reflectBodyCommand = (body: ReflectBody, now: Date) => reflectCommand({ slug: reflectSlug(now), ...body });
+
+/** The file of a lesson's report: its index entry without the lesson id. */
+export function lessonFile(entry: string): string {
+  const words = entry.trim().split(/\s+/);
+  return words.length > 1 ? words.slice(0, -1).join(" ") : entry.trim();
+}
+
+/** The order of a new study that discusses a lesson; the human's question follows after an empty line. */
+export function discussOrder(lesson: Pick<Lesson, "entry" | "cue" | "title">, question: string): string {
+  const entry = lesson.entry.trim();
+  const order =
+    `Обсуждаем урок ${entry} («${lesson.title?.trim() || lesson.cue}»). Прочитай его раздел в файле ${lessonFile(entry)} и записи из его доказательств. ` +
+    "Ответь на вопрос ниже; если урок стоит уточнить или переписать — предложи новую редакцию.";
+  return question.trim() ? `${order}\n\n${question.trim()}` : order;
 }
 
 /** The lesson of the index behind a docket, by its entry. */
@@ -239,4 +241,33 @@ export function workingSince(research: Research): number | null {
   const run = research.run;
   if (run?.alive) return run.phase_started_at ?? run.created ?? run.updated_at;
   return null;
+}
+
+/** What the human can do next, as the line under the station's title: one sentence and at most one button. */
+export interface NextStep {
+  text: string;
+  /** «Ответить» opens the waiting channel, «Разобрать» the lessons to decide, «Показать» the accepted ones. */
+  action: { kind: "reply"; label: "Ответить"; study: Study } | { kind: "review"; label: "Разобрать" } | { kind: "accepted"; label: "Показать" } | null;
+  tone: "wait" | "gold" | "live" | "teal" | "";
+}
+
+export function nextStep(research: Research, now: number, clock: Pick<Clock, "state" | "when">): NextStep {
+  const waiting = research.studies.find((study) => study.waiting);
+  if (waiting) {
+    return { text: `Аналитик ждёт ответа: ${studyTitle(waiting)}`, action: { kind: "reply", label: "Ответить", study: waiting }, tone: "wait" };
+  }
+  if (research.proposed.length) {
+    return { text: `Уроков ждут решения: ${research.proposed.length}`, action: { kind: "review", label: "Разобрать" }, tone: "gold" };
+  }
+  const since = workingSince(research);
+  if (research.running || since !== null) {
+    const live = research.studies.find((study) => study.alive);
+    const minutes = since !== null ? ` · ${Math.max(0, Math.floor((now - since) / 60))} мин` : "";
+    return { text: `Аналитик работает: ${live ? studyTitle(live) : "Плановый разбор"}${minutes}`, action: null, tone: "live" };
+  }
+  if (research.accepted.length) {
+    return { text: `Приняты и ждут внедрения: ${research.accepted.length}`, action: { kind: "accepted", label: "Показать" }, tone: "teal" };
+  }
+  const when = clock.when ?? (clock.state === "off" ? "выключен" : "не назначен");
+  return { text: `Всё разобрано. Плановый разбор ${when}`, action: null, tone: "" };
 }

@@ -1,4 +1,5 @@
-// teamster commands for a task, ready to paste into a terminal. The board never runs them.
+// teamster commands, ready to paste into a terminal: a task's card copies them, and so does the science station when
+// the board only reads.
 
 import type { LessonStatus, StudyQuestion, TaskSummary } from "../types";
 
@@ -91,11 +92,6 @@ export function reflectCommand({ slug, order, tasks = [], since, repos = [] }: {
 export function lessonCommand(entry: string, status: Exclude<LessonStatus, "other">, note = ""): string {
   const base = `teamster lesson ${shellQuote(entry)} ${shellWord(status)}`;
   return note.trim() ? `${base} --note ${shellQuote(note.trim())}` : base;
-}
-
-/** Commands copied together run in order while each previous command succeeds. */
-export function transmission(commands: string[]): string {
-  return commands.filter((command) => command.trim()).join(" && ");
 }
 
 /** One numbered reply per answered analyst question, ready for `say`. */

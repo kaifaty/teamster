@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Study, StudyMessage } from "../types";
+import type { Lesson, Study, StudyMessage } from "../types";
 import { fixtureSource } from "../fixtures/source";
 import { research } from "./research";
 import {
@@ -8,18 +8,19 @@ import {
   signalTally,
   stationCounts,
   workingSince,
+  discussOrder,
   docketPlacement,
+  nextStep,
   studyKey,
   turnKey,
   validSince,
   firstStudy,
   openQuestionsAt,
-  orderCommand,
+  orderAction,
   reach,
   replyText,
   studyState,
   studyTitle,
-  transmissionFor,
   type OrderDraft,
 } from "./station";
 
@@ -110,59 +111,46 @@ describe("openQuestionsAt", () => {
   });
 });
 
-describe("transmission", () => {
+describe("replyText", () => {
   it("numbers the answers and adds the free text", () => {
     expect(replyText(asking.questions, ["Brief gap"], "  thanks ")).toBe("1. Brief gap or outside delay?: Brief gap\nthanks");
     expect(replyText(asking.questions, [""], "")).toBe("");
-  });
-
-  it("joins the decisions and the say into one command", () => {
-    const open = study({ waiting: true, messages: [lead(100, null), asking] });
-    const command = transmissionFor(
-      [{ entry: "batch-2026-11-09.md V1", id: "V1", status: "declined", note: "one incident" }],
-      open,
-      "1. Brief gap",
-    );
-    expect(command).toBe(
-      "teamster lesson 'batch-2026-11-09.md V1' declined --note 'one incident' && teamster say reflect-1109-041200 '1. Brief gap'",
-    );
-  });
-
-  it("sends no say to a study that cannot take it", () => {
-    const decision = { entry: "batch-2026-11-09.md V1", id: "V1", status: "accepted" as const, note: "" };
-    expect(transmissionFor([decision], study({ alive: true }), "hello")).toBe("teamster lesson 'batch-2026-11-09.md V1' accepted");
-    expect(transmissionFor([decision], study({ archived: true }), "hello")).toBe("teamster lesson 'batch-2026-11-09.md V1' accepted");
-    expect(transmissionFor([], study(), "  ")).toBe("");
     expect(reach(null)).toBe("closed");
   });
 });
 
-describe("orderCommand", () => {
+describe("orderAction", () => {
   const now = new Date(Date.UTC(2026, 10, 9, 4, 12));
   const draft = (patch: Partial<OrderDraft>): OrderDraft => ({ kind: "batch", tasks: "", since: "", repos: "", text: "", ...patch });
 
   it("builds a batch order with an optional focus", () => {
-    expect(orderCommand(draft({}), now)).toEqual({ command: "teamster reflect reflect-1109-041200" });
-    expect(orderCommand(draft({ text: "Focus on CI" }), now)).toEqual({ command: "teamster reflect reflect-1109-041200 'Focus on CI'" });
+    expect(orderAction(draft({}), now)).toEqual({ body: {}, command: "teamster reflect reflect-1109-041200" });
+    expect(orderAction(draft({ text: " Focus on CI " }), now)).toEqual({
+      body: { order: "Focus on CI" },
+      command: "teamster reflect reflect-1109-041200 'Focus on CI'",
+    });
   });
 
   it("needs a task for a task order", () => {
-    expect(orderCommand(draft({ kind: "tasks" }), now)).toEqual({ error: "Назови хотя бы одну задачу" });
-    expect(orderCommand(draft({ kind: "tasks", tasks: "nft-send, wallet-fix" }), now)).toEqual({
-      command: "teamster reflect reflect-1109-041200 --task nft-send --task wallet-fix",
+    expect(orderAction(draft({ kind: "tasks" }), now)).toEqual({ error: "Назови хотя бы одну задачу" });
+    expect(orderAction(draft({ kind: "tasks", tasks: "nft-send, wallet-fix", since: "30d", text: "CI" }), now)).toEqual({
+      body: { tasks: ["nft-send", "wallet-fix"], order: "CI" },
+      command: "teamster reflect reflect-1109-041200 --task nft-send --task wallet-fix 'CI'",
     });
   });
 
   it("needs the question and a valid period for a question", () => {
-    expect(orderCommand(draft({ kind: "question" }), now)).toEqual({ error: "Сформулируй вопрос" });
-    expect("error" in orderCommand(draft({ kind: "question", text: "Why?", since: "last week" }), now)).toBe(true);
-    expect("error" in orderCommand(draft({ kind: "question", text: "Why?", since: "2026-02-30" }), now)).toBe(true);
+    expect(orderAction(draft({ kind: "question" }), now)).toEqual({ error: "Сформулируй вопрос" });
+    expect("error" in orderAction(draft({ kind: "question", text: "Why?", since: "last week" }), now)).toBe(true);
+    expect("error" in orderAction(draft({ kind: "question", text: "Why?", since: "2026-02-30" }), now)).toBe(true);
     // Without a period or projects it would be a batch.
-    expect(orderCommand(draft({ kind: "question", text: "Why?" }), now)).toEqual({ error: "Укажи срок или проекты" });
-    expect(orderCommand(draft({ kind: "question", text: "Why?", repos: "wallet" }), now)).toEqual({
+    expect(orderAction(draft({ kind: "question", text: "Why?" }), now)).toEqual({ error: "Укажи срок или проекты" });
+    expect(orderAction(draft({ kind: "question", text: "Why?", repos: "wallet" }), now)).toEqual({
+      body: { repos: ["wallet"], order: "Why?" },
       command: "teamster reflect reflect-1109-041200 --repo wallet 'Why?'",
     });
-    expect(orderCommand(draft({ kind: "question", text: "Why?", since: "14d", repos: "wallet vault" }), now)).toEqual({
+    expect(orderAction(draft({ kind: "question", text: "Why?", since: "14d", repos: "wallet vault" }), now)).toEqual({
+      body: { since: "14d", repos: ["wallet", "vault"], order: "Why?" },
       command: "teamster reflect reflect-1109-041200 --since 14d --repo wallet --repo vault 'Why?'",
     });
   });
@@ -181,13 +169,6 @@ describe("keys", () => {
     expect(validSince("14d")).toBe(true);
     expect(validSince("2026-02-30")).toBe(false);
     expect(validSince("yesterday")).toBe(false);
-  });
-});
-
-describe("transmission with an applied lesson", () => {
-  it("marks it applied with the place as its note", () => {
-    const command = transmissionFor([{ entry: "batch-2026-11-06.md U1", id: "U1", status: "applied", note: "AGENTS.md" }], null, "");
-    expect(command).toBe("teamster lesson 'batch-2026-11-06.md U1' applied --note 'AGENTS.md'");
   });
 });
 
@@ -238,5 +219,37 @@ describe("workingSince", () => {
     expect(workingSince(station)).toBeNull();
     const live = study({ alive: true, messages: [lead(100, null), analyst(180)] });
     expect(workingSince({ ...station, studies: [live], running: true })).toBe(180);
+  });
+});
+
+describe("nextStep", () => {
+  const clock = { state: "counting" as const, when: "завтра в 09:00" };
+  const lesson = (status: Lesson["status"]): Lesson => ({
+    date: "2026-11-09", entry: `batch-2026-11-09.md ${status}`, scope: "invariant", scope_text: "invariant", repos: [], cue: "cue", status, status_text: status,
+  });
+
+  it("asks for an answer, then decisions, then shows the work, then the lessons to apply, then the plan", async () => {
+    const base = research(await fixtureSource().fetchResearch(), [], [])!;
+    const waiting = study({ slug: "q", waiting: true, messages: [lead(100, "Why do checks repeat?"), asking] });
+    const working = study({ slug: "w", alive: true, messages: [lead(100, "Compare CI"), analyst(400)] });
+    const station = { ...base, studies: [working, waiting], running: true, proposed: [lesson("proposed")], accepted: [lesson("accepted")] };
+
+    expect(nextStep(station, 1000, clock)).toMatchObject({ text: "Аналитик ждёт ответа: Why do checks repeat?", action: { kind: "reply", label: "Ответить", study: { slug: "q" } } });
+    const deciding = { ...station, studies: [working] };
+    expect(nextStep(deciding, 1000, clock)).toMatchObject({ text: "Уроков ждут решения: 1", action: { kind: "review", label: "Разобрать" } });
+    const busy = { ...deciding, proposed: [] };
+    expect(nextStep(busy, 1000, clock)).toMatchObject({ text: "Аналитик работает: Compare CI · 10 мин", action: null });
+    const quiet = { ...busy, studies: [], running: false };
+    expect(nextStep(quiet, 1000, clock)).toMatchObject({ text: "Приняты и ждут внедрения: 1", action: { kind: "accepted", label: "Показать" } });
+    expect(nextStep({ ...quiet, accepted: [] }, 1000, clock)).toEqual({ text: "Всё разобрано. Плановый разбор завтра в 09:00", action: null, tone: "" });
+  });
+});
+
+describe("discussOrder", () => {
+  it("names the lesson, its report and the question after an empty line", () => {
+    const order = "Обсуждаем урок batch-2026-11-05.md T1 («Review a partial result»). Прочитай его раздел в файле batch-2026-11-05.md и записи из его доказательств. Ответь на вопрос ниже; если урок стоит уточнить или переписать — предложи новую редакцию.";
+    expect(discussOrder({ entry: "batch-2026-11-05.md T1", cue: "cue", title: "Review a partial result" }, "  ")).toBe(order);
+    expect(discussOrder({ entry: "batch-2026-11-05.md T1", cue: "cue", title: "Review a partial result" }, " Why now? ")).toBe(`${order}\n\nWhy now?`);
+    expect(discussOrder({ entry: "batch-2026-11-05.md T1", cue: "a cue" }, "")).toContain("(«a cue»)");
   });
 });

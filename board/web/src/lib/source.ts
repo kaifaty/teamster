@@ -1,3 +1,4 @@
+import type { ActionSender } from "./actions";
 import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFile } from "../types";
 import { connectSocket, type ConnectionState } from "./socket";
 
@@ -20,6 +21,8 @@ export interface BoardSource {
   fetchEvents(since: number, until: number): Promise<Events>;
   /** `teamster report` from the local date `since` (YYYY-MM-DD), grouped by `by` (e.g. "executor"). */
   fetchReport(since: string, by: string): Promise<Report>;
+  /** Runs a science station action; without it the action goes to the board server (POST /api/actions/*). */
+  act?: ActionSender;
 }
 
 async function get(path: string): Promise<Response | null> {

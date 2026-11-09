@@ -90,22 +90,34 @@ from its core while the analyst waits for your answer, and probes flying to the 
 is going. A run is a `teamster reflect` task (or, before it, a desktop session of the reflection's scheduled task); it stays
 at the station and is not counted in any system.
 A click on the station opens its own screen over the map (`board/web/src/map/station/`; «← Галактика» or Esc goes back,
-and the galaxy stops drawing meanwhile). A resource bar on top counts the analyst's open questions, lessons to decide,
-accepted lessons waiting for their change, applied lessons, the records in the hold with how many carry a signal, and the
-time to the planned reflection; each gauge brings its deck into view. The decks:
+and the galaxy stops drawing meanwhile). Under its title one line says what to do next, with at most one button: answer
+the analyst who waits («Ответить»), decide the proposed lessons («Разобрать»), wait while the analyst works, apply the
+accepted lessons («Показать»), or nothing until the planned run. A resource bar on top counts the analyst's open
+questions, lessons to decide, accepted lessons waiting for their change, applied lessons, the records in the hold with
+how many carry a signal, and the time to the planned reflection; each gauge brings its deck into view. The decks:
 - «Ядро станции»: the station inside a chronometer ring that fills from the last planned run to the next one
   (`schedule` in `GET /api/research`, read from the Claude desktop scheduled task; `board/web/src/map/schedule.ts` puts the
   cron into words), a teal sweep while a run works, the last run and batch, «Внеочередной разбор» and «Вопрос к архиву».
+- «Приказ»: a new study — an extra batch, named tasks, or a question to the archive over a period or projects.
+  «Отдать приказ» starts it, and its channel opens in the comms room; «Команда» shows the equivalent `teamster reflect`.
 - «Экипаж»: the analyst (at work, waiting for your answer, stopped by a failed turn, or free; a click opens its channel) and
   the archive keeper with the hold's count.
 - «Рубка связи»: one channel per study and the open channel's conversation — your order, the analyst's reports with dockets
-  (a lesson to accept, decline or ask about) and questions with answer options, and your replies.
-- «Лаборатория»: lessons on one line, «на решение» › «к внедрению» › «внедрено», with «отклонено» aside; a proposed lesson
-  is accepted, declined or asked about, and an accepted one is marked «Внедрено» with where it landed.
+  and questions with answer options, and your replies — with the reply field under it: «Отправить» or Cmd/Ctrl+Enter
+  sends the picked options and your text to the study, unless the analyst is at work or the study is closed.
+- «Лаборатория»: lessons on one line, «на решение» › «к внедрению» › «внедрено», with «отклонено» aside. A card shows the
+  lesson's title, what to do and the proposal, with its evidence and caveats under «Подробнее». A proposed lesson is
+  accepted, declined with an optional reason, or discussed — in the study that filed it when that study can take a
+  reply, otherwise in a new study over the last 30 days; an accepted one is marked «Внедрено» with where it landed. For a
+  few seconds after a decision the card offers «Отменить».
 - «Трюм архива»: one capsule per record the next planned reflection will read, lit when it carries a signal, the records per
   project and per signal, and the signalled records, each of which can be ordered into a study.
-- «Передатчик» gathers a round's decisions and answers from every deck, or a new order, into one command
-  (`teamster lesson … && teamster say …`, or `teamster reflect …`) and copies it: the board never runs it.
+
+The station's buttons act at once: the board server runs `teamster lesson`, `say` or `reflect` (`POST /api/actions/*`)
+and the screen shows the result. These are the only actions the board runs; every other screen only reads. When the
+server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
+button copies the equivalent command for the terminal instead and says why. In `npm run dev:fixture` the actions play on
+the fixtures, so the whole station can be clicked through without a server.
 
 Like the tanks, the station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
