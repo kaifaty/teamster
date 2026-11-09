@@ -49,9 +49,14 @@ async function act() {
   if (!action) return;
   if (action.kind === "reply") return desk.answer(action.study);
   desk.showStage(action.kind === "review" ? "proposed" : "accepted");
-  if (action.kind !== "review") return;
+  if (action.kind === "accepted") return;
   await nextTick();
-  root.value?.querySelector<HTMLElement>('[data-deck="lab"] .card')?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  const cards = [...(root.value?.querySelectorAll<HTMLElement>('[data-deck="lab"] .card') ?? [])];
+  const entry = action.kind === "review" ? null : action.lesson.entry.trim();
+  const card = entry === null ? cards[0] : cards.find((item) => item.dataset.entry === entry);
+  card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  // «Ответить» the agent: its card's reply field takes the focus.
+  if (action.kind === "agent") card?.querySelector<HTMLTextAreaElement>("textarea.agent-answer")?.focus({ preventScroll: true });
 }
 
 interface Gauge {
@@ -123,12 +128,14 @@ onMounted(() => {
   back.value?.focus();
   window.addEventListener("keydown", onKey);
 });
-// While the analyst works, or a study just ordered has not shown up yet, the screen asks for news more often.
+// While the analyst or an implementing agent works, or a study just ordered has not shown up yet, the screen asks for
+// news more often.
+const implementing = computed(() => props.research.accepted.some((lesson) => lesson.implementation?.alive));
 const WATCH_MS = 10_000;
 let watchTimer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   watchTimer = setInterval(() => {
-    if (props.research.running || desk.awaiting.value) void props.refresh();
+    if (props.research.running || desk.awaiting.value || implementing.value) void props.refresh();
   }, WATCH_MS);
 });
 onBeforeUnmount(() => {

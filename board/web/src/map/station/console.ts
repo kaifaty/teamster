@@ -8,6 +8,7 @@ import { lessonCommand, sayCommand } from "../../lib/commands";
 import type { Lesson, Study } from "../../types";
 import type { Research } from "../research";
 import {
+  defaultRepo,
   discussOrder,
   filedLessons,
   firstStudy,
@@ -22,7 +23,9 @@ import {
   type OrderDraft,
   type OrderKind,
   type Reach,
+  type Started,
 } from "../station";
+import { createImplementation } from "./implement";
 
 export type Deck = "core" | "crew" | "comms" | "order" | "lab" | "hold";
 export type Stage = "proposed" | "accepted" | "applied" | "declined";
@@ -39,8 +42,9 @@ export interface Copied {
   reason: string;
 }
 
-export type CardForm = "decline" | "apply" | "discuss";
+export type CardForm = "decline" | "apply" | "discuss" | "implement";
 export type CardBusy = CardForm | "accept" | "undo";
+
 
 /** A lesson's card: its open form, the request in flight, and what came of the last one. */
 export interface CardState {
@@ -51,7 +55,12 @@ export interface CardState {
   /** The decision just taken, which «Отменить» takes back to `undo`. */
   done: { status: "accepted" | "declined" | "applied"; undo: "proposed" | "accepted" } | null;
   copied: Copied | null;
+  /** «Где внедрять»: a repository's path, empty until one is picked. */
+  repo: string;
+  /** The implementation this card started, shown until the research carries it. */
+  started: Started | null;
 }
+
 
 /** The reply composer of one channel. */
 export interface ReplyState {
@@ -71,7 +80,7 @@ export interface ConsoleOptions {
   jump?: (deck: Deck) => void;
 }
 
-type Outcome = { kind: "ok"; result: Extract<ActionResult, { ok: true }> } | { kind: "error"; error: string } | { kind: "copied"; copied: Copied };
+export type Outcome = { kind: "ok"; result: Extract<ActionResult, { ok: true }> } | { kind: "error"; error: string } | { kind: "copied"; copied: Copied };
 
 async function clipboard(text: string): Promise<boolean> {
   try {
@@ -83,7 +92,7 @@ async function clipboard(text: string): Promise<boolean> {
   }
 }
 
-const BLANK_CARD: Readonly<CardState> = Object.freeze({ form: null, note: "", busy: null, error: "", done: null, copied: null });
+const BLANK_CARD: Readonly<CardState> = Object.freeze({ form: null, note: "", busy: null, error: "", done: null, copied: null, repo: "", started: null });
 const BLANK_REPLY: Readonly<ReplyState> = Object.freeze({ busy: false, error: "", copied: null, echo: null });
 
 export function createConsole(research: Ref<Research>, now: Ref<number>, options: ConsoleOptions) {
@@ -244,7 +253,15 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
   function openForm(lesson: Lesson, form: CardForm) {
     const state = edit(lesson);
     if (state.busy) return;
-    Object.assign(state, { form, note: "", error: "", copied: null });
+    if (form === "implement" && !live.value) return;
+    // «Внедрено» after the agent's PR names the PR.
+    const note = form === "apply" ? (lesson.implementation?.pr ?? "") : "";
+    Object.assign(state, { form, note, error: "", copied: null });
+    if (form === "implement") state.repo = defaultRepo(lesson, research.value.repos);
+  }
+  function setRepo(lesson: Lesson, path: string) {
+    const state = edit(lesson);
+    if (state.form === "implement") state.repo = path;
   }
   function setNote(lesson: Lesson, text: string) {
     const state = edit(lesson);
@@ -316,6 +333,8 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     else release(entry);
   }
 
+  const implementation = createImplementation({ research, live, act: options.act, run, cardOf, edit, listOf, hold });
+
   /** «Обсудить»: in the study that filed the lesson when it can take a reply, otherwise a new study. */
   async function discuss(lesson: Lesson) {
     const at = filed.value.get(lesson.entry.trim());
@@ -350,7 +369,8 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
   const shown = computed(() => {
     const list = [...listOf(labStage.value)];
     for (const [key, item] of Object.entries(held)) {
-      if (item.stage === labStage.value && !list.some((lesson) => lesson.entry.trim() === key)) list.splice(Math.min(item.index, list.length), 0, item.lesson);
+      // The lesson as the research shows it now: a card that started an implementation follows its task.
+      if (item.stage === labStage.value && !list.some((lesson) => lesson.entry.trim() === key)) list.splice(Math.min(item.index, list.length), 0, index.value.get(key) ?? item.lesson);
     }
     return list;
   });
@@ -417,8 +437,11 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     timers.clear();
   }
 
+  const repos = computed(() => research.value.repos);
+
   return {
     studies,
+    repos,
     index,
     filed,
     live,
@@ -443,11 +466,13 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     cardOf,
     openForm,
     setNote,
+    setRepo,
     closeForm,
     accept,
     decline,
     apply,
     undo,
+    ...implementation,
     discuss,
     startDiscussion,
     labStage,

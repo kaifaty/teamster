@@ -1,13 +1,21 @@
-// The science station's actions: the board server runs `teamster lesson`, `say` and `reflect` for the station's
-// buttons (POST /api/actions/*). Only the station acts; every other screen of the board only reads.
+// The science station's actions: the board server runs `teamster lesson`, `say` and `reflect`, and starts a lesson's
+// implementation, for the station's buttons (POST /api/actions/*). Only the station acts; every other screen of the
+// board only reads.
 
 import type { ActionsOff } from "../types";
 
-export type ActionRoute = "lesson" | "say" | "reflect";
+export type ActionRoute = "lesson" | "say" | "reflect" | "implement";
 
 export interface LessonBody {
   entry: string;
   status: "accepted" | "declined" | "applied" | "proposed";
+  note?: string;
+}
+
+/** Starts a task that makes the lesson's change: `repo` is a path from the research's `repos`. */
+export interface ImplementBody {
+  entry: string;
+  repo: string;
   note?: string;
 }
 
@@ -28,6 +36,7 @@ export interface ActionBodies {
   lesson: LessonBody;
   say: SayBody;
   reflect: ReflectBody;
+  implement: ImplementBody;
 }
 
 export type ActionResult = { ok: true; output: string; slug?: string } | { ok: false; error: string };

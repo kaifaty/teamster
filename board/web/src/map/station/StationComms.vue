@@ -7,9 +7,10 @@ import type { Study, StudyMessage } from "../../types";
 import analystPortrait from "../art/portrait-analyst.jpg";
 import archivistPortrait from "../art/portrait-archivist.jpg";
 import { plural, type Research } from "../research";
-import { LESSON_STATE, STATE_TEXT, docketPlacement, openQuestionsAt, studyKey, studyState, studyTitle } from "../station";
+import { LESSON_STATE, STATE_TEXT, docketParts, docketPlacement, openQuestionsAt, studyKey, studyState, studyTitle } from "../station";
 import { useConsole } from "./console";
 import LessonActions from "./LessonActions.vue";
+import LessonImplementation from "./LessonImplementation.vue";
 import StationReply from "./StationReply.vue";
 
 defineProps<{ research: Research; now: number }>();
@@ -25,10 +26,10 @@ function speaker(study: Study, message: StudyMessage, at: number): string {
 }
 
 const docketsOf = (study: Study) => docketPlacement(study.messages);
-/** The index row of a docket that waits for a decision, or was decided a moment ago. */
-function decidable(entry: string) {
+/** The index row of a docket, with what its card shows: the buttons and the implementation's line. */
+function docket(entry: string) {
   const lesson = desk.index.value.get(entry.trim());
-  return lesson && (lesson.status === "proposed" || desk.cardOf(lesson).done) ? lesson : null;
+  return lesson ? { lesson, ...docketParts(lesson, desk.cardOf(lesson)) } : null;
 }
 
 // A newly opened channel shows its latest turn, where the questions wait.
@@ -120,7 +121,8 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
                     <template v-if="lesson.lesson"><dt>Что делать</dt><dd>{{ lesson.lesson }}</dd></template>
                     <template v-if="lesson.proposal"><dt>Предложение</dt><dd>{{ lesson.proposal }}</dd></template>
                   </dl>
-                  <LessonActions v-if="decidable(lesson.entry)" :lesson="decidable(lesson.entry)!" stage="proposed" />
+                  <LessonImplementation v-if="docket(lesson.entry)?.implementation" :lesson="docket(lesson.entry)!.lesson" />
+                  <LessonActions v-if="docket(lesson.entry)?.actions" :lesson="docket(lesson.entry)!.lesson" stage="proposed" />
                 </article>
                 <span v-else class="d-moved">докладная {{ lesson.id }} — пересмотрена ниже</span>
               </template>

@@ -3,15 +3,19 @@ import { nextTick, ref } from "vue";
 import type { ActionResult } from "../../lib/actions";
 import { fixtureResearch } from "../../fixtures/research";
 import { fixtureSource } from "../../fixtures/source";
-import type { ResearchActions, ResearchView } from "../../types";
+import type { Implementation, ResearchActions, ResearchView } from "../../types";
 import { research } from "../research";
-import { discussOrder, isSendKey } from "../station";
+import { discussOrder, docketParts, implementationLine, isSendKey } from "../station";
 import { createConsole, HOLD_MS, type Deck } from "./console";
+import { IMPLEMENT_OFF } from "./implement";
 
 const NOW = Date.UTC(2026, 10, 9, 4, 12) / 1000;
 const T1 = "batch-2026-11-05.md T1"; // proposed, filed by no study
 const U1 = "batch-2026-11-06.md U1"; // accepted
 const L1 = "study-2026-11-07.md L1"; // proposed, filed by a study that waits for an answer
+const U2 = "batch-2026-11-06.md U2"; // proposed, domain ml-lab, which the board does not know
+const U4 = "batch-2026-11-06.md U4"; // accepted, its agent needs a decision
+const U5 = "batch-2026-11-06.md U5"; // accepted, its agent opened a PR
 
 function setup(actions: ResearchActions | null = { enabled: true, reason: null }) {
   const view = fixtureResearch(NOW);
@@ -136,6 +140,114 @@ describe("a lesson's card", () => {
   });
 });
 
+describe("«Внедрить»", () => {
+  it("starts the task in the picked repository, and the proposed lesson leaves its tab a moment later", async () => {
+    vi.useFakeTimers();
+    const { desk, act, lesson, update } = setup();
+    const t1 = lesson(T1);
+    expect(desk.offersImplement(t1)).toBe(true);
+    desk.openForm(t1, "implement");
+    expect(desk.cardOf(t1)).toMatchObject({ form: "implement", repo: "/Users/demo/dev/teamster" });
+    desk.setRepo(t1, "/Users/demo/dev/demo-vault");
+    desk.setNote(t1, " only the supervisor ");
+    // The refresh inside the action already moved the lesson to «к внедрению».
+    act.mockImplementationOnce(async () => {
+      update((view) => (view.lessons.find((item) => item.entry === T1)!.status = "accepted"));
+      return { ok: true, output: "", slug: "lesson-t1" };
+    });
+    await desk.implement(t1, "proposed");
+    expect(act).toHaveBeenCalledWith("implement", { entry: T1, repo: "/Users/demo/dev/demo-vault", note: "only the supervisor" });
+    expect(desk.cardOf(t1)).toMatchObject({ busy: null, form: null, error: "", started: { slug: "lesson-t1", repo: "demo-vault" } });
+    expect(desk.offersImplement(lesson(T1))).toBe(false);
+    expect(desk.labStage.value).toBe("proposed");
+    expect(desk.shown.value.map((item) => item.entry)).toContain(T1);
+    vi.advanceTimersByTime(HOLD_MS);
+    expect(desk.shown.value.map((item) => item.entry)).not.toContain(T1);
+    desk.dispose();
+  });
+
+  it("waits for a repository, and shows the server's refusal on the card", async () => {
+    const { desk, act, lesson, answer } = setup();
+    const u2 = lesson(U2);
+    desk.openForm(u2, "implement");
+    expect(desk.cardOf(u2).repo).toBe("");
+    await desk.implement(u2, "proposed");
+    expect(act).not.toHaveBeenCalled();
+    desk.setRepo(u2, "/Users/demo/dev/demo-game");
+    answer({ ok: false, error: "lesson is already being implemented" });
+    await desk.implement(u2, "proposed");
+    expect(act).toHaveBeenCalledWith("implement", { entry: U2, repo: "/Users/demo/dev/demo-game" });
+    expect(desk.cardOf(u2)).toMatchObject({ busy: null, form: "implement", error: "lesson is already being implemented", started: null });
+  });
+
+  it("shows the implementation under the lesson's docket too, also once the lesson is accepted", async () => {
+    const { desk, lesson, update, answer } = setup();
+    const l1 = lesson(L1);
+    const docket = () => docketParts(desk.index.value.get(L1), desk.cardOf(desk.index.value.get(L1)!));
+    expect(docket()).toEqual({ actions: true, implementation: false });
+    desk.openForm(l1, "implement");
+    answer({ ok: true, output: "", slug: "lesson-l1" });
+    await desk.implement(l1, "proposed");
+    expect(docket()).toEqual({ actions: true, implementation: true });
+
+    const task: Implementation = {
+      slug: "lesson-l1", archived: false, alive: false, repo: "teamster", result_status: "needs_decision", pr: null,
+      questions: ["Where?"], summary: null, created: NOW, updated_at: NOW,
+    };
+    update((view) => Object.assign(view.lessons.find((item) => item.entry === L1)!, { status: "accepted", implementation: task }));
+    expect(docket()).toEqual({ actions: false, implementation: true });
+    const shown = desk.index.value.get(L1)!;
+    expect(implementationLine(shown.implementation, desk.cardOf(shown).started)).toMatchObject({ kind: "decision", answer: true });
+    desk.dispose();
+  });
+
+  it("gives way to the lesson's implementation when the server named no slug, and keeps following it once closed", async () => {
+    const { desk, lesson, update, answer } = setup();
+    const u1 = lesson(U1);
+    desk.openForm(u1, "implement");
+    answer({ ok: true, output: "started" });
+    await desk.implement(u1, "accepted");
+    expect(implementationLine(lesson(U1).implementation, desk.cardOf(u1).started)).toMatchObject({ kind: "started", text: "Внедряется: teamster" });
+    expect(desk.offersImplement(lesson(U1))).toBe(false);
+
+    const task: Implementation = {
+      slug: "lesson-u1", archived: false, alive: true, repo: "teamster", result_status: null, pr: null, questions: [], summary: null, created: NOW, updated_at: NOW,
+    };
+    update((view) => (view.lessons.find((item) => item.entry === U1)!.implementation = task));
+    await nextTick();
+    expect(implementationLine(lesson(U1).implementation, desk.cardOf(u1).started)).toMatchObject({ kind: "working", text: "Агент работает · teamster" });
+
+    update((view) => Object.assign(view.lessons.find((item) => item.entry === U1)!.implementation!, { alive: false, archived: true, result_status: "partial" }));
+    await nextTick();
+    expect(implementationLine(lesson(U1).implementation, desk.cardOf(u1).started)).toMatchObject({ kind: "closed" });
+    expect(desk.offersImplement(lesson(U1))).toBe(true);
+    desk.dispose();
+  });
+
+  it("is not offered while the lesson's implementation goes, and «Внедрено» names the agent's PR", () => {
+    const { desk, lesson } = setup();
+    expect(desk.offersImplement(lesson(U1))).toBe(true);
+    expect(desk.offersImplement(lesson(U5))).toBe(false);
+    desk.openForm(lesson(U5), "apply");
+    expect(desk.cardOf(lesson(U5)).note).toBe("https://github.com/demo/teamster/pull/41");
+  });
+
+  it("answers the agent from the card, and keeps the field off until the task moves on", async () => {
+    const { desk, act, lesson, update } = setup();
+    const u4 = lesson(U4);
+    desk.setAgentText(u4, "  Keep it running  ");
+    await desk.sayToAgent(u4);
+    expect(act).toHaveBeenCalledWith("say", { slug: "lesson-u4-flaky-e2e", text: "Keep it running" });
+    expect(desk.agentSent(u4)).toBe(true);
+    expect(desk.agentOf(u4).text).toBe("");
+    desk.setAgentText(u4, "More");
+    await desk.sayToAgent(u4);
+    expect(act).toHaveBeenCalledTimes(1);
+    update((view) => (view.lessons.find((item) => item.entry === U4)!.implementation!.updated_at += 60));
+    expect(desk.agentSent(lesson(U4))).toBe(false);
+  });
+});
+
 describe("«Обсудить»", () => {
   it("opens the channel of a study that can take a reply, with a line about the lesson", async () => {
     const { desk, act, lesson, jumps } = setup();
@@ -256,6 +368,12 @@ describe("a board that only reads", () => {
       desk.draft.tasks = "flaky-e2e";
       await desk.sendOrder();
 
+      // «Внедрить» has no command to copy: it stays off with the reason.
+      expect(desk.implementOff.value).toBe(IMPLEMENT_OFF);
+      desk.openForm(lesson(U1), "implement");
+      expect(desk.cardOf(lesson(U1)).form).toBeNull();
+      await desk.implement(lesson(U1), "accepted");
+
       expect(act).not.toHaveBeenCalled();
       expect(copied).toEqual([
         "teamster lesson 'batch-2026-11-05.md T1' accepted",
@@ -291,5 +409,17 @@ describe("dev:fixture", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     view = (await source.fetchResearch())!;
     expect(view.studies[0]).toMatchObject({ slug: started.ok ? started.slug : "", alive: false, waiting: true });
+
+    // «Внедрить»: the agent works, asks, takes the answer and opens a PR.
+    const implementation = () => source.fetchResearch().then((research) => research!.lessons.find((item) => item.entry === T1)!.implementation!);
+    expect(await run(source.act!("implement", { entry: T1, repo: "/Users/demo/dev/teamster" }))).toEqual({ ok: true, output: "started lesson-t1", slug: "lesson-t1" });
+    expect(await implementation()).toMatchObject({ slug: "lesson-t1", repo: "teamster", alive: true });
+    expect(await run(source.act!("implement", { entry: T1, repo: "/Users/demo/dev/teamster" }))).toMatchObject({ ok: false });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await implementation()).toMatchObject({ alive: false, result_status: "needs_decision", questions: [expect.any(String)] });
+    expect(await run(source.act!("say", { slug: "lesson-t1", text: "AGENTS.md" }))).toMatchObject({ ok: true });
+    expect(await implementation()).toMatchObject({ alive: true });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await implementation()).toMatchObject({ alive: false, result_status: "done", pr: expect.stringMatching(/\/pull\/\d+$/) });
   });
 });

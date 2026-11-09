@@ -2,10 +2,21 @@
 // so that `dev:fixture` clicks through the whole station without a server.
 import type { ActionBodies, ActionResult, ActionRoute, ActionSender } from "../lib/actions";
 import { reflectSlug } from "../lib/commands";
-import type { ResearchView, Study, StudyMessage } from "../types";
+import type { Implementation, Lesson, ResearchView, Study, StudyMessage } from "../types";
+
+const task = (patch: Partial<Implementation> & Pick<Implementation, "slug" | "repo" | "created">): Implementation => ({
+  archived: false, alive: false, result_status: null, pr: null, questions: [], summary: null, updated_at: patch.created, ...patch,
+});
 
 /** What the reflection learned, in made-up projects; a new copy each time, in the snapshot's time. */
 export const fixtureResearch = (BASE: number): ResearchView => ({
+  repos: [
+    { name: "teamster", path: "/Users/demo/dev/teamster" },
+    { name: "demo-game", path: "/Users/demo/dev/demo-game" },
+    { name: "demo-shop", path: "/Users/demo/dev/demo-shop" },
+    { name: "demo-vault", path: "/Users/demo/dev/demo-vault" },
+    { name: "demo-wallet", path: "/Users/demo/dev/demo-wallet" },
+  ],
   lessons: [
     { date: "2026-10-28", entry: "batch-2026-10-28.md L1", scope: "invariant", scope_text: "invariant", repos: [], cue: "review diff against a moved base", status: "applied", status_text: "applied rules (PR #12)" },
     { date: "2026-10-30", entry: "batch-2026-10-30.md L2", scope: "domain", scope_text: "domain demo-game", repos: ["demo-game"], cue: "full test suite times out while the machine is loaded", status: "applied", status_text: "applied demo-game AGENTS.md" },
@@ -21,6 +32,39 @@ export const fixtureResearch = (BASE: number): ResearchView => ({
       title: "Keep the training smoke out of the turn",
       lesson: "Keep the ml-lab training smoke outside the interactive task turn.", proposal: null,
       evidence: "- ml-lab/budget-overrun: the smoke run took 41 minutes of a 60-minute turn", caveats: null },
+    { date: "2026-11-06", entry: "batch-2026-11-06.md U3", scope: "domain", scope_text: "domain demo-game", repos: ["demo-game"], cue: "a save-format change ships without a migration test", status: "accepted", status_text: "accepted",
+      title: "Test the save migration with the format change",
+      lesson: "A change to the save format comes with a test that loads a save of the previous format.", proposal: null,
+      implementation: task({ slug: "lesson-u3-save-migration", repo: "demo-game", alive: true, created: BASE - 600, updated_at: BASE - 120 }) },
+    { date: "2026-11-06", entry: "batch-2026-11-06.md U4", scope: "domain", scope_text: "domain demo-wallet", repos: ["demo-wallet"], cue: "a retry hides a flaky e2e failure", status: "accepted", status_text: "accepted",
+      title: "Report a flaky e2e test instead of retrying it",
+      lesson: "When an e2e test passes only on retry, record it as flaky in the result instead of passing silently.", proposal: null,
+      implementation: task({
+        slug: "lesson-u4-flaky-e2e", repo: "demo-wallet", result_status: "needs_decision", created: BASE - 5400, updated_at: BASE - 900,
+        questions: ["Mark the flaky test as skipped, or keep it running and only report it?"],
+        summary: "The retry wrapper lives in the shared e2e runner; two suites depend on it.",
+      }) },
+    { date: "2026-11-06", entry: "batch-2026-11-06.md U5", scope: "invariant", scope_text: "invariant", repos: [], cue: "the brief's check runs on a stale build", status: "accepted", status_text: "accepted",
+      title: "Rebuild before the brief's check",
+      lesson: "Run the brief's check on a fresh build of the branch.", proposal: null,
+      implementation: task({
+        slug: "lesson-u5-fresh-build", repo: "teamster", result_status: "done", pr: "https://github.com/demo/teamster/pull/41", created: BASE - 9000, updated_at: BASE - 2400,
+        summary: "The worker rebuilds before the saved check.",
+      }) },
+    { date: "2026-11-06", entry: "batch-2026-11-06.md U6", scope: "domain", scope_text: "domain demo-shop", repos: ["demo-shop"], cue: "a currency rounding fix lands without the ledger test", status: "accepted", status_text: "accepted",
+      title: "Run the ledger test with every rounding fix",
+      lesson: "A change to rounding runs the ledger reconciliation test.", proposal: null,
+      implementation: task({
+        slug: "lesson-u6-ledger-test", repo: "demo-shop", result_status: "blocked", created: BASE - 12000, updated_at: BASE - 4000,
+        summary: "The ledger test needs a database dump that is not in the repository.",
+      }) },
+    { date: "2026-11-06", entry: "batch-2026-11-06.md U7", scope: "domain", scope_text: "domain demo-vault", repos: ["demo-vault"], cue: "a migration runs twice after a crash", status: "accepted", status_text: "accepted",
+      title: "Make vault migrations safe to repeat",
+      lesson: "A vault migration checks whether it already ran before it changes data.", proposal: null,
+      implementation: task({
+        slug: "lesson-u7-repeat-migration", repo: "demo-vault", archived: true, result_status: "partial", pr: "https://github.com/demo/demo-vault/pull/17", created: BASE - 90000, updated_at: BASE - 80000,
+        summary: "Two of three migrations are guarded; the PR was closed for a new attempt.",
+      }) },
     { date: "2026-11-07", entry: "study-2026-11-07.md L1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a broad check repeats before the failure is reproduced", status: "proposed", status_text: "proposed" },
   ],
   studies: [
@@ -100,6 +144,8 @@ export const fixtureResearch = (BASE: number): ResearchView => ({
 
 /** How long the fixture analyst takes for a turn. */
 const TURN_MS = 8000;
+/** How long the fixture agent takes for a turn of an implementation. */
+const IMPLEMENT_MS = 5000;
 
 const message = (at: number, from: StudyMessage["from"], text: string | null, patch: Partial<StudyMessage> = {}): StudyMessage => ({
   at, from, text, status: null, questions: [], lessons: [], file: null, ...patch,
@@ -111,6 +157,18 @@ const message = (at: number, from: StudyMessage["from"], text: string | null, pa
  */
 export function fixtureActions(view: ResearchView, clock: () => number): ActionSender {
   const fail = (error: string): ActionResult => ({ ok: false, error });
+  const implementing = (slug: string): Lesson | undefined => view.lessons.find((item) => item.implementation?.slug === slug);
+  /** The agent's turn ends: the first one asks a question, the next one opens a PR. */
+  const agentTurn = (lesson: Lesson, first: boolean) =>
+    setTimeout(() => {
+      const task = lesson.implementation;
+      if (!task) return;
+      Object.assign(task, first
+        ? { alive: false, result_status: "needs_decision", updated_at: clock(), summary: "Нашёл два места, где правило можно записать.",
+            questions: ["Записать правило в AGENTS.md репозитория или в docs/checks.md?"] }
+        : { alive: false, result_status: "done", updated_at: clock(), questions: [], summary: "Правило записано, проверка добавлена.",
+            pr: `https://github.com/demo/${task.repo}/pull/${50 + view.lessons.indexOf(lesson)}` });
+    }, IMPLEMENT_MS);
   const finish = (study: Study, answer: StudyMessage) =>
     setTimeout(() => {
       study.messages.push({ ...answer, at: clock() });
@@ -126,6 +184,15 @@ export function fixtureActions(view: ResearchView, clock: () => number): ActionS
       return { ok: true, output: `${entry}: ${status}` };
     },
     say({ slug, text }) {
+      const lesson = implementing(slug);
+      if (lesson?.implementation) {
+        const task = lesson.implementation;
+        if (task.alive) return fail("Агент работает: ответить можно после его хода");
+        if (task.archived) return fail("Задача закрыта");
+        Object.assign(task, { alive: true, result_status: null, updated_at: clock() });
+        agentTurn(lesson, false);
+        return { ok: true, output: `said to ${slug}: ${text.length} chars` };
+      }
       const study = view.studies.find((item) => item.slug === slug);
       if (!study) return fail(`Исследование ${slug} не найдено`);
       if (study.alive) return fail("Аналитик работает: ответить можно после его хода");
@@ -134,6 +201,22 @@ export function fixtureActions(view: ResearchView, clock: () => number): ActionS
       Object.assign(study, { alive: true, waiting: false, updated_at: clock() });
       finish(study, message(0, "analyst", "Принял ответ и обновил докладную. Новых вопросов нет.", { status: "done", file: study.file }));
       return { ok: true, output: `said to ${slug}` };
+    },
+    implement({ entry, repo, note }) {
+      const lesson = view.lessons.find((item) => item.entry === entry);
+      if (!lesson) return fail(`Урок ${entry} не найден в индексе`);
+      if (lesson.status === "applied" || lesson.status === "declined") return fail(`Урок ${entry} уже ${lesson.status === "applied" ? "внедрён" : "отклонён"}`);
+      if (lesson.implementation && !lesson.implementation.archived) return fail(`Урок ${entry} уже внедряется: ${lesson.implementation.slug}`);
+      const target = view.repos?.find((item) => item.path === repo);
+      if (!target) return fail(`Репозиторий ${repo} не найден`);
+      const id = entry.trim().split(/\s+/).at(-1)!.toLowerCase();
+      let slug = `lesson-${id}`;
+      while (view.lessons.some((item) => item.implementation?.slug === slug)) slug += "x";
+      if (lesson.status === "proposed") Object.assign(lesson, { status: "accepted", status_text: "accepted" });
+      const at = clock();
+      lesson.implementation = task({ slug, repo: target.name, alive: true, created: at, summary: note ?? null });
+      agentTurn(lesson, true);
+      return { ok: true, output: `started ${slug}`, slug };
     },
     reflect({ order, tasks = [], since, repos = [] }) {
       if (tasks.length && (since !== undefined || repos.length)) return fail("--task не сочетается с --since и --repo");

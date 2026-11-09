@@ -1,9 +1,9 @@
 // The science station as a conversation: who speaks, which docket and which questions are live, what the human
 // should do next, and the bodies of the actions the station's buttons send. Pure data for the station's screen.
 
-import type { ReflectBody } from "../lib/actions";
+import type { ImplementBody, ReflectBody } from "../lib/actions";
 import { answerText, reflectCommand, reflectSlug } from "../lib/commands";
-import type { Lesson, PendingRecord, Signal, Study, StudyMessage, StudyQuestion } from "../types";
+import type { Implementation, Lesson, PendingRecord, ResearchRepo, Signal, Study, StudyMessage, StudyQuestion } from "../types";
 import type { Research } from "./research";
 import type { Clock } from "./schedule";
 
@@ -243,11 +243,107 @@ export function workingSince(research: Research): number | null {
   return null;
 }
 
+/** The lesson's id in its report: the entry's last word, «U1» of «batch-2026-11-06.md U1». */
+export function lessonId(entry: string): string {
+  return entry.trim().split(/\s+/).at(-1) ?? entry.trim();
+}
+
+/** What «Внедрить» sends: the note only when there is one. */
+export function implementBody(entry: string, repo: string, note: string): ImplementBody {
+  const body: ImplementBody = { entry: entry.trim(), repo };
+  if (note.trim()) body.note = note.trim();
+  return body;
+}
+
+/**
+ * The repository «Где внедрять» starts with, as its path: a domain lesson's first named repository the board knows, any
+ * other lesson's `teamster`; empty when there is none, and the human picks one.
+ */
+export function defaultRepo(lesson: Pick<Lesson, "scope" | "repos">, repos: readonly ResearchRepo[]): string {
+  const named = (name: string) => repos.find((repo) => repo.name === name)?.path;
+  if (lesson.scope === "domain") {
+    for (const name of lesson.repos) {
+      const path = named(name);
+      if (path) return path;
+    }
+    return "";
+  }
+  return named("teamster") ?? "";
+}
+
+/** «Внедрить» is offered while the lesson has no implementation, or only a closed one. */
+export const canImplement = (lesson: Pick<Lesson, "implementation">) => !lesson.implementation || lesson.implementation.archived;
+
+/** «PR #12» for a pull request's URL, «PR» when the URL has no number. */
+export function prLabel(url: string): string {
+  const number = /\/pull\/(\d+)/.exec(url)?.[1];
+  return number ? `PR #${number}` : "PR";
+}
+
+/** The task a card just started, while the lesson's research shows no open implementation for it yet. */
+export interface Started {
+  /** Empty when the server's answer named none. */
+  slug: string;
+  repo: string;
+}
+
+/**
+ * Whether the task a card started has yet to show up. The lesson's own implementation is its task — matched by the
+ * lesson, not by the slug, which the server may not name; only a closed earlier one does not count.
+ */
+export function startPending(implementation: Implementation | null | undefined, started: Started | null): boolean {
+  return !!started && (!implementation || (implementation.archived && implementation.slug !== started.slug));
+}
+
+/** The line of a lesson's implementation on its card; `answer`: the card takes a reply for the agent. */
+export type ImplementationLine =
+  | { kind: "started"; text: string; answer: false }
+  | { kind: "working"; text: string; answer: false }
+  | { kind: "decision"; text: "Агенту нужно решение"; questions: string[]; answer: true }
+  | { kind: "pr"; pr: string; label: string; before: "PR готов: "; after: ". Проверь и смёржи, затем отметь «Внедрено»."; answer: false }
+  | { kind: "stopped"; text: string; summary: string | null; answer: true }
+  | { kind: "closed"; text: "Задача закрыта"; pr: string | null; label: string | null; answer: false };
+
+/**
+ * How the implementation goes, by the first state that fits: the agent works, needs a decision, opened a PR, stopped,
+ * or the task is closed. `started`: the task the card just started, shown until the research carries it.
+ */
+export function implementationLine(implementation: Implementation | null | undefined, started: Started | null = null): ImplementationLine | null {
+  const task = implementation ?? null;
+  if (started && startPending(task, started)) {
+    return { kind: "started", text: started.slug ? `Внедряется: ${started.slug} · ${started.repo}` : `Внедряется: ${started.repo}`, answer: false };
+  }
+  if (!task) return null;
+  if (task.alive) return { kind: "working", text: `Агент работает · ${task.repo}`, answer: false };
+  // A closed task takes no reply: its questions stay unanswered.
+  if (task.result_status === "needs_decision" && !task.archived) {
+    return { kind: "decision", text: "Агенту нужно решение", questions: task.questions, answer: true };
+  }
+  if (task.result_status === "done" && task.pr) {
+    return { kind: "pr", pr: task.pr, label: prLabel(task.pr), before: "PR готов: ", after: ". Проверь и смёржи, затем отметь «Внедрено».", answer: false };
+  }
+  if (task.result_status && !task.archived) {
+    return { kind: "stopped", text: `Агент остановился (${task.result_status})`, summary: task.summary, answer: true };
+  }
+  if (task.archived) return { kind: "closed", text: "Задача закрыта", pr: task.pr, label: task.pr ? prLabel(task.pr) : null, answer: false };
+  // Started, before its first turn ended.
+  return { kind: "started", text: `Внедряется: ${task.slug} · ${task.repo}`, answer: false };
+}
+
 /** What the human can do next, as the line under the station's title: one sentence and at most one button. */
 export interface NextStep {
   text: string;
-  /** «Ответить» opens the waiting channel, «Разобрать» the lessons to decide, «Показать» the accepted ones. */
-  action: { kind: "reply"; label: "Ответить"; study: Study } | { kind: "review"; label: "Разобрать" } | { kind: "accepted"; label: "Показать" } | null;
+  /**
+   * «Ответить» opens the waiting channel, or the card whose agent needs a decision; «Разобрать» the lessons to decide;
+   * «Показать» the card of a ready PR, or the accepted lessons.
+   */
+  action:
+    | { kind: "reply"; label: "Ответить"; study: Study }
+    | { kind: "agent"; label: "Ответить"; lesson: Lesson }
+    | { kind: "review"; label: "Разобрать" }
+    | { kind: "pr"; label: "Показать"; lesson: Lesson }
+    | { kind: "accepted"; label: "Показать" }
+    | null;
   tone: "wait" | "gold" | "live" | "teal" | "";
 }
 
@@ -255,6 +351,12 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
   const waiting = research.studies.find((study) => study.waiting);
   if (waiting) {
     return { text: `Аналитик ждёт ответа: ${studyTitle(waiting)}`, action: { kind: "reply", label: "Ответить", study: waiting }, tone: "wait" };
+  }
+  // The implementations of the accepted lessons: an applied lesson's task is no longer the human's concern.
+  const lineOf = (lesson: Lesson) => implementationLine(lesson.implementation);
+  const asking = research.accepted.find((lesson) => lineOf(lesson)?.kind === "decision");
+  if (asking) {
+    return { text: `Агенту нужно решение: урок ${lessonId(asking.entry)}`, action: { kind: "agent", label: "Ответить", lesson: asking }, tone: "wait" };
   }
   if (research.proposed.length) {
     return { text: `Уроков ждут решения: ${research.proposed.length}`, action: { kind: "review", label: "Разобрать" }, tone: "gold" };
@@ -265,9 +367,28 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
     const minutes = since !== null ? ` · ${Math.max(0, Math.floor((now - since) / 60))} мин` : "";
     return { text: `Аналитик работает: ${live ? studyTitle(live) : "Плановый разбор"}${minutes}`, action: null, tone: "live" };
   }
+  const agents = research.accepted.filter((lesson) => lineOf(lesson)?.kind === "working");
+  if (agents.length) {
+    const text = agents.length > 1 ? `Агенты внедряют уроки: ${agents.length}` : `Агент внедряет урок ${lessonId(agents[0]!.entry)}`;
+    return { text, action: null, tone: "live" };
+  }
+  const ready = research.accepted.find((lesson) => lineOf(lesson)?.kind === "pr");
+  if (ready) {
+    return { text: `PR готов по уроку ${lessonId(ready.entry)}`, action: { kind: "pr", label: "Показать", lesson: ready }, tone: "teal" };
+  }
   if (research.accepted.length) {
     return { text: `Приняты и ждут внедрения: ${research.accepted.length}`, action: { kind: "accepted", label: "Показать" }, tone: "teal" };
   }
   const when = clock.when ?? (clock.state === "off" ? "выключен" : "не назначен");
   return { text: `Всё разобрано. Плановый разбор ${when}`, action: null, tone: "" };
+}
+
+/**
+ * What a docket in the comms room shows under its lesson: the buttons while the lesson waits for a decision or was
+ * decided a moment ago, and the implementation's line, as on the lab's card, while the lesson is proposed or accepted.
+ */
+export function docketParts(lesson: Lesson | undefined, card: { done: unknown; started: Started | null }): { actions: boolean; implementation: boolean } {
+  if (!lesson) return { actions: false, implementation: false };
+  const open = lesson.status === "proposed" || lesson.status === "accepted";
+  return { actions: lesson.status === "proposed" || !!card.done, implementation: open && !!implementationLine(lesson.implementation, card.started) };
 }
