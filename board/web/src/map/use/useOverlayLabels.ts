@@ -2,7 +2,6 @@
 // machines'. The builders in ../overlay make them; this keeps them up to date.
 
 import { computed } from "vue";
-import { researchPosition } from "../layout";
 import { constellationKeepOuts, constellationLabels } from "../overlay/constellations";
 import { machineLabels as machineLabelsOf } from "../overlay/machines";
 import { starLabels as starLabelsOf } from "../overlay/stars";
@@ -22,12 +21,12 @@ export function useOverlayLabels(sources: MapSources, model: GalaxyModel) {
       model.constellationList.value,
       galaxy.value,
       world.value,
-      constellationKeepOuts(world.value, machineColumn.value, fuelColumn.value, model.coveredNow.value),
+      constellationKeepOuts(model.stationPoint.value, machineColumn.value, fuelColumn.value, model.coveredNow.value),
     ),
   );
   const stationLabel = computed(() => {
     const marks = model.station.value;
-    return marks ? stationLabelOf(marks, researchPosition(world.value, machineColumn.value, fuelColumn.value)) : null;
+    return marks ? stationLabelOf(marks, model.stationPoint.value) : null;
   });
   const tankLabels = computed(() => tankLabelsOf(model.tankList.value, fuelColumn.value, now.value));
   const machineLabels = computed(() => machineLabelsOf(model.machinesData.value?.items ?? [], machineColumn.value, now.value));

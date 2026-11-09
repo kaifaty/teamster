@@ -31,19 +31,19 @@ describe("constellation labels", () => {
   });
 
   it("keeps off the science station", () => {
-    const station = researchPosition(WORLD);
-    const keepOuts = constellationKeepOuts(WORLD, null, null, []);
+    const station = { x: 500, y: 300 };
+    const keepOuts = constellationKeepOuts(station, null, null, []);
     // The stars stand under the station, close enough for the label above them to touch its keep-out.
     expect(side(keepOuts, keepOuts[0]!.y1 + 60, station.x - 50)).toBe("below");
-    expect(constellationKeepOuts(WORLD, null, null, [ABOVE])).toContainEqual(ABOVE);
+    expect(constellationKeepOuts(station, null, null, [ABOVE])).toContainEqual(ABOVE);
   });
 
   it("keeps off the reactors' column and the tanks' column", () => {
     const machines = machinePositions([{ id: "m", name: "m", status: "в порядке" }], WORLD);
     const fuel = fuelPositions([{ key: "t", executor: "codex", name: "t", info: "83%", resets: 0 }], WORLD);
     const cases = [
-      { rect: machineColumnRect(machines)!, keepOuts: constellationKeepOuts(WORLD, machines, null, []) },
-      { rect: fuelColumnRect(fuel)!, keepOuts: constellationKeepOuts(WORLD, null, fuel, []) },
+      { rect: machineColumnRect(machines)!, keepOuts: constellationKeepOuts(researchPosition(WORLD, [], machines), machines, null, []) },
+      { rect: fuelColumnRect(fuel)!, keepOuts: constellationKeepOuts(researchPosition(WORLD, [], null, fuel), null, fuel, []) },
     ];
     for (const { rect, keepOuts } of cases) {
       expect(keepOuts).toContainEqual(rect);

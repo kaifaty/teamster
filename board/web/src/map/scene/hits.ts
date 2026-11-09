@@ -1,6 +1,6 @@
 // What is under a point of the galaxy, without Pixi: the stars, the science station and the machines' reactors.
 
-import { RESEARCH_SIZE, researchPosition, starSize, type Point, type Size } from "../layout";
+import { RESEARCH_SIZE, starSize, type Point } from "../layout";
 import type { Hit } from "./layer";
 import type { GalaxyModel } from "./types";
 
@@ -15,9 +15,9 @@ export function starAt(model: GalaxyModel, point: Point): string | null {
   return null;
 }
 
-export function researchAt(model: GalaxyModel, world: Size, point: Point): boolean {
+export function researchAt(model: GalaxyModel, point: Point): boolean {
   if (!model.research) return false;
-  const center = researchPosition(world, model.machineColumn, model.fuel);
+  const center = model.research.at;
   return Math.hypot(center.x - point.x, center.y - point.y) < RESEARCH_SIZE * 0.5;
 }
 
@@ -32,10 +32,10 @@ export function machineAt(model: GalaxyModel, point: Point): string | null {
 }
 
 /** What is under `point` in the galaxy: a star before the station, the station before a reactor, reactors if `machines`. */
-export function galaxyAt(model: GalaxyModel, world: Size, point: Point, machines = true): Hit | null {
+export function galaxyAt(model: GalaxyModel, point: Point, machines = true): Hit | null {
   const repo = starAt(model, point);
   if (repo) return { kind: "star", repo };
-  if (researchAt(model, world, point)) return { kind: "research" };
+  if (researchAt(model, point)) return { kind: "research" };
   const id = machines ? machineAt(model, point) : null;
   return id ? { kind: "machine", id } : null;
 }

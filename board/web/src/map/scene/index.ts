@@ -233,7 +233,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   /** What is under a screen point: a ship in a system, in the galaxy what galaxyAt finds. */
   function hitAt(at: Point, machines: boolean): Hit | null {
     const point = worldPoint(at);
-    if (!repo) return galaxyAt(model, camera.world, point, machines);
+    if (!repo) return galaxyAt(model, point, machines);
     const slug = fleet.shipAt(point);
     return slug ? { kind: "ship", slug } : null;
   }

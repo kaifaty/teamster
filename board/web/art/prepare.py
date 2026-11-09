@@ -2,7 +2,8 @@
 """Turn generated art into the files the map loads: python3 art/prepare.py SOURCE_DIR.
 
 Standard library only. Sprites on magenta lose their background, and "trim" sprites are also cropped to what is left of
-them, so that the map can size them by what shows; balls on black are cropped to the ball and lose the black around it,
+them, so that the map can size them by what shows. A "border" sprite loses only the magenta joined to the picture's
+edge, so that its own violet and pink glow stays whole. Balls on black are cropped to the ball and lose the black around it,
 and macOS `sips` scales the results into src/map/art. Files named backdrop-*.png become the skies of the star systems.
 
 With --only NAME ... it prepares only those sprites, so that one new picture needs no other sources.
@@ -32,7 +33,7 @@ SPRITES = {
     "ship-copper-cruiser": ("key", 288),
     "station-command": ("key", 384),
     "station-yard": ("key", 384),
-    "station-research": ("key", 384),
+    "station-research": ("border", 384),
     "station-inspection": ("trim", 384),
     "reactor-core": ("trim", 192),
     "gate": ("key", 320),
@@ -131,6 +132,45 @@ def key_magenta(width, height, channels, rows):
     return width, height, result
 
 
+def key_border(width, height, channels, rows, band=2):
+    """Like key_magenta, but only for the magenta joined to the picture's edge and a band of `band` pixels along it.
+
+    The rest stays opaque as it is, so that a violet or pink part of the sprite keeps its colour."""
+    def background(x, y):
+        r, g, b = rows[y][x * channels:x * channels + 3]
+        return min(r, b) - g > 140
+
+    seen = bytearray(width * height)
+    stack = [(x, y) for x in range(width) for y in (0, height - 1)] + [(x, y) for y in range(height) for x in (0, width - 1)]
+    while stack:
+        x, y = stack.pop()
+        if seen[y * width + x] or not background(x, y):
+            continue
+        seen[y * width + x] = 1
+        stack.extend((nx, ny) for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)) if 0 <= nx < width and 0 <= ny < height)
+    edge = bytearray(width * height)
+    frontier = [(x, y) for y in range(height) for x in range(width) if seen[y * width + x]]
+    for _ in range(band):
+        grown = []
+        for x, y in frontier:
+            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if 0 <= nx < width and 0 <= ny < height and not seen[ny * width + nx] and not edge[ny * width + nx]:
+                    edge[ny * width + nx] = 1
+                    grown.append((nx, ny))
+        frontier = grown
+    keyed = key_magenta(width, height, channels, rows)[2]
+    result = []
+    for y, row in enumerate(rows):
+        out = bytearray(width * 4)
+        for x in range(width):
+            if seen[y * width + x] or edge[y * width + x]:
+                out[x * 4:x * 4 + 4] = keyed[y][x * 4:x * 4 + 4]
+            else:
+                out[x * 4:x * 4 + 4] = bytes((*row[x * channels:x * channels + 3], 255))
+        result.append(out)
+    return width, height, result
+
+
 def trim(width, height, rows, margin=2):
     """Crops keyed rows to the box of their visible pixels, with a margin of `margin` pixels."""
     seen = [(x, y) for y, row in enumerate(rows) for x in range(width) if row[x * 4 + 3] > 24]
@@ -181,6 +221,8 @@ def prepare_sprite(source, target, kind, longest, temp):
         width, height, rows = key_magenta(*image)
     elif kind == "trim":
         width, height, rows = trim(*key_magenta(*image))
+    elif kind == "border":
+        width, height, rows = key_border(*image)
     elif kind == "ball":
         width, height, rows = cut_ball(*image, level=40, margin=1.04, gain=2.2)
     else:

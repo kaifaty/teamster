@@ -13,6 +13,7 @@ import {
   galaxyKeepOuts,
   galaxyLayout,
   machinePositions,
+  researchPosition,
   systemWorldSize,
   worldSize,
   type Galaxy,
@@ -102,6 +103,7 @@ export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSo
           proposed: station.value.proposed.length,
           waiting: station.value.waiting,
           probes: station.value.probes,
+          at: stationPoint.value,
         }
       : null,
   );
@@ -144,6 +146,8 @@ export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSo
     const fuel = fuelColumn.value?.row ? fuelColumnRect(fuelColumn.value) : null;
     return machinePositions(machineShapes.value, world.value, fullZoom.value, !!machineNote.value, fuel ? [...coveredNow.value, { ...fuel, y0: 0 }] : coveredNow.value);
   });
+  /** Where the science station stands: in the galaxy's lower right corner, see researchPosition. */
+  const stationPoint = computed(() => researchPosition(world.value, coveredNow.value, machineColumn.value, fuelColumn.value));
   let previousGalaxy: Galaxy | null = null;
   const galaxy = computed(() => {
     const blocked = galaxyKeepOuts(world.value, coveredNow.value, machineColumn.value, fuelColumn.value);
@@ -171,7 +175,7 @@ export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSo
 
   return {
     starList, systemNames, tankList, constellationList, pickerGroups, station, world, systemWorld, machinesData, machineNote,
-    covered, fullZoom, coveredNow, fuelColumn, machineColumn, galaxy, galaxyModel, galaxySources,
+    covered, fullZoom, coveredNow, fuelColumn, machineColumn, stationPoint, galaxy, galaxyModel, galaxySources,
   };
 }
 

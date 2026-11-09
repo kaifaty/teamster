@@ -1,8 +1,8 @@
-// The science station in the middle of the galaxy: its hull, halo and beacon; the gold waves while its analyst waits,
+// The science station in its corner of the galaxy: its hull, halo and beacon; the gold waves while its analyst waits,
 // under the tanks; and the probes it sends to the systems it reads, over the storms.
 
 import { Container, Graphics, type Sprite } from "pixi.js";
-import { RESEARCH_SIZE, hashName, researchPosition, type Point } from "../../layout";
+import { RESEARCH_SIZE, hashName, type Point } from "../../layout";
 import { SPACE } from "../../palette";
 import type { Kit } from "../kit";
 import type { GalaxyLayer } from "../layer";
@@ -40,7 +40,7 @@ export function createResearch({ art, sprite, glow }: Kit): ResearchLayers {
       watchFx.clear();
       if (!marks || !station) return;
       if (marks.waiting > 0) {
-        // A question waits for the human: gold rings run out from the dish, like a call on the air.
+        // A question waits for the human: gold rings run out from the station, like a call on the air.
         for (let k = 0; k < WAVE_RINGS; k++) {
           const phase = still ? (k + 0.5) / WAVE_RINGS : (time * 0.42 + k / WAVE_RINGS) % 1;
           watchFx.circle(center.x, center.y, RESEARCH_SIZE * (0.55 + 1.45 * phase));
@@ -55,14 +55,14 @@ export function createResearch({ art, sprite, glow }: Kit): ResearchLayers {
 
   const stationLayer: GalaxyLayer = {
     root: researchLayer,
-    /** The science station in the middle of the galaxy: a teal glow, and a gold light while lessons wait. */
-    draw({ model, world, stars: places }) {
+    /** The science station in its corner of the galaxy: a violet glow, and a gold light while lessons wait. */
+    draw({ model, stars: places }) {
       researchLayer.removeChildren().forEach((child) => child.destroy());
       station = null;
       marks = model.research;
       stars = places;
       if (!model.research) return;
-      const point = researchPosition(world, model.machineColumn, model.fuel);
+      const point = model.research.at;
       center = point;
       const halo = glow(SPACE.research, RESEARCH_SIZE * 2.6);
       const body = sprite(art("stationResearch"), RESEARCH_SIZE);
@@ -73,13 +73,14 @@ export function createResearch({ art, sprite, glow }: Kit): ResearchLayers {
       station = { body, halo, beacon };
     },
     /**
-     * The station breathes while the reflection runs, its gold light blinks while lessons wait, gold rings run out
+     * The station breathes and its hull rocks while the reflection runs, its gold light blinks while lessons wait, gold rings run out
      * while the analyst waits for an answer, and probes fly to the systems it reads.
      */
     frame({ time, still }) {
       if (!marks || !station) return;
       const { body, halo, beacon } = station;
-      if (marks.running && !still) body.rotation = time * 0.12;
+      // A long hull does not spin: it rocks slowly in place.
+      body.rotation = marks.running && !still ? 0.06 * Math.sin(time * 0.7) : 0;
       halo.alpha = marks.running ? (still ? 0.5 : 0.38 + 0.18 * Math.sin(time * 2.4)) : 0.16;
       beacon.alpha = still ? 0.35 : 0.08 + 0.4 * Math.max(0, Math.sin(time * 1.8)) ** 2;
     },

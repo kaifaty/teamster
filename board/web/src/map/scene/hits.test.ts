@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Star } from "../fleet";
-import { RESEARCH_SIZE, researchPosition, starSize, type FuelColumn, type MachineColumn, type Point } from "../layout";
+import { RESEARCH_SIZE, starSize, type MachineColumn, type Point } from "../layout";
 import { galaxyAt, hoveredStar, machineAt, researchAt, starAt } from "./hits";
 import type { GalaxyModel, ResearchMarks } from "./types";
 
 const world = { width: 1600, height: 1000 };
-const marks: ResearchMarks = { running: false, proposed: 0, waiting: 0, probes: [] };
+/** The station stands where its marks say: in the lower right corner, as researchPosition puts it. */
+const center = { x: 1300, y: 800 };
+const marks: ResearchMarks = { running: false, proposed: 0, waiting: 0, probes: [], at: center };
 
 const star = (repo: string, live = 4): Star => ({ repo, live, attention: 0, ready: 0, sleeping: 0, dots: [] });
 
@@ -40,47 +42,34 @@ describe("what is under a point of the galaxy", () => {
   });
 
   it("catches the science station within RESEARCH_SIZE/2 of it, and nothing without research", () => {
-    const center = researchPosition(world);
     const galaxy = model({ research: marks });
-    expect(researchAt(galaxy, world, { x: center.x + RESEARCH_SIZE / 2 - 0.5, y: center.y })).toBe(true);
-    expect(researchAt(galaxy, world, { x: center.x, y: center.y - RESEARCH_SIZE / 2 - 0.5 })).toBe(false);
-    expect(researchAt(model(), world, center)).toBe(false);
-    expect(galaxyAt(model(), world, center)).toBeNull();
+    expect(researchAt(galaxy, { x: center.x + RESEARCH_SIZE / 2 - 0.5, y: center.y })).toBe(true);
+    expect(researchAt(galaxy, { x: center.x, y: center.y - RESEARCH_SIZE / 2 - 0.5 })).toBe(false);
+    expect(researchAt(model(), center)).toBe(false);
+    expect(galaxyAt(model(), center)).toBeNull();
   });
 
   it("catches a reactor within column.size/2 of it", () => {
     const galaxy = model(machines({ x: 1400, y: 300 }, 120));
     expect(machineAt(galaxy, { x: 1400 + 59.5, y: 300 })).toBe("m1");
     expect(machineAt(galaxy, { x: 1400, y: 300 - 60.5 })).toBeNull();
-    expect(galaxyAt(galaxy, world, { x: 1400, y: 300 })).toEqual({ kind: "machine", id: "m1" });
-    expect(galaxyAt(galaxy, world, { x: 1400, y: 300 }, false)).toBeNull();
+    expect(galaxyAt(galaxy, { x: 1400, y: 300 })).toEqual({ kind: "machine", id: "m1" });
+    expect(galaxyAt(galaxy, { x: 1400, y: 300 }, false)).toBeNull();
   });
 
   it("picks a star before the station, and the station before a reactor", () => {
-    const center = researchPosition(world);
-    expect(galaxyAt(model({ research: marks, places: [["alpha", center]] }), world, center)).toEqual({ kind: "star", repo: "alpha" });
-
-    // A tank pushes the station right, onto a reactor put where it lands.
-    const fuel: FuelColumn = {
-      places: new Map([["t1", { x: 700, y: 490 }]]),
-      labels: new Map(),
-      anchors: new Map([["t1", { x: 760, y: 490 }]]),
-      row: false,
-      size: 120,
-      labelZoom: 1,
-    };
-    const landed = researchPosition(world, null, fuel);
-    const galaxy = model({ research: marks, fuel, ...machines(landed) });
-    expect(researchPosition(world, galaxy.machineColumn, fuel)).toEqual(landed);
-    expect(machineAt(galaxy, landed)).toBe("m1");
-    expect(galaxyAt(galaxy, world, landed)).toEqual({ kind: "research" });
+    expect(galaxyAt(model({ research: marks, places: [["alpha", center]] }), center)).toEqual({ kind: "star", repo: "alpha" });
+    // A reactor under the station: the station wins.
+    const galaxy = model({ research: marks, ...machines(center) });
+    expect(machineAt(galaxy, center)).toBe("m1");
+    expect(galaxyAt(galaxy, center)).toEqual({ kind: "research" });
   });
 
   it("takes a repository called research for a star, and tells it on hover", () => {
     const galaxy = model({ research: marks, places: [["research", { x: 300, y: 300 }]] });
-    const hit = galaxyAt(galaxy, world, { x: 300, y: 300 });
+    const hit = galaxyAt(galaxy, { x: 300, y: 300 });
     expect(hit).toEqual({ kind: "star", repo: "research" });
     expect(hoveredStar(hit)).toBe("research");
-    expect(hoveredStar(galaxyAt(galaxy, world, researchPosition(world)))).toBeNull();
+    expect(hoveredStar(galaxyAt(galaxy, center))).toBeNull();
   });
 });

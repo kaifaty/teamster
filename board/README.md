@@ -78,9 +78,10 @@ constellation's name and its repositories, where `*` stands for any run of chara
 `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse", "my-support"]}]}`. The galaxy
 gathers their stars in one place under a faint cloud with the constellation's name, and the system picker groups them.
 The server reads the file on each request through `GET /api/constellations`; it stays outside this public repository.
-In the middle of the galaxy stands the science station, fed by `GET /api/research`. It shows the reflection
+In the lower right corner of the galaxy, apart from the systems it studies, stands the science station, fed by
+`GET /api/research`. It shows the reflection
 ([reflection.md](../src/teamster/docs/reflection.md)): a gold light while lessons wait for your decision, gold rings running out
-from its dish while the analyst waits for your answer, and probes flying to the systems with archived records while a run
+from its core while the analyst waits for your answer, and probes flying to the systems with archived records while a run
 is going. A run is a `teamster reflect` task (or, before it, a desktop session of the reflection's scheduled task); it stays
 at the station and is not counted in any system.
 A click on the station opens its own screen over the map (`board/web/src/map/station/`; «← Галактика» or Esc goes back,
