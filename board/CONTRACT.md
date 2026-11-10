@@ -587,11 +587,15 @@ what waits for the next batch, including its planned schedule. Material and less
   probing them. A check-script token `name.ext` or `dir/name.ext`, with no leading `/` or `~`
   and an alphanumeric extension, is also a candidate when it names an existing regular file,
   not a symbolic link, at `<home>/.codex/checks/<repo>/<token>` for one of the lesson's `repos`,
-  or at `<home>/.codex/checks/<token>` when the token contains `/`; use the resolved file.
-  Detection never follows a candidate outside home. A candidate need not exist: it is outside
-  when neither its nearest existing ancestor directory nor any parent up to `/` has a `.git`
-  entry (file or directory). Detection reads the filesystem only, without git or subprocesses.
-  Results use `~/` plus the path relative to home, deduplicated in first-appearance order,
+  or at `<home>/.codex/checks/<token>` when the token contains `/`.
+  The home directory itself and existing directories, including symbolic links to directories,
+  are excluded. Nonexistent file paths remain eligible, even without an extension.
+  Detection never follows a candidate outside home. Resolve a candidate only for home containment
+  and `.git` ancestry: it is outside when neither its nearest existing ancestor directory nor any
+  parent up to `/` has a `.git` entry (file or directory). Detection reads the filesystem only,
+  without git or subprocesses. Results use `~/` plus the original lexical path relative to home,
+  normalized without `.` or `..`, preserving symbolic-link directory names. Check-script paths use
+  `.codex/checks/<repo>/<token>` or `.codex/checks/<token>`. Deduplicate in first-appearance order,
   retaining at most 10 paths.
 - `repos`: `state.json`'s `repo` from all live task and archive directories, excluding `kind: "scout"`,
   `kind: "reflect"` and the archive directory itself. A missing `kind` counts as work.

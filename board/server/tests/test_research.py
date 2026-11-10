@@ -211,6 +211,9 @@ lesson: Never read this for W3.
      ["~/.codex/checks/home-infra/ci_wait.py"]),
     ("codex_task.py, SKILL.md, scripts/e2e.sh", []),
     ("~ci_wait.py and ~nested/check.py", []),
+    ("~/.codex/ ~/.codex/checks/home-infra/ ~/.claude/", []),
+    ("~/new/file", ["~/new/file"]),
+    ("~/new/../.claude/./settings.json", ["~/.claude/settings.json"]),
     ("~/worktree/new/guard.py and {home}/repository/check.py", []),
     ("~/.claude/settings.json and $HOME/.codex/AGENTS.md",
      ["~/.claude/settings.json", "~/.codex/AGENTS.md"]),
@@ -226,6 +229,10 @@ def test_lesson_outside_from_proposal_only(tmp_path, monkeypatch, proposal, expe
     home = tmp_path / "home with spaces"
     home.mkdir()
     monkeypatch.setattr(research_module.Path, "home", classmethod(lambda cls: home))
+    codex = home / "dotfiles" / "codex"
+    codex.mkdir(parents=True)
+    (home / ".codex").symlink_to(codex, target_is_directory=True)
+    (home / ".claude").mkdir()
     checks = home / ".codex" / "checks"
     for name in ("home-infra/ci_wait.py", "second/nested/check.py", "shared/guard.sh"):
         path = checks / name
@@ -267,6 +274,7 @@ def test_lesson_outside_never_probes_paths_outside_home(tmp_path, monkeypatch):
 
     monkeypatch.setattr(research_module.Path, "stat", guard(original_stat))
     monkeypatch.setattr(research_module.Path, "lstat", guard(original_lstat))
+    assert research_module.outside_paths(str(home), []) == []
     assert research_module.outside_paths(
         f"{elsewhere}/file.py ~/escape/file.py ~/../elsewhere/file.py file.py", ["repo"]) == []
 

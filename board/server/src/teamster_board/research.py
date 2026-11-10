@@ -6,6 +6,7 @@ src/teamster/task_state.py, review_cycle.py, supervisor.py and result_schema.py.
 
 import configparser
 import json
+import os
 import re
 import threading
 import time
@@ -301,7 +302,7 @@ def outside_paths(proposal, repos):
             path = home / token[len(prefix):].lstrip("/") if prefix else Path(token)
             candidate = home_path(path, home)
             if candidate is not None:
-                candidates.append(candidate)
+                candidates.append((path, candidate))
         elif CHECK_TOKEN.fullmatch(token):
             checks = home / ".codex" / "checks"
             paths = [checks / repo / token for repo in repos]
@@ -313,12 +314,14 @@ def outside_paths(proposal, repos):
                     candidate = parent / path.name
                     try:
                         if not candidate.is_symlink() and candidate.is_file():
-                            candidates.append(candidate)
+                            candidates.append((path, candidate))
                     except OSError:
                         continue
-        for candidate in candidates:
+        for path, candidate in candidates:
             try:
-                directory = candidate if candidate.is_dir() else candidate.parent
+                if candidate == home or candidate.is_dir():
+                    continue
+                directory = candidate.parent
                 for ancestor in (directory, *directory.parents):
                     try:
                         (ancestor / ".git").lstat()
@@ -326,12 +329,12 @@ def outside_paths(proposal, repos):
                     except (FileNotFoundError, NotADirectoryError):
                         continue
                 else:
-                    display = "~/" + candidate.relative_to(home).as_posix()
+                    display = "~/" + Path(os.path.normpath(path)).relative_to(home).as_posix()
                     if display not in outside:
                         outside.append(display)
                         if len(outside) == 10:
                             return outside
-            except OSError:
+            except (OSError, ValueError):
                 continue
     return outside
 
