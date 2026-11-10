@@ -25,7 +25,7 @@ import {
   type Reach,
   type Started,
 } from "../station";
-import { createImplementation } from "./implement";
+import { createImplementation, type ShipOptions } from "./implement";
 
 export type Deck = "core" | "crew" | "comms" | "order" | "lab" | "hold";
 export type Stage = "proposed" | "accepted" | "applied" | "declined";
@@ -71,7 +71,7 @@ export interface ReplyState {
   echo: { text: string; count: number } | null;
 }
 
-export interface ConsoleOptions {
+export interface ConsoleOptions extends ShipOptions {
   /** Runs an action on the board server and asks for the research again after it succeeded. */
   act: ActionSender;
   /** Copies a command for the terminal; false when the clipboard is not available. */
@@ -333,7 +333,7 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     else release(entry);
   }
 
-  const implementation = createImplementation({ research, live, act: options.act, run, cardOf, edit, listOf, hold });
+  const implementation = createImplementation({ research, live, act: options.act, openShip: options.openShip, run, cardOf, edit, listOf, hold });
 
   /** «Обсудить»: in the study that filed the lesson when it can take a reply, otherwise a new study. */
   async function discuss(lesson: Lesson) {

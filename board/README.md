@@ -120,7 +120,8 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
   of the lesson): the agent works; it needs a decision, with its questions and a reply field; its PR is ready, to be
   checked, merged and then marked «Внедрено», whose note starts with the PR's URL; it stopped, with its summary and a
   reply field to go on; or the task is closed. A reply goes to the task with `say`. While a lesson's task is open,
-  «Внедрить» is not offered.
+  «Внедрить» is not offered, and «Посмотреть» leaves the station for the task's ship: the map flies to its system and
+  opens its card. The line under the station's title offers the same while exactly one agent is at work.
 - «Трюм архива»: one capsule per record the next planned reflection will read, lit when it carries a signal, the records per
   project and per signal, and the signalled records, each of which can be ordered into a study.
 
