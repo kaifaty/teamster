@@ -158,3 +158,89 @@
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+.ship-screen .key.main {
+  border-color: var(--sh-wait);
+  background: rgba(243, 198, 78, 0.16);
+  color: var(--sh-title);
+}
+
+.ship-screen .key.danger {
+  border-color: rgba(255, 141, 122, 0.55);
+  color: var(--sh-red);
+}
+
+.ship-screen .key:disabled,
+.ship-screen .chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Fields and chips of the comms room and the order desk. */
+.ship-screen textarea,
+.ship-screen .field {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--sh-line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--sh-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.ship-screen textarea {
+  resize: vertical;
+}
+
+.ship-screen textarea:focus-visible,
+.ship-screen .field:focus-visible,
+.ship-screen input:focus-visible {
+  outline: 2px solid var(--sh-wait);
+  outline-offset: 1px;
+}
+
+.ship-screen .chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ship-screen .chip {
+  padding: 2px 10px;
+  border: 1px solid var(--sh-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sh-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ship-screen .chip:hover {
+  background: rgba(243, 194, 122, 0.12);
+}
+
+.ship-screen .chip[aria-pressed="true"] {
+  border-color: var(--sh-teal);
+  background: rgba(95, 214, 200, 0.14);
+  color: var(--sh-teal);
+}
+
+/* An order's outcome under its group. */
+.ship-screen .result {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.ship-screen .result.ok {
+  color: var(--sh-green);
+}
+
+.ship-screen .result.bad {
+  color: var(--sh-red);
+}

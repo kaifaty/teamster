@@ -1,20 +1,25 @@
 <script setup lang="ts">
 // A ship's own screen, its bridge. Clicking a ship on the map opens it over the galaxy, as the science station's
 // screen: a header with the line «what next», then the decks — the ship with its papers; its route, gauges and hull;
-// the orders and the ship's documents. A session is a flagship: its papers and activity only.
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import TaskCommands from "../../components/TaskCommands.vue";
+// the comms room, the order desk and the ship's documents. A session is a flagship: its papers and activity only.
+// The orders run at once through the board server; a board that only reads copies the equal command.
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
+import { postAction } from "../../lib/actions";
 import { claudeLink, prLabel, taskTitle } from "../../lib/labels";
 import type { BoardSource } from "../../lib/source";
 import type { TaskDetail, TaskFile, TaskSummary } from "../../types";
 import nebula from "../art/nebula.jpg";
 import { bridgeView, nextLine, stateOf } from "./bridge";
+import { createShipDesk } from "./desk";
+import { mainOrder } from "./orders";
 import "./ship.css";
+import ShipComms from "./ShipComms.vue";
 import ShipDamage from "./ShipDamage.vue";
 import ShipDocs from "./ShipDocs.vue";
 import ShipDocViewer from "./ShipDocViewer.vue";
 import ShipGauges from "./ShipGauges.vue";
 import ShipHull from "./ShipHull.vue";
+import ShipOrders from "./ShipOrders.vue";
 import ShipRoute from "./ShipRoute.vue";
 
 const props = defineProps<{
@@ -80,6 +85,20 @@ const next = computed(() => (shown.value ? nextLine(shown.value, props.now) : nu
 const link = computed(() => (shown.value ? claudeLink(shown.value) : null));
 const letter = computed(() => (shown.value?.repo.replace(/[^\p{L}\p{N}]/gu, "").charAt(0) || "·").toUpperCase());
 
+// The comms room and the order desk; after an order the task loads again at once.
+const desk = createShipDesk({
+  slug: toRef(props, "slug"),
+  task: shown,
+  detail: own,
+  act: (route, body) => postAction(route, body, { send: props.source.act, refresh: loadDetail }),
+});
+const main = computed(() => (shown.value ? mainOrder(shown.value, props.now) : null));
+function runMain() {
+  const order = main.value;
+  if (order?.kind === "fill") void desk.fill(order.text);
+  else if (order?.kind === "verdict") void desk.verdict("accepted");
+}
+
 // The documents' viewer.
 const doc = ref<TaskFile | null>(null);
 let docOpener: HTMLElement | null = null;
@@ -143,6 +162,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <section v-if="next" class="next" :class="next.tone" aria-live="polite">
         <span class="lamp" aria-hidden="true"></span>
         <p>{{ next.text }}</p>
+        <button v-if="main" type="button" class="key main" :disabled="main.kind === 'verdict' && !!desk.groups.accept.busy" @click="runMain">{{ main.label }}</button>
       </section>
       <p v-if="!task" class="note">{{ shown?.kind === "session" ? "Сессии" : "Задачи" }} больше нет на доске; показаны последние данные.</p>
       <p v-if="detailError" class="note bad">Не удалось загрузить задачу: {{ detailError }}</p>
@@ -158,13 +178,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           <ShipDamage v-if="view.hull" :cargo="cargo" :now="now" :loading="loading" />
         </div>
         <div v-if="view.commands || view.docs" class="col right">
-          <section v-if="view.commands" class="deck orders" aria-labelledby="orders-deck">
-            <div class="deck-head">
-              <span class="sigil" aria-hidden="true">⌘</span>
-              <h3 id="orders-deck">Команды</h3>
-            </div>
-            <TaskCommands :task="shown" :now="now" :cargo="cargo" />
-          </section>
+          <template v-if="view.commands">
+            <ShipComms :task="shown" :desk="desk" :messages="own?.messages ?? []" :cargo="cargo" :now="now" />
+            <ShipOrders :task="shown" :desk="desk" :limits="limits" :cargo="cargo" />
+          </template>
           <ShipDocs v-if="view.docs" :files="files" :loading="loading" @open="openDoc" />
         </div>
       </main>
@@ -329,6 +346,7 @@ h2 {
 }
 
 .next p {
+  flex: 1 1 auto;
   margin: 0;
   font-size: 14px;
   line-height: 20px;
@@ -395,34 +413,6 @@ h2 {
   display: grid;
   gap: 10px;
   min-width: 0;
-}
-
-/* The orders keep the board's own block: the deck gives it the station's dark colours. */
-.orders {
-  --surface: rgba(10, 12, 16, 0.85);
-  --surface-2: rgba(214, 170, 96, 0.1);
-  --surface-3: rgba(4, 6, 9, 0.9);
-  --border: rgba(214, 170, 96, 0.3);
-  --border-strong: rgba(243, 198, 78, 0.7);
-  --text: #e8e2d4;
-  --muted: #9b907c;
-  --faint: #7d7566;
-  --link: #8fd8ff;
-  --focus: #f3c64e;
-  --ok: #6fcf8f;
-  --ok-soft: rgba(111, 207, 143, 0.12);
-  --warn: #f3c64e;
-  --warn-soft: rgba(243, 198, 78, 0.12);
-  --bad: #ff8d7a;
-  --bad-soft: rgba(255, 141, 122, 0.12);
-}
-
-.orders :deep(.commands) {
-  margin: 0;
-}
-
-.orders :deep(.commands > h3) {
-  display: none;
 }
 
 @media (max-width: 1180px) {

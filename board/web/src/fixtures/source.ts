@@ -8,7 +8,9 @@ import snapshotJson from "./snapshot.json";
 import streamJson from "./stream.json";
 import detailsJson from "./details.json";
 import { FIXTURE_EVENTS, FIXTURE_LIVE, demoEvents, demoReport, logEvent } from "./events";
-import { fixtureActions, fixtureResearch } from "./research";
+import type { ActionSender } from "../lib/actions";
+import { fixtureActions, fixtureResearch, type StationRoute } from "./research";
+import { fixtureShips, type ShipRoute } from "./ships";
 
 interface FixtureDetail {
   timeline: { at: number; text: string }[];
@@ -68,16 +70,33 @@ export function fixtureSource(): BoardSource {
   const origin = Date.now() / 1000;
   // The station's actions change this copy; its times stay in the snapshot's, like the rest of the fixtures.
   const research = fixtureResearch(BASE);
-  const act = fixtureActions(research, () => Date.now() / 1000 - delta);
+  const station = fixtureActions(research, () => Date.now() / 1000 - delta);
+  // A ship's orders change the board itself, in the board's time.
+  let push: ((message: ServerMessage) => void) | null = null;
+  // A ship the replay has just taken off the board still takes orders, as in the snapshot.
+  const fixtureTasks = Object.fromEntries(snapshot.tasks.map((task) => [task.slug, task]));
+  const ships = fixtureShips(() => ({ ...fixtureTasks, ...state.tasks }), () => Date.now() / 1000, (message) => push?.(message));
+  const studied = (slug: string | undefined) =>
+    research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
+  /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
+  const act: ActionSender = async (route, body) => {
+    const study = route === "say" && studied((body as { slug?: string }).slug);
+    if (route === "lesson" || route === "implement" || route === "reflect" || study) return station(route as StationRoute, body as never);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return ships.act(route as ShipRoute, body as never);
+  };
   return {
     label: "фикстуры",
     act,
     connect(onMessage, onState) {
       let index = -1; // -1 = the snapshot, then the stream; the cycle repeats like a reconnect.
-      const emit = (message: ServerMessage) => {
+      const emit = (original: ServerMessage) => {
+        const message = ships.patch(original);
+        if (!message) return;
         state = reduce(state, message, Date.now());
         onMessage(message);
       };
+      push = emit;
       const step = () => {
         const now = Date.now() / 1000;
         if (index < 0) {
@@ -99,6 +118,7 @@ export function fixtureSource(): BoardSource {
         onMessage({ type: "event", event: logEvent(event, Date.now() / 1000) });
       }, EVENT_MS);
       return () => {
+        push = null;
         clearInterval(timer);
         clearInterval(events);
       };
@@ -119,6 +139,10 @@ export function fixtureSource(): BoardSource {
       for (const key of ["limits", "messages", "activity_log", "actions"] as const) {
         if (extra?.[key] !== undefined) Object.assign(detail, { [key]: shiftTimes(extra[key], delta) });
       }
+      // The fixtures act on every task, whatever its detail says.
+      detail.actions ??= { enabled: true, reason: null };
+      const sent = ships.sent(slug);
+      if (sent.length) detail.messages = [...(detail.messages ?? []), ...sent];
       return detail;
     },
     async fetchFile(slug, name) {
