@@ -1,4 +1,4 @@
-"""The science station's sole write access, through the installed teamster CLI."""
+"""Board orders for tasks and the science station, through the installed teamster CLI."""
 
 import json
 import logging
@@ -14,12 +14,18 @@ from urllib.parse import urlsplit
 from fastapi.responses import JSONResponse
 
 from . import access
-from .research import STATUSES
+from .research import RECORD, STATUSES
+from .store import Store, alive, number
 
 
 BODY_LIMIT = 64 * 1024
 COMMAND_TIMEOUT = 120
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+ANGLES = ("correctness", "concurrency", "security", "tests")
+OPTION_NAMES = ("model", "effort", "max_minutes", "max_weekly", "fix_rounds", "ci_rounds",
+                "reviewer", "review_angles")
 LOGGER = logging.getLogger("uvicorn.error")
 
 
@@ -72,6 +78,40 @@ def names(data, name):
     return values
 
 
+def option_flags(options):
+    if not isinstance(options, dict) or any(key not in OPTION_NAMES for key in options):
+        raise ValueError("Invalid options")
+    flags = []
+    for name in OPTION_NAMES:
+        if name not in options:
+            continue
+        value = options[name]
+        if name == "model":
+            valid = isinstance(value, str) and MODEL.fullmatch(value) is not None
+        elif name == "effort":
+            valid = value in EFFORTS
+        elif name in ("max_minutes", "fix_rounds", "ci_rounds"):
+            low, high = (5, 600) if name == "max_minutes" else (0, 5)
+            valid = type(value) is int and low <= value <= high
+        elif name == "max_weekly":
+            numeric = number(value)
+            valid = numeric is not None and 0.5 <= numeric <= 100
+            if valid:
+                value = str(int(numeric)) if numeric.is_integer() else str(numeric)
+        elif name == "reviewer":
+            valid = value in ("codex", "claude")
+        else:  # review_angles
+            valid = value == "auto" or (isinstance(value, list) and 1 <= len(value) <= 4
+                                        and all(angle in ANGLES for angle in value)
+                                        and len(set(value)) == len(value))
+            if valid and isinstance(value, list):
+                value = ",".join(value)
+        if not valid:
+            raise ValueError(f"Invalid {name}")
+        flags.append(f"--{name.replace('_', '-')}={value}")
+    return flags
+
+
 def implementation_brief(lesson, note):
     entry = lesson["entry"]
     paragraphs = [
@@ -103,8 +143,9 @@ def implementation_brief(lesson, note):
 
 
 class Actions:
-    def __init__(self, research, command, read_only=False):
+    def __init__(self, research, store, command, read_only=False):
         self.research = research
+        self.store = store
         command = shutil.which(str(command)) if command else None
         self.command = str(Path(command).absolute()) if command else None
         self.reason = "read_only" if read_only else "no_teamster" if not command else None
@@ -126,6 +167,8 @@ class Actions:
     def _run(self, route, data):
         if route == "implement":
             return self._implement(data)
+        if route in ("say", "verdict", "review", "stop", "clean"):
+            return self._task(route, data)
         argv = [self.command, route]
         file_text = ""
         slug = None
@@ -140,18 +183,6 @@ class Actions:
             argv.extend([entry, status])
             if note:
                 argv.append(f"--note={note}")
-        elif route == "say":
-            slug = string(data, "slug", 100, required=True)
-            file_text = string(data, "text", 8000, required=True)
-            view = self.research.view()
-            candidates = [*view["studies"], *(row["implementation"] for row in view["lessons"]
-                                             if row["implementation"] is not None)]
-            study = next((row for row in candidates if row["slug"] == slug), None)
-            if study is None:
-                return error(404, "Unknown study")
-            if study["alive"] or study["archived"]:
-                return error(409, "Study is alive or archived")
-            argv.append(slug)
         else:  # reflect; only the registered endpoints call this method.
             tasks, repos = names(data, "tasks"), names(data, "repos")
             since = data.get("since")
@@ -189,6 +220,74 @@ class Actions:
             if route == "reflect" and isinstance(result, dict):
                 result["slug"] = slug
             return result
+        finally:
+            if path is not None:
+                path.unlink()
+
+    def _task(self, route, data):
+        slug = data.get("slug")
+        if not Store._safe_slug(slug):
+            raise ValueError("Invalid slug")
+        file_text = ""
+        flags = []
+        if route == "say":
+            file_text = string(data, "text", 8000, required=True)
+            flags = option_flags(data.get("options", {}))
+        elif route == "verdict":
+            verdict = data.get("verdict")
+            if verdict not in ("accepted", "revised", "redone", "dropped"):
+                raise ValueError("Invalid verdict")
+            note = string(data, "note", 200)
+            flags = [verdict] + ([f"--note={note}"] if note else [])
+        elif route == "review":
+            flags = option_flags({key: data[key] for key in ("effort", "reviewer", "review_angles")
+                                  if key in data})
+        elif route == "clean":
+            keep_branch = data.get("keep_branch", True)
+            if type(keep_branch) is not bool:
+                raise ValueError("Invalid keep_branch")
+            flags = ["--keep-branch"] if keep_branch else []
+        with self.store.lock:
+            if slug in self.store.session_records:
+                return error(409, "not running" if route == "stop" else "Not a task")
+            record = self.store._record(slug)
+            if record is not None:
+                self.store._read_state(record)
+                archived = record.archived
+                running = alive(record.state.get("pid"))
+                kind = record.state.get("kind", "work")
+        if record is None:
+            # The station also addresses archived studies and implementations by their base slug.
+            if route == "say":
+                view = self.research.view()
+                candidates = [*view["studies"], *(row["implementation"] for row in view["lessons"]
+                                                 if row["implementation"] is not None)]
+                if any(row["slug"] == slug and row["archived"] for row in candidates):
+                    return error(409, "Study is alive or archived")
+            return error(404, "Unknown task")
+        if route == "stop":
+            if archived or not running:
+                return error(409, "not running")
+        elif route == "clean":
+            if archived or running:
+                return error(409, "Task is alive or archived")
+        elif route == "verdict":
+            if kind not in ("work", "review"):
+                return error(409, "Task kind does not support verdicts")
+        elif archived or running or kind not in (("work", "review", "reflect") if route == "say"
+                                                else ("work", "review")):
+            return error(409, "Task is alive, archived or has an unsupported kind")
+        match = RECORD.fullmatch(slug) if archived else None
+        command_slug = match.group(1) if match else slug
+        argv = [self.command, route, command_slug, *flags]
+        path = None
+        try:
+            if file_text:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as stream:
+                    path = Path(stream.name)
+                    stream.write(file_text)
+                argv.extend(["--file", str(path)])
+            return self._execute(route, argv)
         finally:
             if path is not None:
                 path.unlink()

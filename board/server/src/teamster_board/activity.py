@@ -88,7 +88,7 @@ def _activity(event):
 
 
 class EventTail:
-    """Keep a byte cursor; read at most the last 256 KiB after a reset or large append.
+    """Keep a byte cursor and ten activities; read at most 256 KiB after a reset or large append.
 
     An unterminated last line is retained until its newline arrives. A malformed
     complete line is discarded. Inode replacement and truncation reset the cursor.
@@ -99,6 +99,7 @@ class EventTail:
         self.offset = 0
         self.signature = None
         self._pending = b""
+        self.activities = []
 
     def read(self):
         try:
@@ -134,6 +135,7 @@ class EventTail:
         if skip_first and lines:
             lines.pop(0)
         latest = None
+        activities = []
         for line in lines:
             try:
                 event = json.loads(line)
@@ -144,4 +146,6 @@ class EventTail:
                 if activity["at"] is None:
                     activity["at"] = metadata.st_mtime
                 latest = activity
+                activities.append(activity)
+        self.activities = sorted(self.activities + activities, key=lambda item: item["at"])[-10:]
         return latest

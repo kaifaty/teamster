@@ -115,7 +115,9 @@ def test_rest_contract_files_and_unknown_paths(board):
         assert response.headers["content-type"] == "text/plain; charset=utf-8"
         assert response.content == b"x" * (256 * 1024)
     detail = client.get("/api/tasks/demo").json()
-    assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo"}
+    assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
+                                           "activity_log", "actions"}
+    assert detail["actions"] == client.get("/api/research").json()["actions"]
     assert set(detail["files"]) == {"brief", "last", "review", "check"}
     assert detail["scheduled"] is None
     assert len(detail["timeline"]) <= 200
@@ -477,7 +479,11 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
         assert task["kind"] == "session"
         assert task["alive"] is False
         detail = client.get("/api/tasks/local_example").json()
-        assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo"}
+        assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
+                                               "activity_log", "actions"}
+        assert detail["limits"] is None
+        assert detail["messages"] == detail["activity_log"] == []
+        assert detail["actions"] == client.get("/api/research").json()["actions"]
         assert detail["files"] == []
         assert len(detail["timeline"]) == 2
         assert "secret" not in json.dumps(detail)
@@ -500,6 +506,9 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
             activity = receive_until(socket, "activity")
             assert activity == {"type": "activity", "slug": "local_example",
                                 "activity": {"at": 1793872802.0, "kind": "message", "text": "First update"}}
+            detail = client.get("/api/tasks/local_example").json()
+            assert detail["limits"] is None
+            assert detail["messages"] == detail["activity_log"] == []
             event["message"]["content"][0]["text"] = "Appended update"
             with transcript.open("a") as stream:
                 stream.write(json.dumps(event) + "\n")
@@ -1280,3 +1289,168 @@ def test_station_nonzero_output_limits_and_timeout_cleanup(station, monkeypatch)
     assert not Path(last["argv"][3]).exists()
     with pytest.raises(ProcessLookupError):
         os.kill(last["pid"], 0)
+
+
+@pytest.fixture
+def ships(station):
+    _, application, settings, _, _, _ = station
+    tasks = settings.path("tasks")
+    for kind in ("work", "review", "reflect", "scout"):
+        for state in ("idle", "alive", "archived"):
+            slug = f"{kind}-{state}"
+            root = tasks / ".archive" if state == "archived" else tasks
+            if state == "archived":
+                slug += "-20261110T000000Z"
+            directory = root / slug
+            directory.mkdir()
+            (directory / "state.json").write_text(json.dumps({
+                "kind": kind, "pid": os.getpid() if state == "alive" else None,
+            }))
+    desktop = settings.task_home / "desktop"
+    directory = desktop / "claude-code-sessions" / "account" / "device"
+    directory.mkdir(parents=True)
+    (directory / "local_ship.json").write_text(json.dumps({
+        "sessionId": "local_ship", "createdAt": 1000, "lastActivityAt": 2000,
+    }))
+    application.state.board.store.claude_desktop_dir = desktop
+    application.state.board.store.poll()
+    return station
+
+
+@pytest.mark.parametrize("route,body,expected", [
+    ("say", {"text": "  --private\nContinue.  ", "options": {
+        "review_angles": ["tests", "security"], "reviewer": "claude", "ci_rounds": 5,
+        "fix_rounds": 0, "max_weekly": 10.0, "max_minutes": 600, "effort": "ultra", "model": "gpt-5.2",
+    }}, ["--model=gpt-5.2", "--effort=ultra", "--max-minutes=600", "--max-weekly=10",
+         "--fix-rounds=0", "--ci-rounds=5", "--reviewer=claude", "--review-angles=tests,security"]),
+    ("say", {"text": "Continue", "options": {"max_weekly": 0.5, "review_angles": "auto"}},
+     ["--max-weekly=0.5", "--review-angles=auto"]),
+    ("verdict", {"verdict": "accepted", "note": "  --keep this  "}, ["accepted", "--note=--keep this"]),
+    ("verdict", {"verdict": "revised", "note": "  "}, ["revised"]),
+    ("verdict", {"verdict": "redone"}, ["redone"]),
+    ("verdict", {"verdict": "dropped"}, ["dropped"]),
+    ("review", {"review_angles": ["concurrency", "correctness"], "reviewer": "codex", "effort": "xhigh"},
+     ["--effort=xhigh", "--reviewer=codex", "--review-angles=concurrency,correctness"]),
+    ("review", {"review_angles": "auto"}, ["--review-angles=auto"]),
+    ("review", {}, []),
+    ("stop", {}, []),
+    ("clean", {}, ["--keep-branch"]),
+    ("clean", {"keep_branch": True}, ["--keep-branch"]),
+    ("clean", {"keep_branch": False}, []),
+])
+def test_ship_action_argv(ships, caplog, route, body, expected):
+    client, _, _, _, calls, _ = ships
+    slug = "work-alive" if route == "stop" else "work-idle"
+    caplog.set_level("INFO", logger="uvicorn.error")
+    response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "output": "finished"}
+    record = json.loads(calls.read_text())
+    argv = [route, slug, *expected]
+    if route == "say":
+        argv.extend(["--file", record["argv"][-1]])
+        assert record["file"] == body["text"].strip()
+        assert not Path(argv[-1]).exists()
+    assert record["argv"] == argv
+    logs = [row.message for row in caplog.records if row.message.startswith("/api/actions/")]
+    assert len(logs) == 1 and f"/api/actions/{route} argv=" in logs[0] and "exit=0" in logs[0]
+    assert "--private" not in logs[0]
+
+
+@pytest.mark.parametrize("route,body,allowed", [
+    ("say", {"text": "Continue"}, {"work-idle", "review-idle", "reflect-idle"}),
+    ("verdict", {"verdict": "accepted"}, {"work-idle", "work-alive", "work-archived",
+                                         "review-idle", "review-alive", "review-archived"}),
+    ("review", {}, {"work-idle", "review-idle"}),
+    ("stop", {}, {"work-alive", "review-alive", "reflect-alive", "scout-alive"}),
+    ("clean", {}, {"work-idle", "review-idle", "reflect-idle", "scout-idle"}),
+])
+def test_ship_action_states_kinds_and_unknown_tasks(ships, route, body, allowed):
+    client, _, _, _, calls, _ = ships
+    for kind in ("work", "review", "reflect", "scout"):
+        for state in ("idle", "alive", "archived"):
+            base = f"{kind}-{state}"
+            slug = base + ("-20261110T000000Z" if state == "archived" else "")
+            before = calls.read_text() if calls.exists() else ""
+            response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
+            assert response.status_code == (200 if base in allowed else 409), (route, slug, response.text)
+            if base in allowed:
+                record = json.loads(calls.read_text().splitlines()[-1])
+                assert record["argv"][:2] == [route, base]
+            else:
+                assert (calls.read_text() if calls.exists() else "") == before
+                if route == "stop":
+                    assert response.json() == {"ok": False, "error": "not running"}
+    for slug, status in (("unknown", 404), ("local_ship", 409)):
+        response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
+        assert response.status_code == status
+        if route == "stop" and status == 409:
+            assert response.json() == {"ok": False, "error": "not running"}
+
+
+@pytest.mark.parametrize("options", [
+    None, [], {"unknown": "x"}, {"model": "-flag"}, {"model": "x" * 65}, {"model": True},
+    {"effort": "extreme"}, {"max_minutes": 4}, {"max_minutes": 601}, {"max_minutes": 5.5},
+    {"max_minutes": True}, {"max_weekly": 0.4}, {"max_weekly": 101}, {"max_weekly": True},
+    {"max_weekly": "10"}, {"fix_rounds": -1}, {"fix_rounds": 6}, {"fix_rounds": 1.5},
+    {"ci_rounds": -1}, {"ci_rounds": 6}, {"ci_rounds": False}, {"reviewer": "other"},
+    {"review_angles": "security"}, {"review_angles": []}, {"review_angles": ["security", "security"]},
+    {"review_angles": ["other"]}, {"review_angles": ["correctness", "concurrency", "security", "tests", "tests"]},
+])
+def test_ship_say_invalid_options(ships, options):
+    client, _, _, _, calls, _ = ships
+    response = client.post("/api/actions/say", json={"slug": "work-idle", "text": "Continue", "options": options})
+    assert response.status_code == 400
+    assert response.json()["ok"] is False
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("route,body", [
+    ("say", {}), ("say", {"text": None}), ("say", {"text": " "}), ("say", {"text": "x" * 8001}),
+    ("verdict", {}), ("verdict", {"verdict": "other"}),
+    ("verdict", {"verdict": "accepted", "note": "x" * 201}),
+    ("verdict", {"verdict": "accepted", "note": False}),
+    ("review", {"reviewer": "other"}), ("review", {"effort": "other"}),
+    ("review", {"review_angles": ["tests", "tests"]}), ("clean", {"keep_branch": 1}),
+])
+def test_ship_invalid_action_fields(ships, route, body):
+    client, _, _, _, calls, _ = ships
+    response = client.post(f"/api/actions/{route}", json={"slug": "work-idle", **body})
+    assert response.status_code == 400
+    assert response.json()["ok"] is False
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("route", ["say", "verdict", "review", "stop", "clean"])
+def test_ship_action_slug_and_request_protection(ships, route):
+    client, _, settings, _, calls, _ = ships
+    body = {"text": "Continue", "verdict": "accepted"}
+    for slug in (None, "", "..", "../work-idle", ".hidden", "work\\idle", "bad\0name"):
+        response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
+        assert response.status_code == 400
+    for headers in ({"Origin": None}, {"Origin": "http://evil.example"},
+                    {"Host": "evil.example"}, {"X-Teamster-Board": None},
+                    {"Content-Type": "text/plain"}, {"Origin": ["http://localhost:8787"] * 2}):
+        request = client.build_request("POST", f"/api/actions/{route}", json={"slug": "work-idle", **body})
+        for name, value in headers.items():
+            del request.headers[name]
+            if isinstance(value, list):
+                for item in value:
+                    request.headers = request.headers.__class__([*request.headers.multi_items(), (name, item)])
+            elif value is not None:
+                request.headers[name] = value
+        response = client.send(request)
+        assert response.status_code == 403
+        assert response.json() == {"ok": False, "error": "forbidden"}
+    for read_only, command, reason in ((True, settings.action_teamster, "read_only"),
+                                       (False, None, "no_teamster")):
+        settings.read_only, settings.action_teamster = read_only, command
+        disabled = create_app(settings)
+        with TestClient(disabled, base_url=str(client.base_url), headers=dict(client.headers)) as other:
+            actions = other.get("/api/research").json()["actions"]
+            assert actions == {"enabled": False, "reason": reason}
+            assert other.get("/api/tasks/work-idle").json()["actions"] == actions
+            response = other.post(f"/api/actions/{route}", json={"slug": "work-idle", **body})
+            assert response.status_code == 403
+            assert response.json() == {"ok": False, "error": reason}
+    assert not calls.exists()
