@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { logEvent } from "../../fixtures/events";
 import type { Activity, LogEvent, TaskSummary } from "../../types";
-import { logSlug, recordedTape, recorderWindow, tapeMarks, tapeOf, tapeSegments, tapeTicks } from "./recorder";
+import { logSlug, recordedTape, recorderWindow, tapeMarks, tapeOf, tapeSegments, tapeSummary, tapeTicks } from "./recorder";
 import { TELEMETRY_LIMIT, mergeTelemetry } from "./telemetry";
 
 const NOW = 1_800_000_000;
@@ -63,10 +63,10 @@ const VOYAGE: LogEvent[] = [
 ];
 
 describe("tape segments", () => {
-  it("maps the phases to stops, skips the turn rows and adds the roadstead after each turn", () => {
+  it("maps the phases to stops, skips the turn rows and adds «ждал тебя» after each turn", () => {
     const segments = tapeSegments(VOYAGE, task(), NOW);
-    expect(segments.map((segment) => segment.stop)).toEqual(["yard", "range", "range", "inspection", "yard", "roadstead", "yard", "range", "roadstead"]);
-    const [firstWait, lastWait] = segments.filter((segment) => segment.stop === "roadstead");
+    expect(segments.map((segment) => segment.stop)).toEqual(["yard", "range", "range", "inspection", "yard", "wait", "yard", "range", "wait"]);
+    const [firstWait, lastWait] = segments.filter((segment) => segment.stop === "wait");
     // The first wait lasts until the next turn starts; the last one until now, while the ship still waits for you.
     expect([firstWait!.from, firstWait!.to]).toEqual([NOW - 110 * M, NOW - 80 * M]);
     expect([lastWait!.from, lastWait!.to]).toEqual([NOW - 40 * M, NOW]);
@@ -74,6 +74,13 @@ describe("tape segments", () => {
     expect(segments.some((segment) => segment.live)).toBe(false);
     expect(segments[0]!.title).toBe("Верфь, ход 1: 30 мин · завершено");
     expect(segments[3]!.title).toBe("Инспекция, ревью: 14 мин · есть замечания: 2");
+    expect([firstWait!.title, lastWait!.title]).toEqual(["Ждал тебя 30 мин", "Ждёт тебя 40 мин"]);
+  });
+
+  it("sums the voyage up by what the ship did", () => {
+    const tape = tapeOf(VOYAGE, task(), [], [], NOW);
+    expect(tapeSummary(tape)).toMatch(/^\d.* в рейсе: работа .+, проверки и ревью .+, ждал тебя 1 ч 10 мин$/);
+    expect(tapeSummary({ start: NOW - 30, end: NOW, segments: [] })).toBe("30 с в рейсе");
   });
 
   it("maps a scout's phase to the yard", () => {
@@ -86,10 +93,10 @@ describe("tape segments", () => {
     expect(live).toMatchObject({ stop: "range", from: NOW - 100 * M, to: NOW, live: true });
     expect(live.title).toBe("Полигон: идёт 1 ч 40 мин");
 
-    // The roadstead after a turn ends where the live phase starts.
+    // «Ждал тебя» after a turn ends where the live phase starts.
     const asleep = tapeSegments(VOYAGE, task({ alive: true, column: "sleeping", phase: "sleeping", phase_started_at: NOW - 30 * M }), NOW);
     expect(asleep.slice(-2).map((segment) => [segment.stop, segment.from, segment.to, segment.live])).toEqual([
-      ["roadstead", NOW - 40 * M, NOW - 30 * M, false],
+      ["wait", NOW - 40 * M, NOW - 30 * M, false],
       ["cryo", NOW - 30 * M, NOW, true],
     ]);
   });

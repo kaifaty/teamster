@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // The deck «Корабль»: the hull as the scene draws it, with a hole per open review finding and a patch per fix round,
-// what the ship does now, and its papers.
+// its class, its papers with the plain word first, the meters that have something to show, and the rest of its papers
+// under «Весь паспорт».
 import { computed } from "vue";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
 import { ART } from "../art";
-import { damageLine, hangarCaption, hullArt, hullClass, hullFrame, hullMarks, papersOf, roundsOf } from "./bridge";
+import { damageLine, hullArt, hullClass, hullFrame, hullMarks, metersOf, papersOf, roundsOf } from "./bridge";
 
 const props = defineProps<{ task: TaskSummary; limits: TaskLimits | null | undefined; cargo: Cargo | null | undefined; now: number }>();
 
@@ -15,10 +16,11 @@ const art = computed(() => hullArt(props.task));
 const frame = computed(() => hullFrame(art.value));
 const marks = computed(() => hullMarks(props.task.slug, holes.value, rounds.value, frame.value));
 const picture = computed(() => ART[art.value]);
-const alt = computed(() => `${hullClass(props.task)}: исполнитель ${props.task.executor === "codex" ? "Codex" : "Claude"}${props.task.effort ? `, форсаж ${props.task.effort}` : ""}`);
+const crew = computed(() => `${props.task.executor === "codex" ? "Codex" : "Claude"}${props.task.effort ? `, усилие ${props.task.effort}` : ""}`);
+const alt = computed(() => `${hullClass(props.task)}: исполнитель ${crew.value}`);
 const damage = computed(() => damageLine(holes.value, rounds.value));
-const caption = computed(() => hangarCaption(props.task, props.now));
 const papers = computed(() => papersOf(props.task, props.limits, props.cargo, props.now));
+const meters = computed(() => metersOf(props.task, props.limits, props.cargo, props.now));
 </script>
 
 <template>
@@ -26,10 +28,10 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
     <div class="deck-head">
       <span class="sigil" aria-hidden="true">◈</span>
       <h3 id="ship-deck">Корабль</h3>
-      <span class="aside num">ход {{ task.turn }}</span>
+      <span v-if="task.turn > 0" class="aside num">ход {{ task.turn }}</span>
     </div>
-    <div class="hangar" :class="{ alive: task.alive }">
-      <div class="bay">
+    <div class="top">
+      <div class="hangar" :class="{ alive: task.alive }">
         <img :src="picture" :alt="alt" :style="{ width: `${frame.size}%`, height: `${frame.size}%`, left: `${frame.left}%`, top: `${frame.top}%` }" />
         <span
           v-for="(mark, index) in marks"
@@ -42,29 +44,50 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
           >{{ mark.kind === "hole" ? "!" : "" }}</span
         >
       </div>
-      <p class="now" :class="{ live: task.alive }" role="status" :title="`${caption.label} · ${caption.text}`">
-        <span class="dim">{{ caption.label }} ·</span> {{ caption.text }}
-      </p>
-    </div>
-    <div class="cls">
-      <span><b>{{ hullClass(task) }}</b></span>
-      <span v-if="damage">{{ damage }}</span>
+      <div class="cls">
+        <b>{{ hullClass(task) }}</b>
+        <span class="dim">{{ crew }}</span>
+        <span v-if="damage" class="dim" :title="'Пробоины — открытые находки ревью, заплаты — круги исправления'">{{ damage }}</span>
+      </div>
     </div>
     <dl class="papers">
-      <template v-for="row in papers" :key="row.label">
-        <dt>{{ row.label }}</dt>
+      <template v-for="row in papers.main" :key="row.label">
+        <dt>{{ row.label }}<i v-if="row.meta"> · {{ row.meta }}</i></dt>
         <dd :class="{ mono: row.mono }" :title="row.title">{{ row.value }}</dd>
       </template>
     </dl>
+    <div v-if="meters.length" class="meters">
+      <div v-for="item in meters" :key="item.id" class="meter">
+        <div class="line">
+          <span class="dim">{{ item.label }}<i v-if="item.meta"> · {{ item.meta }}</i></span>
+          <span class="num">{{ item.value }}</span>
+        </div>
+        <div v-if="item.share !== null" class="track" aria-hidden="true"><div class="fill" :class="item.tone" :style="{ width: `${Math.round(item.share * 100)}%` }"></div></div>
+      </div>
+    </div>
+    <details v-if="papers.more.length" class="fold">
+      <summary>Весь паспорт</summary>
+      <dl class="papers">
+        <template v-for="row in papers.more" :key="row.label">
+          <dt>{{ row.label }}<i v-if="row.meta"> · {{ row.meta }}</i></dt>
+          <dd :class="{ mono: row.mono }" :title="row.title">{{ row.value }}</dd>
+        </template>
+      </dl>
+    </details>
   </section>
 </template>
 
 <style scoped>
-/* The hangar is square, and no taller than 240 px on a narrow window; the bay inside it is the largest square that
-   fits, centred, and the ship's picture is laid out in the bay's percent. */
+.top {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+/* The hangar is a small square; the ship's picture is laid out in its percent. */
 .hangar {
   position: relative;
-  container-type: size;
   aspect-ratio: 1;
   max-width: 100%;
   overflow: hidden;
@@ -73,27 +96,18 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
   background: radial-gradient(circle at 50% 55%, rgba(224, 145, 90, 0.16), transparent 62%), var(--sh-well);
 }
 
-.bay {
-  position: absolute;
-  left: 50%;
-  top: 0;
-  width: 100cqmin;
-  height: 100cqmin;
-  transform: translateX(-50%);
-}
-
-.bay img {
+.hangar img {
   position: absolute;
   object-fit: contain;
 }
 
-.hangar.alive .bay img {
+.hangar.alive img {
   animation: hover 4s ease-in-out infinite;
 }
 
 @keyframes hover {
   50% {
-    transform: translateY(-4px);
+    transform: translateY(-3px);
   }
 }
 
@@ -101,10 +115,10 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
   position: absolute;
   display: grid;
   place-items: center;
-  width: 14px;
-  height: 14px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
   transform: translate(-50%, -50%);
 }
@@ -116,47 +130,17 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
 }
 
 .mark.patch {
-  width: 16px;
-  height: 11px;
+  width: 12px;
+  height: 8px;
   border: 1px solid #b9b2a2;
   border-radius: 2px;
   background: #6d6a62;
 }
 
-/* The caption keeps to two lines in the hangar's bottom band, under the hull; the full text is in its title. */
-.now {
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  bottom: 6px;
-  display: -webkit-box;
-  max-height: 25%;
-  margin: 0;
-  padding: 4px 8px;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  border: 1px solid rgba(214, 170, 96, 0.25);
-  border-radius: 6px;
-  background: rgba(3, 5, 8, 0.85);
-  font-size: 11.5px;
-  line-height: 15px;
-}
-
-.now.live {
-  border-color: rgba(95, 214, 200, 0.35);
-  color: #bfeee6;
-}
-
 .cls {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 4px 8px;
-  color: var(--sh-dim);
-  font-size: 12px;
+  display: grid;
+  gap: 2px;
+  font-size: 12.5px;
 }
 
 .cls b {
@@ -174,6 +158,14 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
 
 .papers dt {
   color: var(--sh-dim);
+  white-space: nowrap;
+}
+
+.papers dt i,
+.meter i {
+  color: var(--sh-faint);
+  font-size: 11px;
+  font-style: normal;
 }
 
 .papers dd {
@@ -182,14 +174,61 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 760px) {
-  .hangar {
-    max-height: 240px;
-  }
+.meters {
+  display: grid;
+  gap: 7px;
+}
+
+.meter {
+  display: grid;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.meter .line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(214, 170, 96, 0.14);
+}
+
+.fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--sh-teal);
+}
+
+.fill.warn {
+  background: var(--sh-wait);
+}
+
+.fill.bad {
+  background: var(--sh-red);
+}
+
+.fold {
+  padding-top: 8px;
+  border-top: 1px solid rgba(214, 170, 96, 0.14);
+}
+
+.fold > summary {
+  color: var(--sh-title);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.fold[open] > summary {
+  margin-bottom: 8px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hangar.alive .bay img {
+  .hangar.alive img {
     animation: none;
   }
 }

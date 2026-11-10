@@ -10,7 +10,9 @@ import {
   fallbackCommand,
   feedOf,
   isLong,
-  mainOrder,
+  answerText,
+  causeOf,
+  needOf,
   orderOutcome,
   reflectOrder,
   refitLine,
@@ -48,24 +50,22 @@ describe("comms feed", () => {
     { at: NOW - 1000, source: "ci" as const, text: "CI упал" },
   ];
 
-  it("orders messages by time and ends with the last report and its waiting questions", () => {
+  it("orders messages by time and ends with the first line of the last report, its questions counted, not listed", () => {
     const waiting = task({ alive: false, column: "attention", result_status: "needs_decision", summary: "Нужен выбор", updated_at: NOW - 100 });
-    const feed = feedOf(waiting, messages, cargo(["Оставить карточку?"]));
+    const feed = feedOf(waiting, messages, cargo(["Оставить карточку?", "Какой цвет?"]));
     expect(feed.map((item) => [item.who, item.tone, item.text])).toEqual([
       ["Ты · указание", "you", "Сделай экран"],
       ["Инспекция · круг исправления", "sys", "Codex нашёл 2 дефекта"],
       ["Врата · починка CI", "sys", "CI упал"],
       ["Капитан · доклад", "agent", "Нужен выбор"],
-      ["Капитан · вопрос", "ask", "Оставить карточку?"],
     ]);
-    expect(feed[3]!.note).toBe("ждёт решения");
+    expect(feed[3]!.note).toBe("ждёт решения · 2 вопроса");
   });
 
-  it("puts a working ship's report before the message that set off its turn, and its questions no longer wait", () => {
+  it("puts a working ship's report before the message that set off its turn", () => {
     const working = task({ result_status: "partial", summary: "Частично", phase_started_at: NOW - 500 });
     const feed = feedOf(working, messages, cargo(["Как быть?"]));
-    expect(feed.map((item) => item.who)).toEqual(["Ты · указание", "Инспекция · круг исправления", "Капитан · доклад", "Капитан · вопрос", "Врата · починка CI"]);
-    expect(feed[3]!.tone).toBe("agent");
+    expect(feed.map((item) => item.who)).toEqual(["Ты · указание", "Инспекция · круг исправления", "Капитан · доклад", "Врата · починка CI"]);
   });
 
   it("shows a sent order until the messages carry it, and folds a long text", () => {
@@ -169,12 +169,52 @@ describe("order groups", () => {
     expect(stopConfirm(5)).toMatch(/ 5 указаний в очереди не уйдут\.$/);
   });
 
-  it("gives the line «what next» a button only for an order the board carries out", () => {
-    expect(mainOrder(task(), NOW)).toBeNull();
-    expect(mainOrder(task({ alive: false, column: "review_me" }), NOW)).toEqual({ kind: "verdict", label: "Принять" });
-    expect(mainOrder(task({ alive: false, column: "attention", outcome: "stopped" }), NOW)?.kind).toBe("fill");
-    expect(mainOrder(task({ alive: false, column: "attention", result_status: "needs_decision", outcome: "needs_decision" }), NOW)).toBeNull();
-    expect(mainOrder(task({ kind: "scout", alive: false, column: "attention", outcome: "stopped" }), NOW)).toBeNull();
+  it("asks of you what the state calls for, with one main order", () => {
+    const need = (overrides: Partial<TaskSummary>, questions: string[] = [], queue = false) => {
+      const ship = task(overrides);
+      return needOf(ship, cargo(questions), deskOf(ship, queue), NOW);
+    };
+    expect(need({})).toMatchObject({ kind: "calm", title: "Вмешиваться не нужно" });
+    expect(need({ alive: true, column: "sleeping", phase: "sleeping" }).kind).toBe("sleep");
+    expect(need({ alive: false, column: "review_me" })).toMatchObject({ kind: "accept", tone: "ok" });
+    expect(need({ alive: false, column: "review_me", ci: "failed" })).toMatchObject({ kind: "return", tone: "bad", text: "CI не прошёл: разбери логи упавших проверок, исправь и запушь." });
+    expect(need({ alive: false, column: "attention", result_status: "needs_decision", outcome: "completed" }, ["Можно?"])).toMatchObject({ kind: "questions", tone: "warn" });
+    // A decision without questions takes your own words; a stopped ship gets «continue» to send.
+    expect(need({ alive: false, column: "attention", result_status: "needs_decision", outcome: "completed" })).toMatchObject({ kind: "reply", text: "" });
+    expect(need({ alive: false, column: "attention", outcome: "stopped" })).toMatchObject({ kind: "reply", text: "Продолжай с того места, где остановился." });
+    // The server takes no words from a scout, an archived record or a closed ship.
+    expect(need({ kind: "scout", alive: false, column: "attention", outcome: "stopped" }).kind).toBe("none");
+    expect(need({ alive: false, column: "closed" })).toMatchObject({ kind: "none", title: "Рейс окончен: приказов не нужно" });
+    expect(need({ kind: "session", alive: false, column: "review_me" }).kind).toBe("none");
+  });
+});
+
+describe("«Сейчас»", () => {
+  it("finds the message that set off the turn: the newest, and only one sent before the last turn ended", () => {
+    const messages = [
+      { at: NOW - 900, source: "review" as const, text: "2 находки" },
+      { at: NOW - 300, source: "lead" as const, text: "почему нельзя?" },
+    ];
+    expect(causeOf(task({ alive: false, updated_at: NOW - 200 }), messages)).toEqual({ who: "Ты написал", tone: "you", at: NOW - 300, text: "почему нельзя?" });
+    expect(causeOf(task({ alive: true }), messages.slice(0, 1))).toMatchObject({ who: "Отчёт ревью", tone: "sys" });
+    expect(causeOf(task({ alive: false, updated_at: NOW - 400 }), messages)).toBeNull();
+    expect(causeOf(task(), [])).toBeNull();
+  });
+
+  it("makes one reply of the quick answers, quoting the start of each question", () => {
+    const questions = ["Можно ли в этой сессии изменить ~/.codex/checks/home-infra/ci_wait.py (вне репозитория)? Сначала сохраню копию.", "Добавить ли ранний выход?", "А третий?"];
+    expect(answerText(questions, [])).toBe("");
+    expect(answerText(questions, [], "  Сделай сам  ")).toBe("Сделай сам");
+    expect(answerText(questions, [{ kind: "yes" }, { kind: "own", text: " только для веток " }, { kind: "own", text: " " }], "Копию оставь.")).toBe(
+      [
+        "Ответы на вопросы:",
+        "1. «Можно ли в этой сессии изменить ~/.codex/checks/home-infra/ci_wait.py…» — да.",
+        "2. «Добавить ли ранний выход?» — только для веток",
+        "",
+        "Копию оставь.",
+      ].join("\n"),
+    );
+    expect(answerText(questions, [null, { kind: "no" }])).toBe("Ответы на вопросы:\n2. «Добавить ли ранний выход?» — нет.");
   });
 });
 

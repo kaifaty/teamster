@@ -1,11 +1,11 @@
 <script setup lang="ts">
-// The deck «Бортовой самописец»: the whole voyage as a tape of stops in time, with the lead's orders, the refuels,
-// the verdicts and the failures over it, a time scale under it and the stops' colours. The tape keeps its width and
-// scrolls inside the deck on a narrow screen.
+// The flight recorder in the voyage log: the whole voyage as a tape of stops in time, with the lead's orders, the
+// refuels, the verdicts and the failures over it, a time scale and the stops' colours under it, and the time summed up
+// by what the ship did. The tape keeps its width and scrolls inside the log on a narrow screen.
 import { computed, ref, watch } from "vue";
 import type { BoardSource } from "../../lib/source";
 import type { LogEvent, TaskLimits, TaskMessage, TaskSummary } from "../../types";
-import { TAPE_STOPS, logSlug, recordedTape, recorderWindow, tapeTicks } from "./recorder";
+import { TAPE_STOPS, logSlug, recordedTape, recorderWindow, tapeSummary, tapeTicks } from "./recorder";
 
 const props = defineProps<{
   task: TaskSummary;
@@ -59,12 +59,7 @@ const lanes = computed(() => Math.max(1, ...(tape.value?.marks.map((mark) => mar
 </script>
 
 <template>
-  <section class="deck rec-deck" aria-labelledby="rec-deck">
-    <div class="deck-head">
-      <span class="sigil" aria-hidden="true">▤</span>
-      <h3 id="rec-deck">Бортовой самописец</h3>
-      <span class="aside">весь рейс: где и сколько стоял</span>
-    </div>
+  <div class="recorder">
     <p v-if="error && !tape" class="empty tone-bad">
       Не удалось прочитать журнал: {{ error }}
       <button type="button" class="key retry" @click="load">Повторить</button>
@@ -92,7 +87,7 @@ const lanes = computed(() => Math.max(1, ...(tape.value?.marks.map((mark) => mar
             v-for="(segment, index) in tape.segments"
             :key="`${segment.stop}-${segment.from}-${index}`"
             role="listitem"
-            :class="{ live: segment.live, failed: segment.failed }"
+            :class="{ live: segment.live, failed: segment.failed, wait: segment.stop === 'wait' }"
             :style="{ left: `${segment.left}%`, width: `${segment.width}%`, backgroundColor: colors[segment.stop] }"
             :title="segment.title"
             :aria-label="segment.title"
@@ -104,16 +99,38 @@ const lanes = computed(() => Math.max(1, ...(tape.value?.marks.map((mark) => mar
       </div>
     </div>
     <div v-if="tape" class="legend">
-      <span v-for="stop in TAPE_STOPS" :key="stop.id" :style="{ '--c': stop.color }">{{ stop.name.toLowerCase() }}</span>
+      <span v-for="stop in TAPE_STOPS" :key="stop.id" :class="{ wait: stop.id === 'wait' }" :style="{ '--c': stop.color }">{{ stop.legend }}</span>
     </div>
+    <p v-if="tape" class="sum">{{ tapeSummary(tape) }}</p>
     <p v-if="error && tape" class="empty tone-bad">
       Журнал не обновился: {{ error }}
       <button type="button" class="key retry" @click="load">Повторить</button>
     </p>
-  </section>
+  </div>
 </template>
 
 <style scoped>
+.recorder {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sum {
+  margin: 0;
+  color: var(--sh-dim);
+  font-size: 12.5px;
+}
+
+/* The time a stopped ship waited for you: hatched, apart from the stops where it worked. */
+.bars i.wait {
+  background-image: repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0) 0 5px, rgba(0, 0, 0, 0.45) 5px 10px);
+}
+
+.legend span.wait::before {
+  background-image: repeating-linear-gradient(-45deg, rgba(0, 0, 0, 0) 0 3px, rgba(0, 0, 0, 0.45) 3px 6px);
+}
+
 .retry {
   margin-left: 8px;
   padding: 2px 10px;

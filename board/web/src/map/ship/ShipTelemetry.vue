@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The deck «Телеметрия»: while the ship works, the agent's latest actions, newest first — the detail's log and every
+// Telemetry in «Сейчас»: while the ship works, the agent's latest actions, newest first — the detail's log and every
 // live activity the socket brought after it.
 import { computed, ref, watch } from "vue";
 import { coarseSpan } from "../../lib/format";
@@ -13,6 +13,8 @@ const props = defineProps<{
   /** Whether the detail has loaded: live activities count from then on. */
   loaded: boolean;
   now: number;
+  /** At most this many rows. */
+  limit?: number;
 }>();
 
 const live = ref<Activity[]>([]);
@@ -29,28 +31,20 @@ watch(
   },
 );
 
-const rows = computed(() => (props.task.alive ? mergeTelemetry(props.log, live.value) : []));
+const rows = computed(() => (props.task.alive ? mergeTelemetry(props.log, live.value).slice(0, props.limit ?? TELEMETRY_LIMIT) : []));
 const MONO = new Set<Activity["kind"]>(["command", "edit", "tool"]);
 const age = (activity: Activity) => (activity.at !== null ? coarseSpan(Math.max(0, props.now - activity.at)) : "—");
 </script>
 
 <template>
-  <section class="deck tele-deck" aria-labelledby="tele-deck">
-    <div class="deck-head">
-      <span class="sigil" aria-hidden="true">⌁</span>
-      <h3 id="tele-deck">Телеметрия</h3>
-      <span class="aside">последние действия</span>
-    </div>
-    <p v-if="!task.alive" class="empty">Корабль у причала: телеметрии нет</p>
-    <p v-else-if="!rows.length" class="empty">{{ loaded ? "Агент пока ничего не сделал" : "…" }}</p>
-    <ul v-else class="tele" aria-live="polite">
-      <li v-for="activity in rows" :key="`${activity.at}-${activity.text}`">
-        <span class="k" :class="activity.kind">{{ TELEMETRY_WORDS[activity.kind] ?? activity.kind }}</span>
-        <span class="x" :class="{ mono: MONO.has(activity.kind) }" :title="activity.text">{{ activity.text }}</span>
-        <span class="a num">{{ age(activity) }}</span>
-      </li>
-    </ul>
-  </section>
+  <p v-if="!rows.length" class="empty">{{ loaded ? "Агент пока ничего не сделал" : "…" }}</p>
+  <ul v-else class="tele" aria-live="polite">
+    <li v-for="activity in rows" :key="`${activity.at}-${activity.text}`">
+      <span class="k" :class="activity.kind">{{ TELEMETRY_WORDS[activity.kind] ?? activity.kind }}</span>
+      <span class="x" :class="{ mono: MONO.has(activity.kind) }" :title="activity.text">{{ activity.text }}</span>
+      <span class="a num">{{ age(activity) }}</span>
+    </li>
+  </ul>
 </template>
 
 <style scoped>
@@ -64,7 +58,7 @@ const age = (activity: Activity) => (activity.at !== null ? coarseSpan(Math.max(
 
 .tele li {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) auto;
+  grid-template-columns: 76px minmax(0, 1fr) auto;
   align-items: baseline;
   gap: 8px;
   font-size: 12px;

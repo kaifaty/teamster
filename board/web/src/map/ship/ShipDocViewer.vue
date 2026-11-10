@@ -8,7 +8,7 @@ import type { TaskFile } from "../../types";
 const props = defineProps<{ source: BoardSource; slug: string; name: TaskFile; version: number }>();
 const emit = defineEmits<{ close: [] }>();
 
-const TITLES: Record<TaskFile, string> = { brief: "Полётное задание", last: "Последний доклад", review: "Акт инспекции", check: "Протокол испытаний" };
+const TITLES: Record<TaskFile, string> = { brief: "Полётное задание", last: "Последний доклад", review: "Акт инспекции", check: "Протокол проверки" };
 
 const tab = toRef(props, "name");
 const { text, state, html } = useTaskFile({

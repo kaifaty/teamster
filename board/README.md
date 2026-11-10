@@ -132,21 +132,29 @@ button copies the equivalent command for the terminal instead and says why; «В
 off. In `npm run dev:fixture` the actions play on the fixtures, so the whole station can be clicked through without a
 server: an implementation started there works for a few seconds, asks a question, and after the answer opens a PR.
 
-A ship's own screen, its bridge (`board/web/src/map/ship/`), has two decks of orders. «Рубка связи» lists by time the
-lead's orders, the inspection's and the gate's reports from the task's `messages`, the captain's last report and its
-questions; a reply goes to the task with `say`, together with the refit's changed fields, and quick buttons fill it with
-«Продолжай», the roadstead's return text or «Слей main». While the ship works, a teamster of 1.60 or later
-(`actions.queue`) takes the reply, with the refit, into the ship's queue (`say --queue`): it goes out as one turn when
-the cycle completes, and any other end, a stop included, drops it. The feed ends with the orders waiting in the queue,
-marks the ones sent from it, and shows the dropped ones with their outcome and «Отправить снова», which puts the text
-back in the field; the stop's confirmation counts what the queue will lose. With an older teamster the field stays
-off while the ship works. «Пульт приказов» has acceptance (`verdict`), the refit (`say` options: model, effort, limits, rounds,
-reviewer and angles), an extra inspection (`review`), a flight review at the science station (`reflect` of this task)
-and the recall (`stop`, `clean` with the branch kept by default), each group only where the server takes its order, and
-the line «what next» gets a button when the board can carry its order out. Under a group, a carried-out order tells in
-Russian what changed (`orderOutcome`), with teamster's own output in the line's title; the line goes once the ship's
-column or phase changes later than the order's own effect. The logic lives in `orders.ts` and
-`desk.ts`; a board that only reads copies the equal command, and `dev:fixture` plays the orders on its own tasks.
+A ship's own screen, its bridge (`board/web/src/map/ship/`), leads with «Сейчас» across the screen: the ship's state
+in plain words with short facts (the turn, the branch's changes, the PR, the stations' results), a strip of the route
+with the ship's stop, the message that set off its turn, the agent's full report (`TaskDetail.report`; the cards keep
+the first line) or, while it works, its latest actions, and on the right what is needed from you, with one main
+button by state (`needOf` in `orders.ts`): the agent's questions, each with «Да», «Нет» or «Своё…», which make one
+reply shown before it goes; your reply with the state's suggestion; «Принять» or «Вернуть на доработку» on the
+roadstead; «Вернуть на исправление» when the check, CI or the base failed; or nothing to do while the ship works,
+where a teamster of 1.60 or later (`actions.queue`) takes an order into the ship's queue (`say --queue`): it goes out
+as one turn when the cycle completes, and any other end, a stop included, drops it. With an older teamster the field
+stays off while the ship works. Every reply goes with the refit's changed fields. Under «Сейчас», «Что сделано» lists
+the branch's changes (`TaskDetail.changes`), the PR, the saved check, the agent's own checks, the review, CI, the base
+merge, the fix loop's stop and what is left undone, each only when known; «Журнал рейса» has the correspondence by time
+(the lead's orders, the review's and CI's reports, the first line of the last report, the orders waiting in the queue,
+the dropped ones with «Отправить снова») and the flight recorder, where the time a stopped ship waited for you is its
+own hatched stripe «ждал тебя». Beside them: the ship's card (papers with the plain word first and the bridge's word
+after it, meters only where there is data, «Весь паспорт» folded), «Другие приказы» with the refit (`say` options:
+model, effort, limits, rounds, reviewer and angles), an extra review (`review`), the verdict (`verdict`), a flight
+review at the science station (`reflect` of this task) and the recall (`stop`, `clean` with the branch kept by
+default), folded and each only where the server takes its order, and the documents the task has. Under a group, a
+carried-out order tells in Russian what changed (`orderOutcome`), with teamster's own output in the line's title; the
+line goes once the ship's column or phase changes later than the order's own effect. The logic lives in `bridge.ts`,
+`now.ts`, `done.ts`, `orders.ts` and `desk.ts`; a board that only reads copies the equal command, and `dev:fixture`
+plays the orders on its own tasks.
 
 Like the tanks, the station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and

@@ -3,7 +3,7 @@
 
 import { ANGLES, EFFORTS, REVIEWERS, type ActionBodies, type Angle, type Effort, type SayOptions } from "../../lib/actions";
 import { cleanCommand, commandSlug, optionFlags, reflectCommand, reflectSlug, reviewCommand, sayCommand, stopCommand, verdictCommand, type Verdict } from "../../lib/commands";
-import { recommendedOrder } from "../../lib/orders";
+import { recommendedOrder, type OrderTone } from "../../lib/orders";
 import type { Cargo, TaskLimits, TaskMessage, TaskQueue, TaskSummary } from "../../types";
 import { plural } from "../research";
 
@@ -62,9 +62,9 @@ export const DROPPED: Record<string, string> = {
 export const droppedNote = (outcome: string | null) => ["не доставлено", outcome ? (DROPPED[outcome] ?? outcome) : null].filter(Boolean).join(" · ");
 
 /**
- * The comms room's feed by time: the lead's orders and the stations' reports from `messages`, the orders the end of a
- * cycle dropped, then the captain's last report and its open questions; the orders waiting in the queue come last.
- * While the ship works, the report is the one before the current phase began.
+ * The voyage log's feed by time: the lead's orders and the stations' reports from `messages`, the orders the end of a
+ * cycle dropped, then the first line of the captain's last report; the orders waiting in the queue come last. While the
+ * ship works, the report is the one before the current phase began. The full report and its questions are in «Сейчас».
  */
 export function feedOf(
   task: TaskSummary,
@@ -95,23 +95,15 @@ export function feedOf(
     else rows.push({ item, rank: 0 });
   }
   const status = task.result_status;
-  const questions = cargo?.questions ?? [];
-  if (task.summary || status || questions.length) {
+  if (task.summary || status) {
     const last = ordered.length ? ordered[ordered.length - 1]!.at : Infinity;
     const at = task.alive ? Math.min(task.phase_started_at ?? task.updated_at, last) : task.updated_at;
     // The report that set off the work comes before the messages of its time; a finished turn's after them.
     const rank = task.alive ? -1 : 1;
-    if (task.summary || status) {
-      const text = task.summary ?? RESULTS[status ?? ""] ?? status ?? "";
-      rows.push({ item: { key: "report", at, who: "Капитан · доклад", tone: "agent", text, note: status ? (RESULTS[status] ?? status) : null }, rank });
-    }
-    const waiting = !task.alive && task.column !== "closed" && !archived(task.slug);
-    for (const [index, question] of questions.entries()) {
-      rows.push({
-        item: { key: `q${index}`, at, who: "Капитан · вопрос", tone: waiting ? "ask" : "agent", text: question, note: waiting ? "ждёт ответа" : null },
-        rank: rank + 0.5,
-      });
-    }
+    const text = task.summary ?? RESULTS[status ?? ""] ?? status ?? "";
+    const asks = cargo?.questions.length ?? 0;
+    const note = [status ? (RESULTS[status] ?? status) : null, asks ? `${asks} ${plural(asks, "вопрос", "вопроса", "вопросов")}` : null].filter(Boolean).join(" · ");
+    rows.push({ item: { key: "report", at, who: "Капитан · доклад", tone: "agent", text, note: note || null }, rank });
   }
   const feed = rows
     .map((row, order) => ({ ...row, order }))
@@ -311,16 +303,98 @@ export function fallbackCommand(order: ShipOrder, now: Date = new Date()): strin
 /** A reflection of this one ship, by the name teamster knows it. */
 export const reflectOrder = (slug: string): ShipOrder => ({ route: "reflect", body: { tasks: [commandSlug(slug)] } });
 
-export type MainOrder = { kind: "fill"; label: string; text: string } | { kind: "verdict"; label: string };
+// «Сейчас»: what set off the turn, and what is needed from you.
 
-/** The button of the line «what next», when the board can carry the order out: a reply to fill in, or the acceptance. */
-export function mainOrder(task: TaskSummary, now: number): MainOrder | null {
+/** The message that set off the ship's present or last turn: your order, the review's findings or CI's failure. */
+export interface Cause {
+  who: string;
+  tone: "you" | "sys";
+  at: number;
+  text: string;
+}
+
+const CAUSES: Record<TaskMessage["source"], { who: string; tone: Cause["tone"] }> = {
+  lead: { who: "Ты написал", tone: "you" },
+  review: { who: "Отчёт ревью", tone: "sys" },
+  ci: { who: "Отчёт CI", tone: "sys" },
+};
+
+/**
+ * The newest message, when it set off the ship's turn: one that came while it works, or before its last turn ended.
+ * The first turn has none: its brief set it off.
+ */
+export function causeOf(task: Pick<TaskSummary, "alive" | "updated_at" | "kind">, messages: readonly TaskMessage[]): Cause | null {
+  if (task.kind === "session") return null;
+  const last = [...messages].sort((a, b) => a.at - b.at).pop();
+  if (!last || (!task.alive && last.at > task.updated_at)) return null;
+  return { ...CAUSES[last.source], at: last.at, text: last.text };
+}
+
+export type Answer = { kind: "yes" | "no" } | { kind: "own"; text: string };
+
+const QUOTE = 70;
+const quote = (text: string) => {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > QUOTE ? `${line.slice(0, QUOTE - 1).trimEnd()}…` : line;
+};
+
+/**
+ * The reply the answers make: «Ответы на вопросы:», one line per answered question with its number and the start of
+ * its words, then the extra words. Empty while nothing is answered or written.
+ */
+export function answerText(questions: readonly string[], answers: readonly (Answer | null | undefined)[], extra = ""): string {
+  const lines: string[] = [];
+  questions.forEach((question, index) => {
+    const answer = answers[index];
+    if (!answer) return;
+    const word = answer.kind === "own" ? answer.text.trim() : answer.kind === "yes" ? "да." : "нет.";
+    if (word) lines.push(`${index + 1}. «${quote(question)}» — ${word}`);
+  });
+  const more = extra.trim();
+  if (!lines.length) return more;
+  return ["Ответы на вопросы:", ...lines, ...(more ? ["", more] : [])].join("\n");
+}
+
+/**
+ * What «Сейчас» asks of you, by the ship's state:
+ * - `questions`: the agent asked; each question takes a quick answer;
+ * - `reply`: the ship waits for your words, with the text the state suggests;
+ * - `accept`: ready on the roadstead: read the diff and accept, or return it;
+ * - `return`: back for a fix first: the check, CI or the base failed;
+ * - `calm`: at work, nothing to do (an order can wait in the queue);
+ * - `sleep`: asleep until the limit resets, wakes by itself;
+ * - `none`: nothing the board can do here: a session, a closed or archived ship, or one the server takes no words from.
+ */
+export type NeedKind = "questions" | "reply" | "accept" | "return" | "calm" | "sleep" | "none";
+
+export interface Need {
+  kind: NeedKind;
+  title: string;
+  tone: OrderTone;
+  /** The text put into the field: the state's suggestion, empty for your own words. */
+  text: string;
+}
+
+export function needOf(task: TaskSummary, cargo: Cargo | null | undefined, desk: Pick<DeskView, "send" | "accept">, now: number): Need {
+  if (task.kind === "session") {
+    return task.alive
+      ? { kind: "none", title: "Сессия ведёт ход: ответить ей можно в приложении Claude", tone: "muted", text: "" }
+      : { kind: "none", title: "Сессия ждёт тебя в приложении Claude", tone: "warn", text: "" };
+  }
   const order = recommendedOrder(task, now);
-  if (!order) return null;
-  const desk = deskOf(task);
-  if (order.action === "say" && order.text && desk.send) return { kind: "fill", label: "Подготовить указание", text: order.text };
-  if (order.action === "verdict" && desk.accept) return { kind: "verdict", label: "Принять" };
-  return null;
+  if (!order) return { kind: "none", title: "Рейс окончен: приказов не нужно", tone: "muted", text: "" };
+  if (task.column === "sleeping") return { kind: "sleep", title: order.reason, tone: "muted", text: "" };
+  if (task.alive) return { kind: "calm", title: "Вмешиваться не нужно", tone: "muted", text: "" };
+  if (task.column === "review_me") {
+    if (order.action === "say" && desk.send) return { kind: "return", title: order.reason, tone: order.tone, text: order.text ?? "" };
+    if (desk.accept) return { kind: "accept", title: order.reason, tone: order.tone, text: "" };
+  }
+  const questions = cargo?.questions ?? [];
+  if (task.result_status === "needs_decision" && questions.length && desk.send) {
+    return { kind: "questions", title: "Ответь агенту — он продолжит сам", tone: "warn", text: "" };
+  }
+  if (desk.send) return { kind: "reply", title: order.reason, tone: order.tone, text: order.text ?? "" };
+  return { kind: "none", title: order.reason, tone: order.tone, text: "" };
 }
 
 const VERDICT_WORDS: Record<Verdict, string> = { accepted: "принято", revised: "принят с моими правками", redone: "переделан в другом месте", dropped: "не берём" };

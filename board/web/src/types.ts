@@ -340,6 +340,19 @@ export interface TaskDetail extends TaskSummary {
   /** `queue`: the installed teamster queues a say to a busy ship (1.60.0 and later); absent from older servers. */
   actions?: { enabled: boolean; reason: "read_only" | "no_teamster" | null; queue?: boolean };
   queue?: TaskQueue;
+  /** The last result's summary in full, with its line breaks; null without one and for sessions. */
+  report?: string | null;
+  /** What the task's branch changed against its base; null when the worktree cannot be read, and for sessions. */
+  changes?: TaskChanges | null;
+}
+
+/** The branch against its base: commits, the files and lines of `git diff --shortstat`, and uncommitted paths. */
+export interface TaskChanges {
+  commits: number;
+  files: number;
+  insertions: number;
+  deletions: number;
+  uncommitted: number;
 }
 
 export interface Accounts {

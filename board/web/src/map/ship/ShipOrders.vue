@@ -1,11 +1,11 @@
 <script setup lang="ts">
-// The order desk: acceptance, refit, an extra inspection, a flight review at the science station and the recall.
-// A group shows only where the board server takes its order; every button acts at once, and a board that only reads
-// copies the equal command. Stopping and writing off ask on the screen itself first.
+// The deck «Другие приказы»: what «Сейчас» does not lead with — a verdict, the refit, an extra review, a flight review
+// at the science station and the recall. The forms stay folded until opened. A group shows only where the board server
+// takes its order; every button acts at once, and a board that only reads copies the equal command. Stopping and
+// writing off ask on the screen itself first.
 import { computed, ref, watch } from "vue";
 import { REVIEWERS, type Reviewer } from "../../lib/actions";
 import { EXECUTORS } from "../../lib/labels";
-import { returnText } from "../../lib/orders";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
 import CopiedNote from "../station/CopiedNote.vue";
 import type { GroupId, ShipDesk } from "./desk";
@@ -70,101 +70,106 @@ watch(
   <section class="deck orders" aria-labelledby="orders-deck">
     <div class="deck-head">
       <span class="sigil" aria-hidden="true">⌘</span>
-      <h3 id="orders-deck">Пульт приказов</h3>
+      <h3 id="orders-deck">Другие приказы</h3>
     </div>
     <p v-if="!desk.live.value" class="readonly" role="note">Доска только читает ({{ desk.offReason.value }}): кнопки копируют команды teamster.</p>
 
     <div class="desk">
-      <div v-if="view.accept" class="group" :class="{ lit: view.acceptFirst }" :aria-busy="busy('accept')">
-        <h4>Приёмка <small v-if="view.acceptFirst">корабль на рейде: твой вердикт</small></h4>
-        <div class="row">
-          <button type="button" class="key main" :disabled="busy('accept')" @click="accept('accepted')">{{ groups.accept.busy === "accepted" ? "Принимаю…" : "Принять" }}</button>
-          <button v-if="view.reply" type="button" class="key" :disabled="busy('accept')" @click="desk.fill(returnText(cargo))">Вернуть на доработку</button>
+      <details v-if="view.refit" class="group fold">
+        <summary>Переоснащение <small>{{ view.queue ? "уйдёт с указанием в очередь" : "уйдёт со следующим ответом" }}</small></summary>
+        <div class="body">
+          <div class="refit">
+            <label>Модель <i>· двигатель</i><input v-model="refit.model" class="field mono" type="text" maxlength="64" :placeholder="asIs(task.model)" /></label>
+            <label
+              >Усилие <i>· форсаж</i>
+              <select v-model="refit.effort" class="field">
+                <option value="">{{ `как сейчас${task.effort ? ` · ${task.effort}` : ""}` }}</option>
+                <option v-for="effort in efforts" :key="effort" :value="effort">{{ effort }}</option>
+              </select>
+            </label>
+            <label>Лимит хода, мин<input v-model="refit.max_minutes" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.max_turn_minutes)" /></label>
+            <label>Бюджет, % недели <i>· топливо</i><input v-model="refit.max_weekly" class="field num" type="text" inputmode="decimal" :placeholder="asIs(limits?.max_weekly_percent)" /></label>
+            <label>Круги исправления<input v-model="refit.fix_rounds" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.fix_rounds)" /></label>
+            <label>Попытки CI<input v-model="refit.ci_rounds" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.ci_rounds)" /></label>
+            <label
+              >Ревьюер <i>· инспектор</i>
+              <select v-model="refit.reviewer" class="field">
+                <option value="">{{ `как сейчас${task.reviewer ? ` · ${EXECUTORS[task.reviewer]}` : ""}` }}</option>
+                <option v-for="name in REVIEWERS" :key="name" :value="name">{{ EXECUTORS[name] }}</option>
+              </select>
+            </label>
+          </div>
+          <div class="chips" role="group" aria-label="Углы ревью">
+            <span class="dim small">Углы ревью · ракурсы{{ savedAngles.length ? ` · сейчас ${savedAngles.join(", ")}` : "" }}</span>
+            <button
+              v-for="angle in ANGLE_CHIPS"
+              :key="angle"
+              type="button"
+              class="chip"
+              :aria-pressed="refit.angles.includes(angle)"
+              @click="refit.angles = toggleAngle(refit.angles, angle)"
+            >
+              {{ angle }}
+            </button>
+          </div>
+          <p class="cmd" :class="{ bad: desk.refitNow.value.errors.length }">{{ line }}</p>
         </div>
-        <div class="row">
-          <select v-model="other" class="field" aria-label="Другой вердикт" :disabled="busy('accept')">
-            <option value="">другой вердикт…</option>
-            <option v-for="item in OTHER_VERDICTS" :key="item.verdict" :value="item.verdict">{{ item.label }}</option>
-          </select>
-          <button v-if="other" type="button" class="key" :disabled="busy('accept')" @click="accept(other as (typeof OTHER_VERDICTS)[number]['verdict'])">Записать</button>
-        </div>
-        <input v-model="note" class="field" type="text" :maxlength="NOTE_MAX" placeholder="Заметка к вердикту — необязательно" aria-label="Заметка к вердикту" :disabled="busy('accept')" />
-        <p v-if="groups.accept.done" class="result ok" role="status" :title="groups.accept.output">{{ groups.accept.done }}</p>
-        <p v-if="groups.accept.error" class="result bad" role="alert">{{ groups.accept.error }}</p>
-        <CopiedNote v-if="groups.accept.copied" :copied="groups.accept.copied" />
-      </div>
+      </details>
 
-      <div v-if="view.refit" class="group">
-        <h4>Переоснащение <small>{{ view.queue ? "уйдёт с указанием в очередь" : "со следующего указания" }}</small></h4>
-        <div class="refit">
-          <label>Двигатель<input v-model="refit.model" class="field mono" type="text" maxlength="64" :placeholder="asIs(task.model)" /></label>
-          <label
-            >Форсаж
-            <select v-model="refit.effort" class="field">
-              <option value="">{{ `как сейчас${task.effort ? ` · ${task.effort}` : ""}` }}</option>
-              <option v-for="effort in efforts" :key="effort" :value="effort">{{ effort }}</option>
-            </select>
-          </label>
-          <label>Лимит хода, мин<input v-model="refit.max_minutes" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.max_turn_minutes)" /></label>
-          <label>Топливо задачи, %<input v-model="refit.max_weekly" class="field num" type="text" inputmode="decimal" :placeholder="asIs(limits?.max_weekly_percent)" /></label>
-          <label>Круги ремонта<input v-model="refit.fix_rounds" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.fix_rounds)" /></label>
-          <label>Попытки CI<input v-model="refit.ci_rounds" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.ci_rounds)" /></label>
-          <label
-            >Инспектор
-            <select v-model="refit.reviewer" class="field">
-              <option value="">{{ `как сейчас${task.reviewer ? ` · ${EXECUTORS[task.reviewer]}` : ""}` }}</option>
+      <!-- A called review sets the ship to work: its outcome stays under the group. -->
+      <details v-if="view.review || groups.review.done" class="group fold" :open="!!groups.review.done || undefined" :aria-busy="busy('review')">
+        <summary>Внеочередное ревью <small>инспекция</small></summary>
+        <div class="body">
+          <div v-if="view.review" class="chips" role="group" aria-label="Углы внеочередного ревью">
+            <button
+              v-for="angle in ANGLE_CHIPS"
+              :key="angle"
+              type="button"
+              class="chip"
+              :aria-pressed="reviewAngles.includes(angle)"
+              @click="reviewAngles = toggleAngle(reviewAngles, angle)"
+            >
+              {{ angle }}
+            </button>
+          </div>
+          <div v-if="view.review" class="row">
+            <select v-model="reviewer" class="field" aria-label="Ревьюер">
+              <option value="">{{ `ревьюер как сейчас${task.reviewer ? ` · ${EXECUTORS[task.reviewer]}` : ""}` }}</option>
               <option v-for="name in REVIEWERS" :key="name" :value="name">{{ EXECUTORS[name] }}</option>
             </select>
-          </label>
+            <button type="button" class="key" :disabled="busy('review')" @click="desk.review(anglesOf(reviewAngles), reviewer)">{{ groups.review.busy ? "Вызываю…" : "Вызвать" }}</button>
+          </div>
+          <p v-if="groups.review.done" class="result ok" role="status" :title="groups.review.output">{{ groups.review.done }}</p>
+          <p v-if="groups.review.error" class="result bad" role="alert">{{ groups.review.error }}</p>
+          <CopiedNote v-if="groups.review.copied" :copied="groups.review.copied" />
         </div>
-        <div class="chips" role="group" aria-label="Ракурсы инспекции">
-          <span class="dim small">Ракурсы{{ savedAngles.length ? ` · сейчас ${savedAngles.join(", ")}` : "" }}</span>
-          <button
-            v-for="angle in ANGLE_CHIPS"
-            :key="angle"
-            type="button"
-            class="chip"
-            :aria-pressed="refit.angles.includes(angle)"
-            @click="refit.angles = toggleAngle(refit.angles, angle)"
-          >
-            {{ angle }}
-          </button>
-        </div>
-        <p class="cmd" :class="{ bad: desk.refitNow.value.errors.length }">{{ line }}</p>
-      </div>
+      </details>
 
-      <!-- A called inspection sets the ship to work: its outcome stays under the group. -->
-      <div v-if="view.review || groups.review.done" class="group" :aria-busy="busy('review')">
-        <h4>Инспекция <small>внеочередная</small></h4>
-        <div v-if="view.review" class="chips" role="group" aria-label="Ракурсы внеочередной инспекции">
-          <button
-            v-for="angle in ANGLE_CHIPS"
-            :key="angle"
-            type="button"
-            class="chip"
-            :aria-pressed="reviewAngles.includes(angle)"
-            @click="reviewAngles = toggleAngle(reviewAngles, angle)"
-          >
-            {{ angle }}
-          </button>
+      <details v-if="view.accept" class="group fold" :open="!!groups.accept.done || !!groups.accept.error || undefined" :aria-busy="busy('accept')">
+        <summary>{{ view.acceptFirst ? "Другой вердикт" : "Записать вердикт" }} <small>{{ view.acceptFirst ? "с правками, переделан, не берём" : "принят, с правками, не берём" }}</small></summary>
+        <div class="body">
+          <div class="row">
+            <button v-if="!view.acceptFirst" type="button" class="key" :disabled="busy('accept')" @click="accept('accepted')">{{ groups.accept.busy === "accepted" ? "Принимаю…" : "Принять" }}</button>
+            <select v-model="other" class="field" aria-label="Другой вердикт" :disabled="busy('accept')">
+              <option value="">другой вердикт…</option>
+              <option v-for="item in OTHER_VERDICTS" :key="item.verdict" :value="item.verdict">{{ item.label }}</option>
+            </select>
+            <button v-if="other" type="button" class="key" :disabled="busy('accept')" @click="accept(other as (typeof OTHER_VERDICTS)[number]['verdict'])">Записать</button>
+          </div>
+          <input v-model="note" class="field" type="text" :maxlength="NOTE_MAX" placeholder="Заметка к вердикту — необязательно" aria-label="Заметка к вердикту" :disabled="busy('accept')" />
+          <p class="dim small">Вердикт — оценка для статистики; PR этим не сливается.</p>
+          <template v-if="!view.acceptFirst">
+            <p v-if="groups.accept.done" class="result ok" role="status" :title="groups.accept.output">{{ groups.accept.done }}</p>
+            <p v-if="groups.accept.error" class="result bad" role="alert">{{ groups.accept.error }}</p>
+            <CopiedNote v-if="groups.accept.copied" :copied="groups.accept.copied" />
+          </template>
         </div>
-        <div v-if="view.review" class="row">
-          <select v-model="reviewer" class="field" aria-label="Инспектор">
-            <option value="">{{ `инспектор как сейчас${task.reviewer ? ` · ${EXECUTORS[task.reviewer]}` : ""}` }}</option>
-            <option v-for="name in REVIEWERS" :key="name" :value="name">{{ EXECUTORS[name] }}</option>
-          </select>
-          <button type="button" class="key" :disabled="busy('review')" @click="desk.review(anglesOf(reviewAngles), reviewer)">{{ groups.review.busy ? "Вызываю…" : "Вызвать" }}</button>
-        </div>
-        <p v-if="groups.review.done" class="result ok" role="status" :title="groups.review.output">{{ groups.review.done }}</p>
-        <p v-if="groups.review.error" class="result bad" role="alert">{{ groups.review.error }}</p>
-        <CopiedNote v-if="groups.review.copied" :copied="groups.review.copied" />
-      </div>
+      </details>
 
       <div v-if="view.reflect" class="group" :aria-busy="busy('reflect')">
-        <h4>Разбор полёта</h4>
         <div class="row">
-          <button type="button" class="key" :disabled="busy('reflect')" @click="desk.reflect()">{{ groups.reflect.busy ? "Отправляю…" : "Отправить на научную станцию" }}</button>
-          <span class="dim small">аналитик разберёт этот рейс</span>
+          <button type="button" class="key" :disabled="busy('reflect')" @click="desk.reflect()">{{ groups.reflect.busy ? "Отправляю…" : "Разбор полёта" }}</button>
+          <span class="dim small">отправить рейс на научную станцию</span>
         </div>
         <p v-if="groups.reflect.done" class="result ok" role="status" :title="groups.reflect.output">{{ groups.reflect.done }}</p>
         <p v-if="groups.reflect.error" class="result bad" role="alert">{{ groups.reflect.error }}</p>
@@ -172,10 +177,9 @@ watch(
       </div>
 
       <div v-if="view.stop || view.clean" class="group" :aria-busy="busy('recall')">
-        <h4>Отзыв</h4>
         <div class="row">
-          <button v-if="view.stop" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'stop'">Остановить</button>
-          <button v-if="view.clean" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'clean'">Списать</button>
+          <button v-if="view.stop" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'stop'">Остановить ход</button>
+          <button v-if="view.clean" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'clean'">Списать корабль</button>
           <label v-if="view.clean" class="check"><input v-model="keepBranch" type="checkbox" /> оставить ветку</label>
         </div>
         <div v-if="confirming" class="confirm" role="alertdialog" aria-label="Подтверждение" @keydown.esc.stop="confirming = null">
@@ -187,6 +191,7 @@ watch(
         <p v-if="groups.recall.error" class="result bad" role="alert">{{ groups.recall.error }}</p>
         <CopiedNote v-if="groups.recall.copied" :copied="groups.recall.copied" />
       </div>
+
     </div>
   </section>
 </template>
@@ -218,29 +223,47 @@ watch(
   border-top: 0;
 }
 
-.group.lit {
-  padding: 8px;
-  border: 1px solid var(--sh-green);
-  border-radius: 8px;
-  background: rgba(111, 207, 143, 0.07);
-  box-shadow: 0 0 0 3px rgba(111, 207, 143, 0.08);
-}
-
-h4 {
+.fold > summary {
   display: flex;
+  list-style: none;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
-  margin: 0;
   color: var(--sh-title);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
+  cursor: pointer;
 }
 
-h4 small {
+.fold > summary small {
   color: var(--sh-faint);
   font-size: 11px;
   font-weight: 400;
+}
+
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold > summary::after {
+  content: "▸";
+  margin-left: auto;
+  color: var(--sh-faint);
+}
+
+.fold[open] > summary::after {
+  content: "▾";
+}
+
+.fold .body {
+  display: grid;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.refit label i {
+  color: var(--sh-faint);
+  font-style: normal;
 }
 
 .row {

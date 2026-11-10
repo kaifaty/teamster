@@ -19,6 +19,7 @@ from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 
 from teamster_board import access, actions as actions_module
 from teamster_board import app as board_app
+from teamster_board import store as store_module
 from teamster_board.app import Settings, create_app
 from teamster_board.research import Research
 
@@ -95,7 +96,10 @@ def test_stale_days_environment_reaches_store(tmp_path, monkeypatch):
 
 
 def test_rest_contract_files_and_unknown_paths(board):
-    client, _, directory, _, _ = board
+    client, application, directory, state, _ = board
+    state["result"] = {"summary": "Change completed.\nThis preserves the reason for the change."}
+    (directory / "state.json").write_text(json.dumps(state))
+    client.portal.call(application.state.board.poll)
     snapshot = client.get("/api/snapshot").json()
     assert set(snapshot) == {"generated_at", "tasks", "accounts", "machines"}
     assert snapshot["machines"] == {"config_error": None, "items": []}
@@ -105,6 +109,7 @@ def test_rest_contract_files_and_unknown_paths(board):
     assert snapshot["tasks"][0]["title"] is None
     assert snapshot["tasks"][0]["link"] is None
     assert snapshot["tasks"][0]["scheduled"] is None
+    assert snapshot["tasks"][0]["summary"] == "Change completed."
     assert set(snapshot["accounts"]) == {"fetched_at", "error", "data"}
     for name, filename in (("brief", "brief.md"), ("last", "last.md"),
                            ("review", "review.md"), ("check", "check.log")):
@@ -116,7 +121,10 @@ def test_rest_contract_files_and_unknown_paths(board):
         assert response.content == b"x" * (256 * 1024)
     detail = client.get("/api/tasks/demo").json()
     assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
-                                           "activity_log", "actions", "queue"}
+                                           "activity_log", "actions", "queue", "report", "changes"}
+    assert detail["report"] == state["result"]["summary"]
+    assert detail["summary"] == "Change completed."
+    assert detail["changes"] is None
     assert detail["actions"] == {**client.get("/api/research").json()["actions"], "queue": False}
     assert detail["queue"] == {"waiting": [], "dropped": []}
     assert set(detail["files"]) == {"brief", "last", "review", "check"}
@@ -130,6 +138,42 @@ def test_rest_contract_files_and_unknown_paths(board):
         "/api/tasks/%2e%2e%2fstate.json", "/api/tasks/demo/files/brief/other",
     ):
         assert client.get(path).status_code == 404, path
+
+
+def test_detail_git_does_not_block_board_polling(board, monkeypatch):
+    client, application, directory, state, _ = board
+    state.update(worktree=str(directory), base="origin/main")
+    (directory / "state.json").write_text(json.dumps(state))
+    client.portal.call(application.state.board.poll)
+    entered, release = threading.Event(), threading.Event()
+    original_run = subprocess.run
+
+    def git(argv, **kwargs):
+        if argv[0] != "git":
+            return original_run(argv, **kwargs)
+        assert argv[:3] == ["git", "-C", str(directory)]
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["timeout"] == 5
+        entered.set()
+        assert release.wait(5)
+        output = {"rev-parse": "true\n", "rev-list": "0\n", "diff": "", "status": ""}
+        return subprocess.CompletedProcess(argv, 0, stdout=output[argv[3]])
+
+    async def poll_and_snapshot():
+        with anyio.fail_after(2):
+            await application.state.board.poll()
+            return await application.state.board.snapshot()
+
+    monkeypatch.setattr(store_module.subprocess, "run", git)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        detail = executor.submit(client.get, "/api/tasks/demo")
+        try:
+            assert entered.wait(5)
+            assert client.portal.call(poll_and_snapshot)["tasks"][0]["slug"] == "demo"
+        finally:
+            release.set()
+        assert detail.result(timeout=5).json()["changes"] == {
+            "commits": 0, "files": 0, "insertions": 0, "deletions": 0, "uncommitted": 0}
 
 
 def test_events_window_limit_and_websocket(board):
@@ -481,7 +525,8 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
         assert task["alive"] is False
         detail = client.get("/api/tasks/local_example").json()
         assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
-                                               "activity_log", "actions", "queue"}
+                                               "activity_log", "actions", "queue", "report", "changes"}
+        assert detail["report"] is detail["changes"] is None
         assert detail["limits"] is None
         assert detail["messages"] == detail["activity_log"] == []
         assert detail["queue"] == {"waiting": [], "dropped": []}

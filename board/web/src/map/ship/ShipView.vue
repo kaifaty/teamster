@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // A ship's own screen, its bridge. Clicking a ship on the map opens it over the galaxy, as the science station's
-// screen: a header with the line «what next», then the decks — the ship with its papers; its route, gauges and hull;
-// the comms room and the order desk; under them the flight recorder, the telemetry and the ship's documents. A session
-// is a flagship: its papers and telemetry only.
+// screen: a header, then «Сейчас» across the screen — the state in words, the route strip, the agent's full report and
+// what is needed from you — and under it two columns: «Что сделано» and the voyage log; the ship's card, the other
+// orders and the documents. A session is a flagship: «Сейчас» and its card only.
 // The orders run at once through the board server; a board that only reads copies the equal command.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from "vue";
 import { postAction } from "../../lib/actions";
@@ -10,20 +10,16 @@ import { claudeLink, prLabel, taskTitle } from "../../lib/labels";
 import type { BoardSource } from "../../lib/source";
 import type { TaskDetail, TaskFile, TaskSummary } from "../../types";
 import nebula from "../art/nebula.jpg";
-import { bridgeView, nextLine, stateOf } from "./bridge";
+import { bridgeView, stateOf } from "./bridge";
 import { createShipDesk } from "./desk";
-import { mainOrder } from "./orders";
 import "./ship.css";
-import ShipComms from "./ShipComms.vue";
-import ShipDamage from "./ShipDamage.vue";
 import ShipDocs from "./ShipDocs.vue";
 import ShipDocViewer from "./ShipDocViewer.vue";
-import ShipGauges from "./ShipGauges.vue";
+import ShipDone from "./ShipDone.vue";
 import ShipHull from "./ShipHull.vue";
+import ShipJournal from "./ShipJournal.vue";
+import ShipNow from "./ShipNow.vue";
 import ShipOrders from "./ShipOrders.vue";
-import ShipRecorder from "./ShipRecorder.vue";
-import ShipRoute from "./ShipRoute.vue";
-import ShipTelemetry from "./ShipTelemetry.vue";
 
 const props = defineProps<{
   slug: string;
@@ -84,7 +80,6 @@ const files = computed(() => own.value?.files ?? []);
 const view = computed(() => bridgeView(shown.value ?? { kind: "work" }));
 const heading = computed(() => (shown.value ? taskTitle(shown.value) : props.slug));
 const state = computed(() => (shown.value ? stateOf(shown.value) : null));
-const next = computed(() => (shown.value ? nextLine(shown.value, props.now) : null));
 const link = computed(() => (shown.value ? claudeLink(shown.value) : null));
 const letter = computed(() => (shown.value?.repo.replace(/[^\p{L}\p{N}]/gu, "").charAt(0) || "·").toUpperCase());
 
@@ -95,12 +90,6 @@ const desk = createShipDesk({
   detail: own,
   act: (route, body) => postAction(route, body, { send: props.source.act, refresh: loadDetail }),
 });
-const main = computed(() => (shown.value ? mainOrder(shown.value, props.now) : null));
-function runMain() {
-  const order = main.value;
-  if (order?.kind === "fill") void desk.fill(order.text);
-  else if (order?.kind === "verdict") void desk.verdict("accepted");
-}
 
 // The documents' viewer.
 const doc = ref<TaskFile | null>(null);
@@ -162,33 +151,24 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         </nav>
       </header>
 
-      <section v-if="next" class="next" :class="next.tone" aria-live="polite">
-        <span class="lamp" aria-hidden="true"></span>
-        <p>{{ next.text }}</p>
-        <button v-if="main" type="button" class="key main" :disabled="main.kind === 'verdict' && !!desk.groups.accept.busy" @click="runMain">{{ main.label }}</button>
-      </section>
       <p v-if="!task" class="note">{{ shown?.kind === "session" ? "Сессии" : "Задачи" }} больше нет на доске; показаны последние данные.</p>
       <p v-if="detailError" class="note bad">Не удалось загрузить задачу: {{ detailError }}</p>
       <p v-else-if="!shown && !loading" class="note">Задача не найдена.</p>
 
-      <main v-if="shown" class="grid" :class="{ session: !view.route }">
-        <div class="col left">
-          <ShipHull :task="shown" :limits="limits" :cargo="cargo" :now="now" />
-          <ShipDocs v-if="view.docs" class="docs" :files="files" :loading="loading" @open="openDoc" />
-          <ShipTelemetry v-if="!view.commands" :task="shown" :log="own?.activity_log ?? []" :loaded="!!own" :now="now" />
-        </div>
-        <div v-if="view.route" class="col center">
-          <ShipRoute :task="shown" :limits="limits" :cargo="cargo" :now="now" />
-          <ShipGauges v-if="view.gauges" :task="shown" :limits="limits" :cargo="cargo" :now="now" />
-          <ShipDamage v-if="view.hull" :cargo="cargo" :now="now" :loading="loading" />
-          <ShipRecorder :task="shown" :source="source" :messages="own?.messages ?? []" :limits="limits" :now="now" />
-        </div>
-        <div v-if="view.commands" class="col right">
-          <ShipComms :task="shown" :desk="desk" :messages="own?.messages ?? []" :cargo="cargo" :now="now" />
-          <ShipOrders :task="shown" :desk="desk" :limits="limits" :cargo="cargo" />
-          <ShipTelemetry :task="shown" :log="own?.activity_log ?? []" :loaded="!!own" :now="now" />
-        </div>
-      </main>
+      <template v-if="shown">
+        <ShipNow :task="shown" :detail="own" :desk="desk" :now="now" />
+        <main class="grid" :class="{ session: !view.commands }">
+          <div v-if="view.commands" class="col main-col">
+            <ShipDone :task="shown" :cargo="cargo" :changes="own?.changes" :loading="loading" :now="now" />
+            <ShipJournal :task="shown" :desk="desk" :messages="own?.messages ?? []" :cargo="cargo" :limits="limits" :source="source" :now="now" />
+          </div>
+          <div class="col side">
+            <ShipHull :task="shown" :limits="limits" :cargo="cargo" :now="now" />
+            <ShipOrders v-if="view.commands" :task="shown" :desk="desk" :limits="limits" :cargo="cargo" />
+            <ShipDocs v-if="view.docs" :files="files" :loading="loading" @open="openDoc" />
+          </div>
+        </main>
+      </template>
     </div>
     <ShipDocViewer v-if="doc && shown" :source="source" :slug="slug" :name="doc" :version="shown.updated_at" @close="closeDoc" />
   </section>
@@ -338,56 +318,6 @@ h2 {
   gap: 6px;
 }
 
-/* What next: one sentence in the tone of the order the state calls for. */
-.next {
-  display: flex;
-  align-items: center;
-  gap: 10px 14px;
-  padding: 10px 14px;
-  border: 1px solid var(--sh-line);
-  border-radius: 10px;
-  background: rgba(7, 9, 14, 0.92);
-}
-
-.next p {
-  flex: 1 1 auto;
-  margin: 0;
-  font-size: 14px;
-  line-height: 20px;
-}
-
-.lamp {
-  flex: none;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--sh-teal);
-  box-shadow: 0 0 10px var(--sh-teal);
-}
-
-.next.ok .lamp {
-  background: var(--sh-green);
-  box-shadow: 0 0 10px var(--sh-green);
-}
-
-.next.warn .lamp {
-  background: var(--sh-wait);
-  box-shadow: 0 0 10px var(--sh-wait);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
-.next.bad .lamp {
-  background: var(--sh-red);
-  box-shadow: 0 0 10px var(--sh-red);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
 .note {
   margin: 0;
   padding: 4px 10px;
@@ -400,11 +330,10 @@ h2 {
   color: var(--sh-red);
 }
 
-/* Columns, each stacked on its own so that a short one leaves no hole above the next deck:
-   the ship and its documents; the route, gauges, hull and recorder; the comms, orders and telemetry. */
+/* Under «Сейчас»: what is done and the voyage log, beside the ship's card, the other orders and the documents. */
 .grid {
   display: grid;
-  grid-template-columns: minmax(250px, 290px) minmax(0, 1fr) minmax(300px, 390px);
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
   align-items: start;
   gap: 10px;
 }
@@ -420,40 +349,25 @@ h2 {
   min-width: 0;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1100px) {
   .grid {
-    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .grid > .right {
-    grid-column: 1 / -1;
+  .grid > .side {
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     align-items: start;
   }
 }
 
 @media (max-width: 760px) {
-  .grid {
+  .grid > .side {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* One column of decks: the documents go last instead of pushing the route down. */
-  .grid > .col {
-    display: contents;
-  }
-
-  .grid .docs {
-    order: 1;
-  }
-
-  .next {
-    padding: 8px 10px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ship-screen,
-  .next .lamp {
+  .ship-screen {
     animation: none;
   }
 }
