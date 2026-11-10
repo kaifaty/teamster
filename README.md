@@ -356,6 +356,7 @@ A minimal configuration is:
 | `review_angles_min_lines` | `400` | Changed-line threshold for `--review-angles auto`; counts `base..HEAD` and uncommitted changes. |
 | `ci` | `false` | Enable PR CI when creating a task; follow-ups inherit it. `say --ci` enables it, `say --no-ci` disables it. |
 | `ci_timeout_minutes` | `30` | Maximum wait for PR checks per CI attempt. |
+| `ci_queued_minutes` | `20` | Stop waiting for PR checks once only never-started (queued) checks have remained this long; CI is recorded as `skipped`. |
 | `repeat_limit` | `3` | Matching failures of the same command that trigger `stuck`; success for that command resets its count. |
 | `notify` | Absent | `"macos"` for desktop notifications, or an argv list that receives the event JSON as its final argument. |
 | `notify_events` | All events | Optional list of event types to send. |

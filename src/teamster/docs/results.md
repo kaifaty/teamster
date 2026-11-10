@@ -40,7 +40,7 @@ When the [task CI setting](settings.md#task-ci-options) is enabled, state includ
 SHA, outcome (`pending` while waiting, then `passed`, `failed`, `timeout`, `none`, or `skipped`), checks
 and states, cumulative wait duration, repair-round count, and stop reason. The reason identifies a
 pass, exhausted repair rounds, an incomplete repair result, a budget stop, timeout, absent checks, or
-why waiting was skipped. See [ci.md](ci.md) for waiting and repair mechanics.
+why waiting was skipped, such as checks that stayed queued without starting. See [ci.md](ci.md) for waiting and repair mechanics.
 
 `wait` prints, for example, `== CI 3749d91: passed (8/8, 6.2 min)` or
 `== CI 3749d91: FAILED 1/8: test (macos-latest, 3.9)`, followed by failed-check log tails.

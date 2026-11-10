@@ -1363,7 +1363,7 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(len(self.invocations()), 1)
         self.assertEqual(len(self.ci_polls()), 2)
         for event in self.ci_polls():
-            self.assertEqual(event["argv"][2:], [state["publish"]["pr"], "--json", "name,state,bucket,link"])
+            self.assertEqual(event["argv"][2:], [state["publish"]["pr"], "--json", "name,state,bucket,link,startedAt"])
         self.assertEqual(self.notification("ci-pass", "turn_finished")["ci"], ci)
         self.until(lambda: any(row["phase"] == "turn" for row in self.telemetry_journal()))
         turn = next(row for row in self.telemetry_journal() if row["phase"] == "turn")
@@ -1603,6 +1603,7 @@ class WorkspaceTests(RotationTestCase):
         defaults = self.worker().config.accounts_config()
         self.assertFalse(defaults["ci"])
         self.assertEqual(defaults["ci_timeout_minutes"], 30)
+        self.assertEqual(defaults["ci_queued_minutes"], 20)
         self.configure_ci([[self.ci_check()]])
         self.account(self.home, "A", self.reset, runs=[self.ci_work()])
         self.start("ci-flag", "--ci", "--ci-rounds", "2")
@@ -1868,6 +1869,26 @@ class WorkspaceTests(RotationTestCase):
         self.assertNotIn("turn_stop", st)
         self.assertEqual(sum(waits), 240)
         self.assertTrue(all(call[:2] in (["pr", "view"], ["pr", "checks"]) for call in calls))
+
+    def test_ci_never_started_checks_skip_after_the_queued_minutes(self):
+        build = {"name": "Build", "state": "QUEUED", "bucket": "pending", "link": "",
+                 "startedAt": "0001-01-01T00:00:00Z"}
+        status = {"name": "deploy", "state": "PENDING", "bucket": "pending", "link": ""}
+        running = dict(self.ci_check("pending"), startedAt="2026-11-09T18:31:00Z")
+        queued = [self.ci_check(), self.ci_check("skipping", name="optional"), build, status]
+        # A started check keeps the full wait; the queued clock starts once only queued checks remain.
+        st, ci, calls, waits = self.run_ci_wait_fixture([queued + [running]] * 4 + [queued])
+        self.assertEqual((ci["outcome"], ci["reason"]),
+                         ("skipped", "CI queued: never started in 20 min: Build, deploy"))
+        self.assertEqual(ci["seconds"], 4 * 30 + 20 * 60)
+        self.assertEqual([check["state"] for check in ci["checks"]], ["SUCCESS", "SKIPPED", "QUEUED", "PENDING"])
+        self.assertEqual(self.worker().ci_runs.ci_lines(ci),
+                         ["== CI " + ci["sha"][:7] + ": skipped: " + ci["reason"]])
+        self.assertTrue(all(call[:2] in (["pr", "view"], ["pr", "checks"]) for call in calls))
+        # A queued check that has a start time is running, so the wait reaches the CI timeout.
+        st, ci, calls, waits = self.run_ci_wait_fixture(
+            [[dict(build, startedAt="2026-11-09T18:31:00Z")]], timeout=40)
+        self.assertEqual((ci["outcome"], ci["seconds"]), ("timeout", 40 * 60))
 
     def test_ci_gh_no_checks_reported_exit_one_observes_the_grace_period(self):
         st, ci, calls, waits = self.run_ci_wait_fixture([[]], no_checks_error=True)
