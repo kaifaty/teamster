@@ -860,11 +860,11 @@ worker.notifications.reap_notifications = reap
             return subprocess.run([PYTHON, "-I", str(SCRIPT), *args], cwd=self.repo, env=self.env,
                                   text=True, capture_output=True, timeout=30)
 
-        self.assertEqual(self.cli("say", slug, "--queue", "First order", "--effort", "low",
+        self.assertEqual(self.cli("say", slug, "First order", "--queue", "--effort", "low",
                                   "--task-type", "alpha", "--check", "exit 1"),
                          f"queued for {slug}: 1 waiting; sent when the current cycle ends\n")
-        for args, error in ((("say", slug, "--queue", "--upgrade", "Moved"), "--queue cannot be combined with --upgrade"),
-                            (("say", slug, "--queue", " "), "empty message")):
+        for args, error in ((("say", slug, "Moved", "--queue", "--upgrade"), "--queue cannot be combined with --upgrade"),
+                            (("say", slug, " ", "--queue"), "empty message")):
             result = run(*args)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(error, result.stderr)
@@ -913,7 +913,7 @@ worker.notifications.reap_notifications = reap
         self.assertEqual((notification["count"], notification["turn"]), (2, 2))
         self.assertNotIn("queued orders", self.cli("status", slug))
 
-        idle = self.cli("say", slug, "--queue", "Idle order")
+        idle = self.cli("say", slug, "Idle order", "--queue")
         self.assertRegex(idle, rf"^sent to {slug} \(turn 3\), pid [0-9]+\n$")
         self.assertIn("Idle order done", self.wait(slug))
         self.assertEqual(self.invocations()[-1]["prompt"], "Idle order")
@@ -955,7 +955,7 @@ worker.notifications.reap_notifications = reap
                 mock.patch.object(worker.task_state, "enqueue", side_effect=late_enqueue), \
                 mock.patch.object(worker.supervisor.subprocess, "Popen", side_effect=popen), \
                 redirect_stdout(output):
-            worker.commands.cmd_say(parser.parse_args(["say", slug, "--queue", "Order after the cycle"]))
+            worker.commands.cmd_say(parser.parse_args(["say", slug, "Order after the cycle", "--queue"]))
         self.assertIn(f"sent to {slug} (turn 2)", output.getvalue())
         self.assertIn("Order done", self.wait(slug))
         for process in supervisors:
@@ -1267,10 +1267,10 @@ worker.notifications.reap_notifications = reap
                       "; stop first to send a new message; or queue it with say --queue", result.stderr)
         orders = [f"Отправить после сброса {number}" for number in range(10)]
         for number, order in enumerate(orders, 1):
-            self.assertEqual(self.cli("say", "say-sleep", "--queue", order),
+            self.assertEqual(self.cli("say", "say-sleep", order, "--queue"),
                              f"queued for say-sleep: {number} waiting; sent when the current cycle ends\n")
         # One drop fits in the dropped history, so wait lists every message.
-        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", "say-sleep", "--queue", "Лишнее"],
+        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", "say-sleep", "Лишнее", "--queue"],
                                 cwd=self.repo, env=self.env, text=True, capture_output=True,
                                 timeout=self.fixture_timeout)
         self.assertNotEqual(result.returncode, 0)
