@@ -2,12 +2,13 @@
 
 import json
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from teamster_board import research as research_module
+from teamster_board import access, research as research_module
 from teamster_board.research import Research, signals
 
 
@@ -44,6 +45,65 @@ def counting(monkeypatch):
 
     monkeypatch.setattr(research_module, "load_json", load_json)
     return reads
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_readable_opens_closes_and_reports_errors(tmp_path, monkeypatch, allowed):
+    original = os.open
+    descriptors = []
+
+    def probe(path, flags):
+        assert path == tmp_path and flags == os.O_RDONLY
+        assert threading.current_thread().daemon
+        if not allowed:
+            raise PermissionError("Disk access denied")
+        descriptor = original(path, flags)
+        descriptors.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(access.os, "open", probe)
+    assert access.readable(tmp_path) is allowed
+    if allowed:
+        with pytest.raises(OSError):
+            os.fstat(descriptors[0])
+
+
+def test_readable_timeout_groups_device_and_recovers(tmp_path, monkeypatch):
+    release, started = threading.Event(), threading.Event()
+    original_open, original_thread = os.open, threading.Thread
+    threads = []
+    other = tmp_path / "other"
+    other.mkdir()
+
+    def probe(path, flags):
+        started.set()
+        release.wait()
+        return original_open(path, flags)
+
+    def thread(*args, **kwargs):
+        result = original_thread(*args, **kwargs)
+        threads.append(result)
+        return result
+
+    monkeypatch.setattr(access.os, "open", probe)
+    monkeypatch.setattr(access.threading, "Thread", thread)
+    try:
+        before = time.monotonic()
+        assert access.readable(tmp_path, timeout=0.05) is None
+        assert time.monotonic() - before < 1
+        assert started.wait(1)
+        for _ in range(5):
+            before = time.monotonic()
+            assert access.readable(other, timeout=3) is None
+            assert time.monotonic() - before < 1
+        assert len(threads) == 1 and threads[0].daemon
+    finally:
+        release.set()
+        for pending in threads:
+            pending.join(5)
+            assert not pending.is_alive()
+    assert access.readable(other) is True
+    assert len(threads) == 2
 
 
 def test_index_rows_scopes_statuses_and_extra_cells(tmp_path):
@@ -185,35 +245,77 @@ def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp
     (archive / ".git").mkdir()
     (archive / ".git" / "config").write_text(origin)
     write_record(tasks, "archive-repo", {"repo": str(archive)})
-    research = Research(tasks, seconds=0)
+    research = Research(tasks)
+
+    def view_repos():
+        research.invalidate()
+        research._next_repos_scan = 0
+        research.view()
+        research._repos_thread.join(5)
+        assert not research._repos_thread.is_alive()
+        view = research.view()
+        assert view["repos_access"] == "ok"
+        return view["repos"]
+
     expected = [
         {"name": "alpha", "path": str(alpha)},
         {"name": "alpha", "path": str(other_alpha)},
         {"name": "beta", "path": str(beta)},
     ]
-    assert research.view()["repos"] == expected
+    assert view_repos() == expected
     second = tmp_path / "second-worktree"
     second.mkdir()
     gitdir = beta / ".git" / "worktrees" / "second"
     gitdir.mkdir(parents=True)
     (second / ".git").write_text(f"gitdir: {gitdir}\n")
     write_record(tasks, "second-worktree", {"kind": "work", "repo": str(second)})
-    assert research.view()["repos"] == expected
+    assert view_repos() == expected
     (no_origin / ".git" / "config").unlink()
     (no_origin / ".git" / "config").symlink_to(alpha / ".git" / "config")
-    assert research.view()["repos"] == expected
+    assert view_repos() == expected
     (no_origin / ".git" / "config").unlink()
     (no_origin / ".git" / "config").write_text(origin + "#" * research_module.GIT_LIMIT)
-    assert research.view()["repos"] == expected
+    assert view_repos() == expected
     for index in range(101):
         repo = tmp_path / f"repo-{index:03}"
         (repo / ".git").mkdir(parents=True)
         (repo / ".git" / "config").write_text(origin)
         write_record(tasks, f"extra-{index}", {"repo": str(repo)})
-    repos = research.view()["repos"]
+    repos = view_repos()
     assert len(repos) == 100
     assert repos == sorted(repos, key=lambda row: (row["name"], row["path"]))
     assert repos[-1]["name"] == "repo-096"
+
+
+@pytest.mark.parametrize("readable", [False, None])
+def test_repository_without_access_is_skipped_and_reported(tmp_path, monkeypatch, readable):
+    tasks = tmp_path / "tasks"
+    allowed, denied = tmp_path / "allowed", tmp_path / "denied"
+    for repo in (allowed, denied):
+        (repo / ".git").mkdir(parents=True)
+        (repo / ".git" / "config").write_text('[remote "origin"]\nurl = https://example.com/repo\n')
+        write_record(tasks, repo.name, {"repo": str(repo)})
+    probes = []
+
+    def probe(path):
+        probes.append(path)
+        return readable if path == denied / ".git" else True
+
+    original = research_module.repository
+
+    def repository(path):
+        assert path == str(allowed)
+        return original(path)
+
+    monkeypatch.setattr(access, "readable", probe)
+    monkeypatch.setattr(research_module, "repository", repository)
+    research = Research(tasks)
+    research.view()
+    research._repos_thread.join(5)
+    view = research.view()
+    assert view["repos"] == [{"name": allowed.name, "path": str(allowed)}]
+    assert view["repos_access"] == "denied"
+    assert set(probes) == {allowed / ".git", denied / ".git"}
 
 
 def test_implementation_matches_first_line_and_uses_newest_live_or_archived_state(tmp_path):
@@ -356,7 +458,7 @@ def test_missing_empty_and_linked_archives_give_an_empty_view(tmp_path, make):
         tasks.mkdir()
         (tasks / ".archive").symlink_to(real / ".archive", target_is_directory=True)
     view = Research(tasks, reflection_task="weekly").view()
-    assert view == {"lessons": [], "repos": [], "batch": None,
+    assert view == {"lessons": [], "repos": [], "repos_access": "scanning", "batch": None,
                     "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
                     "studies": [], "reflection_task": "weekly", "schedule": None}
 
@@ -392,6 +494,8 @@ def test_unchanged_records_are_not_read_again_and_cache_lasts_its_interval(tmp_p
         return view
 
     monkeypatch.setattr(research, "_scan", slow_scan)
+    research.view()
+    research._repos_thread.join(5)
     first = research.view()
     monkeypatch.setattr(research, "_scan", scan)
     assert research.view() is first
