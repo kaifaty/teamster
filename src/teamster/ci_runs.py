@@ -397,7 +397,7 @@ def wait_ci(st, stopped, sleep, queued_minutes=20):
         ci["seconds"] = round(prior_seconds + now - started, 3)
         task_state.save(st)
         boundary = min(deadline, empty_deadline) if not seen_checks and not ci.get("error") else deadline
-        if queued_deadline is not None:
+        if queued_deadline is not None and not ci.get("error"):
             boundary = min(boundary, queued_deadline)
         sleep(max(0, min(config.CI_POLL_SECONDS, boundary - now)))
     return finish("skipped", "stopped")

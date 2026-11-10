@@ -1885,6 +1885,10 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(self.worker().ci_runs.ci_lines(ci),
                          ["== CI " + ci["sha"][:7] + ": skipped: " + ci["reason"]])
         self.assertTrue(all(call[:2] in (["pr", "view"], ["pr", "checks"]) for call in calls))
+        # Request errors past the queued deadline keep the normal poll pause.
+        st, ci, calls, waits = self.run_ci_wait_fixture([[build]] + [{}] * 44 + [[build]])
+        self.assertEqual((ci["outcome"], ci["seconds"]), ("skipped", 45 * 30))
+        self.assertEqual(waits, [30] * 45)
         # A queued check that has a start time is running, so the wait reaches the CI timeout.
         st, ci, calls, waits = self.run_ci_wait_fixture(
             [[dict(build, startedAt="2026-11-09T18:31:00Z")]], timeout=40)
