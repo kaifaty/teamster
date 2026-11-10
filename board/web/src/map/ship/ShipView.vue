@@ -174,22 +174,21 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <main v-if="shown" class="grid" :class="{ session: !view.route }">
         <div class="col left">
           <ShipHull :task="shown" :limits="limits" :cargo="cargo" :now="now" />
+          <ShipDocs v-if="view.docs" class="docs" :files="files" :loading="loading" @open="openDoc" />
+          <ShipTelemetry v-if="!view.commands" :task="shown" :log="own?.activity_log ?? []" :loaded="!!own" :now="now" />
         </div>
         <div v-if="view.route" class="col center">
           <ShipRoute :task="shown" :limits="limits" :cargo="cargo" :now="now" />
           <ShipGauges v-if="view.gauges" :task="shown" :limits="limits" :cargo="cargo" :now="now" />
           <ShipDamage v-if="view.hull" :cargo="cargo" :now="now" :loading="loading" />
+          <ShipRecorder :task="shown" :source="source" :messages="own?.messages ?? []" :limits="limits" :now="now" />
         </div>
         <div v-if="view.commands" class="col right">
           <ShipComms :task="shown" :desk="desk" :messages="own?.messages ?? []" :cargo="cargo" :now="now" />
           <ShipOrders :task="shown" :desk="desk" :limits="limits" :cargo="cargo" />
+          <ShipTelemetry :task="shown" :log="own?.activity_log ?? []" :loaded="!!own" :now="now" />
         </div>
       </main>
-      <section v-if="shown" class="bottom" :class="{ session: !view.route }" aria-label="Самописец, телеметрия и документы">
-        <ShipRecorder v-if="view.route" class="rec" :task="shown" :source="source" :messages="own?.messages ?? []" :limits="limits" :now="now" />
-        <ShipTelemetry :task="shown" :log="own?.activity_log ?? []" :loaded="!!own" :now="now" />
-        <ShipDocs v-if="view.docs" :files="files" :loading="loading" @open="openDoc" />
-      </section>
     </div>
     <ShipDocViewer v-if="doc && shown" :source="source" :slug="slug" :name="doc" :version="shown.updated_at" @close="closeDoc" />
   </section>
@@ -401,7 +400,8 @@ h2 {
   color: var(--sh-red);
 }
 
-/* Columns: the ship; its route, gauges and hull; the orders and documents. */
+/* Columns, each stacked on its own so that a short one leaves no hole above the next deck:
+   the ship and its documents; the route, gauges, hull and recorder; the comms, orders and telemetry. */
 .grid {
   display: grid;
   grid-template-columns: minmax(250px, 290px) minmax(0, 1fr) minmax(300px, 390px);
@@ -420,30 +420,9 @@ h2 {
   min-width: 0;
 }
 
-/* Under the columns: the recorder wide, the telemetry and the documents beside it. */
-.bottom {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(220px, 0.7fr);
-  align-items: start;
-  gap: 10px;
-}
-
-.bottom.session {
-  grid-template-columns: minmax(0, 420px);
-  justify-content: center;
-}
-
 @media (max-width: 1180px) {
   .grid {
     grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
-  }
-
-  .bottom:not(.session) {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-
-  .bottom > .rec {
-    grid-column: 1 / -1;
   }
 
   .grid > .right {
@@ -454,10 +433,17 @@ h2 {
 }
 
 @media (max-width: 760px) {
-  .grid,
-  .grid > .right,
-  .bottom:not(.session) {
+  .grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* One column of decks: the documents go last instead of pushing the route down. */
+  .grid > .col {
+    display: contents;
+  }
+
+  .grid .docs {
+    order: 1;
   }
 
   .next {
