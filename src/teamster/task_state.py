@@ -2,6 +2,7 @@
 import fcntl
 import json
 import os
+import threading
 from contextlib import contextmanager
 from typing import Callable, Literal, NamedTuple, Optional
 
@@ -165,13 +166,28 @@ def load(slug):
     return st
 
 
+# The slugs whose state lock this thread holds.
+HELD_STATE_LOCKS = threading.local()
+
+
 @contextmanager
 def state_lock(slug):
     # stop and spawn read, modify and write state under it, serialized with
     # supervisor saves so none can lose another's published fields.
+    # Reentrant in one thread: the supervisor saves its final state inside the hold that reads the queue.
+    held = getattr(HELD_STATE_LOCKS, "slugs", None)
+    if held is None:
+        held = HELD_STATE_LOCKS.slugs = set()
+    if slug in held:
+        yield
+        return
     with state_path(slug).with_suffix(".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
+        held.add(slug)
+        try:
+            yield
+        finally:
+            held.discard(slug)
 
 
 def write_state(st):

@@ -199,7 +199,7 @@ def finish_cycle(st):
                     continue
                 st["pid"] = None
                 if not orders:
-                    task_state.write_state(st)
+                    task_state.save(st)
                     return None
                 if outcome is None:
                     try:
@@ -220,7 +220,7 @@ def finish_cycle(st):
                         return {"orders": orders, "sent": following}
                 task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"] + [
                     dict(order, dropped_at=st["turn_finished"], outcome=outcome) for order in orders]})
-                task_state.write_state(st)
+                task_state.save(st)
                 return {"orders": orders, "dropped": outcome}
 
 
