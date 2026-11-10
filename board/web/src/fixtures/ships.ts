@@ -45,7 +45,7 @@ export function fixtureShips(tasks: () => Record<string, TaskSummary>, clock: ()
   }
 
   function find(slug: string): TaskSummary | ActionResult {
-    const task = tasks()[slug];
+    const task = removed.has(slug) ? undefined : tasks()[slug];
     return task ?? fail(`Задача ${slug} не найдена`);
   }
   const isTask = (found: TaskSummary | ActionResult): found is TaskSummary => "slug" in found;

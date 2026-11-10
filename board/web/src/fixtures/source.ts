@@ -73,11 +73,14 @@ export function fixtureSource(): BoardSource {
   const station = fixtureActions(research, () => Date.now() / 1000 - delta);
   // A ship's orders change the board itself, in the board's time.
   let push: ((message: ServerMessage) => void) | null = null;
-  const ships = fixtureShips(() => state.tasks, () => Date.now() / 1000, (message) => push?.(message));
-  /** A say to a study goes to the station; every other say and order goes to the ship. */
+  // A ship the replay has just taken off the board still takes orders, as in the snapshot.
+  const fixtureTasks = Object.fromEntries(snapshot.tasks.map((task) => [task.slug, task]));
+  const ships = fixtureShips(() => ({ ...fixtureTasks, ...state.tasks }), () => Date.now() / 1000, (message) => push?.(message));
+  const studied = (slug: string | undefined) =>
+    research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
+  /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
   const act: ActionSender = async (route, body) => {
-    const slug = (body as { slug?: string }).slug;
-    const study = route === "say" && (!slug || !state.tasks[slug] || state.tasks[slug]!.kind === "reflect");
+    const study = route === "say" && studied((body as { slug?: string }).slug);
     if (route === "lesson" || route === "implement" || route === "reflect" || study) return station(route as StationRoute, body as never);
     await new Promise((resolve) => setTimeout(resolve, 400));
     return ships.act(route as ShipRoute, body as never);
@@ -136,6 +139,8 @@ export function fixtureSource(): BoardSource {
       for (const key of ["limits", "messages", "activity_log", "actions"] as const) {
         if (extra?.[key] !== undefined) Object.assign(detail, { [key]: shiftTimes(extra[key], delta) });
       }
+      // The fixtures act on every task, whatever its detail says.
+      detail.actions ??= { enabled: true, reason: null };
       const sent = ships.sent(slug);
       if (sent.length) detail.messages = [...(detail.messages ?? []), ...sent];
       return detail;
