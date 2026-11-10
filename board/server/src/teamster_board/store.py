@@ -51,7 +51,7 @@ def branch_changes(worktree, base):
         return subprocess.run(
             ["git", "-C", worktree, *args], stdin=subprocess.DEVNULL,
             capture_output=True, encoding="utf-8", errors="replace", check=True,
-            timeout=5, env=dict(os.environ, LC_ALL="C"),
+            timeout=5, env=dict(os.environ, LC_ALL="C", GIT_OPTIONAL_LOCKS="0"),
         ).stdout
 
     try:

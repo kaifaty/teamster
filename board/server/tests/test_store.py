@@ -206,6 +206,12 @@ def test_detail_branch_changes(tmp_path, monkeypatch):
     git("-C", str(worktree), "add", ".")
     git("-C", str(worktree), "commit", "--quiet", "-m", "Change files")
     (worktree / "pending.txt").write_text("pending\n")
+    tracked = worktree / "modified.txt"
+    stamp = tracked.stat()
+    os.utime(tracked, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+    index = Path(git("-C", str(worktree), "rev-parse", "--git-path", "index").stdout.decode().strip())
+    original_index = index.read_bytes()
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
     write_state(tasks, worktree=str(worktree), base="base")
     write_state(tasks, "unchanged", worktree=str(repo), base="base")
     write_state(tasks, "missing", repo=str(repo), worktree=str(tmp_path / "gone"), base="base")
@@ -215,6 +221,7 @@ def test_detail_branch_changes(tmp_path, monkeypatch):
     store.poll()
     assert store.detail("task")["changes"] == {
         "commits": 1, "files": 2, "insertions": 2, "deletions": 2, "uncommitted": 1}
+    assert index.read_bytes() == original_index
     assert store.detail("unchanged")["changes"] == {
         "commits": 0, "files": 0, "insertions": 0, "deletions": 0, "uncommitted": 0}
     for slug in ("missing", "not-git", "unknown-base"):
