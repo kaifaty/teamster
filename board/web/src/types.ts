@@ -301,10 +301,36 @@ export interface Cargo {
   decisions: { fixed: number; rejected: number }; // the executor's decisions on review findings
 }
 
+/** A task's limits and the rounds it has spent against them. */
+export interface TaskLimits {
+  max_turn_minutes: number | null; // the turn's limit, minutes
+  weekly_used_percent: number | null; // how much of the account's week the task has spent, %
+  max_weekly_percent: number | null; // the task's budget, % of the week; null without a budget
+  fix_rounds: number | null; // fix rounds allowed after a review
+  review_rounds: number; // rounds done in the current cycle
+  ci_rounds: number | null; // attempts allowed to repair CI
+  ci_enabled: boolean;
+  review_angles: string[];
+  check: string | null; // the check's command
+  rotations: { at: number; from: string | null; to: string | null; reason: string | null }[]; // account changes
+}
+
+/** A message to the task: the lead's order, a review's or CI's report. */
+export interface TaskMessage {
+  at: number;
+  source: "lead" | "review" | "ci";
+  text: string;
+}
+
 export interface TaskDetail extends TaskSummary {
   timeline: { at: number; text: string }[]; // task events (≤ 200), or session creation and last activity
   files: TaskFile[]; // which files exist
   cargo: Cargo | null; // null for sessions; always an object for tasks, possibly empty
+  // Absent from older servers.
+  limits?: TaskLimits | null; // null for sessions
+  messages?: TaskMessage[];
+  activity_log?: Activity[];
+  actions?: { enabled: boolean; reason: "read_only" | "no_teamster" | null };
 }
 
 export interface Accounts {

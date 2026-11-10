@@ -4,7 +4,6 @@
 // components there draw them.
 import { computed, ref } from "vue";
 import type { Board } from "../store/board";
-import TaskPanel from "../components/TaskPanel.vue";
 import frameLight from "./art/frame-light.png";
 import DaySummary from "./DaySummary.vue";
 import FleetPanel from "./FleetPanel.vue";
@@ -12,6 +11,7 @@ import MapDock from "./MapDock.vue";
 import MapToolbar from "./MapToolbar.vue";
 import GalaxyLabels from "./overlay/GalaxyLabels.vue";
 import SystemLabels from "./overlay/SystemLabels.vue";
+import ShipView from "./ship/ShipView.vue";
 import StationView from "./station/StationView.vue";
 import { useFleetScene } from "./use/useFleetScene";
 import { useGalaxyModel } from "./use/useGalaxyModel";
@@ -26,7 +26,7 @@ import { useSystemFleet } from "./use/useSystemFleet";
 const props = defineProps<{ board: Board; active: boolean; machine?: string | null }>();
 /**
  * `machine`: a machine's reactor was clicked, with the label to give the focus back to; `panel`: the map opened a
- * task's card or the science station's screen, which replace the machine's card.
+ * ship's bridge or the science station's screen, which replace the machine's card.
  */
 const emit = defineEmits<{ board: []; machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
 
@@ -54,7 +54,7 @@ const panels = useMapPanels({
   onMachine: (id, opener) => emit("machine", id, opener),
   onPanel: () => emit("panel"),
 });
-const { repo, repoModel, selected, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip } = panels;
+const { repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip, showOnMap } = panels;
 const { openMachine, flying, enter, leave, logEvents, replayTime, goTo, seekTo, summaryOpen, closeSummary } = panels;
 const { compactDock, logOpen, replayVisible, toggleReplay, fleetVisible, toggleFleet, showStation } = panels;
 
@@ -156,20 +156,23 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
       :research="station"
       :now="now"
       :frame="frameLight"
-      :covered="!!selected || !!machine"
+      :covered="shipOpen || !!machine"
       :source="source.source"
       :refresh="loadResearch"
       @close="closeResearch"
       @open="open"
       @ship="openShip"
     />
-    <TaskPanel
-      v-if="selected && active"
+    <ShipView
+      v-if="shipOpen && selected && active"
       :slug="selected"
       :task="selectedTask"
       :source="source.source"
       :now="now"
+      :frame="frameLight"
+      :emblem="emblemOf(selectedTask?.repo ?? null)"
       @close="close"
+      @show="showOnMap"
     />
     <DaySummary v-if="summaryOpen && active" :source="source.source" :events="events" :frame="frameLight" @close="closeSummary" />
   </section>

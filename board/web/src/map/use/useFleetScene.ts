@@ -24,7 +24,9 @@ export interface SceneOptions {
 export function useFleetScene({ props, host, overlay, sources, model, panels, entries, stars, stage }: SceneOptions) {
   const { replay, repoArt } = sources;
   const { world, systemWorld } = model;
-  const { repo, selected, hovered, researchOpen } = panels;
+  const { repo, selected, hovered, researchOpen, shipOpen } = panels;
+  /** The station's screen and a ship's bridge cover the whole map: the galaxy under them stops drawing until they close. */
+  const drawing = () => props.active && !researchOpen.value && !shipOpen.value;
   const failure = ref<"webgl" | "lost" | null>(null);
   let scene: FleetScene | null = null;
   let unmounted = false;
@@ -47,7 +49,7 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
     scene.setSelected(selected.value);
     scene.setMachine(props.machine ?? null);
     scene.setHovered(hovered.value);
-    scene.setActive(props.active && !researchOpen.value);
+    scene.setActive(drawing());
   }
 
   function applyCamera(camera: Camera) {
@@ -111,15 +113,14 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
   watch(model.galaxySources, () => scene?.setGalaxy(model.galaxyModel()));
   watch(() => props.machine, (id) => scene?.setMachine(id ?? null));
   watch(repoArt, (art) => scene?.setArt(art));
-  // The station's screen covers the whole map: the galaxy under it stops drawing until it closes.
-  watch(researchOpen, (open) => scene?.setActive(props.active && !open));
+  watch([researchOpen, shipOpen], () => scene?.setActive(drawing()));
   watch(repo, (name) => scene?.setView(name), { flush: "sync" });
   watch(entries, setShips);
   watch(selected, (slug) => scene?.setSelected(slug));
   watch(hovered, (slug) => scene?.setHovered(slug));
   watch(
     () => props.active,
-    (active) => scene?.setActive(active && !researchOpen.value),
+    () => scene?.setActive(drawing()),
   );
   onMounted(() => void mount());
   onBeforeUnmount(() => {
