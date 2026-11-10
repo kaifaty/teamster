@@ -116,8 +116,9 @@ def test_rest_contract_files_and_unknown_paths(board):
         assert response.content == b"x" * (256 * 1024)
     detail = client.get("/api/tasks/demo").json()
     assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
-                                           "activity_log", "actions"}
-    assert detail["actions"] == client.get("/api/research").json()["actions"]
+                                           "activity_log", "actions", "queue"}
+    assert detail["actions"] == {**client.get("/api/research").json()["actions"], "queue": False}
+    assert detail["queue"] == {"waiting": [], "dropped": []}
     assert set(detail["files"]) == {"brief", "last", "review", "check"}
     assert detail["scheduled"] is None
     assert len(detail["timeline"]) <= 200
@@ -480,10 +481,11 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
         assert task["alive"] is False
         detail = client.get("/api/tasks/local_example").json()
         assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
-                                               "activity_log", "actions"}
+                                               "activity_log", "actions", "queue"}
         assert detail["limits"] is None
         assert detail["messages"] == detail["activity_log"] == []
-        assert detail["actions"] == client.get("/api/research").json()["actions"]
+        assert detail["queue"] == {"waiting": [], "dropped": []}
+        assert detail["actions"] == {**client.get("/api/research").json()["actions"], "queue": False}
         assert detail["files"] == []
         assert len(detail["timeline"]) == 2
         assert "secret" not in json.dumps(detail)
@@ -859,6 +861,11 @@ def station(tmp_path, monkeypatch):
 from pathlib import Path
 args = sys.argv[1:]
 control = json.loads(Path(os.environ["STATION_CONTROL"]).read_text())
+if args == ["--version"]:
+    with (Path(os.environ["STATION_CALLS"]).parent / "versions.log").open("a") as stream:
+        stream.write("asked\\n")
+    print(control.get("version", "1.59.2"))
+    sys.exit(control.get("version_exit", 0))
 record = {"argv": args, "cwd": os.getcwd(), "stdin": sys.stdin.read(), "pid": os.getpid()}
 if "--file" in args:
     record["file"] = Path(args[args.index("--file") + 1]).read_text()
@@ -1388,6 +1395,34 @@ def test_ship_action_states_kinds_and_unknown_tasks(ships, route, body, allowed)
             assert response.json() == {"ok": False, "error": "not running"}
 
 
+@pytest.mark.parametrize("version,exit_code,queue", [
+    ("1.60.0", 0, True), ("teamster 2.0.1", 0, True), ("1.59.9", 0, False), ("1.60.0", 1, False),
+    ("unknown", 0, False),
+])
+def test_ship_say_queues_to_a_live_ship_from_teamster_1_60(ships, version, exit_code, queue):
+    client, _, _, _, calls, control = ships
+    control.write_text(json.dumps({"version": version, "version_exit": exit_code}))
+    for _ in range(2):
+        assert client.get("/api/tasks/work-alive").json()["actions"] == {"enabled": True, "reason": None,
+                                                                        "queue": queue}
+    response = client.post("/api/actions/say", json={"slug": "work-alive", "text": " Next ",
+                                                      "options": {"effort": "low"}})
+    if queue:
+        assert response.json() == {"ok": True, "output": "finished"}
+        record = json.loads(calls.read_text())
+        assert record["argv"] == ["say", "work-alive", "--effort=low", "--file", record["argv"][4], "--queue"]
+        assert record["file"] == "Next"
+    else:
+        assert response.status_code == 409
+        assert not calls.exists()
+    # An idle ship takes the order at once; an archived ship and a scout refuse it as before.
+    assert client.post("/api/actions/say", json={"slug": "work-idle", "text": "Now"}).status_code == 200
+    assert len(json.loads(calls.read_text().splitlines()[-1])["argv"]) == 4
+    for slug in ("scout-alive", "work-archived-20261110T000000Z"):
+        assert client.post("/api/actions/say", json={"slug": slug, "text": "Now"}).status_code == 409
+    assert (calls.parent / "versions.log").read_text() == "asked\n"
+
+
 @pytest.mark.parametrize("options", [
     None, [], {"unknown": "x"}, {"model": "-flag"}, {"model": "x" * 65}, {"model": True},
     {"effort": "extreme"}, {"max_minutes": 4}, {"max_minutes": 601}, {"max_minutes": 5.5},
@@ -1449,7 +1484,7 @@ def test_ship_action_slug_and_request_protection(ships, route):
         with TestClient(disabled, base_url=str(client.base_url), headers=dict(client.headers)) as other:
             actions = other.get("/api/research").json()["actions"]
             assert actions == {"enabled": False, "reason": reason}
-            assert other.get("/api/tasks/work-idle").json()["actions"] == actions
+            assert other.get("/api/tasks/work-idle").json()["actions"] == {**actions, "queue": False}
             response = other.post(f"/api/actions/{route}", json={"slug": "work-idle", **body})
             assert response.status_code == 403
             assert response.json() == {"ok": False, "error": reason}

@@ -16,6 +16,8 @@ FILES = {"brief": "brief.md", "last": "last.md", "review": "review.md", "check":
 FAILURES = {"failed", "stopped", "interrupted", "budget_exhausted", "conflict", "stuck",
             "refused", "unavailable", "exhausted", "running", "sleeping"}
 LOG_RETENTION_SECONDS = 31 * 24 * 3600
+# A larger queue.json reads as an empty queue.
+QUEUE_BYTES = 1024 * 1024
 LOG_LIMIT = 5000
 
 
@@ -199,10 +201,35 @@ def task_messages(path):
                 if at is not None and isinstance(message, str):
                     source = row.get("source")
                     messages.append({"at": at, "source": source if source in ("review", "ci") else "lead",
-                                     "text": message[:4000]})
+                                     "text": message[:4000], "queued_at": number(row.get("queued_at"))})
     except OSError:
         pass
     return sorted(messages, key=lambda item: item["at"])[-50:]
+
+
+def task_queue(path):
+    """The say --queue orders from queue.json: waiting ones and dropped ones with their outcome, options left out."""
+    queue = {"waiting": [], "dropped": []}
+    if path is None:
+        return queue
+    try:
+        with path.open("rb") as stream:
+            data = json.loads(stream.read(QUEUE_BYTES + 1)[:QUEUE_BYTES].decode("utf-8", errors="replace"))
+    except (OSError, ValueError, RecursionError):
+        return queue
+    if not isinstance(data, dict):
+        return queue
+    for section in ("waiting", "dropped"):
+        for row in objects(data.get(section)):
+            at, message = number(row.get("at")), row.get("text")
+            if at is None or not isinstance(message, str):
+                continue
+            order = {"at": at, "text": message[:4000]}
+            if section == "dropped":
+                order.update(dropped_at=number(row.get("dropped_at")), outcome=line(row.get("outcome")))
+            queue[section].append(order)
+        queue[section] = queue[section][-50:]
+    return queue
 
 
 def log_event(row):
@@ -881,7 +908,8 @@ class Store:
                                               ("updated_at", "Last activity"))
                            if session.summary[key] is not None]
                 return dict(session.summary, timeline=sorted(entries, key=lambda item: item["at"]),
-                            files=[], cargo=None, limits=None, messages=[], activity_log=[])
+                            files=[], cargo=None, limits=None, messages=[], activity_log=[],
+                            queue={"waiting": [], "dropped": []})
             record = self._record(slug)
             if record is None:
                 return None
@@ -891,6 +919,7 @@ class Store:
                                if self._file(record.path, filename) is not None],
                         cargo=cargo(record.state), limits=limits(record.state),
                         messages=task_messages(self._file(record.path, "messages.jsonl")),
+                        queue=task_queue(self._file(record.path, "queue.json")),
                         activity_log=sorted((activity for tail in record.tails.values()
                                              for activity in tail.activities),
                                             key=lambda item: item["at"])[-10:][::-1]
