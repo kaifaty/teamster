@@ -247,6 +247,9 @@ def cmd_say(a):
         if waiting is not None:
             print(f"queued for {a.slug}: {waiting} waiting; sent when the current cycle ends")
             return
+        # The cycle may have ended since st was loaded: send from the state it left.
+        st = task_state.load(a.slug)
+        supervisor.apply_say(st, options, cfg)
     # If no thread was created (all accounts exhausted on start), retain the brief too.
     # spawn journals the message only once this turn is claimed: a refused say leaves no trace.
     supervisor.spawn(st, lambda: threads.followup_prompt(st, msg, cfg), **supervisor.say_turn(st, options))

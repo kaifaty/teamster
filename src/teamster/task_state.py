@@ -261,6 +261,10 @@ def enqueue(slug, order):
         if not procs.alive(load(slug).get("pid")):
             return None
         queue = read_queue(slug)
+        # One drop must fit in the dropped history, so wait can list every dropped message.
+        if len(queue["waiting"]) >= QUEUE_DROPPED_LIMIT:
+            procs.die(f"{slug}: {QUEUE_DROPPED_LIMIT} queued messages are already waiting; "
+                      "wait for the cycle to end (or stop it) first")
         queue["waiting"].append(order)
         write_queue(slug, queue)
         return len(queue["waiting"])

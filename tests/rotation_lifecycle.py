@@ -919,6 +919,77 @@ worker.notifications.reap_notifications = reap
         self.assertEqual(self.invocations()[-1]["prompt"], "Idle order")
         self.assertNotIn("queued_at", json.loads((record / "messages.jsonl").read_text().splitlines()[-1]))
 
+    def test_say_queue_that_finds_the_cycle_ended_sends_from_its_final_state(self):
+        self.configure(language="en")
+        gate = self.root / "finish-first-turn"
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "delay_gate": str(gate), "reply": "First turn done"},
+            {"mode": "complete", "reply": "Order done"}])
+        slug = "say-queue-late"
+        self.start(slug, "--check", "true")
+        self.until(lambda: len(self.invocations()) == 1)
+        worker = self.worker()
+        parser = argparse.ArgumentParser()
+        command = parser.add_subparsers(dest="cmd").add_parser("say")
+        command.add_argument("slug")
+        command.add_argument("message", nargs="?")
+        worker.cli.add_command_options(command, "say")
+        original_enqueue = worker.task_state.enqueue
+
+        def late_enqueue(slug, order):
+            # The cycle say loaded as running ends, with its check, before say queues.
+            gate.touch()
+            self.until(lambda: not self.state(slug).get("pid"), timeout=60)
+            self.assertEqual(len(self.state(slug)["checks"]), 1)
+            return original_enqueue(slug, order)
+
+        original_popen = subprocess.Popen
+        supervisors = []
+
+        def popen(*args, **kwargs):
+            supervisors.append(original_popen(*args, **kwargs))
+            return supervisors[-1]
+
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.task_state, "enqueue", side_effect=late_enqueue), \
+                mock.patch.object(worker.supervisor.subprocess, "Popen", side_effect=popen), \
+                redirect_stdout(output):
+            worker.commands.cmd_say(parser.parse_args(["say", slug, "--queue", "Order after the cycle"]))
+        self.assertIn(f"sent to {slug} (turn 2)", output.getvalue())
+        self.assertIn("Order done", self.wait(slug))
+        for process in supervisors:
+            process.wait(30)
+        self.assertEqual([check["outcome"] for check in self.state(slug)["checks"]], ["passed", "passed"])
+
+    def test_wait_follows_a_queued_turn_started_after_its_last_poll(self):
+        worker = self.worker()
+        slug = "wait-late-handoff"
+        record = self.home / "claude-tasks" / slug
+        record.mkdir(parents=True)
+        supervisor = subprocess.Popen([PYTHON, "-c", "import time; time.sleep(60)"])
+        self.extra_pids.add(supervisor.pid)
+        try:
+            (record / "state.json").write_text(json.dumps(
+                {"slug": slug, "turns": 2, "pid": supervisor.pid, "outcome": "running"}))
+            (record / "queue.json").write_text(json.dumps({"waiting": [], "dropped": []}))
+            (record / "queue-sent.jsonl").write_text(json.dumps(
+                {"at": 1, "turn": 1, "next_turn": 2, "count": 1, "report": "First cycle report"}) + "\n")
+            # wait's last poll still saw the first supervisor, which exited after the handoff.
+            stale = {"slug": slug, "turns": 1, "pid": IMPOSSIBLE_PID, "outcome": "running"}
+            loads = iter([stale])
+            original_load = worker.task_state.load
+            output = io.StringIO()
+            with mock.patch.object(worker.task_state, "load",
+                                   side_effect=lambda name: next(loads, None) or original_load(name)), \
+                    mock.patch.object(worker.config, "WAIT_POLL_SECONDS", 0.02), redirect_stdout(output):
+                worker.wait_view.cmd_wait(SimpleNamespace(slug=slug, timeout=1, through_sleep=False))
+        finally:
+            supervisor.kill()
+            supervisor.wait()
+        self.assertEqual(output.getvalue().splitlines(), [
+            "First cycle report", "== queued orders sent: 1, turn 2 started", f"{slug}: still running after 1 s"])
+
     def test_review_limit_restarts_fresh_on_another_account(self):
         self.configure()
         self.account(self.home, "A", self.reset, runs=[
@@ -1194,24 +1265,33 @@ worker.notifications.reap_notifications = reap
         expected = datetime.datetime.fromtimestamp(state["sleeping"]["until"]).strftime("%Y-%m-%d %H:%M")
         self.assertIn("waiting for limit reset until " + expected +
                       "; stop first to send a new message; or queue it with say --queue", result.stderr)
-        self.assertEqual(self.cli("say", "say-sleep", "--queue", "Отправить после сброса"),
-                         "queued for say-sleep: 1 waiting; sent when the current cycle ends\n")
+        orders = [f"Отправить после сброса {number}" for number in range(10)]
+        for number, order in enumerate(orders, 1):
+            self.assertEqual(self.cli("say", "say-sleep", "--queue", order),
+                             f"queued for say-sleep: {number} waiting; sent when the current cycle ends\n")
+        # One drop fits in the dropped history, so wait lists every message.
+        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", "say-sleep", "--queue", "Лишнее"],
+                                cwd=self.repo, env=self.env, text=True, capture_output=True,
+                                timeout=self.fixture_timeout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("say-sleep: 10 queued messages are already waiting", result.stderr)
         self.assertFalse((self.home / "claude-tasks" / "say-sleep" / "messages.jsonl").exists())
         self.assertEqual(self.state("say-sleep")["turns"], 1)
         self.assertFalse(self.invocations())
         self.cli("stop", "say-sleep")
         output = self.wait("say-sleep")
         # A stop drops the queue: nothing is journaled or sent.
-        self.assertIn("== queued orders not sent (outcome stopped):\n- Отправить после сброса", output)
+        self.assertIn("\n".join(["== queued orders not sent (outcome stopped):"] + ["- " + order for order in orders]),
+                      output)
         queue = json.loads((self.home / "claude-tasks" / "say-sleep" / "queue.json").read_text())
         self.assertEqual(queue["waiting"], [])
         self.assertEqual([(order["text"], order["outcome"]) for order in queue["dropped"]],
-                         [("Отправить после сброса", "stopped")])
+                         [(order, "stopped") for order in orders])
         self.assertFalse((self.home / "claude-tasks" / "say-sleep" / "messages.jsonl").exists())
         self.assertEqual(self.state("say-sleep")["turns"], 1)
         self.assertFalse(self.invocations())
         dropped = self.notification("say-sleep", "queue_dropped")
-        self.assertEqual((dropped["outcome"], dropped["texts"]), ("stopped", ["Отправить после сброса"]))
+        self.assertEqual((dropped["outcome"], dropped["texts"]), ("stopped", orders))
         self.cli("clean", "say-sleep")
         archived = list((self.home / "claude-tasks" / ".archive").glob("say-sleep-*/queue.json"))
         self.assertEqual([json.loads(path.read_text()) for path in archived], [queue])
