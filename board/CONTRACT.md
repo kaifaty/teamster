@@ -315,6 +315,7 @@ interface Lesson {             // one row of INDEX.md, in file order
   title: string | null;        // own archive file's lesson heading
   lesson: string | null;       // own section's fields, trimmed, ≤ 2000 chars each
   proposal: string | null;
+  outside: string[];           // proposal paths outside every git repository, as ~/ paths; at most 10
   evidence: string | null;     // preserves line breaks, including evidence lists
   caveats: string | null;
   implementation: Implementation | null;
@@ -579,6 +580,19 @@ what waits for the next batch, including its planned schedule. Material and less
   Values are trimmed and cut to 2000 characters; empty or missing fields, files or sections give `null`.
   Later files' additions are ignored. Lesson files share the batch file signature cache and 64 KiB
   read limit, and symbolic links are skipped.
+- Each lesson's `outside` is computed only from `proposal`; a `null` proposal gives `[]`.
+  Home-path candidates start with `~/`, `$HOME/`, `${HOME}/` or the board user's absolute home
+  directory (`Path.home()`). After the prefix, take the longest run of `[A-Za-z0-9._@+/-]`,
+  stripping trailing `.`, `,`, `:`, `;` and `/`. Absolute paths outside home are ignored without
+  probing them. A check-script token `name.ext` or `dir/name.ext`, with no leading `/` or `~`
+  and an alphanumeric extension, is also a candidate when it names an existing regular file,
+  not a symbolic link, at `<home>/.codex/checks/<repo>/<token>` for one of the lesson's `repos`,
+  or at `<home>/.codex/checks/<token>` when the token contains `/`; use the resolved file.
+  Detection never follows a candidate outside home. A candidate need not exist: it is outside
+  when neither its nearest existing ancestor directory nor any parent up to `/` has a `.git`
+  entry (file or directory). Detection reads the filesystem only, without git or subprocesses.
+  Results use `~/` plus the path relative to home, deduplicated in first-appearance order,
+  retaining at most 10 paths.
 - `repos`: `state.json`'s `repo` from all live task and archive directories, excluding `kind: "scout"`,
   `kind: "reflect"` and the archive directory itself. A missing `kind` counts as work.
   Only existing repositories whose common git directory's `config` contains a `[remote "origin"]`
@@ -719,6 +733,29 @@ Only these POST endpoints execute commands:
   that order, omitting empty fields and their labels. Its fixed completion criteria require implementing
   the proposal in the selected repository, tests and affected documentation, reporting work outside
   the repository in `remaining`, and `needs_decision` with questions when a choice is needed.
+  These criteria stay unchanged when the lesson's `outside` is empty. Otherwise, the brief takes
+  `outside` from the server's current research view, never from the request, and adds this paragraph
+  before `Готово, когда:` (one list item per permitted path):
+
+  ```text
+  Файлы вне репозитория: пользователь разрешил этой задаче менять только эти файлы вне репозитория:
+  - <path from outside>
+  Перед первой правкой существующего файла сохрани его копию рядом: <файл>.bak-<YYYY-MM-DD>-<id урока>. Проверь изменённое поведение на копии файла во временном каталоге, не на живых задачах и системах. Если в репозитории менять нечего, не коммить и не пушь ветку.
+  ```
+
+  `YYYY-MM-DD` is the UTC start date from the same timestamp as the slug; `id урока` is the
+  slug's normalized lesson id (for X4 started on 2026-11-10: `.bak-2026-11-10-x4`).
+  For these lessons, the completion criteria are:
+
+  ```text
+  - предложение урока внедрено в той форме, которую оно называет, в этом репозитории и в разрешённых файлах вне него; если эта форма не подходит к коду — в ближайшей, которая даёт тот же результат, предпочитая проверку или защиту в коде правилу в тексте;
+  - изменённое поведение закреплено тестом в репозитории, а для файла вне репозитория — проверкой на копии, записанной в checks;
+  - документация репозитория, которую задевает изменение, обновлена;
+  - в summary перечислены изменённые файлы вне репозитория, их копии .bak и команда `diff -u <копия> <файл>` для каждого;
+  - части предложения для других файлов вне репозитория и для других репозиториев не сделаны, а перечислены в remaining.
+  ```
+
+  The existing criterion requiring `needs_decision` with questions when a choice is needed remains.
   Only for a `proposed` lesson, first run
   `teamster lesson <entry> accepted --note=внедряется: <slug>` (the note is one argv word).
   A nonzero exit returns 422 and prevents the start step. Then run

@@ -1092,6 +1092,81 @@ Keep its run id.
     assert "Keep it focused" not in caplog.text
 
 
+def test_station_implement_outside_brief_from_research(station, lesson_repo, monkeypatch):
+    client, application, settings, _, calls, _ = station
+
+    class FixedDatetime(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, zone):
+            assert zone is timezone.utc
+            cls.calls += 1
+            assert cls.calls == 1
+            return cls(2026, 11, 10, 23, 4, 5, tzinfo=zone)
+
+    monkeypatch.setattr(actions_module, "datetime", FixedDatetime)
+    script = Path.home() / ".codex" / "checks" / "home-infra" / "ci_wait.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("raise SystemExit(0)\n")
+    entry = "batch-2026-11-10.md X4"
+    archive = settings.path("tasks") / ".archive"
+    (archive / "INDEX.md").write_text(
+        f"| 2026-11-10 | {entry} | domain home-infra | CI | proposed |\n")
+    (archive / "batch-2026-11-10.md").write_text(
+        "## X4. Wait for a run\nproposal: ci_wait.py: when no run exists, exit 75.\n")
+    application.state.board.research.invalidate()
+    before = client.get("/api/research").json()["lessons"][0]
+    assert before["outside"] == ["~/.codex/checks/home-infra/ci_wait.py"]
+    assert before["status"] == "proposed"
+    response = client.post("/api/actions/implement", json={
+        "entry": entry, "repo": str(lesson_repo), "outside": ["~/.claude/settings.json"],
+    })
+    slug = "lesson-x4-1110"
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "output": "finished", "slug": slug}
+    records = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(records) == 2
+    assert records[0]["argv"] == ["lesson", entry, "accepted", f"--note=внедряется: {slug}"]
+    start = records[1]
+    brief_path = start["argv"][3]
+    assert start["argv"] == [
+        "start", slug, "--brief", brief_path, "--repo", str(lesson_repo), "--executor", "claude",
+        "--sandbox", "off", "--effort", "high", "--task-type", "feature", "--max-minutes", "60",
+        "--review", "--fix-rounds", "2", "--parallel",
+    ]
+    expected = """Внедрить урок «batch-2026-11-10.md X4»: Wait for a run.
+
+Зачем: пользователь принял этот урок рефлексии на научной станции и попросил его внедрить. Урок из файла batch-2026-11-10.md в архиве задач.
+
+Признак: CI
+Предложение: ci_wait.py: when no run exists, exit 75.
+
+Файлы вне репозитория: пользователь разрешил этой задаче менять только эти файлы вне репозитория:
+- ~/.codex/checks/home-infra/ci_wait.py
+Перед первой правкой существующего файла сохрани его копию рядом: <файл>.bak-2026-11-10-x4. Проверь изменённое поведение на копии файла во временном каталоге, не на живых задачах и системах. Если в репозитории менять нечего, не коммить и не пушь ветку.
+
+Готово, когда:
+- предложение урока внедрено в той форме, которую оно называет, в этом репозитории и в разрешённых файлах вне него; если эта форма не подходит к коду — в ближайшей, которая даёт тот же результат, предпочитая проверку или защиту в коде правилу в тексте;
+- изменённое поведение закреплено тестом в репозитории, а для файла вне репозитория — проверкой на копии, записанной в checks;
+- документация репозитория, которую задевает изменение, обновлена;
+- в summary перечислены изменённые файлы вне репозитория, их копии .bak и команда `diff -u <копия> <файл>` для каждого;
+- части предложения для других файлов вне репозитория и для других репозиториев не сделаны, а перечислены в remaining.
+
+Проверки: тесты и проверки, которые требуют AGENTS.md и README этого репозитория.
+Не трогать: ничего, что не нужно для этого урока; записи задач и INDEX.md в архиве teamster.
+Если предложение неясно или для него нужен выбор пользователя — закончи ход со статусом needs_decision и задай вопросы.
+"""
+    assert start["brief"] == expected
+    assert (calls.parent / f"{slug}.brief.md").read_text() == expected
+    assert not Path(brief_path).exists()
+    assert all(row["cwd"] == str(Path.home()) and row["stdin"] == "" for row in records)
+    after = client.get("/api/research").json()["lessons"][0]
+    assert after["status"] == "accepted"
+    assert after["implementation"]["slug"] == slug
+    assert FixedDatetime.calls == 1
+
+
 @pytest.mark.parametrize("lesson_id,expected", [("W2", "w2"), ("W_Ä.2", "w---2")])
 def test_station_implement_slug_characters_and_collisions(station, lesson_repo, lesson_id, expected):
     client, application, settings, entry, _, _ = station

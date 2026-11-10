@@ -117,7 +117,7 @@ def option_flags(options):
     return flags
 
 
-def implementation_brief(lesson, note):
+def implementation_brief(lesson, note, started, lesson_id):
     entry = lesson["entry"]
     paragraphs = [
         f"Внедрить урок «{entry}»: {lesson['title'] or lesson['cue']}.",
@@ -134,13 +134,27 @@ def implementation_brief(lesson, note):
         paragraphs.append("\n".join(details))
     if note:
         paragraphs.append(f"Уточнение пользователя: {note}")
-    paragraphs.append("""Готово, когда:
+    if lesson["outside"]:
+        paragraphs.append(
+            "Файлы вне репозитория: пользователь разрешил этой задаче менять только эти файлы вне репозитория:\n"
+            + "\n".join(f"- {path}" for path in lesson["outside"])
+            + "\nПеред первой правкой существующего файла сохрани его копию рядом: "
+            f"<файл>.bak-{started:%Y-%m-%d}-{lesson_id}. Проверь изменённое поведение на копии файла "
+            "во временном каталоге, не на живых задачах и системах. Если в репозитории менять нечего, "
+            "не коммить и не пушь ветку.")
+        paragraphs.append("""Готово, когда:
+- предложение урока внедрено в той форме, которую оно называет, в этом репозитории и в разрешённых файлах вне него; если эта форма не подходит к коду — в ближайшей, которая даёт тот же результат, предпочитая проверку или защиту в коде правилу в тексте;
+- изменённое поведение закреплено тестом в репозитории, а для файла вне репозитория — проверкой на копии, записанной в checks;
+- документация репозитория, которую задевает изменение, обновлена;
+- в summary перечислены изменённые файлы вне репозитория, их копии .bak и команда `diff -u <копия> <файл>` для каждого;
+- части предложения для других файлов вне репозитория и для других репозиториев не сделаны, а перечислены в remaining.""")
+    else:
+        paragraphs.append("""Готово, когда:
 - предложение урока внедрено в этом репозитории в той форме, которую оно называет; если эта форма не подходит к коду — в ближайшей, которая даёт тот же результат, предпочитая проверку или защиту в коде правилу в тексте;
 - изменённое поведение закреплено тестом;
 - документация репозитория, которую задевает изменение, обновлена;
-- части предложения для другого репозитория или для файлов вне репозитория (например ~/.codex/AGENTS.md или ~/.claude/…) не сделаны, а перечислены в отчёте в remaining.
-
-Проверки: тесты и проверки, которые требуют AGENTS.md и README этого репозитория.
+- части предложения для другого репозитория или для файлов вне репозитория (например ~/.codex/AGENTS.md или ~/.claude/…) не сделаны, а перечислены в отчёте в remaining.""")
+    paragraphs.append("""Проверки: тесты и проверки, которые требуют AGENTS.md и README этого репозитория.
 Не трогать: ничего, что не нужно для этого урока; записи задач и INDEX.md в архиве teamster.
 Если предложение неясно или для него нужен выбор пользователя — закончи ход со статусом needs_decision и задай вопросы.
 """)
@@ -344,7 +358,8 @@ class Actions:
                          "на съёмных томах: Системные настройки → Конфиденциальность и безопасность → "
                          "Файлы и папки или Полный доступ к диску.")
         lesson_id = re.sub(r"[^a-z0-9]", "-", entry.split()[-1].lower())
-        base = f"lesson-{lesson_id}-{datetime.now(timezone.utc):%m%d}"
+        started = datetime.now(timezone.utc)
+        base = f"lesson-{lesson_id}-{started:%m%d}"
         slug, suffix = base, 2
         while (self.research.tasks_path / slug).exists():
             slug = f"{base}-{suffix}"
@@ -354,7 +369,7 @@ class Actions:
         argv = [self.command, "start", slug]
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as stream:
             path = Path(stream.name)
-            stream.write(implementation_brief(lesson, note))
+            stream.write(implementation_brief(lesson, note, started, lesson_id))
         try:
             argv.extend(["--brief", str(path), "--repo", repo, "--executor", "claude", "--sandbox", "off",
                          "--effort", "high", "--task-type", "feature", "--max-minutes", "60",
