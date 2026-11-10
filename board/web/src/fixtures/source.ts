@@ -3,7 +3,7 @@
 import type { BoardSource } from "../lib/source";
 import { ART, BACKDROPS } from "../map/art";
 import { emptyState, reduce, type BoardState } from "../store/reduce";
-import type { Activity, Cargo, ServerMessage, Snapshot, TaskDetail, TaskFile, TaskLimits, TaskMessage, TaskQueue } from "../types";
+import type { Activity, Cargo, ServerMessage, Snapshot, TaskChanges, TaskDetail, TaskFile, TaskLimits, TaskMessage, TaskQueue } from "../types";
 import snapshotJson from "./snapshot.json";
 import streamJson from "./stream.json";
 import detailsJson from "./details.json";
@@ -21,6 +21,8 @@ interface FixtureDetail {
   activity_log?: Activity[];
   actions?: TaskDetail["actions"];
   queue?: TaskQueue;
+  report?: string | null;
+  changes?: TaskChanges | null;
 }
 
 /** A task's cargo when the fixtures give none: present, but with nothing in it. */
@@ -143,7 +145,7 @@ export function fixtureSource(): BoardSource {
       const cargo = task.kind === "session" ? null : shiftTimes(extra?.cargo ?? NO_CARGO, delta);
       const detail: TaskDetail = { ...task, timeline, files, cargo };
       // The fields newer servers add stay absent where the fixture leaves them out, as from an older server.
-      for (const key of ["limits", "messages", "activity_log", "actions", "queue"] as const) {
+      for (const key of ["limits", "messages", "activity_log", "actions", "queue", "report", "changes"] as const) {
         if (extra?.[key] !== undefined) Object.assign(detail, { [key]: shiftTimes(extra[key], delta) });
       }
       // The fixtures act on every task, whatever its detail says.

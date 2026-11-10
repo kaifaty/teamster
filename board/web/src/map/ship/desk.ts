@@ -125,25 +125,29 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
     area.setSelectionRange(area.value.length, area.value.length);
   }
 
-  async function send() {
-    const text = reply.value.trim();
+  /**
+   * Sends the reply field, or `text` when given (the answers to the agent's questions), with the refit's changed
+   * fields. Returns whether the server took it; the field and the refit are cleared then.
+   */
+  async function send(text: string = reply.value): Promise<boolean> {
+    const words = text.trim();
     const state = groups.reply;
-    if (!text) {
+    if (!words) {
       Object.assign(state, blank(), { error: "Сначала напиши указание" });
-      return;
+      return false;
     }
     const { options, errors } = refitNow.value;
     if (errors.length) {
       Object.assign(state, blank(), { error: `Переоснащение: ${errors.join(" · ")}` });
-      return;
+      return false;
     }
-    const body = Object.keys(options).length ? { slug: slug.value, text, options } : { slug: slug.value, text };
+    const body = Object.keys(options).length ? { slug: slug.value, text: words, options } : { slug: slug.value, text: words };
     const toQueue = view.value?.queue === true;
-    if (await run("reply", "send", { route: "say", body }, toQueue)) {
-      echo.value = [...echo.value, toQueue ? { at: Date.now() / 1000, text, queued: true } : { at: Date.now() / 1000, text }];
-      reply.value = "";
-      Object.assign(refit, blankRefit());
-    }
+    if (!(await run("reply", "send", { route: "say", body }, toQueue))) return false;
+    echo.value = [...echo.value, toQueue ? { at: Date.now() / 1000, text: words, queued: true } : { at: Date.now() / 1000, text: words }];
+    reply.value = "";
+    Object.assign(refit, blankRefit());
+    return true;
   }
 
   const verdict = (value: Verdict, note = "") => {

@@ -1,16 +1,19 @@
 <script setup lang="ts">
-// The deck «Бортовые документы»: the task's brief, last answer, review and check log; each opens in the viewer.
+// The deck «Бортовые документы»: the task's brief, last answer, review and check log, those the task has; each opens
+// in the viewer.
+import { computed } from "vue";
 import type { TaskFile } from "../../types";
 
-defineProps<{ files: readonly TaskFile[]; loading: boolean }>();
+const props = defineProps<{ files: readonly TaskFile[]; loading: boolean }>();
 const emit = defineEmits<{ open: [name: TaskFile, opener: HTMLElement] }>();
 
 const DOCS: readonly { name: TaskFile; sigil: string; title: string; file: string }[] = [
   { name: "brief", sigil: "✦", title: "Полётное задание", file: "brief.md" },
   { name: "last", sigil: "✎", title: "Последний доклад", file: "last.md" },
   { name: "review", sigil: "⛨", title: "Акт инспекции", file: "review.md" },
-  { name: "check", sigil: "▣", title: "Протокол испытаний", file: "check.log" },
+  { name: "check", sigil: "▣", title: "Протокол проверки", file: "check.log" },
 ];
+const present = computed(() => DOCS.filter((doc) => props.files.includes(doc.name)));
 </script>
 
 <template>
@@ -19,19 +22,19 @@ const DOCS: readonly { name: TaskFile; sigil: string; title: string; file: strin
       <span class="sigil" aria-hidden="true">▥</span>
       <h3 id="docs-deck">Бортовые документы</h3>
     </div>
-    <div class="docs">
+    <p v-if="!present.length" class="empty">{{ loading ? "Загрузка…" : "Документов пока нет." }}</p>
+    <div v-else class="docs">
       <button
-        v-for="doc in DOCS"
+        v-for="doc in present"
         :key="doc.name"
         type="button"
         class="doc well"
-        :disabled="!files.includes(doc.name)"
         :data-doc="doc.name"
         @click="emit('open', doc.name, $event.currentTarget as HTMLElement)"
       >
         <span class="g" aria-hidden="true">{{ doc.sigil }}</span>
         <span class="n">{{ doc.title }}</span>
-        <span class="f mono">{{ doc.file }}<template v-if="!files.includes(doc.name)"> · {{ loading ? "…" : "нет" }}</template></span>
+        <span class="f mono">{{ doc.file }}</span>
       </button>
     </div>
   </section>

@@ -5,16 +5,20 @@
 import { coarseSpan } from "../../lib/format";
 import type { LogEvent, TaskLimits, TaskMessage, TaskSummary } from "../../types";
 
-export type TapeStop = "yard" | "range" | "inspection" | "gate" | "roadstead" | "cryo";
+export type TapeStop = "yard" | "range" | "inspection" | "gate" | "wait" | "cryo";
 
-/** The legend: every stop of the route the tape can show, in the route's order, with its colour. */
-export const TAPE_STOPS: readonly { id: TapeStop; name: string; color: string }[] = [
-  { id: "yard", name: "Верфь", color: "#a8653a" },
-  { id: "range", name: "Полигон", color: "#4f9a62" },
-  { id: "inspection", name: "Инспекция", color: "#7b5bb8" },
-  { id: "gate", name: "Врата", color: "#4a78c9" },
-  { id: "roadstead", name: "Рейд", color: "#c9a23f" },
-  { id: "cryo", name: "Криополе", color: "#5aa7c4" },
+/**
+ * The legend: every stop the tape can show, in the route's order, with its colour; `legend` names it the plain way
+ * first. The time a stopped ship waited for you is its own stripe, «ждал тебя», wherever it stood: the route strip
+ * shows where.
+ */
+export const TAPE_STOPS: readonly { id: TapeStop; name: string; legend: string; color: string }[] = [
+  { id: "yard", name: "Верфь", legend: "работа · верфь", color: "#a8653a" },
+  { id: "range", name: "Полигон", legend: "проверка · полигон", color: "#4f9a62" },
+  { id: "inspection", name: "Инспекция", legend: "ревью · инспекция", color: "#7b5bb8" },
+  { id: "gate", name: "Врата", legend: "CI · врата", color: "#4a78c9" },
+  { id: "wait", name: "Ждал тебя", legend: "ждал тебя", color: "#c9a23f" },
+  { id: "cryo", name: "Криополе", legend: "сон · криополе", color: "#5aa7c4" },
 ];
 
 const NAMES = Object.fromEntries(TAPE_STOPS.map((stop) => [stop.id, stop.name])) as Record<TapeStop, string>;
@@ -140,8 +144,8 @@ const span = (from: number, to: number) => coarseSpan(Math.max(0, to - from));
 type Bare = Omit<TapeSegment, "left" | "width">;
 
 /**
- * The tape's stops: every completed phase but the final `turn` rows; the roadstead after each finished turn, while the
- * ship waited for you until its next event; and, while the ship works or sleeps, its live phase until `now`.
+ * The tape's stops: every completed phase but the final `turn` rows; «ждал тебя» after each finished turn, until the
+ * ship's next event; and, while the ship works or sleeps, its live phase until `now`.
  */
 export function tapeSegments(events: readonly LogEvent[], task: TaskSummary, now: number): Bare[] {
   const rows = [...events].sort((a, b) => begin(a) - begin(b) || a.at - b.at);
@@ -170,14 +174,17 @@ export function tapeSegments(events: readonly LogEvent[], task: TaskSummary, now
     live = { stop, from, to: now, live: true, failed: false, title: `${NAMES[stop]}: ${what} ${span(from, now)}` };
   }
 
-  // The roadstead: from a finished turn to the next thing that happened, or to now while the ship still waits.
+  // «Ждал тебя»: from a finished turn to the next thing that happened, or to now while the ship still waits.
   const closedAt = task.column === "closed" ? Math.max(lastEnd, task.updated_at) : now;
   for (const turn of rows) {
     if (turn.phase !== "turn") continue;
     const next = rows.filter((event) => event !== turn && begin(event) >= turn.at).map(begin);
     if (live) next.push(live.from);
     const to = next.length ? Math.min(...next) : working ? turn.at : closedAt;
-    if (to > turn.at) segments.push({ stop: "roadstead", from: turn.at, to, live: false, failed: false, title: `Рейд: ждал тебя ${span(turn.at, to)}` });
+    if (to > turn.at) {
+      const still = !working && task.column !== "closed" && to >= now;
+      segments.push({ stop: "wait", from: turn.at, to, live: false, failed: false, title: `${still ? "Ждёт тебя" : "Ждал тебя"} ${span(turn.at, to)}` });
+    }
   }
   if (live) segments.push(live);
   return segments.sort((a, b) => a.from - b.from || Number(a.live) - Number(b.live));
@@ -272,6 +279,24 @@ export function recordedTape(
   if (events === null) return null;
   const tape = tapeOf(events, task, messages, rotations, now, truncated);
   return tape.segments.length || tape.marks.length ? tape : null;
+}
+
+const SUM_PARTS: readonly { stops: readonly TapeStop[]; word: string }[] = [
+  { stops: ["yard"], word: "работа" },
+  { stops: ["range", "inspection"], word: "проверки и ревью" },
+  { stops: ["gate"], word: "CI" },
+  { stops: ["wait"], word: "ждал тебя" },
+  { stops: ["cryo"], word: "сон" },
+];
+
+/** «36 мин в рейсе: работа 3 мин, ждал тебя 33 мин» under the tape; overlapping segments are counted once each. */
+export function tapeSummary(tape: Pick<Tape, "start" | "end" | "segments">): string {
+  const parts = SUM_PARTS.map(({ stops, word }) => {
+    const seconds = tape.segments.filter((segment) => stops.includes(segment.stop)).reduce((sum, segment) => sum + Math.max(0, segment.to - segment.from), 0);
+    return seconds >= 60 ? `${word} ${coarseSpan(seconds)}` : null;
+  }).filter(Boolean);
+  const total = `${coarseSpan(Math.max(0, tape.end - tape.start))} в рейсе`;
+  return parts.length ? `${total}: ${parts.join(", ")}` : total;
 }
 
 // The time scale under the tape.

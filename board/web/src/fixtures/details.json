@@ -338,6 +338,14 @@
     "actions": {
       "enabled": true,
       "reason": null
+    },
+    "report": "Описал схему вывода accounts --json, добавил поля five_hour и seven_day.\n\nОба замечания P3 оставил: пример в README обновлю отдельно, а порядок аккаунтов тест не проверяет намеренно.",
+    "changes": {
+      "commits": 4,
+      "files": 6,
+      "insertions": 210,
+      "deletions": 35,
+      "uncommitted": 0
     }
   },
   "merge-conflict-fix": {
@@ -378,6 +386,14 @@
         "fixed": 0,
         "rejected": 0
       }
+    },
+    "report": "Конфликт с main в vault/sync.ts\n\nОбе стороны меняют `mergeRemote`: в main добавили повтор при сетевой ошибке, в ветке — порядок слияния. Сам не разрешаю: нужен выбор, чья логика главнее.",
+    "changes": {
+      "commits": 2,
+      "files": 3,
+      "insertions": 40,
+      "deletions": 12,
+      "uncommitted": 1
     }
   },
   "demo-tunnel-land": {
@@ -455,6 +471,14 @@
           "outcome": "budget_exhausted"
         }
       ]
+    },
+    "report": "Нужно решение: сливать через скрипт слияния или ждать ручного ревью?\n\nТуннель для демо готов: `scripts/land.sh` собирает ветку, прогоняет `npm test` и поднимает стенд. Проверка прошла, ревью чистое, но в этом репозитории правило: слияние только после ручного ревью, а скрипт слияния обходит его.\n\nЕсли сливать скриптом, демо будет сегодня; если ждать ревью — завтра утром. Я ничего не сливал.",
+    "changes": {
+      "commits": 3,
+      "files": 5,
+      "insertions": 142,
+      "deletions": 18,
+      "uncommitted": 0
     }
   },
   "ml-eval-pipeline": {
