@@ -6,6 +6,7 @@ src/teamster/task_state.py, review_cycle.py, supervisor.py and result_schema.py.
 
 import configparser
 import json
+import os
 import re
 import threading
 import time
@@ -22,6 +23,7 @@ BATCH = re.compile(r"batch-([0-9]{4}-[0-9]{2}-[0-9]{2})?.*\.md", re.S)
 ARCHIVE_FILE = re.compile(r"(?:batch|study)-[^/\\]+\.md")
 IMPLEMENTATION = re.compile(r"^Внедрить урок «([^»]+)»")
 LESSON_FIELDS = ("title", "lesson", "proposal", "evidence", "caveats")
+CHECK_TOKEN = re.compile(r"[A-Za-z0-9._@+-]+(?:/[A-Za-z0-9._@+-]+)*\.[A-Za-z0-9]+")
 SEPARATOR = re.compile(r":?-+:?")
 STATUSES = ("proposed", "accepted", "applied", "declined")
 SIGNALS = ("blocked", "refused", "needs_decision", "escalate", "round_cap",
@@ -254,6 +256,87 @@ def lesson_section(content, lesson_id):
     for name in LESSON_FIELDS[1:]:
         result[name] = "\n".join(values.get(name, [])).strip()[:2000] or None
     return result
+
+
+def home_path(path, home):
+    """Resolve links one at a time, without inspecting a target outside home."""
+    try:
+        pending = list(path.relative_to(home).parts)
+        current = home
+        links = 0
+        while pending:
+            part = pending.pop(0)
+            if part == "..":
+                if current == home:
+                    return None
+                current = current.parent
+                continue
+            current = current / part
+            if current.is_symlink():
+                links += 1
+                if links > 40:
+                    return None
+                target = current.readlink()
+                if not target.is_absolute():
+                    target = current.parent / target
+                pending = list(target.relative_to(home).parts) + pending
+                current = home
+        return current
+    except (OSError, ValueError):
+        return None
+
+
+def outside_paths(proposal, repos):
+    if proposal is None:
+        return []
+    home = Path.home()
+    outside = []
+    tokens = re.finditer(r"(?<![A-Za-z0-9._@+/$~{}-])(?:" + re.escape(str(home)) +
+                         r"/|~/|\$HOME/|\$\{HOME\}/)?[A-Za-z0-9._@+/-]+", proposal)
+    for match in tokens:
+        token = match.group().rstrip(".,:;/")
+        candidates = []
+        prefix = next((prefix for prefix in ("~/", "$HOME/", "${HOME}/")
+                       if token.startswith(prefix)), None)
+        if prefix is not None or token.startswith("/"):
+            path = home / token[len(prefix):].lstrip("/") if prefix else Path(token)
+            candidate = home_path(path, home)
+            if candidate is not None:
+                candidates.append((path, candidate))
+        elif CHECK_TOKEN.fullmatch(token):
+            checks = home / ".codex" / "checks"
+            paths = [checks / repo / token for repo in repos]
+            if "/" in token:
+                paths.append(checks / token)
+            for path in paths:
+                parent = home_path(path.parent, home)
+                if parent is not None:
+                    candidate = parent / path.name
+                    try:
+                        if not candidate.is_symlink() and candidate.is_file():
+                            candidates.append((path, candidate))
+                    except OSError:
+                        continue
+        for path, candidate in candidates:
+            try:
+                if candidate == home or candidate.is_dir():
+                    continue
+                directory = candidate.parent
+                for ancestor in (directory, *directory.parents):
+                    try:
+                        (ancestor / ".git").lstat()
+                        break
+                    except (FileNotFoundError, NotADirectoryError):
+                        continue
+                else:
+                    display = "~/" + Path(os.path.normpath(path)).relative_to(home).as_posix()
+                    if display not in outside:
+                        outside.append(display)
+                        if len(outside) == 10:
+                            return outside
+            except (OSError, ValueError):
+                continue
+    return outside
 
 
 def schedule_timestamp(value):
@@ -579,7 +662,8 @@ class Research:
                 content = self._archive_file(archive, parts[0])
                 if content is not None:
                     fields = lesson_section(content, parts[1])
-            lessons.append({**row, **fields})
+            lessons.append({**row, **fields,
+                            "outside": outside_paths(fields["proposal"], row["repos"])})
         return lessons
 
     def _archive_file(self, archive, name):

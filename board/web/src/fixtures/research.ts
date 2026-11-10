@@ -66,6 +66,21 @@ export const fixtureResearch = (BASE: number): ResearchView => ({
         summary: "Two of three migrations are guarded; the PR was closed for a new attempt.",
       }) },
     { date: "2026-11-07", entry: "study-2026-11-07.md L1", scope: "invariant", scope_text: "invariant", repos: [], cue: "a broad check repeats before the failure is reproduced", status: "proposed", status_text: "proposed" },
+    { date: "2026-11-07", entry: "batch-2026-11-07.md V1", scope: "domain", scope_text: "domain demo-vault", repos: ["demo-vault"], cue: "the CI waiter reports «no CI run» as a CI failure", status: "proposed", status_text: "proposed",
+      title: "No CI run is CI unavailable, not a failure",
+      lesson: "When no run exists for the head commit, the waiter exits 75 so the supervisor skips CI.",
+      proposal: "`~/.codex/checks/demo-vault/ci_wait.py`: when no run exists for the head commit after the wait, print the reason and exit 75.",
+      evidence: "- demo-vault/backup-snapshots: «no CI run» after 10 min, two repair rounds, blocked", caveats: null,
+      outside: ["~/.codex/checks/demo-vault/ci_wait.py"] },
+    { date: "2026-11-07", entry: "batch-2026-11-07.md V2", scope: "domain", scope_text: "domain demo-shop", repos: ["demo-shop"], cue: "the check script skips the ledger test", status: "accepted", status_text: "accepted: внедряется: lesson-v2-1107",
+      title: "Run the ledger test in the saved check",
+      lesson: "The saved check of demo-shop runs the ledger reconciliation test.",
+      proposal: "Add the ledger test to `check.sh` in `~/.codex/checks/demo-shop/`.", evidence: null, caveats: null,
+      outside: ["~/.codex/checks/demo-shop/check.sh"],
+      implementation: task({
+        slug: "lesson-v2-1107", repo: "demo-shop", result_status: "done", created: BASE - 7000, updated_at: BASE - 1200,
+        summary: "Changed ~/.codex/checks/demo-shop/check.sh: it runs the ledger test; copy check.sh.bak-2026-11-07-v2.",
+      }) },
   ],
   studies: [
     {

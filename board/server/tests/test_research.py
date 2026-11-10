@@ -122,7 +122,7 @@ def test_index_rows_scopes_statuses_and_extra_cells(tmp_path):
                           "scope_text": "domain a, b", "repos": ["a", "b"], "cue": "a flaky check",
                           "status": "applied", "status_text": "applied AGENTS.md in a",
                           "title": None, "lesson": None, "proposal": None, "evidence": None, "caveats": None,
-                          "implementation": None}
+                          "outside": [], "implementation": None}
 
 
 def test_lesson_sections_batch_study_and_signature_cache(tmp_path, monkeypatch):
@@ -203,6 +203,80 @@ lesson: Never read this for W3.
     with original(batch, "w") as stream:
         stream.write(" " * research_module.BATCH_LIMIT + "\n## W2 Hidden\nlesson: hidden")
     assert fields(research.view()["lessons"][0]) == dict.fromkeys(research_module.LESSON_FIELDS)
+
+
+@pytest.mark.parametrize("proposal,expected", [
+    (None, []),
+    ("`~/.codex/checks/home-infra/ci_wait.py`: when no run exists … exit 75",
+     ["~/.codex/checks/home-infra/ci_wait.py"]),
+    ("codex_task.py, SKILL.md, scripts/e2e.sh", []),
+    ("~ci_wait.py and ~nested/check.py", []),
+    ("~/.codex/ ~/.codex/checks/home-infra/ ~/.claude/", []),
+    ("~/new/file", ["~/new/file"]),
+    ("~/new/../.claude/./settings.json", ["~/.claude/settings.json"]),
+    ("~/worktree/new/guard.py and {home}/repository/check.py", []),
+    ("~/.claude/settings.json and $HOME/.codex/AGENTS.md",
+     ["~/.claude/settings.json", "~/.codex/AGENTS.md"]),
+    ("${HOME}/.codex/AGENTS.md.; ~/new/check.py/ $HOME//new/check.py {home}/.claude/settings.json:",
+     ["~/.codex/AGENTS.md", "~/new/check.py", "~/.claude/settings.json"]),
+    ("ci_wait.py and nested/check.py, shared/guard.sh linked.py directory.py",
+     ["~/.codex/checks/home-infra/ci_wait.py", "~/.codex/checks/second/nested/check.py",
+      "~/.codex/checks/shared/guard.sh"]),
+    (" ".join(f"~/new/file{index}.py" for index in range(12)),
+     [f"~/new/file{index}.py" for index in range(10)]),
+])
+def test_lesson_outside_from_proposal_only(tmp_path, monkeypatch, proposal, expected):
+    home = tmp_path / "home with spaces"
+    home.mkdir()
+    monkeypatch.setattr(research_module.Path, "home", classmethod(lambda cls: home))
+    codex = home / "dotfiles" / "codex"
+    codex.mkdir(parents=True)
+    (home / ".codex").symlink_to(codex, target_is_directory=True)
+    (home / ".claude").mkdir()
+    checks = home / ".codex" / "checks"
+    for name in ("home-infra/ci_wait.py", "second/nested/check.py", "shared/guard.sh"):
+        path = checks / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Saved check\n")
+    (checks / "home-infra" / "linked.py").symlink_to(checks / "home-infra" / "ci_wait.py")
+    (checks / "home-infra" / "directory.py").mkdir()
+    (home / "repository" / ".git").mkdir(parents=True)
+    (home / "worktree").mkdir()
+    (home / "worktree" / ".git").write_text("gitdir: unused\n")
+    archive = tmp_path / "tasks" / ".archive"
+    archive.mkdir(parents=True)
+    (archive / "INDEX.md").write_text(
+        "| 2026-11-10 | batch-2026-11-10.md X4 | domain home-infra, second | ~/cue.py | proposed |\n")
+    (archive / "batch-2026-11-10.md").write_text(
+        "## X4. ~/title.py\nlesson: ~/lesson.py\nevidence: ~/evidence.py\ncaveats: ~/caveats.py\n" +
+        ("proposal: " + proposal.replace("{home}", str(home)) + "\n" if proposal is not None else ""))
+    lesson = Research(archive.parent).view()["lessons"][0]
+    assert lesson["outside"] == expected
+
+
+def test_lesson_outside_never_probes_paths_outside_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (home / "escape").symlink_to(elsewhere, target_is_directory=True)
+    checks = home / ".codex" / "checks"
+    checks.mkdir(parents=True)
+    (checks / "repo").symlink_to(elsewhere, target_is_directory=True)
+    monkeypatch.setattr(research_module.Path, "home", classmethod(lambda cls: home))
+    original_stat, original_lstat = research_module.Path.stat, research_module.Path.lstat
+
+    def guard(original):
+        def probe(path, *args, **kwargs):
+            assert not path.is_relative_to(elsewhere)
+            return original(path, *args, **kwargs)
+        return probe
+
+    monkeypatch.setattr(research_module.Path, "stat", guard(original_stat))
+    monkeypatch.setattr(research_module.Path, "lstat", guard(original_lstat))
+    assert research_module.outside_paths(str(home), []) == []
+    assert research_module.outside_paths(
+        f"{elsewhere}/file.py ~/escape/file.py ~/../elsewhere/file.py file.py", ["repo"]) == []
 
 
 def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp_path):

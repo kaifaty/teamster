@@ -2,7 +2,7 @@
 // should do next, and the bodies of the actions the station's buttons send. Pure data for the station's screen.
 
 import type { ImplementBody, ReflectBody } from "../lib/actions";
-import { answerText, reflectCommand, reflectSlug } from "../lib/commands";
+import { answerText, lessonCommand, reflectCommand, reflectSlug } from "../lib/commands";
 import type { Implementation, Lesson, PendingRecord, ResearchRepo, Signal, Study, StudyMessage, StudyQuestion } from "../types";
 import type { Research } from "./research";
 import type { Clock } from "./schedule";
@@ -274,6 +274,54 @@ export function defaultRepo(lesson: Pick<Lesson, "scope" | "repos">, repos: read
 /** «Внедрить» is offered while the lesson has no implementation, or only a closed one. */
 export const canImplement = (lesson: Pick<Lesson, "implementation">) => !lesson.implementation || lesson.implementation.archived;
 
+/** The files outside every repository that the lesson's proposal names: «Внедрить» lets its agent change them. */
+export const outsideOf = (lesson: Pick<Lesson, "outside">): string[] => lesson.outside ?? [];
+
+/** The suffix of a backup copy before a file outside the repository changes, as the server names it in the brief. */
+export function backupSuffix(entry: string, now: Date): string {
+  const id = lessonId(entry).toLowerCase().replace(/[^a-z0-9]/g, "-");
+  return `.bak-${now.toISOString().slice(0, 10)}-${id}`;
+}
+
+/**
+ * «Скопировать задание»: the lesson's change outside the repositories, worded for a Claude session that makes it by
+ * hand — the files, the lesson's fields as the server's brief orders them, how to back up and check, and the command
+ * that marks the lesson applied.
+ */
+export function manualAssignment(lesson: Lesson, now: Date): string {
+  const entry = lesson.entry.trim();
+  const fields = (
+    [
+      ["Признак", lesson.cue],
+      ["Что делать", lesson.lesson],
+      ["Предложение", lesson.proposal],
+      ["Доказательства", lesson.evidence],
+      ["Оговорки", lesson.caveats],
+    ] as const
+  ).flatMap(([label, value]) => {
+    const text = value?.trim();
+    if (!text) return [];
+    return [label === "Доказательства" ? `${label}:\n${text}` : `${label}: ${text}`];
+  });
+  return [
+    `Внедри урок «${entry}»: ${(lesson.title || lesson.cue).trim()}.`,
+    `Урок из файла ${entry.split(/\s+/)[0]} в архиве задач teamster. Его предложение меняет файлы вне git-репозиториев:\n${outsideOf(lesson)
+      .map((path) => `- ${path}`)
+      .join("\n")}`,
+    fields.join("\n"),
+    [
+      "Как делать:",
+      `- перед первой правкой существующего файла сохрани копию рядом: <файл>${backupSuffix(entry, now)};`,
+      "- проверь изменённое поведение на копии файла во временном каталоге, не на живых задачах и системах;",
+      "- покажи `diff -u <копия> <файл>` для каждого изменённого файла;",
+      "- часть предложения для репозитория делай обычной задачей с PR.",
+    ].join("\n"),
+    `Когда готово, отметь урок внедрённым:\n${lessonCommand(entry, "applied", "<что и где изменено>")}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 /** «PR #12» for a pull request's URL, «PR» when the URL has no number. */
 export function prLabel(url: string): string {
   const number = /\/pull\/(\d+)/.exec(url)?.[1];
@@ -301,14 +349,23 @@ export type ImplementationLine =
   | { kind: "working"; text: string; answer: false }
   | { kind: "decision"; text: "Агенту нужно решение"; questions: string[]; answer: true }
   | { kind: "pr"; pr: string; label: string; before: "PR готов: "; after: ". Проверь и смёржи, затем отметь «Внедрено»."; answer: false }
+  | { kind: "outside"; text: typeof OUTSIDE_DONE; summary: string | null; answer: true }
   | { kind: "stopped"; text: string; summary: string | null; answer: true }
   | { kind: "closed"; text: "Задача закрыта"; pr: string | null; label: string | null; answer: false };
 
+/** A lesson's change outside the repositories is done: it has no PR, so the human checks it by the agent's report. */
+export const OUTSIDE_DONE = "Правка вне репозитория готова: проверь её по отчёту агента и отметь «Внедрено»";
+
 /**
- * How the implementation goes, by the first state that fits: the agent works, needs a decision, opened a PR, stopped,
- * or the task is closed. `started`: the task the card just started, shown until the research carries it.
+ * How the implementation goes, by the first state that fits: the agent works, needs a decision, opened a PR, changed
+ * the files outside the repository (`outside`, the lesson's) without a PR, stopped, or the task is closed.
+ * `started`: the task the card just started, shown until the research carries it.
  */
-export function implementationLine(implementation: Implementation | null | undefined, started: Started | null = null): ImplementationLine | null {
+export function implementationLine(
+  implementation: Implementation | null | undefined,
+  started: Started | null = null,
+  outside: readonly string[] = [],
+): ImplementationLine | null {
   const task = implementation ?? null;
   if (started && startPending(task, started)) {
     return { kind: "started", text: started.slug ? `Внедряется: ${started.slug} · ${started.repo}` : `Внедряется: ${started.repo}`, answer: false };
@@ -321,6 +378,9 @@ export function implementationLine(implementation: Implementation | null | undef
   }
   if (task.result_status === "done" && task.pr) {
     return { kind: "pr", pr: task.pr, label: prLabel(task.pr), before: "PR готов: ", after: ". Проверь и смёржи, затем отметь «Внедрено».", answer: false };
+  }
+  if (task.result_status === "done" && outside.length && !task.archived) {
+    return { kind: "outside", text: OUTSIDE_DONE, summary: task.summary, answer: true };
   }
   if (task.result_status && !task.archived) {
     return { kind: "stopped", text: `Агент остановился (${task.result_status})`, summary: task.summary, answer: true };
@@ -343,6 +403,7 @@ export interface NextStep {
     | { kind: "review"; label: "Разобрать" }
     | { kind: "watch"; label: "Посмотреть"; lesson: Lesson }
     | { kind: "pr"; label: "Показать"; lesson: Lesson }
+    | { kind: "outside"; label: "Показать"; lesson: Lesson }
     | { kind: "accepted"; label: "Показать" }
     | null;
   tone: "wait" | "gold" | "live" | "teal" | "";
@@ -354,7 +415,7 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
     return { text: `Аналитик ждёт ответа: ${studyTitle(waiting)}`, action: { kind: "reply", label: "Ответить", study: waiting }, tone: "wait" };
   }
   // The implementations of the accepted lessons: an applied lesson's task is no longer the human's concern.
-  const lineOf = (lesson: Lesson) => implementationLine(lesson.implementation);
+  const lineOf = (lesson: Lesson) => implementationLine(lesson.implementation, null, outsideOf(lesson));
   const asking = research.accepted.find((lesson) => lineOf(lesson)?.kind === "decision");
   if (asking) {
     return { text: `Агенту нужно решение: урок ${lessonId(asking.entry)}`, action: { kind: "agent", label: "Ответить", lesson: asking }, tone: "wait" };
@@ -377,6 +438,10 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
   const ready = research.accepted.find((lesson) => lineOf(lesson)?.kind === "pr");
   if (ready) {
     return { text: `PR готов по уроку ${lessonId(ready.entry)}`, action: { kind: "pr", label: "Показать", lesson: ready }, tone: "teal" };
+  }
+  const changed = research.accepted.find((lesson) => lineOf(lesson)?.kind === "outside");
+  if (changed) {
+    return { text: `Правка вне репозитория готова по уроку ${lessonId(changed.entry)}`, action: { kind: "outside", label: "Показать", lesson: changed }, tone: "teal" };
   }
   if (research.accepted.length) {
     return { text: `Приняты и ждут внедрения: ${research.accepted.length}`, action: { kind: "accepted", label: "Показать" }, tone: "teal" };
