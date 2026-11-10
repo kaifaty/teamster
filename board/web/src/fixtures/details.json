@@ -442,7 +442,19 @@
     ],
     "actions": {
       "enabled": true,
-      "reason": null
+      "reason": null,
+      "queue": true
+    },
+    "queue": {
+      "waiting": [],
+      "dropped": [
+        {
+          "at": 1793994400,
+          "text": "Потом подними версию и допиши CHANGELOG.",
+          "dropped_at": 1793996000,
+          "outcome": "budget_exhausted"
+        }
+      ]
     }
   },
   "ml-eval-pipeline": {
@@ -541,7 +553,8 @@
       {
         "at": 1793981100,
         "source": "lead",
-        "text": "Добавь в отчёт метрики ux и прогоняй eval на полном наборе."
+        "text": "Добавь в отчёт метрики ux и прогоняй eval на полном наборе.",
+        "queued_at": 1793979900
       },
       {
         "at": 1793985000,
@@ -563,7 +576,17 @@
     ],
     "actions": {
       "enabled": true,
-      "reason": null
+      "reason": null,
+      "queue": true
+    },
+    "queue": {
+      "waiting": [
+        {
+          "at": 1793990400,
+          "text": "Когда закончишь, слей main и прогони eval ещё раз."
+        }
+      ],
+      "dropped": []
     }
   },
   "nightly-bench": {
@@ -608,7 +631,8 @@
     },
     "actions": {
       "enabled": true,
-      "reason": null
+      "reason": null,
+      "queue": false
     }
   },
   "scout-cache-layout": {

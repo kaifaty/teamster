@@ -20,6 +20,11 @@ from .store import Store, alive, number
 
 BODY_LIMIT = 64 * 1024
 COMMAND_TIMEOUT = 120
+VERSION_TIMEOUT = 10
+# teamster 1.60.0 added `say --queue`: an order to a busy task waits for the end of its cycle.
+QUEUE_VERSION = (1, 60, 0)
+VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")
+SAY_KINDS = ("work", "review", "reflect")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
@@ -150,10 +155,32 @@ class Actions:
         self.command = str(Path(command).absolute()) if command else None
         self.reason = "read_only" if read_only else "no_teamster" if not command else None
         self.lock = threading.Lock()
+        self.version_lock = threading.Lock()
+        self._queue = None
 
     @property
     def value(self):
         return {"enabled": self.reason is None, "reason": self.reason}
+
+    def queue(self):
+        """Whether the installed teamster queues orders to a busy task; its version is asked once, when first needed."""
+        if self.reason is not None:
+            return False
+        with self.version_lock:
+            if self._queue is None:
+                self._queue = self._queue_version()
+            return self._queue
+
+    def _queue_version(self):
+        try:
+            result = subprocess.run([self.command, "--version"], stdin=subprocess.DEVNULL, capture_output=True,
+                                    encoding="utf-8", errors="replace", timeout=VERSION_TIMEOUT, cwd=Path.home())
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            LOGGER.info("teamster --version failed: %s", exc)
+            return False
+        match = VERSION.search(result.stdout) if result.returncode == 0 else None
+        LOGGER.info("teamster --version: %s", match.group(0) if match else f"exit={result.returncode}, no version")
+        return match is not None and tuple(int(part) for part in match.groups()) >= QUEUE_VERSION
 
     def run(self, route, data):
         with self.lock:
@@ -230,6 +257,7 @@ class Actions:
             raise ValueError("Invalid slug")
         file_text = ""
         flags = []
+        queued = False
         if route == "say":
             file_text = string(data, "text", 8000, required=True)
             flags = option_flags(data.get("options", {}))
@@ -274,8 +302,10 @@ class Actions:
         elif route == "verdict":
             if kind not in ("work", "review"):
                 return error(409, "Task kind does not support verdicts")
-        elif archived or running or kind not in (("work", "review", "reflect") if route == "say"
-                                                else ("work", "review")):
+        elif route == "say" and running and not archived and kind in SAY_KINDS and self.queue():
+            # A busy task takes the order into its queue, sent when its cycle completes.
+            queued = True
+        elif archived or running or kind not in (SAY_KINDS if route == "say" else ("work", "review")):
             return error(409, "Task is alive, archived or has an unsupported kind")
         match = RECORD.fullmatch(slug) if archived else None
         command_slug = match.group(1) if match else slug
@@ -287,6 +317,8 @@ class Actions:
                     path = Path(stream.name)
                     stream.write(file_text)
                 argv.extend(["--file", str(path)])
+            if queued:
+                argv.append("--queue")
             return self._execute(route, argv)
         finally:
             if path is not None:

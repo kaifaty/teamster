@@ -320,6 +320,13 @@ export interface TaskMessage {
   at: number;
   source: "lead" | "review" | "ci";
   text: string;
+  queued_at?: number | null; // an order sent from the queue: when it was queued; absent from older servers
+}
+
+/** Orders queued with `say --queue` while the ship was busy: waiting for the end of its cycle, or dropped by it. */
+export interface TaskQueue {
+  waiting: { at: number; text: string }[];
+  dropped: { at: number; text: string; dropped_at: number | null; outcome: string | null }[];
 }
 
 export interface TaskDetail extends TaskSummary {
@@ -330,7 +337,9 @@ export interface TaskDetail extends TaskSummary {
   limits?: TaskLimits | null; // null for sessions
   messages?: TaskMessage[];
   activity_log?: Activity[];
-  actions?: { enabled: boolean; reason: "read_only" | "no_teamster" | null };
+  /** `queue`: the installed teamster queues a say to a busy ship (1.60.0 and later); absent from older servers. */
+  actions?: { enabled: boolean; reason: "read_only" | "no_teamster" | null; queue?: boolean };
+  queue?: TaskQueue;
 }
 
 export interface Accounts {

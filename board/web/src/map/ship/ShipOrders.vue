@@ -9,15 +9,15 @@ import { returnText } from "../../lib/orders";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
 import CopiedNote from "../station/CopiedNote.vue";
 import type { GroupId, ShipDesk } from "./desk";
-import { ANGLE_CHIPS, NOTE_MAX, OTHER_VERDICTS, anglesOf, deskOf, effortsFor, refitLine, toggleAngle } from "./orders";
+import { ANGLE_CHIPS, NOTE_MAX, OTHER_VERDICTS, anglesOf, deskOf, effortsFor, refitLine, stopConfirm, toggleAngle } from "./orders";
 
 const props = defineProps<{ task: TaskSummary; desk: ShipDesk; limits: TaskLimits | null | undefined; cargo: Cargo | null }>();
 
-const view = computed(() => deskOf(props.task));
+const view = computed(() => deskOf(props.task, props.desk.queue.value));
 const groups = computed(() => props.desk.groups);
 const busy = (id: GroupId) => !!groups.value[id].busy;
 const efforts = computed(() => effortsFor(props.task.executor));
-const line = computed(() => refitLine(props.desk.refitNow.value));
+const line = computed(() => refitLine(props.desk.refitNow.value, view.value.queue));
 const refit = props.desk.refit;
 const asIs = (value: string | number | null | undefined) => (value === null || value === undefined || value === "" ? "как сейчас" : String(value));
 const savedAngles = computed(() => props.limits?.review_angles ?? []);
@@ -39,7 +39,10 @@ const reviewer = ref<Reviewer | "">("");
 // The recall.
 const confirming = ref<"stop" | "clean" | null>(null);
 const keepBranch = ref(true);
-const CONFIRM = { stop: "Остановить корабль посреди хода? Работа в worktree останется.", clean: "Списать: удалить worktree и запись задачи." } as const;
+const CONFIRM = computed(() => ({
+  stop: stopConfirm(props.desk.queued.value?.waiting.length ?? 0),
+  clean: "Списать: удалить worktree и запись задачи.",
+}));
 async function recall() {
   const what = confirming.value;
   if (!what) return;
@@ -86,13 +89,13 @@ watch(
           <button v-if="other" type="button" class="key" :disabled="busy('accept')" @click="accept(other as (typeof OTHER_VERDICTS)[number]['verdict'])">Записать</button>
         </div>
         <input v-model="note" class="field" type="text" :maxlength="NOTE_MAX" placeholder="Заметка к вердикту — необязательно" aria-label="Заметка к вердикту" :disabled="busy('accept')" />
-        <p v-if="groups.accept.done" class="result ok" role="status">{{ groups.accept.done }}</p>
+        <p v-if="groups.accept.done" class="result ok" role="status" :title="groups.accept.output">{{ groups.accept.done }}</p>
         <p v-if="groups.accept.error" class="result bad" role="alert">{{ groups.accept.error }}</p>
         <CopiedNote v-if="groups.accept.copied" :copied="groups.accept.copied" />
       </div>
 
       <div v-if="view.refit" class="group">
-        <h4>Переоснащение <small>со следующего указания</small></h4>
+        <h4>Переоснащение <small>{{ view.queue ? "уйдёт с указанием в очередь" : "со следующего указания" }}</small></h4>
         <div class="refit">
           <label>Двигатель<input v-model="refit.model" class="field mono" type="text" maxlength="64" :placeholder="asIs(task.model)" /></label>
           <label
@@ -152,7 +155,7 @@ watch(
           </select>
           <button type="button" class="key" :disabled="busy('review')" @click="desk.review(anglesOf(reviewAngles), reviewer)">{{ groups.review.busy ? "Вызываю…" : "Вызвать" }}</button>
         </div>
-        <p v-if="groups.review.done" class="result ok" role="status">{{ groups.review.done }}</p>
+        <p v-if="groups.review.done" class="result ok" role="status" :title="groups.review.output">{{ groups.review.done }}</p>
         <p v-if="groups.review.error" class="result bad" role="alert">{{ groups.review.error }}</p>
         <CopiedNote v-if="groups.review.copied" :copied="groups.review.copied" />
       </div>
@@ -163,7 +166,7 @@ watch(
           <button type="button" class="key" :disabled="busy('reflect')" @click="desk.reflect()">{{ groups.reflect.busy ? "Отправляю…" : "Отправить на научную станцию" }}</button>
           <span class="dim small">аналитик разберёт этот рейс</span>
         </div>
-        <p v-if="groups.reflect.done" class="result ok" role="status">{{ groups.reflect.done }}</p>
+        <p v-if="groups.reflect.done" class="result ok" role="status" :title="groups.reflect.output">{{ groups.reflect.done }}</p>
         <p v-if="groups.reflect.error" class="result bad" role="alert">{{ groups.reflect.error }}</p>
         <CopiedNote v-if="groups.reflect.copied" :copied="groups.reflect.copied" />
       </div>
@@ -180,7 +183,7 @@ watch(
           <button type="button" class="key danger" :disabled="busy('recall')" @click="recall">{{ groups.recall.busy ? "Выполняю…" : "Да" }}</button>
           <button type="button" class="key" :disabled="busy('recall')" @click="confirming = null">Отмена</button>
         </div>
-        <p v-if="groups.recall.done" class="result ok" role="status">{{ groups.recall.done }}</p>
+        <p v-if="groups.recall.done" class="result ok" role="status" :title="groups.recall.output">{{ groups.recall.done }}</p>
         <p v-if="groups.recall.error" class="result bad" role="alert">{{ groups.recall.error }}</p>
         <CopiedNote v-if="groups.recall.copied" :copied="groups.recall.copied" />
       </div>

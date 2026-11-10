@@ -156,7 +156,15 @@ interface TaskDetail extends TaskSummary {
   limits: TaskLimits | null;  // null for desktop sessions
   messages: TaskMessage[];    // ≤ 50 newest by at, ascending at; [] for sessions
   activity_log: Activity[];   // ≤ 10 latest, newest first; [] unless the task is alive; [] for sessions
-  actions: { enabled: boolean; reason: "read_only" | "no_teamster" | null }; // same as ResearchView.actions
+  actions: { enabled: boolean; reason: "read_only" | "no_teamster" | null; // same as ResearchView.actions
+             queue: boolean };   // the installed teamster queues say to a busy task (1.60.0 and later)
+  queue: TaskQueue;           // queue.json; empty lists for sessions
+}
+
+interface TaskQueue {         // orders sent with `say --queue` while the task was busy; options are not exposed
+  waiting: { at: number; text: string }[];   // sent as one turn when the current cycle completes
+  dropped: { at: number; text: string; dropped_at: number | null; outcome: string | null }[];
+  // dropped when the cycle ended otherwise: outcome "stopped", "interrupted", "failed", …
 }
 
 interface TaskLimits {
@@ -177,6 +185,7 @@ interface TaskMessage {
   at: number;
   source: "lead" | "review" | "ci"; // claude, missing and any other source map to lead
   text: string;                    // ≤ 4000 chars
+  queued_at: number | null;        // when an order sent from the queue was queued; null otherwise
 }
 
 interface Cargo {             // every string is one line, ≤ 200 chars
@@ -680,7 +689,11 @@ fallback.
 executable is available. `--teamster PATH` selects it; the default is `shutil.which("teamster")` at
 startup, independently of the accounts/report script. Otherwise `actions.reason` is `read_only`
 (taking precedence) or `no_teamster`; enabled actions have `reason: null`. Task details return the
-same `actions` value as `/api/research`, including for desktop sessions.
+same `actions` value as `/api/research`, including for desktop sessions, with one more field: `queue`
+is true when the installed `teamster` is 1.60.0 or later. The server runs `teamster --version` (stdin
+closed, 10-second timeout, the user's home as working directory) once, for the first task detail or
+order that needs it, and keeps the answer until it restarts; the first `X.Y.Z` in its stdout is the
+version. A failed, timed-out or unparsable probe means `queue: false`; disabled actions never probe.
 
 Only these POST endpoints execute commands:
 
@@ -716,7 +729,10 @@ Only these POST endpoints execute commands:
   lesson `accepted`. A successful acceptance invalidates research even if the start step fails.
 - `/api/actions/say`: `{slug: string, text: string, options?: object}` runs
   `teamster say <slug> [options] --file <temporary file>` for any non-archived, idle task of kind
-  `work`, `review` or `reflect`, including studies and lesson implementations. Alive or archived tasks,
+  `work`, `review` or `reflect`, including studies and lesson implementations. An alive task of these
+  kinds (its turn runs or its supervisor sleeps until a limit reset) gets
+  `teamster say <slug> [options] --file <temporary file> --queue` when the installed `teamster` supports
+  the queue (`actions.queue`), and 409 otherwise. Archived tasks,
   scouts and desktop sessions get 409; unknown slugs get 404. The station's base-slug addresses for
   archived studies and implementations also return 409. Trimmed text must contain 1–8000 characters
   and is written to the temporary file, never passed as an argv word. Every option is optional;
@@ -797,7 +813,12 @@ There is no merge endpoint for ordinary tasks.
   live or archived, through the same safe file lookup as other task files, without following symbolic
   links. If reading starts after the beginning of the file, discard the first, partial line. Malformed
   lines, non-object rows, non-finite or non-numeric `at` (including booleans), and non-string or missing
-  `text` are skipped. Keep the newest 50 messages by `at`, ascending. Activity logs retain every
+  `text` are skipped. `queued_at` is a finite number or `null`. Keep the newest 50 messages by `at`, ascending.
+  The queue comes from the task's `queue.json` through the same safe lookup, read whole up to 1 MiB:
+  a missing, larger or malformed file, or one that is not an object, gives empty lists. Rows of
+  `waiting` and `dropped` that are not objects, or lack a finite numeric `at` or a string `text`,
+  are skipped; text is cut to 4000 characters, `outcome` is one line ≤ 200 characters, and each list
+  keeps its last 50 rows in file order. Activity logs retain every
   activity parsed from newly read executor lines across polls, capped to the latest 10, newest first;
   they are empty when the task is not alive. Summary activity and WebSocket activity messages still
   carry only the latest activity.

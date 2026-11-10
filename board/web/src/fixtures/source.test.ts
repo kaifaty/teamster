@@ -4,7 +4,7 @@ import { fixtureSource } from "./source";
 afterEach(() => vi.useRealTimers());
 
 describe("fixture source", () => {
-  it("takes a say to an ordinary task into its messages and acts on every task", async () => {
+  it("takes a say to an ordinary task into its messages or its queue and acts on every task", async () => {
     vi.useFakeTimers();
     const source = fixtureSource();
     const removed: string[] = [];
@@ -22,7 +22,15 @@ describe("fixture source", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       const detail = await source.fetchDetail("accounts-json-schema");
       expect(detail?.messages?.at(-1)).toMatchObject({ source: "lead", text: "Доработай перед приёмкой" });
-      expect((await source.fetchDetail("board-web-frontend"))?.actions).toEqual({ enabled: true, reason: null });
+      expect((await source.fetchDetail("board-web-frontend"))?.actions).toEqual({ enabled: true, reason: null, queue: true });
+      // A busy ship queues the order when its teamster can, and drops the queue when it stops.
+      expect(await act("say", { slug: "board-web-frontend", text: "Потом слей main" })).toMatchObject({ ok: true });
+      expect((await source.fetchDetail("board-web-frontend"))?.queue?.waiting.map((order) => order.text)).toEqual(["Потом слей main"]);
+      expect(await act("say", { slug: "nightly-bench", text: "Потом слей main" })).toMatchObject({ ok: false });
+      // The count takes in what the fixture's queue already holds.
+      expect(await act("say", { slug: "ml-eval-pipeline", text: "И обнови README" })).toMatchObject({ output: expect.stringMatching(/: 2 waiting;/) });
+      expect(await act("stop", { slug: "board-web-frontend" })).toMatchObject({ ok: true });
+      expect((await source.fetchDetail("board-web-frontend"))?.queue).toMatchObject({ waiting: [], dropped: [{ text: "Потом слей main", outcome: "stopped" }] });
       expect(await act("say", { slug: "reflect-review-patterns", text: "demo-wallet" })).toEqual({ ok: true, output: "said to reflect-review-patterns" });
     } finally {
       stop();

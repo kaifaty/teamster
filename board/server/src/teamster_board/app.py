@@ -283,7 +283,8 @@ def create_app(settings=None):
             task = await asyncio.to_thread(board.store.detail, slug)
         if task is None:
             raise HTTPException(404)
-        return {**task, "actions": board.actions.value}
+        queue = await asyncio.to_thread(board.actions.queue)
+        return {**task, "actions": {**board.actions.value, "queue": queue}}
 
     @app.get("/api/tasks/{slug}/files/{name}")
     async def task_file(slug: str, name: str):

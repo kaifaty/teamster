@@ -218,7 +218,8 @@ def test_detail_messages_sources_invalid_rows_and_limit(tmp_path, archived):
     store.poll()
     assert store.detail(slug)["messages"] == []
     sources = ["lead", "review", "ci", "claude", None, "other"]
-    rows = [{"at": at, "source": sources[at % len(sources)], "text": "t" * 4100}
+    rows = [{"at": at, "source": sources[at % len(sources)], "text": "t" * 4100,
+             **({"queued_at": at - 0.5} if at % 2 else {"queued_at": "bad"} if at % 4 else {})}
             for at in reversed(range(60))]
     rows += [[], None, {"text": "missing at"}, {"at": "61", "text": "bad at"},
              {"at": True, "text": "bool"}, {"at": float("nan"), "text": "nan"},
@@ -227,18 +228,43 @@ def test_detail_messages_sources_invalid_rows_and_limit(tmp_path, archived):
     path.write_text("{bad json}\n" + "".join(json.dumps(row) + "\n" for row in rows))
     expected = [
         {"at": at, "source": sources[at % 6] if sources[at % 6] in ("review", "ci") else "lead",
-         "text": "t" * 4000} for at in range(10, 60)
+         "text": "t" * 4000, "queued_at": at - 0.5 if at % 2 else None} for at in range(10, 60)
     ]
     assert store.detail(slug)["messages"] == expected
     path.write_bytes(b'{"at": 1001, "text": "before tail"}\n' + b" " * (256 * 1024)
                      + b'{"at": 1000, "text": "cut first line"}\n' + path.read_bytes())
     assert store.detail(slug)["messages"] == expected
     path.write_text('{"at": 1, "text": ""}\n')
-    assert store.detail(slug)["messages"] == [{"at": 1, "source": "lead", "text": ""}]
+    assert store.detail(slug)["messages"] == [{"at": 1, "source": "lead", "text": "", "queued_at": None}]
     outside = tmp_path / "private.jsonl"
     path.rename(outside)
     path.symlink_to(outside)
     assert store.detail(slug)["messages"] == []
+
+
+def test_detail_queue_waiting_dropped_and_broken_files(tmp_path):
+    directory = write_state(tmp_path, "task")
+    store = Store(tmp_path)
+    store.poll()
+    empty = {"waiting": [], "dropped": []}
+    assert store.detail("task")["queue"] == empty
+    path = directory / "queue.json"
+    for broken in ("{bad json", "[]", '{"waiting": {}, "dropped": 3}'):
+        path.write_text(broken)
+        assert store.detail("task")["queue"] == empty
+    path.write_text(json.dumps({
+        "waiting": [{"at": 5, "text": "Then merge main", "options": {"effort": "low"}},
+                    {"at": True, "text": "bool"}, {"at": 6}, None],
+        "dropped": [{"at": 1, "text": "x" * 4100, "options": {}, "dropped_at": 3, "outcome": "stopped"},
+                    {"at": 2, "text": "no outcome"}],
+    }))
+    assert store.detail("task")["queue"] == {
+        "waiting": [{"at": 5, "text": "Then merge main"}],
+        "dropped": [{"at": 1, "text": "x" * 4000, "dropped_at": 3, "outcome": "stopped"},
+                    {"at": 2, "text": "no outcome", "dropped_at": None, "outcome": None}],
+    }
+    path.write_text(json.dumps({"waiting": [{"at": 7, "text": "Only waiting"}]}))
+    assert store.detail("task")["queue"] == {"waiting": [{"at": 7, "text": "Only waiting"}], "dropped": []}
 
 
 def test_detail_activity_log_retains_all_new_lines_across_polls(tmp_path, pids):

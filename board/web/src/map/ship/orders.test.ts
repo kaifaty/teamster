@@ -1,9 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { nextTick, ref } from "vue";
 import type { ActionResult } from "../../lib/actions";
 import type { Cargo, TaskDetail, TaskLimits, TaskSummary } from "../../types";
-import { createShipDesk } from "./desk";
-import { blankRefit, deskOf, fallbackCommand, feedOf, isLong, mainOrder, reflectOrder, refitLine, refitOf, toggleAngle, type DeskView } from "./orders";
+import { OWN_CHANGE_MS, createShipDesk } from "./desk";
+import {
+  blankRefit,
+  deskOf,
+  droppedNote,
+  fallbackCommand,
+  feedOf,
+  isLong,
+  mainOrder,
+  orderOutcome,
+  reflectOrder,
+  refitLine,
+  refitOf,
+  replyHint,
+  stopConfirm,
+  toggleAngle,
+  type DeskView,
+} from "./orders";
 
 const NOW = 1_800_000_000;
 
@@ -59,6 +75,43 @@ describe("comms feed", () => {
     expect(isLong("1\n2\n3\n4")).toBe(false);
     expect(isLong("1\n2\n3\n4\n5")).toBe(true);
   });
+
+  it("ends with the orders waiting in the queue, marks the sent and the dropped ones", () => {
+    const queue = {
+      waiting: [
+        { at: NOW - 10, text: "Потом слей main" },
+        { at: NOW - 20, text: "Сначала P1" },
+      ],
+      dropped: [{ at: NOW - 2500, text: "Подними версию", dropped_at: NOW - 2400, outcome: "stopped" }],
+    };
+    const sent = [...messages, { at: NOW - 1500, source: "lead" as const, text: "Добавь тест", queued_at: NOW - 1800 }];
+    const working = task({ result_status: "partial", summary: "Частично", phase_started_at: NOW - 500 });
+    const echo = [
+      { at: NOW - 12, text: "Потом слей main", queued: true },
+      { at: NOW, text: "И обнови README", queued: true },
+    ];
+    const feed = feedOf(working, sent, null, echo, queue);
+    expect(feed.map((item) => [item.text, item.note, item.queue])).toEqual([
+      ["Сделай экран", null, undefined],
+      ["Подними версию", "не доставлено · остановлен", "dropped"],
+      ["Codex нашёл 2 дефекта", null, undefined],
+      ["Добавь тест", "из очереди", undefined],
+      ["Частично", "сделано частично", undefined],
+      ["CI упал", null, undefined],
+      ["Сначала P1", "в очереди", "waiting"],
+      ["Потом слей main", "в очереди", "waiting"],
+      ["И обнови README", "в очереди", "waiting"],
+    ]);
+    expect(feed.filter((item) => item.queue).every((item) => item.tone === "you")).toBe(true);
+  });
+
+  it("words why the end of a cycle dropped an order", () => {
+    expect(droppedNote("stopped")).toBe("не доставлено · остановлен");
+    expect(droppedNote("interrupted")).toBe("не доставлено · прерван");
+    expect(droppedNote("failed")).toBe("не доставлено · сбой");
+    expect(droppedNote("something_new")).toBe("не доставлено · something_new");
+    expect(droppedNote(null)).toBe("не доставлено");
+  });
 });
 
 describe("order groups", () => {
@@ -78,6 +131,42 @@ describe("order groups", () => {
     expect(groups(deskOf(task({ kind: "session", alive: false })))).toEqual([]);
     expect(groups(deskOf(task({ kind: "scout", alive: false, column: "closed" })))).toEqual(["reflect", "clean"]);
     expect(groups(deskOf(task({ kind: "reflect", alive: false })))).toEqual(["reply", "send", "refit", "reflect", "clean"]);
+  });
+
+  it("puts the reply of a busy ship in its queue only when the board's teamster queues", () => {
+    expect(groups(deskOf(task(), true))).toEqual(["reply", "send", "queue", "accept", "refit", "reflect", "stop"]);
+    expect(groups(deskOf(task({ column: "sleeping" }), true))).toContain("queue");
+    expect(groups(deskOf(task({ kind: "reflect" }), true))).toEqual(["reply", "send", "queue", "refit", "reflect", "stop"]);
+    expect(deskOf(task({ alive: false, column: "review_me" }), true).queue).toBe(false);
+    expect(deskOf(task({ kind: "scout" }), true).send).toBe(false);
+    expect(deskOf(task({ slug: "t-20261105T101500Z" }), true).send).toBe(false);
+    expect(replyHint(deskOf(task(), true))).toMatch(/^Корабль в пути: указание встанет в очередь/);
+    expect(replyHint(deskOf(task()))).toMatch(/^Идёт ход: teamster отклонит указание\. Обнови teamster до 1\.60/);
+    expect(refitLine({ options: { effort: "low" }, errors: [] }, true)).toBe("уйдёт с указанием в очередь: --effort=low");
+  });
+
+  it("asks to upgrade teamster only while the board runs orders, and else names why it does not", () => {
+    const hintOf = (actions: TaskDetail["actions"]) => {
+      const detail = ref({ ...task(), timeline: [], files: [], cargo: null, actions } as TaskDetail);
+      const desk = createShipDesk({ slug: ref("t"), task: ref(task()), detail, act: (async () => ({ ok: true, output: "" })) as never });
+      return replyHint(deskOf(task(), desk.queue.value), desk.live.value ? null : desk.offReason.value);
+    };
+    expect(hintOf({ enabled: true, reason: null, queue: false })).toMatch(/Обнови teamster до 1\.60/);
+    for (const [reason, words] of [
+      ["read_only", "запущена с --read-only"],
+      ["no_teamster", "команда teamster не найдена"],
+    ] as const) {
+      const hint = hintOf({ enabled: false, reason, queue: false });
+      expect(hint).toContain(`доска только читает (${words})`);
+      expect(hint).not.toMatch(/Обнови teamster/);
+    }
+  });
+
+  it("warns before a stop that the queue will not go", () => {
+    expect(stopConfirm(0)).toBe("Остановить корабль посреди хода? Работа в worktree останется.");
+    expect(stopConfirm(1)).toMatch(/ 1 указание в очереди не уйдёт\.$/);
+    expect(stopConfirm(3)).toMatch(/ 3 указания в очереди не уйдут\.$/);
+    expect(stopConfirm(5)).toMatch(/ 5 указаний в очереди не уйдут\.$/);
   });
 
   it("gives the line «what next» a button only for an order the board carries out", () => {
@@ -133,7 +222,54 @@ describe("fallback commands", () => {
   });
 });
 
+describe("order outcomes", () => {
+  it("tells what each order changed in words, never teamster's raw output", () => {
+    const say = { route: "say", body: { slug: "t", text: "Дальше" } } as const;
+    expect(orderOutcome(say, "sent to t (turn 4), pid 12")).toBe("Указание передано: корабль начал ход 4");
+    expect(orderOutcome(say, "")).toBe("Указание передано");
+    expect(orderOutcome(say, "queued for t: 2 waiting; sent when the current cycle ends", { queued: true })).toBe(
+      "Указание в очереди: уйдёт одним ходом, когда корабль закончит цикл",
+    );
+    expect(orderOutcome({ route: "verdict", body: { slug: "t", verdict: "accepted" } }, "verdict accepted recorded for t (repo)")).toBe(
+      "Вердикт «принято» записан — это оценка для статистики; PR этим не сливается",
+    );
+    expect(orderOutcome({ route: "verdict", body: { slug: "t", verdict: "dropped" } }, "")).toMatch(/^Вердикт «не берём» записан/);
+    expect(orderOutcome({ route: "review", body: { slug: "t" } }, "reviewing t, pid 3")).toBe("Внеочередная инспекция вызвана: корабль ушёл на ревью");
+    expect(orderOutcome(reflectOrder("t"), "said", { slug: "reflect-1110-120000" })).toBe("Разбор отправлен на научную станцию: reflect-1110-120000");
+    expect(orderOutcome({ route: "stop", body: { slug: "t" } }, "stopped t")).toBe("Корабль остановлен");
+    expect(orderOutcome({ route: "clean", body: { slug: "t", keep_branch: true } }, "cleaned t")).toBe("Корабль списан: worktree удалён, ветка осталась");
+    expect(orderOutcome({ route: "clean", body: { slug: "t", keep_branch: false } }, "cleaned t")).toBe("Корабль списан: worktree и ветка удалены");
+  });
+});
+
 describe("console", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps teamster's output for the title and drops an outcome once the ship moves on past its own effect", async () => {
+    vi.useFakeTimers();
+    const ship = ref(task({ slug: "a" }));
+    const detail = ref({ ...ship.value, timeline: [], files: [], cargo: null, actions: { enabled: true, reason: null, queue: true } } as TaskDetail);
+    const outputs = ["queued for a: 2 waiting; sent when the current cycle ends", "stopped a"];
+    const desk = createShipDesk({ slug: ref("a"), task: ship, detail, act: (async () => ({ ok: true, output: outputs.shift()! })) as never });
+    desk.reply.value = "Потом слей main";
+    await desk.send();
+    expect([desk.groups.reply.done, desk.groups.reply.output]).toEqual([
+      "Указание в очереди: уйдёт одним ходом, когда корабль закончит цикл",
+      "queued for a: 2 waiting; sent when the current cycle ends",
+    ]);
+    vi.advanceTimersByTime(OWN_CHANGE_MS + 1);
+    await desk.stop();
+    // The stop's own effect, soon after it, keeps its outcome; the queued say is out of date.
+    ship.value = { ...ship.value, alive: false, column: "attention", phase: "idle", outcome: "stopped" };
+    await nextTick();
+    expect([desk.groups.reply.done, desk.groups.reply.output]).toEqual(["", ""]);
+    expect(desk.groups.recall.done).toBe("Корабль остановлен");
+    vi.advanceTimersByTime(OWN_CHANGE_MS + 1);
+    ship.value = { ...ship.value, column: "closed" };
+    await nextTick();
+    expect(desk.groups.recall.done).toBe("");
+  });
+
   it("leaves another ship's console alone when an order's answer comes late", async () => {
     const slug = ref("a");
     const detail = ref({ ...task({ slug: "a", alive: false }), timeline: [], files: [], cargo: null, actions: { enabled: true, reason: null } } as TaskDetail);

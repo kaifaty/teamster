@@ -135,11 +135,17 @@ server: an implementation started there works for a few seconds, asks a question
 A ship's own screen, its bridge (`board/web/src/map/ship/`), has two decks of orders. «Рубка связи» lists by time the
 lead's orders, the inspection's and the gate's reports from the task's `messages`, the captain's last report and its
 questions; a reply goes to the task with `say`, together with the refit's changed fields, and quick buttons fill it with
-«Продолжай», the roadstead's return text or «Слей main». While the ship works, the field stays but the reply waits for
-the turn's end. «Пульт приказов» has acceptance (`verdict`), the refit (`say` options: model, effort, limits, rounds,
+«Продолжай», the roadstead's return text or «Слей main». While the ship works, a teamster of 1.60 or later
+(`actions.queue`) takes the reply, with the refit, into the ship's queue (`say --queue`): it goes out as one turn when
+the cycle completes, and any other end, a stop included, drops it. The feed ends with the orders waiting in the queue,
+marks the ones sent from it, and shows the dropped ones with their outcome and «Отправить снова», which puts the text
+back in the field; the stop's confirmation counts what the queue will lose. With an older teamster the field stays
+off while the ship works. «Пульт приказов» has acceptance (`verdict`), the refit (`say` options: model, effort, limits, rounds,
 reviewer and angles), an extra inspection (`review`), a flight review at the science station (`reflect` of this task)
 and the recall (`stop`, `clean` with the branch kept by default), each group only where the server takes its order, and
-the line «what next» gets a button when the board can carry its order out. The logic lives in `orders.ts` and
+the line «what next» gets a button when the board can carry its order out. Under a group, a carried-out order tells in
+Russian what changed (`orderOutcome`), with teamster's own output in the line's title; the line goes once the ship's
+column or phase changes later than the order's own effect. The logic lives in `orders.ts` and
 `desk.ts`; a board that only reads copies the equal command, and `dev:fixture` plays the orders on its own tasks.
 
 Like the tanks, the station stays live during a replay.
