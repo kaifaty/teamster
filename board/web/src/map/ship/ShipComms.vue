@@ -16,7 +16,7 @@ const props = defineProps<{ task: TaskSummary; desk: ShipDesk; messages: TaskMes
 
 const view = computed(() => deskOf(props.task, props.desk.queue.value));
 const feed = computed(() => feedOf(props.task, props.messages, props.cargo, props.desk.echo.value, props.desk.queued.value));
-const hint = computed(() => replyHint(view.value));
+const hint = computed(() => replyHint(view.value, props.desk.live.value ? null : props.desk.offReason.value));
 const state = computed(() => props.desk.groups.reply);
 const busy = computed(() => !!state.value.busy);
 

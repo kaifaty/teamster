@@ -144,6 +144,23 @@ describe("order groups", () => {
     expect(refitLine({ options: { effort: "low" }, errors: [] }, true)).toBe("уйдёт с указанием в очередь: --effort=low");
   });
 
+  it("asks to upgrade teamster only while the board runs orders, and else names why it does not", () => {
+    const hintOf = (actions: TaskDetail["actions"]) => {
+      const detail = ref({ ...task(), timeline: [], files: [], cargo: null, actions } as TaskDetail);
+      const desk = createShipDesk({ slug: ref("t"), task: ref(task()), detail, act: (async () => ({ ok: true, output: "" })) as never });
+      return replyHint(deskOf(task(), desk.queue.value), desk.live.value ? null : desk.offReason.value);
+    };
+    expect(hintOf({ enabled: true, reason: null, queue: false })).toMatch(/Обнови teamster до 1\.60/);
+    for (const [reason, words] of [
+      ["read_only", "запущена с --read-only"],
+      ["no_teamster", "команда teamster не найдена"],
+    ] as const) {
+      const hint = hintOf({ enabled: false, reason, queue: false });
+      expect(hint).toContain(`доска только читает (${words})`);
+      expect(hint).not.toMatch(/Обнови teamster/);
+    }
+  });
+
   it("warns before a stop that the queue will not go", () => {
     expect(stopConfirm(0)).toBe("Остановить корабль посреди хода? Работа в worktree останется.");
     expect(stopConfirm(1)).toMatch(/ 1 указание в очереди не уйдёт\.$/);

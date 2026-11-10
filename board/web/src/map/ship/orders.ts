@@ -267,10 +267,14 @@ export function refitLine(refit: Refit, queued = false): string {
   return flags.length ? `уйдёт с указанием${queued ? " в очередь" : ""}: ${flags.join(" ")}` : "ничего не меняется";
 }
 
-/** The hint under the reply field: how the order goes, or why it does not. */
-export function replyHint(view: Pick<DeskView, "send" | "queue">): string {
+/**
+ * The hint under the reply field: how the order goes, or why it does not. `off`: why the board runs no orders (the
+ * desk's `offReason`), null while it runs them; then the board cannot know whether teamster queues.
+ */
+export function replyHint(view: Pick<DeskView, "send" | "queue">, off: string | null = null): string {
   if (view.queue) return "Корабль в пути: указание встанет в очередь и уйдёт одним ходом, когда он закончит цикл. Срочно — «Остановить», но очередь тогда не уйдёт";
   if (view.send) return "С изменёнными полями переоснащения · ⌘/Ctrl+Enter";
+  if (off !== null) return `Идёт ход, а доска только читает (${off}): указание кораблю в пути отсюда не уйдёт. Останови корабль или дождись конца хода`;
   return "Идёт ход: teamster отклонит указание. Обнови teamster до 1.60, чтобы ставить указания в очередь, или останови корабль";
 }
 
