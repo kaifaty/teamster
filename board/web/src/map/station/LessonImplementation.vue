@@ -1,17 +1,18 @@
 <script setup lang="ts">
-// How a lesson's implementation goes, on its card: the agent works, needs a decision, opened a PR, stopped, or the
-// task is closed. An agent that waits takes a reply from the card, like the analyst in the comms room. «Посмотреть»
-// leaves the station for the agent's ship: its system on the map, with the ship's card open.
+// How a lesson's implementation goes, on its card: the agent works, needs a decision, opened a PR, changed the files
+// outside the repository without one, stopped, or the task is closed. An agent that waits takes a reply from the card,
+// like the analyst in the comms room. «Посмотреть» leaves the station for the agent's ship: its system on the map,
+// with the ship's card open.
 import { computed } from "vue";
 import type { Lesson } from "../../types";
-import { implementationLine, isSendKey } from "../station";
+import { implementationLine, isSendKey, outsideOf } from "../station";
 import { useConsole } from "./console";
 import CopiedNote from "./CopiedNote.vue";
 
 const props = defineProps<{ lesson: Lesson }>();
 const desk = useConsole();
 
-const line = computed(() => implementationLine(props.lesson.implementation, desk.cardOf(props.lesson).started));
+const line = computed(() => implementationLine(props.lesson.implementation, desk.cardOf(props.lesson).started, outsideOf(props.lesson)));
 const agent = computed(() => desk.agentOf(props.lesson));
 const sent = computed(() => desk.agentSent(props.lesson));
 const off = computed(() => agent.value.busy || sent.value);
@@ -47,7 +48,7 @@ function onKey(event: KeyboardEvent) {
     <ul v-if="line.kind === 'decision' && line.questions.length" class="questions">
       <li v-for="(question, number) in line.questions" :key="number">{{ question }}</li>
     </ul>
-    <p v-if="line.kind === 'stopped' && line.summary" class="summary">{{ line.summary }}</p>
+    <p v-if="(line.kind === 'stopped' || line.kind === 'outside') && line.summary" class="summary">{{ line.summary }}</p>
 
     <form v-if="line.answer" class="answer" @submit.prevent="desk.sayToAgent(lesson)">
       <textarea
@@ -87,7 +88,8 @@ function onKey(event: KeyboardEvent) {
   background: rgba(243, 198, 78, 0.08);
 }
 
-.implementation.pr {
+.implementation.pr,
+.implementation.outside {
   border-left-color: var(--st-green);
 }
 

@@ -2,14 +2,18 @@
 // A lesson's buttons, the same on its lab card and its docket: a proposed lesson is implemented, accepted, declined
 // or discussed, an accepted one is implemented or marked applied. «Внедрить» asks where and starts a task at once;
 // the other buttons act at once too, and for a few seconds after them the card offers to take the decision back.
-import { computed } from "vue";
+// A lesson whose proposal changes files outside the repositories names them above the buttons: «Внедрить» lets its
+// agent change them, and «Скопировать задание» copies the change for a session that makes it by hand.
+import { computed, ref } from "vue";
 import type { Lesson } from "../../types";
+import { manualAssignment, outsideOf } from "../station";
 import { useConsole, type CardBusy } from "./console";
 import CopiedNote from "./CopiedNote.vue";
 
 const props = defineProps<{ lesson: Lesson; stage: "proposed" | "accepted" }>();
 const desk = useConsole();
 const repos = computed(() => desk.repos.value);
+const outside = computed(() => outsideOf(props.lesson));
 
 const card = computed(() => desk.cardOf(props.lesson));
 const busy = (what: CardBusy) => card.value.busy === what;
@@ -25,7 +29,23 @@ const repo = computed({
   get: () => card.value.repo,
   set: (path: string) => desk.setRepo(props.lesson, path),
 });
-const implementTitle = computed(() => desk.implementOff.value ?? "Агент сделает изменение урока и откроет PR");
+const implementTitle = computed(
+  () =>
+    desk.implementOff.value ??
+    (outside.value.length
+      ? "Агент сделает изменение урока, в том числе в файлах вне репозитория, сначала сохранив их копии .bak"
+      : "Агент сделает изменение урока и откроет PR"),
+);
+
+/** «Скопировать задание»: the text just copied, or shown to copy by hand when the clipboard refused. */
+const assignment = ref<{ text: string; copied: boolean } | null>(null);
+async function copyAssignment() {
+  const text = manualAssignment(props.lesson, new Date());
+  assignment.value = { text, copied: await desk.copyText(text) };
+}
+function selectAll(event: FocusEvent) {
+  (event.target as HTMLTextAreaElement).select();
+}
 
 function submit() {
   const form = card.value.form;
@@ -38,6 +58,17 @@ function submit() {
 
 <template>
   <div class="lesson-actions" :aria-busy="!!card.busy">
+    <div v-if="outside.length && !card.done" class="outside" role="note">
+      <p class="outside-head">Предложение меняет файлы вне репозитория</p>
+      <ul class="paths mono">
+        <li v-for="path in outside" :key="path">{{ path }}</li>
+      </ul>
+      <p v-if="desk.offersImplement(lesson) && !card.started && !card.form" class="hint">
+        «Внедрить» разрешит агенту их менять: сначала копия .bak рядом, проверка на копии, без PR. Или скопируй задание
+        и сделай правку в своей сессии.
+      </p>
+    </div>
+
     <p v-if="card.done" class="done-line" role="status">
       {{ DONE[card.done.status] }} ·
       <button type="button" class="link" :class="{ busy: busy('undo') }" :disabled="!!card.busy" @click="desk.undo(lesson)">Отменить</button>
@@ -56,7 +87,11 @@ function submit() {
         Часть репозиториев не видна: у доски нет доступа к диску. Разреши Python доски доступ к файлам на съёмных
         томах: Системные настройки → Конфиденциальность и безопасность → Файлы и папки или Полный доступ к диску.
       </p>
-      <p class="hint">Правки вне репозиториев (~/.codex/AGENTS.md, ~/.claude/…) агент не делает — он перечислит их в отчёте.</p>
+      <p v-if="outside.length" class="hint">
+        Агенту разрешено менять файлы вне репозитория из списка выше: перед правкой он сохранит копию .bak рядом и
+        проверит изменение на копии. PR для них не будет — проверь их по отчёту агента.
+      </p>
+      <p v-else class="hint">Правки вне репозиториев (~/.codex/AGENTS.md, ~/.claude/…) агент не делает — он перечислит их в отчёте.</p>
       <textarea v-model="note" rows="2" placeholder="Уточнение — необязательно" aria-label="Уточнение" :disabled="!!card.busy"></textarea>
       <span class="buttons">
         <button type="submit" class="key gold" :class="{ busy: busy('implement') }" :disabled="!!card.busy || !repo">Запустить</button>
@@ -102,6 +137,9 @@ function submit() {
       >
         Внедрить
       </button>
+      <button v-if="outside.length" type="button" class="chip" title="Скопировать правку для своей сессии Claude" :disabled="!!card.busy" @click="copyAssignment">
+        Скопировать задание
+      </button>
       <button type="button" class="key" title="Принять без запуска" :class="{ busy: busy('accept') }" :disabled="!!card.busy" @click="desk.accept(lesson)">Принять</button>
       <button type="button" class="chip" :disabled="!!card.busy" @click="desk.openForm(lesson, 'decline')">Отклонить</button>
       <button type="button" class="chip" :disabled="!!card.busy" @click="desk.discuss(lesson)">Обсудить</button>
@@ -117,11 +155,21 @@ function submit() {
       >
         Внедрить
       </button>
+      <button v-if="outside.length" type="button" class="chip" title="Скопировать правку для своей сессии Claude" :disabled="!!card.busy" @click="copyAssignment">
+        Скопировать задание
+      </button>
       <button type="button" class="chip applied" title="Изменение уже сделано: отметить урок внедрённым" :disabled="!!card.busy" @click="desk.openForm(lesson, 'apply')">
         Внедрено
       </button>
     </div>
 
+    <template v-if="assignment && !card.form">
+      <p v-if="assignment.copied" class="copied" role="status">Задание скопировано: вставь его в сессию Claude, а после правки отметь «Внедрено»</p>
+      <template v-else>
+        <p class="copied" role="status">Буфер обмена недоступен: скопируй задание и вставь его в сессию Claude</p>
+        <textarea class="mono manual" rows="6" readonly :value="assignment.text" aria-label="Задание для сессии Claude" @focus="selectAll"></textarea>
+      </template>
+    </template>
     <p v-if="card.error" class="fail" role="alert">{{ card.error }}</p>
     <CopiedNote v-if="card.copied" :copied="card.copied" />
   </div>
@@ -180,6 +228,42 @@ function submit() {
 .form .note {
   flex: none;
   width: 100%;
+}
+
+.outside {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+  padding: 5px 8px;
+  border-left: 2px solid var(--st-amber);
+  background: rgba(217, 162, 76, 0.08);
+  font-size: 12.5px;
+}
+
+.outside-head {
+  margin: 0;
+  color: var(--st-amber);
+}
+
+.paths {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.copied {
+  margin: 6px 0 0;
+  color: #d4cab5;
+  font-size: 12px;
+}
+
+.manual {
+  width: 100%;
+  margin-top: 4px;
+  font-size: 11.5px;
+  resize: vertical;
 }
 
 .done-line {

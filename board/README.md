@@ -116,12 +116,19 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
   «Внедрить» asks where — a repository from `repos` in `GET /api/research`, a domain lesson's own one or `teamster`
   first — and for an optional note, and «Запустить» starts a teamster task whose brief the server builds from the
   lesson (`POST /api/actions/implement`; a proposed lesson becomes accepted). The agent makes the change and opens a
-  PR; changes outside the repositories it only lists in its report. The card then follows the task (`implementation`
+  PR; changes outside the repositories it only lists in its report. A lesson whose proposal names files outside every
+  git repository (`outside` of the lesson, such as `~/.codex/checks/<repo>/ci_wait.py`) lists them on its card above
+  the buttons. «Внедрить» then lets the agent change exactly those files: it saves a `.bak` copy next to each file
+  first and checks the change on a copy, and these changes have no PR. «Скопировать задание» copies the same change
+  as an assignment for a Claude session that makes it by hand, ending with the `teamster lesson … applied` command; when
+  the clipboard refuses, the assignment is shown to copy. The card then follows the task (`implementation`
   of the lesson): the agent works; it needs a decision, with its questions and a reply field; its PR is ready, to be
-  checked, merged and then marked «Внедрено», whose note starts with the PR's URL; it stopped, with its summary and a
-  reply field to go on; or the task is closed. A reply goes to the task with `say`. While a lesson's task is open,
+  checked, merged and then marked «Внедрено», whose note starts with the PR's URL; for a lesson with `outside` files,
+  its change outside the repository is done, to be checked by the agent's report and marked «Внедрено»; it stopped,
+  with its summary and a reply field to go on; or the task is closed. A reply goes to the task with `say`. While a lesson's task is open,
   «Внедрить» is not offered, and «Посмотреть» leaves the station for the task's ship: the map flies to its system and
-  opens its card. The line under the station's title offers the same while exactly one agent is at work.
+  opens its card. The line under the station's title offers the same while exactly one agent is at work, and shows
+  a ready PR first, then a done change outside the repository.
 - «Трюм архива»: one capsule per record the next planned reflection will read, lit when it carries a signal, the records per
   project and per signal, and the signalled records, each of which can be ordered into a study.
 

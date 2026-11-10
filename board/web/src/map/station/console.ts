@@ -74,7 +74,7 @@ export interface ReplyState {
 export interface ConsoleOptions extends ShipOptions {
   /** Runs an action on the board server and asks for the research again after it succeeded. */
   act: ActionSender;
-  /** Copies a command for the terminal; false when the clipboard is not available. */
+  /** Copies a command for the terminal or a lesson's manual assignment; false when the clipboard is not available. */
   copy?: (text: string) => Promise<boolean>;
   /** Brings a deck into view. */
   jump?: (deck: Deck) => void;
@@ -438,6 +438,7 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
   }
 
   return {
+    copyText: copy,
     studies,
     repos: computed(() => research.value.repos),
     reposAccess: computed(() => research.value.reposAccess),

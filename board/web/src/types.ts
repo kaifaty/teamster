@@ -135,6 +135,8 @@ export interface Lesson {
   proposal?: string | null;
   evidence?: string | null;
   caveats?: string | null;
+  /** Files outside every git repository that the proposal names, as `~/…`; absent on older servers. */
+  outside?: string[];
   /** The task that implements the lesson, the newest one; absent on older servers. */
   implementation?: Implementation | null;
 }
