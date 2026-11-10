@@ -7,7 +7,7 @@ import { readOnlyReason, type ActionSender, type ReviewAngles, type Reviewer } f
 import type { Verdict } from "../../lib/commands";
 import type { TaskDetail, TaskSummary } from "../../types";
 import type { Copied } from "../station/console";
-import { blankRefit, fallbackCommand, lastLine, reflectOrder, refitOf, type Echo, type RefitDraft, type ShipOrder } from "./orders";
+import { blankRefit, deskOf, fallbackCommand, lastLine, reflectOrder, refitOf, type Echo, type RefitDraft, type ShipOrder } from "./orders";
 
 export type GroupId = "reply" | "accept" | "review" | "reflect" | "recall";
 
@@ -46,6 +46,12 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
   const actions = computed(() => detail.value?.actions);
   const live = computed(() => actions.value?.enabled === true);
   const offReason = computed(() => readOnlyReason(actions.value?.reason, !!actions.value));
+  /** The board's teamster queues a say to a busy ship. */
+  const queue = computed(() => actions.value?.queue === true);
+  /** The groups the bridge shows for the ship as it is now. */
+  const view = computed(() => (task.value ? deskOf(task.value, queue.value) : null));
+  /** The orders in the ship's queue: waiting for the end of its cycle, or dropped by it. */
+  const queued = computed(() => detail.value?.queue ?? null);
 
   const reply = ref("");
   const field = ref<HTMLTextAreaElement | null>(null);
@@ -114,8 +120,9 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
       return;
     }
     const body = Object.keys(options).length ? { slug: slug.value, text, options } : { slug: slug.value, text };
-    if (await run("reply", "send", { route: "say", body }, (output) => lastLine(output) || "Указание передано")) {
-      echo.value = [...echo.value, { at: Date.now() / 1000, text }];
+    const toQueue = view.value?.queue === true;
+    if (await run("reply", "send", { route: "say", body }, (output) => lastLine(output) || (toQueue ? "Указание в очереди" : "Указание передано"))) {
+      echo.value = [...echo.value, toQueue ? { at: Date.now() / 1000, text, queued: true } : { at: Date.now() / 1000, text }];
       reply.value = "";
       Object.assign(refit, blankRefit());
     }
@@ -135,7 +142,7 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
   const stop = () => run("recall", "stop", { route: "stop", body: { slug: slug.value } });
   const clean = (keepBranch: boolean) => run("recall", "clean", { route: "clean", body: { slug: slug.value, keep_branch: keepBranch } });
 
-  return { live, offReason, reply, field, refit, refitNow, echo, groups, fill, send, verdict, review, reflect, stop, clean };
+  return { live, offReason, queue, queued, reply, field, refit, refitNow, echo, groups, fill, send, verdict, review, reflect, stop, clean };
 }
 
 export type ShipDesk = ReturnType<typeof createShipDesk>;

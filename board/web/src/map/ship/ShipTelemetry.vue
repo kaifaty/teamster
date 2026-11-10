@@ -46,7 +46,7 @@ const age = (activity: Activity) => (activity.at !== null ? coarseSpan(Math.max(
     <ul v-else class="tele" aria-live="polite">
       <li v-for="activity in rows" :key="`${activity.at}-${activity.text}`">
         <span class="k" :class="activity.kind">{{ TELEMETRY_WORDS[activity.kind] ?? activity.kind }}</span>
-        <span class="x" :class="{ mono: MONO.has(activity.kind) }">{{ activity.text }}</span>
+        <span class="x" :class="{ mono: MONO.has(activity.kind) }" :title="activity.text">{{ activity.text }}</span>
         <span class="a num">{{ age(activity) }}</span>
       </li>
     </ul>
@@ -93,8 +93,14 @@ const age = (activity: Activity) => (activity.at !== null ? coarseSpan(Math.max(
   color: var(--sh-blue);
 }
 
+/* A long or many-line command keeps two lines; its whole text is in the title. */
 .x {
+  display: -webkit-box;
+  overflow: hidden;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .a {

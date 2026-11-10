@@ -4,7 +4,8 @@
 import { ANGLES, EFFORTS, REVIEWERS, type ActionBodies, type Angle, type Effort, type SayOptions } from "../../lib/actions";
 import { cleanCommand, commandSlug, optionFlags, reflectCommand, reflectSlug, reviewCommand, sayCommand, stopCommand, verdictCommand, type Verdict } from "../../lib/commands";
 import { recommendedOrder } from "../../lib/orders";
-import type { Cargo, TaskLimits, TaskMessage, TaskSummary } from "../../types";
+import type { Cargo, TaskLimits, TaskMessage, TaskQueue, TaskSummary } from "../../types";
+import { plural } from "../research";
 
 /** An archived record's folder ends in its archive time: the server takes no order but a verdict or a reflection. */
 export const archived = (slug: string) => commandSlug(slug) !== slug;
@@ -21,6 +22,8 @@ export interface FeedItem {
   text: string;
   /** Beside the time, e.g. the report's outcome. */
   note: string | null;
+  /** An order of the queue: waiting for the end of the cycle, or dropped by it and ready to be sent again. */
+  queue?: "waiting" | "dropped";
 }
 
 const SOURCES: Record<TaskMessage["source"], { who: string; tone: FeedItem["tone"] }> = {
@@ -31,27 +34,65 @@ const SOURCES: Record<TaskMessage["source"], { who: string; tone: FeedItem["tone
 
 const RESULTS: Record<string, string> = { done: "сделано", partial: "сделано частично", needs_decision: "ждёт решения", blocked: "заблокирована" };
 
-/** An order sent from the bridge, shown until the task's own messages carry it. */
+/** An order sent from the bridge, shown until the task's own messages or its queue carry it. */
 export interface Echo {
   at: number;
   text: string;
+  /** Sent to a busy ship: it waits in the queue. */
+  queued?: boolean;
 }
 
 const same = (a: string, b: string) => a.trim() === b.trim();
 
+/** Why the end of a cycle dropped the queue, in words about the ship. */
+export const DROPPED: Record<string, string> = {
+  stopped: "остановлен",
+  interrupted: "прерван",
+  failed: "сбой",
+  budget_exhausted: "бюджет исчерпан",
+  stuck: "завис",
+  conflict: "конфликт",
+  refused: "отказ",
+  unavailable: "недоступен",
+  exhausted: "лимиты исчерпаны",
+  error: "ошибка",
+};
+
+/** «не доставлено · остановлен» beside a dropped order. */
+export const droppedNote = (outcome: string | null) => ["не доставлено", outcome ? (DROPPED[outcome] ?? outcome) : null].filter(Boolean).join(" · ");
+
 /**
- * The comms room's feed by time: the lead's orders and the stations' reports from `messages`, then the captain's last
- * report and its open questions. While the ship works, the report is the one before the current phase began.
+ * The comms room's feed by time: the lead's orders and the stations' reports from `messages`, the orders the end of a
+ * cycle dropped, then the captain's last report and its open questions; the orders waiting in the queue come last.
+ * While the ship works, the report is the one before the current phase began.
  */
-export function feedOf(task: TaskSummary, messages: readonly TaskMessage[], cargo: Cargo | null | undefined, echo: readonly Echo[] = []): FeedItem[] {
+export function feedOf(
+  task: TaskSummary,
+  messages: readonly TaskMessage[],
+  cargo: Cargo | null | undefined,
+  echo: readonly Echo[] = [],
+  queue: TaskQueue | null | undefined = null,
+): FeedItem[] {
   const ordered = [...messages].sort((a, b) => a.at - b.at);
   const rows: { item: FeedItem; rank: number }[] = ordered.map((message, index) => ({
-    item: { key: `m${index}-${message.at}`, at: message.at, ...SOURCES[message.source], text: message.text, note: null },
+    item: { key: `m${index}-${message.at}`, at: message.at, ...SOURCES[message.source], text: message.text, note: typeof message.queued_at === "number" ? "из очереди" : null },
     rank: 0,
   }));
+  for (const [index, order] of (queue?.dropped ?? []).entries()) {
+    rows.push({ item: { key: `d${index}-${order.at}`, at: order.at, ...SOURCES.lead, text: order.text, note: droppedNote(order.outcome), queue: "dropped" }, rank: 0 });
+  }
+  const waiting: FeedItem[] = [...(queue?.waiting ?? [])]
+    .sort((a, b) => a.at - b.at)
+    .map((order, index) => ({ key: `w${index}-${order.at}`, at: order.at, ...SOURCES.lead, text: order.text, note: "в очереди", queue: "waiting" }));
+  const carried = (sent: Echo) =>
+    [...ordered.filter((message) => message.source === "lead"), ...(queue?.waiting ?? []), ...(queue?.dropped ?? [])].some(
+      (message) => message.at >= sent.at - 5 && same(message.text, sent.text),
+    );
   for (const [index, sent] of echo.entries()) {
-    if (ordered.some((message) => message.source === "lead" && message.at >= sent.at - 5 && same(message.text, sent.text))) continue;
-    rows.push({ item: { key: `e${index}-${sent.at}`, at: sent.at, ...SOURCES.lead, text: sent.text, note: "передано" }, rank: 0 });
+    if (carried(sent)) continue;
+    const item: FeedItem = { key: `e${index}-${sent.at}`, at: sent.at, ...SOURCES.lead, text: sent.text, note: sent.queued ? "в очереди" : "передано" };
+    if (sent.queued) waiting.push({ ...item, queue: "waiting" });
+    else rows.push({ item, rank: 0 });
   }
   const status = task.result_status;
   const questions = cargo?.questions ?? [];
@@ -72,10 +113,11 @@ export function feedOf(task: TaskSummary, messages: readonly TaskMessage[], carg
       });
     }
   }
-  return rows
+  const feed = rows
     .map((row, order) => ({ ...row, order }))
     .sort((a, b) => (a.item.at ?? 0) - (b.item.at ?? 0) || a.rank - b.rank || a.order - b.order)
     .map((row) => row.item);
+  return [...feed, ...waiting];
 }
 
 /** A message longer than four lines folds under «показать целиком». */
@@ -87,8 +129,10 @@ export const isLong = (text: string) => text.split("\n").length > FOLD_LINES || 
 export interface DeskView {
   /** The reply field of the comms room. */
   reply: boolean;
-  /** «Передать»: the server takes `say` now; a ship at work gets the note instead. */
+  /** «Передать»: the server takes `say` now; a ship at work gets the note instead, unless it queues. */
   send: boolean;
+  /** «В очередь»: the ship is at work and the installed teamster queues the order until its cycle ends. */
+  queue: boolean;
   /** «Приёмка»; `acceptFirst`: on the roadstead it leads and is lit. */
   accept: boolean;
   acceptFirst: boolean;
@@ -99,17 +143,22 @@ export interface DeskView {
   clean: boolean;
 }
 
-/** Which groups the bridge shows: only those whose order the server accepts (the 409 conditions of the contract). */
-export function deskOf(task: Pick<TaskSummary, "slug" | "kind" | "alive" | "column">): DeskView {
+/**
+ * Which groups the bridge shows: only those whose order the server accepts (the 409 conditions of the contract).
+ * `queue`: the board's teamster queues a say to a busy ship (`actions.queue`).
+ */
+export function deskOf(task: Pick<TaskSummary, "slug" | "kind" | "alive" | "column">, queue = false): DeskView {
   const session = task.kind === "session";
   const old = archived(task.slug);
   const idle = !task.alive;
   const words = task.kind === "work" || task.kind === "review" || task.kind === "reflect";
   const judged = task.kind === "work" || task.kind === "review";
-  const send = words && !old && idle;
+  const queued = words && !old && task.alive && queue;
+  const send = (words && !old && idle) || queued;
   return {
     reply: words && !old,
     send,
+    queue: queued,
     accept: judged,
     acceptFirst: judged && task.column === "review_me",
     refit: send,
@@ -211,11 +260,25 @@ export function refitOf(draft: RefitDraft, task: Pick<TaskSummary, "executor" | 
   return { options, errors };
 }
 
-/** The line under the refit: what goes with the next order. */
-export function refitLine(refit: Refit): string {
+/** The line under the refit: what goes with the next order, or with the order put in the queue. */
+export function refitLine(refit: Refit, queued = false): string {
   if (refit.errors.length) return refit.errors.join(" · ");
   const flags = optionFlags(refit.options);
-  return flags.length ? `уйдёт с указанием: ${flags.join(" ")}` : "ничего не меняется";
+  return flags.length ? `уйдёт с указанием${queued ? " в очередь" : ""}: ${flags.join(" ")}` : "ничего не меняется";
+}
+
+/** The hint under the reply field: how the order goes, or why it does not. */
+export function replyHint(view: Pick<DeskView, "send" | "queue">): string {
+  if (view.queue) return "Корабль в пути: указание встанет в очередь и уйдёт одним ходом, когда он закончит цикл. Срочно — «Остановить», но очередь тогда не уйдёт";
+  if (view.send) return "С изменёнными полями переоснащения · ⌘/Ctrl+Enter";
+  return "Идёт ход: teamster отклонит указание. Обнови teamster до 1.60, чтобы ставить указания в очередь, или останови корабль";
+}
+
+/** The confirmation of «Остановить»: the orders waiting in the queue are lost with the cycle. */
+export function stopConfirm(waiting: number): string {
+  const base = "Остановить корабль посреди хода? Работа в worktree останется.";
+  if (waiting <= 0) return base;
+  return `${base} ${waiting} ${plural(waiting, "указание", "указания", "указаний")} в очереди не ${plural(waiting, "уйдёт", "уйдут", "уйдут")}.`;
 }
 
 // The orders and their commands.

@@ -9,15 +9,15 @@ import { returnText } from "../../lib/orders";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
 import CopiedNote from "../station/CopiedNote.vue";
 import type { GroupId, ShipDesk } from "./desk";
-import { ANGLE_CHIPS, NOTE_MAX, OTHER_VERDICTS, anglesOf, deskOf, effortsFor, refitLine, toggleAngle } from "./orders";
+import { ANGLE_CHIPS, NOTE_MAX, OTHER_VERDICTS, anglesOf, deskOf, effortsFor, refitLine, stopConfirm, toggleAngle } from "./orders";
 
 const props = defineProps<{ task: TaskSummary; desk: ShipDesk; limits: TaskLimits | null | undefined; cargo: Cargo | null }>();
 
-const view = computed(() => deskOf(props.task));
+const view = computed(() => deskOf(props.task, props.desk.queue.value));
 const groups = computed(() => props.desk.groups);
 const busy = (id: GroupId) => !!groups.value[id].busy;
 const efforts = computed(() => effortsFor(props.task.executor));
-const line = computed(() => refitLine(props.desk.refitNow.value));
+const line = computed(() => refitLine(props.desk.refitNow.value, view.value.queue));
 const refit = props.desk.refit;
 const asIs = (value: string | number | null | undefined) => (value === null || value === undefined || value === "" ? "как сейчас" : String(value));
 const savedAngles = computed(() => props.limits?.review_angles ?? []);
@@ -39,7 +39,10 @@ const reviewer = ref<Reviewer | "">("");
 // The recall.
 const confirming = ref<"stop" | "clean" | null>(null);
 const keepBranch = ref(true);
-const CONFIRM = { stop: "Остановить корабль посреди хода? Работа в worktree останется.", clean: "Списать: удалить worktree и запись задачи." } as const;
+const CONFIRM = computed(() => ({
+  stop: stopConfirm(props.desk.queued.value?.waiting.length ?? 0),
+  clean: "Списать: удалить worktree и запись задачи.",
+}));
 async function recall() {
   const what = confirming.value;
   if (!what) return;
@@ -92,7 +95,7 @@ watch(
       </div>
 
       <div v-if="view.refit" class="group">
-        <h4>Переоснащение <small>со следующего указания</small></h4>
+        <h4>Переоснащение <small>{{ view.queue ? "уйдёт с указанием в очередь" : "со следующего указания" }}</small></h4>
         <div class="refit">
           <label>Двигатель<input v-model="refit.model" class="field mono" type="text" maxlength="64" :placeholder="asIs(task.model)" /></label>
           <label

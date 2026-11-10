@@ -1,7 +1,8 @@
 <script setup lang="ts">
-// The comms room: the lead's orders, the stations' reports and the captain's last report with its questions, by time;
-// under them the reply, which goes to the ship at once with the refit's changed fields. A ship at work takes the reply
-// only once its turn ends; an archived ship, a session and a scout take none.
+// The comms room: the lead's orders, the stations' reports and the captain's last report with its questions, by time,
+// and the orders waiting in the queue last; an order the end of a cycle dropped can go into the reply again. Under them
+// the reply, which goes to the ship at once with the refit's changed fields. A ship at work puts the reply in its queue
+// when the board's teamster has one, else takes none; an archived ship, a session and a scout take none.
 import { computed, ref, watch } from "vue";
 import { formatClock } from "../../lib/format";
 import { CONTINUE, MERGE, returnText } from "../../lib/orders";
@@ -9,12 +10,13 @@ import type { Cargo, TaskMessage, TaskSummary } from "../../types";
 import CopiedNote from "../station/CopiedNote.vue";
 import { isSendKey } from "../station";
 import type { ShipDesk } from "./desk";
-import { deskOf, feedOf, isLong } from "./orders";
+import { deskOf, feedOf, isLong, replyHint } from "./orders";
 
 const props = defineProps<{ task: TaskSummary; desk: ShipDesk; messages: TaskMessage[]; cargo: Cargo | null; now: number }>();
 
-const view = computed(() => deskOf(props.task));
-const feed = computed(() => feedOf(props.task, props.messages, props.cargo, props.desk.echo.value));
+const view = computed(() => deskOf(props.task, props.desk.queue.value));
+const feed = computed(() => feedOf(props.task, props.messages, props.cargo, props.desk.echo.value, props.desk.queued.value));
+const hint = computed(() => replyHint(view.value));
 const state = computed(() => props.desk.groups.reply);
 const busy = computed(() => !!state.value.busy);
 
@@ -53,13 +55,14 @@ function onKey(event: KeyboardEvent) {
     </div>
 
     <ol v-if="feed.length" class="feed">
-      <li v-for="item in feed" :key="item.key" class="msg" :class="item.tone">
+      <li v-for="item in feed" :key="item.key" class="msg" :class="[item.tone, item.queue]">
         <div class="from">
           <b>{{ item.who }}</b>
           <span>{{ [item.at !== null ? formatClock(item.at, now) : null, item.note].filter(Boolean).join(" · ") }}</span>
         </div>
         <p :class="{ folded: isLong(item.text) && !open.has(item.key) }">{{ item.text }}</p>
         <button v-if="isLong(item.text) && !open.has(item.key)" type="button" class="more" @click="unfold(item.key)">показать целиком</button>
+        <button v-if="item.queue === 'dropped' && view.reply" type="button" class="more" :disabled="busy" @click="desk.fill(item.text)">Отправить снова</button>
       </li>
     </ol>
     <p v-else class="empty">Переговоров пока нет.</p>
@@ -72,18 +75,20 @@ function onKey(event: KeyboardEvent) {
         v-model="desk.reply.value"
         rows="3"
         placeholder="Например: сначала закрой P1, P2 можно позже"
-        :disabled="busy"
+        :disabled="busy || !view.send"
         @keydown="onKey"
       ></textarea>
       <div class="chips">
-        <button v-for="quick in QUICK" :key="quick.label" type="button" class="chip" :disabled="busy" @click="desk.fill(quick.text)">{{ quick.label }}</button>
+        <button v-for="quick in QUICK" :key="quick.label" type="button" class="chip" :disabled="busy || !view.send" @click="desk.fill(quick.text)">{{ quick.label }}</button>
       </div>
       <div class="row">
         <template v-if="view.send">
-          <span class="dim hint">С изменёнными полями переоснащения · ⌘/Ctrl+Enter</span>
-          <button type="submit" class="key main" :disabled="busy || !desk.reply.value.trim()">{{ state.busy ? "Передаю…" : "Передать" }}</button>
+          <span class="dim hint">{{ hint }}</span>
+          <button type="submit" class="key main" :disabled="busy || !desk.reply.value.trim()">
+            {{ view.queue ? (state.busy ? "Ставлю в очередь…" : "В очередь") : state.busy ? "Передаю…" : "Передать" }}
+          </button>
         </template>
-        <p v-else class="hint wait">Идёт ход: teamster примет указание, когда ход кончится. Срочное — через «Остановить».</p>
+        <p v-else class="hint wait">{{ hint }}</p>
       </div>
       <p v-if="state.done" class="result ok" role="status">{{ state.done }}</p>
       <p v-if="state.error" class="result bad" role="alert">{{ state.error }}</p>
@@ -141,6 +146,19 @@ function onKey(event: KeyboardEvent) {
 
 .msg.sys b {
   color: var(--sh-blue);
+}
+
+.msg.waiting {
+  border-style: dashed;
+}
+
+.msg.dropped {
+  border-color: rgba(255, 141, 122, 0.35);
+  opacity: 0.85;
+}
+
+.msg.dropped .from span {
+  color: var(--sh-red);
 }
 
 .msg.ask {

@@ -3,7 +3,7 @@
 import type { BoardSource } from "../lib/source";
 import { ART, BACKDROPS } from "../map/art";
 import { emptyState, reduce, type BoardState } from "../store/reduce";
-import type { Activity, Cargo, ServerMessage, Snapshot, TaskDetail, TaskFile, TaskLimits, TaskMessage } from "../types";
+import type { Activity, Cargo, ServerMessage, Snapshot, TaskDetail, TaskFile, TaskLimits, TaskMessage, TaskQueue } from "../types";
 import snapshotJson from "./snapshot.json";
 import streamJson from "./stream.json";
 import detailsJson from "./details.json";
@@ -20,6 +20,7 @@ interface FixtureDetail {
   messages?: TaskMessage[];
   activity_log?: Activity[];
   actions?: TaskDetail["actions"];
+  queue?: TaskQueue;
 }
 
 /** A task's cargo when the fixtures give none: present, but with nothing in it. */
@@ -39,7 +40,7 @@ const EVENT_MS = 9000;
 const TIME_KEYS = new Set([
   "generated_at", "phase_started_at", "sleeping_until", "created", "updated_at", "at", "fetched_at",
   "resets_at", "limited_until", "expires_at", "since", "checked_at", "sampled_at",
-  "last_run_at", "last_scheduled_for", "next_at",
+  "last_run_at", "last_scheduled_for", "next_at", "queued_at", "dropped_at",
 ]);
 
 function shiftValue(value: unknown, delta: number): unknown {
@@ -75,7 +76,13 @@ export function fixtureSource(): BoardSource {
   let push: ((message: ServerMessage) => void) | null = null;
   // A ship the replay has just taken off the board still takes orders, as in the snapshot.
   const fixtureTasks = Object.fromEntries(snapshot.tasks.map((task) => [task.slug, task]));
-  const ships = fixtureShips(() => ({ ...fixtureTasks, ...state.tasks }), () => Date.now() / 1000, (message) => push?.(message));
+  // A fixture ship's teamster queues orders unless its detail says otherwise.
+  const ships = fixtureShips(
+    () => ({ ...fixtureTasks, ...state.tasks }),
+    () => Date.now() / 1000,
+    (message) => push?.(message),
+    (slug) => details[slug]?.actions?.queue ?? true,
+  );
   const studied = (slug: string | undefined) =>
     research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
   /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
@@ -136,13 +143,20 @@ export function fixtureSource(): BoardSource {
       const cargo = task.kind === "session" ? null : shiftTimes(extra?.cargo ?? NO_CARGO, delta);
       const detail: TaskDetail = { ...task, timeline, files, cargo };
       // The fields newer servers add stay absent where the fixture leaves them out, as from an older server.
-      for (const key of ["limits", "messages", "activity_log", "actions"] as const) {
+      for (const key of ["limits", "messages", "activity_log", "actions", "queue"] as const) {
         if (extra?.[key] !== undefined) Object.assign(detail, { [key]: shiftTimes(extra[key], delta) });
       }
       // The fixtures act on every task, whatever its detail says.
-      detail.actions ??= { enabled: true, reason: null };
+      detail.actions ??= { enabled: true, reason: null, queue: true };
       const sent = ships.sent(slug);
       if (sent.length) detail.messages = [...(detail.messages ?? []), ...sent];
+      const queue = ships.queue(slug);
+      if (detail.queue || queue.waiting.length || queue.dropped.length) {
+        const own = detail.queue ?? { waiting: [], dropped: [] };
+        // A fixture ship that went out of work, stopped or finished, has dropped what waited in its queue.
+        const lost = task.alive ? [] : own.waiting.map((order) => ({ ...order, dropped_at: task.updated_at, outcome: task.outcome ?? "stopped" }));
+        detail.queue = { waiting: task.alive ? [...own.waiting, ...queue.waiting] : queue.waiting, dropped: [...own.dropped, ...lost, ...queue.dropped] };
+      }
       return detail;
     },
     async fetchFile(slug, name) {
