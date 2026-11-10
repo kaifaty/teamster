@@ -20,7 +20,10 @@ LOG_LIMIT = 5000
 
 
 def number(value):
-    return float(value) if type(value) in (int, float) and math.isfinite(value) else None
+    try:
+        return float(value) if type(value) in (int, float) and math.isfinite(value) else None
+    except OverflowError:
+        return None
 
 
 def text(value):
@@ -149,6 +152,53 @@ def cargo(state):
     }
 
 
+def limits(state):
+    rotations = []
+    for item in objects(state.get("rotations")):
+        at = number(item.get("at"))
+        if at is not None:
+            rotations.append({"at": at, **{key: line(item.get(key))
+                                           for key in ("from", "to", "reason")}})
+    angles = state.get("review_angles")
+    rounds = state.get("rounds")
+    return {
+        "max_turn_minutes": number(state.get("max_turn_minutes")),
+        "weekly_used_percent": number(state.get("weekly_used_percent")),
+        "max_weekly_percent": number(state.get("max_task_weekly_percent")),
+        "fix_rounds": number(state.get("fix_rounds")),
+        "review_rounds": len(rounds) if isinstance(rounds, list) else 0,
+        "ci_rounds": number(state.get("ci_rounds")),
+        "ci_enabled": state.get("ci_enabled") is True or bool(text(state.get("ci_command"))),
+        "review_angles": angles if isinstance(angles, list) and all(isinstance(a, str) for a in angles) else [],
+        "check": line(state.get("check")),
+        "rotations": sorted(rotations, key=lambda item: item["at"])[-20:],
+    }
+
+
+def task_messages(path):
+    messages = []
+    if path is None:
+        return messages
+    try:
+        with path.open(encoding="utf-8", errors="replace") as stream:
+            for raw in stream:
+                try:
+                    row = json.loads(raw)
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                at = number(row.get("at"))
+                message = row.get("text")
+                if at is not None and isinstance(message, str):
+                    source = row.get("source")
+                    messages.append({"at": at, "source": source if source in ("review", "ci") else "lead",
+                                     "text": message[:4000]})
+    except OSError:
+        pass
+    return sorted(messages, key=lambda item: item["at"])[-50:]
+
+
 def log_event(row):
     if not isinstance(row, dict) or row.get("kind") not in ("work", "review", "scout", "verdict"):
         return None
@@ -209,7 +259,7 @@ def phase(state, is_alive):
     if not is_alive:
         return "idle", number(state.get("turn_finished"))
     if state.get("outcome") == "sleeping":
-        sleeps = [item for item in state.get("rotations", []) if item.get("event") == "sleep"]
+        sleeps = [item for item in objects(state.get("rotations")) if item.get("event") == "sleep"]
         return "sleeping", number(sleeps[-1].get("at")) if sleeps else None
     if state.get("check_pid"):
         return "check", None
@@ -248,7 +298,7 @@ def timeline(state):
         label = f"Review {item.get('angle', 'correctness')} by {item.get('reviewer', 'codex')}/{item.get('account', '?')}"
         add(item.get("started"), label + " started")
         add(item.get("finished"), label + " " + str(item.get("outcome") or "finished"))
-    for item in state.get("rotations", []):
+    for item in objects(state.get("rotations")):
         event = item.get("event")
         label = (f"{event}: {item.get('account') or ''} {item.get('reason') or ''}" if event else
                  f"Rotated {item.get('from', '?')} to {item.get('to', '?')}: {item.get('reason', '')}")
@@ -385,7 +435,8 @@ class Store:
             "phase_started_at": started_at,
             "alive": is_alive,
             "turn": state.get("turns", 0),
-            "fix_round": len(state.get("rounds", [])) + (integer(ci.get("rounds")) or 0),
+            "fix_round": (len(state["rounds"]) if isinstance(state.get("rounds"), list) else 0)
+                         + (integer(ci.get("rounds")) or 0),
             "outcome": outcome,
             "result_status": status,
             "summary": one_line(summary.splitlines()[0]) if summary else None,
@@ -494,21 +545,24 @@ class Store:
                 pass
 
     def _record(self, slug):
+        if not self._safe_slug(slug):
+            return None
         record = self.records.get(slug)
         if record is not None:
             return record
-        if not slug or slug.startswith(".") or Path(slug).name != slug:
-            return None
         archive = self.tasks_path / ".archive"
-        if self.tasks_path.is_symlink() or archive.is_symlink():
+        if self.tasks_path.is_symlink():
             return None
         # The 50-record limit applies to snapshots, not archive REST addresses.
-        record = Record(archive / slug, archived=True)
-        self._read_state(record)
-        if record.signature is None:
-            return None
-        record.summary = self._summary(slug, record)
-        return record
+        for root, archived in ((self.tasks_path, False), (archive, True)):
+            if root.is_symlink():
+                continue
+            record = Record(root / slug, archived=archived)
+            self._read_state(record)
+            if record.signature is not None:
+                record.summary = self._summary(slug, record)
+                return record
+        return None
 
     def _poll(self):
         messages = []
@@ -821,7 +875,7 @@ class Store:
                                               ("updated_at", "Last activity"))
                            if session.summary[key] is not None]
                 return dict(session.summary, timeline=sorted(entries, key=lambda item: item["at"]),
-                            files=[], cargo=None)
+                            files=[], cargo=None, limits=None, messages=[], activity_log=[])
             record = self._record(slug)
             if record is None:
                 return None
@@ -829,7 +883,12 @@ class Store:
             return dict(record.summary, timeline=timeline(state),
                         files=[name for name, filename in FILES.items()
                                if self._file(record.path, filename) is not None],
-                        cargo=cargo(record.state))
+                        cargo=cargo(record.state), limits=limits(record.state),
+                        messages=task_messages(self._file(record.path, "messages.jsonl")),
+                        activity_log=sorted((activity for tail in record.tails.values()
+                                             for activity in tail.activities),
+                                            key=lambda item: item["at"])[-10:][::-1]
+                        if record.summary["alive"] else [])
 
     def file_path(self, slug, name):
         with self.lock:

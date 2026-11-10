@@ -151,7 +151,7 @@ class Board:
         )
         self.research = Research(settings.path("tasks"), settings.reflection_task,
                                  settings.research_seconds, claude_desktop_dir=settings.claude_desktop_dir)
-        self.actions = Actions(self.research, settings.action_teamster, settings.read_only)
+        self.actions = Actions(self.research, self.store, settings.action_teamster, settings.read_only)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
         self.reports = Reports(settings.teamster)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),
@@ -283,7 +283,7 @@ def create_app(settings=None):
             task = await asyncio.to_thread(board.store.detail, slug)
         if task is None:
             raise HTTPException(404)
-        return task
+        return {**task, "actions": board.actions.value}
 
     @app.get("/api/tasks/{slug}/files/{name}")
     async def task_file(slug: str, name: str):
@@ -305,6 +305,10 @@ def create_app(settings=None):
     @app.post("/api/actions/implement")
     @app.post("/api/actions/say")
     @app.post("/api/actions/reflect")
+    @app.post("/api/actions/verdict")
+    @app.post("/api/actions/review")
+    @app.post("/api/actions/stop")
+    @app.post("/api/actions/clean")
     async def action(request: Request):
         data = await action_body(request)
         if not isinstance(data, dict):
