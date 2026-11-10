@@ -100,10 +100,10 @@ watch(
               <option v-for="effort in efforts" :key="effort" :value="effort">{{ effort }}</option>
             </select>
           </label>
-          <label>Лимит хода, мин<input v-model="refit.max_minutes" class="field num" type="number" min="5" max="600" step="5" :placeholder="asIs(limits?.max_turn_minutes)" /></label>
-          <label>Топливо задачи, %<input v-model="refit.max_weekly" class="field num" type="number" min="0.5" max="100" step="0.5" :placeholder="asIs(limits?.max_weekly_percent)" /></label>
-          <label>Круги ремонта<input v-model="refit.fix_rounds" class="field num" type="number" min="0" max="5" step="1" :placeholder="asIs(limits?.fix_rounds)" /></label>
-          <label>Попытки CI<input v-model="refit.ci_rounds" class="field num" type="number" min="0" max="5" step="1" :placeholder="asIs(limits?.ci_rounds)" /></label>
+          <label>Лимит хода, мин<input v-model="refit.max_minutes" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.max_turn_minutes)" /></label>
+          <label>Топливо задачи, %<input v-model="refit.max_weekly" class="field num" type="text" inputmode="decimal" :placeholder="asIs(limits?.max_weekly_percent)" /></label>
+          <label>Круги ремонта<input v-model="refit.fix_rounds" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.fix_rounds)" /></label>
+          <label>Попытки CI<input v-model="refit.ci_rounds" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.ci_rounds)" /></label>
           <label
             >Инспектор
             <select v-model="refit.reviewer" class="field">
