@@ -113,6 +113,12 @@ describe("research", () => {
     expect(made.other.map((item) => item.entry)).toEqual(["e"]);
   });
 
+  it("passes the repositories' disk access through, «ok» for a server that does not say", () => {
+    expect(research(view(), [], [])!.reposAccess).toBe("ok");
+    expect(research(view({ repos_access: "denied" }), [], [])!.reposAccess).toBe("denied");
+    expect(research(view({ repos_access: "scanning" }), [], [])!.reposAccess).toBe("scanning");
+  });
+
   it("watches only systems on the map, most records first", () => {
     expect(research(view(), [], ["alpha", "beta"])!.watched).toEqual([
       { repo: "alpha", count: 2 },

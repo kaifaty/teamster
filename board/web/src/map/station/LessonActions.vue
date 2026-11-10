@@ -51,6 +51,11 @@ function submit() {
           <option v-for="item in repos" :key="item.path" :value="item.path" :title="item.path">{{ item.name }}</option>
         </select>
       </label>
+      <p v-if="desk.reposAccess.value === 'scanning'" class="hint" role="status">Ищу репозитории…</p>
+      <p v-else-if="desk.reposAccess.value === 'denied'" class="hint warn" role="note">
+        Часть репозиториев не видна: у доски нет доступа к диску. Разреши Python доски доступ к файлам на съёмных
+        томах: Системные настройки → Конфиденциальность и безопасность → Файлы и папки или Полный доступ к диску.
+      </p>
       <p class="hint">Правки вне репозиториев (~/.codex/AGENTS.md, ~/.claude/…) агент не делает — он перечислит их в отчёте.</p>
       <textarea v-model="note" rows="2" placeholder="Уточнение — необязательно" aria-label="Уточнение" :disabled="!!card.busy"></textarea>
       <span class="buttons">
@@ -166,6 +171,10 @@ function submit() {
   margin: 0;
   color: var(--st-dim);
   font-size: 12px;
+}
+
+.hint.warn {
+  color: var(--st-amber);
 }
 
 .form .note {
