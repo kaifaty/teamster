@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .activity import EventTail
+from .activity import EventTail, TAIL_BYTES
 
 
 FILES = {"brief": "brief.md", "last": "last.md", "review": "review.md", "check": "check.log"}
@@ -180,8 +180,14 @@ def task_messages(path):
     if path is None:
         return messages
     try:
-        with path.open(encoding="utf-8", errors="replace") as stream:
-            for raw in stream:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            start = max(0, stream.tell() - TAIL_BYTES)
+            stream.seek(start)
+            rows = stream.read(TAIL_BYTES).decode("utf-8", errors="replace").split("\n")
+            if start:
+                rows = rows[1:]
+            for raw in rows:
                 try:
                     row = json.loads(raw)
                 except (ValueError, RecursionError):

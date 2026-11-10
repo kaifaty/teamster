@@ -225,10 +225,14 @@ def test_detail_messages_sources_invalid_rows_and_limit(tmp_path, archived):
              {"at": float("inf"), "text": "inf"}, {"at": 61}, {"at": 62, "text": []}]
     path = directory / "messages.jsonl"
     path.write_text("{bad json}\n" + "".join(json.dumps(row) + "\n" for row in rows))
-    assert store.detail(slug)["messages"] == [
+    expected = [
         {"at": at, "source": sources[at % 6] if sources[at % 6] in ("review", "ci") else "lead",
          "text": "t" * 4000} for at in range(10, 60)
     ]
+    assert store.detail(slug)["messages"] == expected
+    path.write_bytes(b'{"at": 1001, "text": "before tail"}\n' + b" " * (256 * 1024)
+                     + b'{"at": 1000, "text": "cut first line"}\n' + path.read_bytes())
+    assert store.detail(slug)["messages"] == expected
     path.write_text('{"at": 1, "text": ""}\n')
     assert store.detail(slug)["messages"] == [{"at": 1, "source": "lead", "text": ""}]
     outside = tmp_path / "private.jsonl"

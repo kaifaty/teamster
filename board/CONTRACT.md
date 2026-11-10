@@ -793,8 +793,9 @@ There is no merge endpoint for ordinary tasks.
   `cargo: null`, `limits: null`, `messages: []`, `activity_log: []`.
   Limits come from `state.json`: numeric fields accept only finite JSON numbers, excluding booleans;
   missing or invalid values are `null`, except `review_rounds: 0` and empty lists. Rotations without
-  a finite numeric `at` are skipped. Messages come from the task's `messages.jsonl`, live or archived,
-  through the same safe file lookup as other task files, without following symbolic links. Malformed
+  a finite numeric `at` are skipped. Messages come from the last 256 KiB of the task's `messages.jsonl`,
+  live or archived, through the same safe file lookup as other task files, without following symbolic
+  links. If reading starts after the beginning of the file, discard the first, partial line. Malformed
   lines, non-object rows, non-finite or non-numeric `at` (including booleans), and non-string or missing
   `text` are skipped. Keep the newest 50 messages by `at`, ascending. Activity logs retain every
   activity parsed from newly read executor lines across polls, capped to the latest 10, newest first;
