@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from fastapi.responses import JSONResponse
 
+from . import access
 from .research import STATUSES
 
 
@@ -207,6 +208,10 @@ class Actions:
         implementation = lesson["implementation"]
         if implementation is not None and not implementation["archived"]:
             return error(409, f"Урок уже внедряется: {implementation['slug']}")
+        if access.readable(Path(repo) / ".git") is not True:
+            return error(503, "Нет доступа к диску с репозиторием. Разреши Python доски доступ к файлам "
+                         "на съёмных томах: Системные настройки → Конфиденциальность и безопасность → "
+                         "Файлы и папки или Полный доступ к диску.")
         lesson_id = re.sub(r"[^a-z0-9]", "-", entry.split()[-1].lower())
         base = f"lesson-{lesson_id}-{datetime.now(timezone.utc):%m%d}"
         slug, suffix = base, 2

@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from . import access
 from .store import Record, Store, alive, cargo, number, objects, text
 
 
@@ -349,6 +350,11 @@ class Research:
         self._schedules = {}
         self._view = None
         self._next_scan = 0.0
+        self._repo_paths = set()
+        self._repos = []
+        self._repos_access = "scanning"
+        self._repos_thread = None
+        self._next_repos_scan = 0.0
         self._store = Store(self.tasks_path)
 
     def view(self):
@@ -357,6 +363,12 @@ class Research:
             if self._view is None or now >= self._next_scan:
                 self._view = self._scan()
                 self._next_scan = time.monotonic() + self.seconds
+            if (now >= self._next_repos_scan
+                    and (self._repos_thread is None or not self._repos_thread.is_alive())):
+                self._repos_thread = threading.Thread(target=self._find_repos,
+                                                      args=(self._repo_paths,), daemon=True)
+                self._repos_thread.start()
+            self._view.update(repos=self._repos, repos_access=self._repos_access)
             return self._view
 
     def invalidate(self):
@@ -370,6 +382,7 @@ class Research:
 
     def _scan(self):
         view = self._empty()
+        self._repo_paths = set()
         view["schedule"] = self._schedule()
         archive = self.tasks_path / ".archive"
         if self.tasks_path.is_symlink():
@@ -449,16 +462,7 @@ class Research:
             if not archived and state.get("kind") == "reflect":
                 study_paths.add(directory)
                 view["studies"].append(self._study(directory, directory.name, state, archived=False))
-        repos = set()
-        for repo in repo_paths:
-            path = repository(repo)
-            try:
-                if path is not None and path != archive.resolve():
-                    repos.add(path)
-            except (OSError, ValueError, RuntimeError):
-                pass
-        view["repos"] = sorted(({"name": path.name, "path": str(path)} for path in repos),
-                               key=lambda repo: (repo["name"], repo["path"]))[:100]
+        self._repo_paths = repo_paths
         for lesson in view["lessons"]:
             lesson["implementation"] = implementations.get(lesson["entry"])
         self._records = {path: value for path, value in self._records.items() if path in wanted}
@@ -467,6 +471,26 @@ class Research:
                                  key=lambda study: (study["created"], study["updated_at"], study["slug"]),
                                  reverse=True)[:STUDY_LIMIT]
         return view
+
+    def _find_repos(self, repo_paths):
+        repos = set()
+        denied = False
+        for repo in repo_paths:
+            try:
+                if access.readable(Path(repo) / ".git") is not True:
+                    denied = True
+                    continue
+                path = repository(repo)
+                if path is not None and path != (self.tasks_path / ".archive").resolve():
+                    repos.add(path)
+            except (OSError, ValueError, RuntimeError):
+                continue
+        found = sorted(({"name": path.name, "path": str(path)} for path in repos),
+                       key=lambda repo: (repo["name"], repo["path"]))[:100]
+        with self.lock:
+            self._repos = found
+            self._repos_access = "denied" if denied else "ok"
+            self._next_repos_scan = time.monotonic() + self.seconds
 
     def _implementation(self, directory, slug, state, archived):
         if not slug.startswith("lesson-"):

@@ -360,6 +360,7 @@ interface ResearchView {
   actions: { enabled: boolean; reason: "read_only" | "no_teamster" | null };
   lessons: Lesson[];
   repos: { name: string; path: string }[]; // known local git repositories, at most 100
+  repos_access: "ok" | "scanning" | "denied";
   studies: Study[];           // live and recent archived reflect tasks, newest created first, at most 20
   batch: ResearchBatch | null;
   pending: {
@@ -558,6 +559,11 @@ what waits for the next batch, including its planned schedule. Material and less
   to 64 KiB per file. Main repository paths are resolved and deduplicated; `name` is the resolved
   directory's name. Sort by `name`, then `path`, retaining at most 100. This list is independent of
   the batch and study age windows.
+- `repos_access`: `"scanning"` until the first repository search finishes; `"denied"` when the last
+  completed search skipped at least one repository because its `.git` access probe failed or timed out;
+  otherwise `"ok"`. Before reading a repository's git metadata, discovery opens and closes its `.git`
+  with a 3-second timeout in a daemon thread. At most one pending probe per device is allowed; another
+  probe on that device immediately reports a timeout until the pending probe returns.
 - `implementation`: the task with the greatest `created` across live tasks and all archive records whose
   slug starts with `lesson-` and whose first `brief.md` line matches `^Внедрить урок «([^»]+)»`.
   The captured text, trimmed at both ends, must equal the lesson's `entry`; otherwise the field is `null`.
@@ -603,6 +609,11 @@ at most once per `BOARD_RESEARCH_SECONDS` (default 30), counted from build compl
 numbers, lists and rows are skipped or treated as missing under the existing field rules; malformed JSON
 states are skipped. Task/archive directories and study message files that are symbolic links are never
 followed. A missing archive leaves material empty and still permits live studies, repositories and implementations.
+
+Repository resolution and origin checks run in a separate daemon thread outside the research lock,
+including during startup warmup. Requests never wait for this search: `repos` and `repos_access` come
+from the last completed search (initially an empty list and `"scanning"`). Only one search runs at a
+time, and a new one starts no sooner than `BOARD_RESEARCH_SECONDS` after the previous search completes.
 
 `schedule` reads the Claude desktop app's
 `$BOARD_CLAUDE_DESKTOP_DIR/claude-code-sessions/*/*/scheduled-tasks.json` files (desktop directory defaults to
@@ -657,6 +668,10 @@ Only these POST endpoints execute commands:
   `error: "Урок уже внедрён или отклонён"`. `repo` must exactly equal a `repos[].path` (400 otherwise).
   A lesson with a non-archived implementation gets 409 with `error: "Урок уже внедряется: <slug>"`,
   even when its supervisor is idle.
+  Before running any command, the server probes `<repo>/.git` with the same 3-second access timeout.
+  A failed, timed-out or already pending probe returns 503 with
+  `{ok: false, error: "Нет доступа к диску с репозиторием. Разреши Python доски доступ к файлам на съёмных томах: Системные настройки → Конфиденциальность и безопасность → Файлы и папки или Полный доступ к диску."}`
+  and runs no commands.
   The slug is `lesson-<id>-MMDD` in UTC: `<id>` is the entry's last word, lowercased, with every character
   outside `[a-z0-9]` replaced by `-`. Add `-2`, `-3`, … while the task directory exists. The final slug
   must match `[a-z0-9][a-z0-9-]{1,40}` (400 otherwise).

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 
-from teamster_board import actions as actions_module
+from teamster_board import access, actions as actions_module
 from teamster_board import app as board_app
 from teamster_board.app import Settings, create_app
 from teamster_board.research import Research
@@ -55,7 +56,7 @@ def board(tmp_path, monkeypatch):
         directory = tmp_path / "claude-tasks" / "demo"
         directory.mkdir(parents=True)
         state = {
-            "slug": "demo", "kind": "work", "repo": "/tmp/repository", "branch": "demo-branch",
+            "slug": "demo", "kind": "work", "repo": str(tmp_path / "repository"), "branch": "demo-branch",
             "executor": "codex", "account": "main", "reviewer": "claude", "pid": process.pid,
             "outcome": "running", "turns": 1, "turn_started": 10.0, "created": 1.0,
         }
@@ -677,8 +678,11 @@ def test_art_needs_a_localhost_host_header(board):
 
 def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeypatch):
     client, application, _, _, settings = board
+    research = application.state.board.research
+    research.view()
+    research._repos_thread.join(5)
     assert client.get("/api/research").json() == {
-        "lessons": [], "repos": [], "batch": None,
+        "lessons": [], "repos": [], "repos_access": "denied", "batch": None,
         "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
         "studies": [], "reflection_task": "codex-batch-reflection", "schedule": None,
         "actions": application.state.board.actions.value}
@@ -739,6 +743,73 @@ def test_research_startup_warms_once_and_first_request_waits(tmp_path, monkeypat
             assert len(calls) == 3 and len(scans) == 1
         finally:
             finish.set()
+
+
+def test_research_startup_and_requests_do_not_wait_for_repository_disk(tmp_path, monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    repo = tmp_path / "repository"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "config").write_text('[remote "origin"]\nurl = https://example.com/repo\n')
+    fake = tmp_path / "accounts.py"
+    fake.write_text("print('{}')\n")
+    settings = Settings(tmp_path / "data", fake, layout="new", research_seconds=3600,
+                        web_dist=tmp_path / "dist")
+    directory = settings.path("tasks") / "known-repo"
+    directory.mkdir(parents=True)
+    (directory / "state.json").write_text(json.dumps({"repo": str(repo)}))
+    original = os.open
+    probes = []
+
+    def probe(path, flags, *args, **kwargs):
+        if path == repo / ".git":
+            probes.append(path)
+            started.set()
+            release.wait()
+        return original(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(access.os, "open", probe)
+    application = create_app(settings)
+    research = application.state.board.research
+    with TestClient(application, base_url="http://localhost") as client:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            try:
+                assert started.wait(5)
+                worker = research._repos_thread
+                assert worker.daemon
+                for _ in range(3):
+                    research.invalidate()
+                    before = time.monotonic()
+                    response = pool.submit(client.get, "/api/research").result(timeout=1)
+                    assert time.monotonic() - before < 1
+                    assert response.status_code == 200
+                    assert response.json()["repos"] == []
+                    assert response.json()["repos_access"] == "scanning"
+                    assert research._repos_thread is worker
+                assert probes == [repo / ".git"]
+            finally:
+                release.set()
+                if research._repos_thread is not None:
+                    research._repos_thread.join(5)
+        assert not worker.is_alive()
+        ready = client.get("/api/research").json()
+        assert ready["repos"] == [{"name": repo.name, "path": str(repo)}]
+        assert ready["repos_access"] == "ok"
+        research.invalidate()
+        assert client.get("/api/research").json()["repos"] == ready["repos"]
+        assert research._repos_thread is worker
+        started.clear()
+        release.clear()
+        research._next_repos_scan = 0
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            try:
+                response = pool.submit(client.get, "/api/research").result(timeout=1)
+                assert started.wait(5)
+                assert response.json()["repos"] == ready["repos"]
+                assert response.json()["repos_access"] == "ok"
+                assert research._repos_thread is not worker
+            finally:
+                release.set()
+                research._repos_thread.join(5)
 
 
 def test_constellations_come_from_the_data_home(board):
@@ -899,7 +970,15 @@ def lesson_repo(station):
     directory = settings.path("tasks") / "known-repository"
     directory.mkdir()
     (directory / "state.json").write_text(json.dumps({"repo": str(repo)}))
-    application.state.board.research.invalidate()
+    research = application.state.board.research
+    research.view()
+    research._repos_thread.join(5)
+    research.invalidate()
+    research._next_repos_scan = 0
+    research.view()
+    research._repos_thread.join(5)
+    assert not research._repos_thread.is_alive()
+    research.invalidate()
     return repo
 
 
@@ -1020,8 +1099,14 @@ def test_station_implement_slug_characters_and_collisions(station, lesson_repo, 
     ("note", 400, "Invalid note"),
     ("implementation", 409, "Урок уже внедряется: lesson-existing"),
     ("slug", 400, "Invalid slug"),
+    ("disk denied", 503, "Нет доступа к диску с репозиторием. Разреши Python доски доступ к файлам "
+     "на съёмных томах: Системные настройки → Конфиденциальность и безопасность → "
+     "Файлы и папки или Полный доступ к диску."),
+    ("disk timeout", 503, "Нет доступа к диску с репозиторием. Разреши Python доски доступ к файлам "
+     "на съёмных томах: Системные настройки → Конфиденциальность и безопасность → "
+     "Файлы и папки или Полный доступ к диску."),
 ])
-def test_station_implement_rejections(station, lesson_repo, case, status, message):
+def test_station_implement_rejections(station, lesson_repo, monkeypatch, case, status, message):
     client, application, settings, entry, calls, _ = station
     body = {"entry": entry, "repo": str(lesson_repo)}
     index = settings.path("tasks") / ".archive" / "INDEX.md"
@@ -1041,6 +1126,16 @@ def test_station_implement_rejections(station, lesson_repo, case, status, messag
     elif case == "slug":
         body["entry"] = entry.rsplit(" ", 1)[0] + " " + "W" * 40
         index.write_text(index.read_text().replace(entry, body["entry"]))
+    elif case.startswith("disk"):
+        def probe(path):
+            assert path == lesson_repo / ".git"
+            return False if case == "disk denied" else None
+
+        def execute(*args, **kwargs):
+            pytest.fail("An inaccessible repository must not run commands")
+
+        monkeypatch.setattr(access, "readable", probe)
+        monkeypatch.setattr(actions_module.subprocess, "run", execute)
     application.state.board.research.invalidate()
     response = client.post("/api/actions/implement", json=body)
     assert response.status_code == status
