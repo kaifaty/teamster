@@ -149,8 +149,12 @@ def test_archive_cap_and_removed_message(tmp_path):
 def test_details_and_file_allowlist(tmp_path):
     directory = write_state(tmp_path, executor="claude", claude_account="pool", task_model="opus",
                             reasoning_effort="high", publish={"pr": "https://example.test/pr/1"},
+                            result={"summary": "First line\n\nWhy this change was needed.\n"},
                             rounds=[{}], ci={"outcome": "failed", "rounds": 2}, checks=[{"at": i, "outcome": "passed", "cmd": "x" * 250}
                                                for i in range(250)])
+    write_state(tmp_path, "empty")
+    for size in (8000, 8001):
+        write_state(tmp_path, f"long-{size}", result={"summary": "x" * size})
     (directory / "brief.md").write_text("brief")
     (directory / "last.md").write_text("last")
     (directory / "auth.json").write_text("must never be read")
@@ -168,11 +172,62 @@ def test_details_and_file_allowlist(tmp_path):
     assert detail["repo"] == "project"
     assert detail["fix_round"] == 3
     assert detail["pr"] == "https://example.test/pr/1"
+    assert detail["report"] == "First line\n\nWhy this change was needed.\n"
+    summary = next(row for row in store.summaries() if row["slug"] == "task")
+    assert detail["summary"] == summary["summary"] == "First line"
+    assert detail["changes"] is None
+    assert store.detail("empty")["report"] is None
+    assert store.detail("long-8000")["report"] == "x" * 8000
+    assert store.detail("long-8001")["report"] == "x" * 7999 + "…"
     assert store.detail("escape") is None
     assert store.detail("unknown") is None
     for name in ("../state.json", "state.json", "auth.json", "review", "missing"):
         assert store.file_path("task", name) is None
     assert store.file_path("task", "brief") == directory / "brief.md"
+
+
+def test_detail_branch_changes(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.test",
+             "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+            cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=5,
+        )
+
+    repo, worktree, tasks = tmp_path / "repository", tmp_path / "branch", tmp_path / "tasks"
+    git("init", "--quiet", str(repo))
+    (repo / "modified.txt").write_text("before\nremoved\n")
+    git("-C", str(repo), "add", ".")
+    git("-C", str(repo), "commit", "--quiet", "-m", "Base")
+    git("-C", str(repo), "branch", "base")
+    git("-C", str(repo), "worktree", "add", "--quiet", "-b", "task", str(worktree), "base")
+    (worktree / "modified.txt").write_text("after\n")
+    (worktree / "added.txt").write_text("new\n")
+    git("-C", str(worktree), "add", ".")
+    git("-C", str(worktree), "commit", "--quiet", "-m", "Change files")
+    (worktree / "pending.txt").write_text("pending\n")
+    write_state(tasks, worktree=str(worktree), base="base")
+    write_state(tasks, "unchanged", worktree=str(repo), base="base")
+    write_state(tasks, "missing", repo=str(repo), worktree=str(tmp_path / "gone"), base="base")
+    write_state(tasks, "not-git", worktree=str(tmp_path), base="base")
+    write_state(tasks, "unknown-base", worktree=str(worktree), base="missing-ref")
+    store = Store(tasks)
+    store.poll()
+    assert store.detail("task")["changes"] == {
+        "commits": 1, "files": 2, "insertions": 2, "deletions": 2, "uncommitted": 1}
+    assert store.detail("unchanged")["changes"] == {
+        "commits": 0, "files": 0, "insertions": 0, "deletions": 0, "uncommitted": 0}
+    for slug in ("missing", "not-git", "unknown-base"):
+        assert store.detail(slug)["changes"] is None
+
+    def no_git(*args, **kwargs):
+        pytest.fail("Invalid base refs must not start git")
+
+    monkeypatch.setattr(subprocess, "run", no_git)
+    for base in ("-base", "base name", "base..HEAD"):
+        write_state(tasks, worktree=str(worktree), base=base)
+        store.poll()
+        assert store.detail("task")["changes"] is None
 
 
 def test_detail_limits_from_state_and_invalid_fields(tmp_path):
@@ -606,7 +661,8 @@ def test_session_repo_and_allowlisted_summary(tmp_path, cwd, origin, expected):
     assert detail["created"] == 1.0
     assert detail["updated_at"] == detail["phase_started_at"] == 2.0
     assert all(detail[key] is None for key in (
-        "reviewer", "account", "task_type", "ci", "outcome", "result_status", "summary", "sleeping_until"))
+        "reviewer", "account", "task_type", "ci", "outcome", "result_status", "summary", "sleeping_until",
+        "report", "changes"))
     assert {key: detail[key] for key in ("check", "review", "findings_left", "stop", "left", "cargo")} == {
         "check": None, "review": None, "findings_left": 0, "stop": None, "left": 0, "cargo": None}
     assert detail["files"] == []

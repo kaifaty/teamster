@@ -3,7 +3,9 @@
 import json
 import math
 import os
+import re
 import stat
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -34,6 +36,36 @@ def text(value):
 
 def one_line(value):
     return " ".join(str(value).split())[:200]
+
+
+def branch_changes(worktree, base):
+    """Read branch statistics only for a worktree and ref supplied by task state."""
+    if (not text(worktree) or not text(base) or base.startswith("-") or base == "@"
+            or base.endswith(".") or any(char.isspace() for char in base)
+            or re.search(r"[\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{", base)
+            or any(not part or part.startswith(".") or part.endswith(".lock")
+                   for part in base.split("/"))):
+        return None
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", worktree, *args], stdin=subprocess.DEVNULL,
+            capture_output=True, encoding="utf-8", errors="replace", check=True,
+            timeout=5, env=dict(os.environ, LC_ALL="C"),
+        ).stdout
+
+    try:
+        if git("rev-parse", "--is-inside-work-tree").strip() != "true":
+            return None
+        changes = {"commits": int(git("rev-list", "--count", f"{base}..HEAD"))}
+        shortstat = git("diff", "--shortstat", f"{base}...HEAD")
+        for key, label in (("files", "file"), ("insertions", "insertion"), ("deletions", "deletion")):
+            match = re.search(rf"(\d+) {label}", shortstat)
+            changes[key] = int(match[1]) if match else 0
+        changes["uncommitted"] = len(git("status", "--porcelain").splitlines())
+        return changes
+    except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
 
 
 def mapping(value):
@@ -908,13 +940,16 @@ class Store:
                                               ("updated_at", "Last activity"))
                            if session.summary[key] is not None]
                 return dict(session.summary, timeline=sorted(entries, key=lambda item: item["at"]),
-                            files=[], cargo=None, limits=None, messages=[], activity_log=[],
+                            files=[], report=None, changes=None, cargo=None, limits=None,
+                            messages=[], activity_log=[],
                             queue={"waiting": [], "dropped": []})
             record = self._record(slug)
             if record is None:
                 return None
             state = dict(record.state, _updated_at=record.updated_at)
-            return dict(record.summary, timeline=timeline(state),
+            report = text(mapping(state.get("result")).get("summary"))
+            detail = dict(record.summary, timeline=timeline(state),
+                        report=report[:7999] + "…" if report and len(report) > 8000 else report,
                         files=[name for name, filename in FILES.items()
                                if self._file(record.path, filename) is not None],
                         cargo=cargo(record.state), limits=limits(record.state),
@@ -924,6 +959,8 @@ class Store:
                                              for activity in tail.activities),
                                             key=lambda item: item["at"])[-10:][::-1]
                         if record.summary["alive"] else [])
+        detail["changes"] = branch_changes(state.get("worktree"), state.get("base"))
+        return detail
 
     def file_path(self, slug, name):
         with self.lock:

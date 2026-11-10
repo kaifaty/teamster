@@ -150,6 +150,9 @@ interface TaskSummary {
 }
 
 interface TaskDetail extends TaskSummary {
+  report: string | null;      // full last result summary, with newlines, ≤ 8000 chars; null for sessions
+  changes: { commits: number; files: number; insertions: number; deletions: number;
+             uncommitted: number } | null; // branch statistics; null when unavailable or for sessions
   timeline: { at: number; text: string }[];   // task events (≤ 200), or session creation and last activity
   files: ("brief" | "last" | "review" | "check")[];   // which files exist
   cargo: Cargo | null;        // always an object for tasks, possibly empty; null for sessions
@@ -806,7 +809,17 @@ There is no merge endpoint for ordinary tasks.
   the report runs on demand and is cached per argument pair as described above.
 - `GET /api/tasks/{slug}` → `TaskDetail`; 404 for an unknown slug. Archived tasks are addressed by their
   archive folder name. Sessions have an empty `files` array, creation/last-activity timeline entries and
-  `cargo: null`, `limits: null`, `messages: []`, `activity_log: []`.
+  `report: null`, `changes: null`, `cargo: null`, `limits: null`, `messages: []`, `activity_log: []`.
+  Report comes from `state.json` → `result.summary`, preserving newlines; a missing or empty summary
+  gives `null`. Reports longer than 8000 characters are cut to 8000, including a final `…`.
+  `TaskSummary.summary` still carries only the first line. Changes use only `state.json` → `worktree`
+  and `base`: `git rev-list --count <base>..HEAD` counts commits, `git diff --shortstat <base>...HEAD`
+  supplies files, insertions and deletions (zero for empty output), and the number of lines from
+  `git status --porcelain` counts uncommitted files. A missing worktree, a path outside a git worktree,
+  an invalid or missing base ref, disk access errors, git errors or a five-second command timeout give
+  `changes: null`. Ref names are validated before starting git; whitespace and leading `-` are rejected.
+  Detail data is collected under the store lock; git runs afterward, outside the locks used by board
+  polling, with argument lists, no shell and closed stdin.
   Limits come from `state.json`: numeric fields accept only finite JSON numbers, excluding booleans;
   missing or invalid values are `null`, except `review_rounds: 0` and empty lists. Rotations without
   a finite numeric `at` are skipped. Messages come from the last 256 KiB of the task's `messages.jsonl`,

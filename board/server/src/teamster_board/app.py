@@ -279,8 +279,7 @@ def create_app(settings=None):
 
     @app.get("/api/tasks/{slug}")
     async def detail(slug: str):
-        async with board.lock:
-            task = await asyncio.to_thread(board.store.detail, slug)
+        task = await asyncio.to_thread(board.store.detail, slug)
         if task is None:
             raise HTTPException(404)
         queue = await asyncio.to_thread(board.actions.queue)
