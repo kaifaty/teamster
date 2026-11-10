@@ -1,6 +1,6 @@
 // The science station's fixtures: what the reflection learned, and the board server's actions played on that data,
 // so that `dev:fixture` clicks through the whole station without a server.
-import type { ActionBodies, ActionResult, ActionRoute, ActionSender } from "../lib/actions";
+import type { ActionBodies, ActionResult } from "../lib/actions";
 import { reflectSlug } from "../lib/commands";
 import type { Implementation, Lesson, ResearchView, Study, StudyMessage } from "../types";
 
@@ -151,11 +151,14 @@ const message = (at: number, from: StudyMessage["from"], text: string | null, pa
   at, from, text, status: null, questions: [], lessons: [], file: null, ...patch,
 });
 
+export type StationRoute = "lesson" | "say" | "reflect" | "implement";
+export type StationSender = <R extends StationRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
+
 /**
- * The board server's actions on the fixture data. `clock` is now in the fixture's own time; a say or an order sets
+ * The board server's station actions on the fixture data. `clock` is now in the fixture's own time; a say or an order sets
  * the analyst to work, and a turn later the analyst answers.
  */
-export function fixtureActions(view: ResearchView, clock: () => number): ActionSender {
+export function fixtureActions(view: ResearchView, clock: () => number): StationSender {
   const fail = (error: string): ActionResult => ({ ok: false, error });
   const implementing = (slug: string): Lesson | undefined => view.lessons.find((item) => item.implementation?.slug === slug);
   /** The agent's turn ends: the first one asks a question, the next one opens a PR. */
@@ -175,7 +178,7 @@ export function fixtureActions(view: ResearchView, clock: () => number): ActionS
       Object.assign(study, { alive: false, waiting: answer.status === "needs_decision", outcome: "completed", updated_at: clock() });
     }, TURN_MS);
 
-  const routes: { [R in ActionRoute]: (body: ActionBodies[R]) => ActionResult } = {
+  const routes: { [R in StationRoute]: (body: ActionBodies[R]) => ActionResult } = {
     lesson({ entry, status, note }) {
       const lesson = view.lessons.find((item) => item.entry === entry);
       if (!lesson) return fail(`Урок ${entry} не найден в индексе`);

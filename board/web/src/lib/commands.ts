@@ -1,7 +1,8 @@
-// teamster commands, ready to paste into a terminal: a task's card copies them, and so does the science station when
-// the board only reads.
+// teamster commands, ready to paste into a terminal: a task's card copies them, and so do the science station and a
+// ship's bridge when the board only reads.
 
 import type { LessonStatus, StudyQuestion, TaskSummary } from "../types";
+import type { ReviewBody, SayOptions } from "./actions";
 
 export const VERDICTS = ["accepted", "revised", "redone", "dropped"] as const;
 export type Verdict = (typeof VERDICTS)[number];
@@ -58,9 +59,43 @@ export function verdictCommand(slug: string, verdict: Verdict, note = ""): strin
   return note.trim() ? `${base} --note ${shellQuote(note.trim())}` : base;
 }
 
-/** `teamster say` with the message as one word. */
-export function sayCommand(slug: string, text: string): string {
-  return `teamster say ${shellWord(commandSlug(slug))} ${shellQuote(text)}`;
+/** The refit's flags in the server's order, each one `--option=value` word. */
+export function optionFlags(options: SayOptions & Pick<ReviewBody, "effort"> = {}): string[] {
+  const flags: string[] = [];
+  const add = (name: string, value: string | number | undefined) => {
+    if (value !== undefined) flags.push(shellWord(`--${name}=${value}`));
+  };
+  add("model", options.model);
+  add("effort", options.effort);
+  add("max-minutes", options.max_minutes);
+  add("max-weekly", options.max_weekly);
+  add("fix-rounds", options.fix_rounds);
+  add("ci-rounds", options.ci_rounds);
+  add("reviewer", options.reviewer);
+  const angles = options.review_angles;
+  add("review-angles", angles === undefined ? undefined : typeof angles === "string" ? angles : angles.join(","));
+  return flags;
+}
+
+/** `teamster say` with the refit's flags and the message as one word. */
+export function sayCommand(slug: string, text: string, options: SayOptions = {}): string {
+  return ["teamster", "say", shellWord(commandSlug(slug)), ...optionFlags(options), shellQuote(text)].join(" ");
+}
+
+/** `teamster review` with effort, reviewer and angles, as the server orders them. */
+export function reviewCommand({ slug, effort, reviewer, review_angles }: ReviewBody): string {
+  const flags = optionFlags({ effort, reviewer, review_angles });
+  return ["teamster", "review", shellWord(commandSlug(slug)), ...flags].join(" ");
+}
+
+export function stopCommand(slug: string): string {
+  return `teamster stop ${shellWord(commandSlug(slug))}`;
+}
+
+/** `teamster clean`, keeping the branch unless told otherwise. */
+export function cleanCommand(slug: string, keepBranch = true): string {
+  const base = `teamster clean ${shellWord(commandSlug(slug))}`;
+  return keepBranch ? `${base} --keep-branch` : base;
 }
 
 /** A short study name based on the UTC date and time, to the second: two orders in one minute stay apart. */

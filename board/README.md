@@ -126,11 +126,21 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
   project and per signal, and the signalled records, each of which can be ordered into a study.
 
 The station's buttons act at once: the board server runs `teamster lesson`, `say` or `reflect` (`POST /api/actions/*`)
-and the screen shows the result. These are the only actions the board runs; every other screen only reads. When the
-server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
+and the screen shows the result. These and a ship's orders below are the only actions the board runs; every other
+screen only reads. When the server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
 button copies the equivalent command for the terminal instead and says why; «Внедрить» has no such command and stays
 off. In `npm run dev:fixture` the actions play on the fixtures, so the whole station can be clicked through without a
 server: an implementation started there works for a few seconds, asks a question, and after the answer opens a PR.
+
+A ship's own screen, its bridge (`board/web/src/map/ship/`), has two decks of orders. «Рубка связи» lists by time the
+lead's orders, the inspection's and the gate's reports from the task's `messages`, the captain's last report and its
+questions; a reply goes to the task with `say`, together with the refit's changed fields, and quick buttons fill it with
+«Продолжай», the roadstead's return text or «Слей main». While the ship works, the field stays but the reply waits for
+the turn's end. «Пульт приказов» has acceptance (`verdict`), the refit (`say` options: model, effort, limits, rounds,
+reviewer and angles), an extra inspection (`review`), a flight review at the science station (`reflect` of this task)
+and the recall (`stop`, `clean` with the branch kept by default), each group only where the server takes its order, and
+the line «what next» gets a button when the board can carry its order out. The logic lives in `orders.ts` and
+`desk.ts`; a board that only reads copies the equal command, and `dev:fixture` plays the orders on its own tasks.
 
 Like the tanks, the station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
