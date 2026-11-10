@@ -477,7 +477,14 @@ class Research:
         denied = False
         for repo in repo_paths:
             try:
-                if access.readable(Path(repo) / ".git") is not True:
+                git = Path(repo) / ".git"
+                try:
+                    git.stat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    pass
+                if access.readable(git) is not True:
                     denied = True
                     continue
                 path = repository(repo)

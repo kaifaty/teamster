@@ -682,7 +682,7 @@ def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeyp
     research.view()
     research._repos_thread.join(5)
     assert client.get("/api/research").json() == {
-        "lessons": [], "repos": [], "repos_access": "denied", "batch": None,
+        "lessons": [], "repos": [], "repos_access": "ok", "batch": None,
         "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
         "studies": [], "reflection_task": "codex-batch-reflection", "schedule": None,
         "actions": application.state.board.actions.value}

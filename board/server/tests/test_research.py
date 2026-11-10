@@ -253,7 +253,9 @@ def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp
         research.view()
         research._repos_thread.join(5)
         assert not research._repos_thread.is_alive()
-        return research.view()["repos"]
+        view = research.view()
+        assert view["repos_access"] == "ok"
+        return view["repos"]
 
     expected = [
         {"name": "alpha", "path": str(alpha)},

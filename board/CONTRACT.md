@@ -561,7 +561,8 @@ what waits for the next batch, including its planned schedule. Material and less
   the batch and study age windows.
 - `repos_access`: `"scanning"` until the first repository search finishes; `"denied"` when the last
   completed search skipped at least one repository because its `.git` access probe failed or timed out;
-  otherwise `"ok"`. Before reading a repository's git metadata, discovery opens and closes its `.git`
+  otherwise `"ok"`. Missing repositories or `.git` paths are skipped without setting `"denied"`.
+  Before reading a repository's git metadata, discovery opens and closes its `.git`
   with a 3-second timeout in a daemon thread. At most one pending probe per device is allowed; another
   probe on that device immediately reports a timeout until the pending probe returns.
 - `implementation`: the task with the greatest `created` across live tasks and all archive records whose
