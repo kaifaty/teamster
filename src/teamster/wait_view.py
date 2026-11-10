@@ -253,19 +253,18 @@ def wait_queue_sent_lines(slug, turn, st):
     """The reports of cycles from turn on whose end started a later turn of st with queued orders."""
     if st.get("turns", 0) <= turn:
         return
-    for sent in task_state.locked_queue_sends(slug):
+    for sent in task_state.locked_queue_log(slug, task_state.queue_sent_path(slug)):
         if turn <= sent["turn"] < st["turns"]:
             yield sent["report"]
             yield f"== queued orders sent: {sent['count']}, turn {sent['next_turn']} started"
 
 
 def wait_queue_dropped_lines(st):
-    finished = st.get("turn_finished")
-    dropped = [order for order in task_state.locked_queue(st["slug"])["dropped"]
-               if finished is not None and order["dropped_at"] == finished]
-    if dropped:
-        yield f"== queued orders not sent (outcome {dropped[0]['outcome']}):"
-        yield from ("- " + order["text"] for order in dropped)
+    """Every message the end of this cycle dropped, including those past the dropped history in queue.json."""
+    for dropped in task_state.locked_queue_log(st["slug"], task_state.queue_dropped_path(st["slug"])):
+        if dropped["turn"] == st.get("turns", 0):
+            yield f"== queued orders not sent (outcome {dropped['outcome']}):"
+            yield from ("- " + text for text in dropped["texts"])
 
 
 def cmd_wait(a):

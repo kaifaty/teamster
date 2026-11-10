@@ -261,10 +261,6 @@ def enqueue(slug, order):
         if not procs.alive(load(slug).get("pid")):
             return None
         queue = read_queue(slug)
-        # One drop must fit in the dropped history, so wait can list every dropped message.
-        if len(queue["waiting"]) >= QUEUE_DROPPED_LIMIT:
-            procs.die(f"{slug}: {QUEUE_DROPPED_LIMIT} queued messages are already waiting; "
-                      "wait for the cycle to end (or stop it) first")
         queue["waiting"].append(order)
         write_queue(slug, queue)
         return len(queue["waiting"])
@@ -275,12 +271,17 @@ def queue_sent_path(slug):
     return config.TASKS / slug / "queue-sent.jsonl"
 
 
-def locked_queue_sends(slug):
+def queue_dropped_path(slug):
+    """One line per cycle whose end dropped the queue: the turn, the outcome and every text, beyond the dropped history."""
+    return config.TASKS / slug / "queue-dropped.jsonl"
+
+
+def locked_queue_log(slug, path):
+    """The lines of queue-sent.jsonl or queue-dropped.jsonl, read under the state lock."""
     if not queue_path(slug).exists():
         return []
     with state_lock(slug):
-        p = queue_sent_path(slug)
-        return [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
 def stop_outcome(st, stopped):

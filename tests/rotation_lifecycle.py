@@ -1265,28 +1265,24 @@ worker.notifications.reap_notifications = reap
         expected = datetime.datetime.fromtimestamp(state["sleeping"]["until"]).strftime("%Y-%m-%d %H:%M")
         self.assertIn("waiting for limit reset until " + expected +
                       "; stop first to send a new message; or queue it with say --queue", result.stderr)
-        orders = [f"Отправить после сброса {number}" for number in range(10)]
+        # More orders than the dropped history keeps.
+        orders = [f"Отправить после сброса {number}" for number in range(11)]
         for number, order in enumerate(orders, 1):
             self.assertEqual(self.cli("say", "say-sleep", order, "--queue"),
                              f"queued for say-sleep: {number} waiting; sent when the current cycle ends\n")
-        # One drop fits in the dropped history, so wait lists every message.
-        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", "say-sleep", "Лишнее", "--queue"],
-                                cwd=self.repo, env=self.env, text=True, capture_output=True,
-                                timeout=self.fixture_timeout)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("say-sleep: 10 queued messages are already waiting", result.stderr)
         self.assertFalse((self.home / "claude-tasks" / "say-sleep" / "messages.jsonl").exists())
         self.assertEqual(self.state("say-sleep")["turns"], 1)
         self.assertFalse(self.invocations())
         self.cli("stop", "say-sleep")
         output = self.wait("say-sleep")
-        # A stop drops the queue: nothing is journaled or sent.
+        # A stop drops the queue: nothing is journaled or sent, and wait lists every order
+        # though queue.json keeps only the last 10.
         self.assertIn("\n".join(["== queued orders not sent (outcome stopped):"] + ["- " + order for order in orders]),
                       output)
         queue = json.loads((self.home / "claude-tasks" / "say-sleep" / "queue.json").read_text())
         self.assertEqual(queue["waiting"], [])
         self.assertEqual([(order["text"], order["outcome"]) for order in queue["dropped"]],
-                         [(order, "stopped") for order in orders])
+                         [(order, "stopped") for order in orders[1:]])
         self.assertFalse((self.home / "claude-tasks" / "say-sleep" / "messages.jsonl").exists())
         self.assertEqual(self.state("say-sleep")["turns"], 1)
         self.assertFalse(self.invocations())
@@ -1295,6 +1291,34 @@ worker.notifications.reap_notifications = reap
         self.cli("clean", "say-sleep")
         archived = list((self.home / "claude-tasks" / ".archive").glob("say-sleep-*/queue.json"))
         self.assertEqual([json.loads(path.read_text()) for path in archived], [queue])
+
+    def test_say_drops_the_queue_a_killed_supervisor_left(self):
+        self.env["CODEX_TASK_SLEEP_STEP"] = "60"
+        self.configure(language="en")
+        self.account(self.home, "A", self.reset, used=99, auto_reset=True)
+        self.account(self.other, "B", self.reset + 3600, used=99)
+        slug = "say-killed"
+        record = self.home / "claude-tasks" / slug
+        self.start(slug)
+        self.assert_sleeping(slug, self.wait(slug), self.reset)
+        self.assertIn("1 waiting", self.cli("say", slug, "Old order", "--queue"))
+        pid = self.state(slug)["pid"]
+        os.kill(pid, signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(pid))
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": "New order done"}])
+        self.assertIn(f"1 queued orders of the previous cycle were not sent; see {record / 'queue.json'}\n",
+                      self.cli("say", slug, "New order"))
+        self.assertIn("New order done", self.wait(slug))
+        execution, = self.invocations()
+        self.assertIn("New order", execution["prompt"])
+        self.assertNotIn("Old order", execution["prompt"])
+        self.assertEqual([json.loads(line)["text"] for line in (record / "messages.jsonl").read_text().splitlines()],
+                         ["New order"])
+        queue = json.loads((record / "queue.json").read_text())
+        self.assertEqual(queue["waiting"], [])
+        self.assertEqual([(order["text"], order["outcome"]) for order in queue["dropped"]],
+                         [("Old order", "interrupted")])
+        self.assertEqual(self.state(slug)["turns"], 2)
 
     def test_delayed_reset_sleeps_again_before_continuing(self):
         self.configure()

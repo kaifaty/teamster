@@ -45,6 +45,13 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
                 busy = task_state.busy_message(latest, queue_hint=current_message)
                 if busy is not None:
                     procs.die(busy)
+                # A supervisor that died before its cycle ended neither sent nor dropped its queue.
+                queue = task_state.read_queue(st["slug"])
+                if queue["waiting"]:
+                    task_state.write_queue(st["slug"], {"waiting": [], "dropped": queue["dropped"] + [
+                        dict(order, dropped_at=clock.CLOCK.time(), outcome="interrupted") for order in queue["waiting"]]})
+                    print(f"{len(queue['waiting'])} queued orders of the previous cycle were not sent; "
+                          f"see {task_state.queue_path(st['slug'])}")
             return launch(st, prompt, effort, current_message, kind, review_after, fix_rounds)
 
 
@@ -220,6 +227,9 @@ def finish_cycle(st):
                         return {"orders": orders, "sent": following}
                 task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"] + [
                     dict(order, dropped_at=st["turn_finished"], outcome=outcome) for order in orders]})
+                with task_state.queue_dropped_path(slug).open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"at": st["turn_finished"], "turn": st.get("turns", 0), "outcome": outcome,
+                                             "texts": [order["text"] for order in orders]}, ensure_ascii=False) + "\n")
                 task_state.save(st)
                 return {"orders": orders, "dropped": outcome}
 
