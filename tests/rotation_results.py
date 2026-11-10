@@ -876,6 +876,14 @@ class ResultScoutConfigTests(RotationTestCase):
                 self.assertIn("git diff", prompt)
                 self.assertEqual(worker.prompts.review_prompt(st), worker.prompts.review_prompt(st, cfg))
                 self.assertEqual(worker.prompts.reset_resume_prompt(), worker.prompts.reset_resume_prompt(cfg))
+                records = ["fix-20260101T000000Z"]
+                for reflect in (worker.prompts.reflect_prompt(None, records, "20260101T000000Z"),
+                                worker.prompts.study_prompt("Take the fix apart.", records)):
+                    if language == "ru":
+                        self.assertIn("Пиши по-русски summary, report", reflect)
+                        self.assertIn("(cue:, lesson:, evidence:, scope:, earlier:, caveats:, proposal:)", reflect)
+                    else:
+                        self.assertNotRegex(reflect, "[А-Яа-яЁё]")
 
     def test_rules_override_replaces_both_languages(self):
         worker = self.worker()

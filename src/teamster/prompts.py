@@ -11,6 +11,13 @@ REVIEW_ANGLES = {
     "tests": "Focus on ineffective or weakened tests, uncovered brief requirements, and mocks replacing the code under test.",
 }
 AUTO_REVIEW_ANGLES = ["correctness", "concurrency", "tests"]
+# The board parses what this rule keeps as is: the markers, lesson headings and scope words.
+REFLECT_RUSSIAN = ("- Пиши по-русски summary, report, текст уроков (cue, lesson, evidence, caveats, proposal), "
+                   "вопросы и варианты ответов, даже если записи и прежние разборы написаны по-английски. "
+                   "Не переводи код, пути, имена файлов, slug, команды, id находок и цитаты из записей. "
+                   "Оставь как есть ключи JSON, метки полей в начале строки report (cue:, lesson:, evidence:, "
+                   "scope:, earlier:, caveats:, proposal:), заголовки уроков «### <id>. …» с неизменным id "
+                   "и слова invariant и domain в scope.\n")
 
 
 def scout_prompt(question, cfg=None):
@@ -50,6 +57,7 @@ def reflect_prompt(order, records, through, cfg=None):
                   "- Вопрос ведущему — только о решении, которого записи не решают. Если ответ — выбор, "
                   "дай для этого вопроса 2–4 коротких варианта в options, иначе пустой массив.\n"
                   "- Если есть вопросы, status needs_decision, иначе done.\n"
+                  + REFLECT_RUSSIAN +
                   "Ответь JSON по схеме рефлексии: summary — короткий итог; report — markdown-тело разбора "
                   "в том виде, как пишутся batch-*.md, без заголовка и строки through:; в lessons — каждый новый "
                   "урок с id (например V1), cue, lesson, evidence, scope invariant или domain, repos для domain, "
@@ -96,6 +104,7 @@ def study_prompt(order, records, cfg=None):
                   "- Вопрос ведущему — только о решении, которого записи не решают. Если ответ — выбор, "
                   "дай для этого вопроса 2–4 коротких варианта в options, иначе пустой массив.\n"
                   "- Если есть вопросы, status needs_decision, иначе done.\n"
+                  + REFLECT_RUSSIAN +
                   "Ответь JSON по схеме рефлексии: summary — короткий итог; report — markdown-тело разбора "
                   "без заголовка: ответ на приказ по записям; в lessons — каждый новый "
                   "урок с id (например V1), cue, lesson, evidence, scope invariant или domain, repos для domain, "

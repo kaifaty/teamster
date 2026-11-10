@@ -114,6 +114,12 @@ The executor's steps:
    `needs_decision`; answer them with `say`.
 5. Change nothing: not `AGENTS.md`, skills, checks, repositories or the task records.
 
+With `"language": "ru"` in the settings, the prompt asks for the summary, the report, the lessons, the
+questions and their options in Russian, whatever the language of the records. It keeps as written what
+teamster and the board read: the JSON keys, the field markers that start a lesson's lines in `report`
+(`cue:`, `lesson:`, `evidence:`, `scope:`, `earlier:`, `caveats:`, `proposal:`), the lesson headings
+`### <id>. <title>`, and `invariant` or `domain` in `scope`.
+
 teamster, not the executor, records every completed turn with a valid answer. The first writes
 `.archive/batch-<YYYY-MM-DD>.md` (UTC; `b`, `c`, … when the day already has one) with the heading,
 `through: <newest stamp taken>`, `task: <slug>` and the report; later turns after `say` rewrite the same
