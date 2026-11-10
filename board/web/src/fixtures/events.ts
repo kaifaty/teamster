@@ -53,6 +53,26 @@ const M = 60;
  * to the yard, and budget-overrun ends its turn in trouble.
  */
 export const FIXTURE_EVENTS: readonly DemoEvent[] = [
+  // ml-eval-pipeline's whole voyage for the ship's flight recorder: the yard, the range and a clean inspection, the
+  // roadstead until the lead's order, then a turn with defects, a failed check, two fix rounds and a timed-out check.
+  { ago: 7.8 * H, took: 24 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", account: "claude-pool-2", phase: "work", turn: 1, outcome: "completed" },
+  { ago: 7.7 * H, took: 6 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", phase: "check", turn: 1, outcome: "passed" },
+  { ago: 7.45 * H, took: 12 * M, kind: "review", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "codex", reviewer: "codex", phase: "review", turn: 1, round: 0, angle: "correctness", outcome: "completed", findings: 0, verdict: "clean" },
+  { ago: 7.4 * H, took: 48 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", phase: "turn", turn: 1, outcome: "done", result_status: "done" },
+  { ago: 4.6 * H, took: 36 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", phase: "work", turn: 2, outcome: "completed" },
+  { ago: 4.5 * H, took: 5 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", phase: "check", turn: 2, outcome: "passed" },
+  { ago: 250 * M, took: 14 * M, kind: "review", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "codex", reviewer: "codex", phase: "review", turn: 2, round: 0, angle: "correctness", outcome: "completed", findings: 3, severe_findings: 1, verdict: "defects" },
+  { ago: 3.4 * H, took: 44 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", phase: "fix", turn: 2, round: 1, outcome: "completed" },
+  { ago: 3.25 * H, took: 7 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", phase: "check", turn: 2, round: 1, outcome: "failed" },
+  { ago: 75 * M, took: 100 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", account: "claude-pool-3", phase: "fix", turn: 2, round: 2, outcome: "completed" },
+  // cdp-screenshot-tool: two turns, each through the range and the inspection, and the roadstead until its verdict.
+  { ago: 3.3 * H, took: 28 * M, kind: "work", slug: "cdp-screenshot-tool", repo: "teamster", provider: "claude", phase: "work", turn: 1, outcome: "completed" },
+  { ago: 3.2 * H, took: 5 * M, kind: "work", slug: "cdp-screenshot-tool", repo: "teamster", provider: "claude", phase: "check", turn: 1, outcome: "passed" },
+  { ago: 3.05 * H, took: 8 * M, kind: "review", slug: "cdp-screenshot-tool", repo: "teamster", provider: "codex", reviewer: "codex", phase: "review", turn: 1, round: 0, angle: "correctness", outcome: "completed", findings: 1, verdict: "defects" },
+  { ago: 3 * H, took: 48 * M, kind: "work", slug: "cdp-screenshot-tool", repo: "teamster", provider: "claude", phase: "turn", turn: 1, outcome: "done", result_status: "partial" },
+  { ago: 2.7 * H, took: 15 * M, kind: "work", slug: "cdp-screenshot-tool", repo: "teamster", provider: "claude", phase: "work", turn: 2, outcome: "completed" },
+  { ago: 2.62 * H, took: 4 * M, kind: "work", slug: "cdp-screenshot-tool", repo: "teamster", provider: "claude", phase: "check", turn: 2, outcome: "passed" },
+  { ago: 2.52 * H, took: 5 * M, kind: "review", slug: "cdp-screenshot-tool", repo: "teamster", provider: "codex", reviewer: "codex", phase: "review", turn: 2, round: 0, angle: "correctness", outcome: "completed", findings: 0, verdict: "clean" },
   { ago: 22 * H, kind: "verdict", slug: "flaky-e2e", repo: "demo-wallet", verdict: "dropped", note: "flaky test moved elsewhere" },
   { ago: 20 * H, took: 50 * M, kind: "work", slug: "pr-template", repo: "teamster", provider: "codex", account: "codex-team-1", phase: "work", turn: 1, outcome: "completed" },
   { ago: 19.5 * H, took: 12 * M, kind: "work", slug: "pr-template", repo: "teamster", provider: "codex", phase: "check", turn: 1, outcome: "passed" },
@@ -80,7 +100,7 @@ export const FIXTURE_EVENTS: readonly DemoEvent[] = [
   { ago: 2 * H, kind: "verdict", slug: "merge-conflict-fix", repo: "demo-vault", verdict: "redone", note: "conflicts with the new schema" },
   { ago: 100 * M, took: 20 * M, kind: "review", slug: "review-ws-reconnect", repo: "demo-vault", provider: "codex", phase: "review", turn: 1, angle: "correctness", outcome: "completed", findings: 2 },
   { ago: 80 * M, took: 25 * M, kind: "work", slug: "died-supervisor", repo: "demo-wallet", provider: "codex", phase: "work", turn: 3, outcome: "failed" },
-  { ago: 60 * M, took: 10 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", phase: "check", turn: 1, outcome: "timeout" },
+  { ago: 60 * M, took: 10 * M, kind: "work", slug: "ml-eval-pipeline", repo: "ml-lab", provider: "claude", phase: "check", turn: 2, outcome: "timeout" },
   { ago: 45 * M, kind: "verdict", slug: "cdp-screenshot-tool", repo: "teamster", verdict: "revised", note: "renamed the option" },
   { ago: 30 * M, took: 5 * M, kind: "work", slug: "nightly-bench", repo: "demo-tunnel", provider: "codex", phase: "wrapup", turn: 2, outcome: "stopped" },
   { ago: 20 * M, kind: "work", slug: "orphan-row", repo: null, phase: "base_check", turn: 1, outcome: "skipped" },
