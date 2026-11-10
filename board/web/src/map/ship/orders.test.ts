@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { nextTick, ref } from "vue";
 import type { ActionResult } from "../../lib/actions";
 import type { Cargo, TaskDetail, TaskLimits, TaskSummary } from "../../types";
-import { createShipDesk } from "./desk";
+import { OWN_CHANGE_MS, createShipDesk } from "./desk";
 import {
   blankRefit,
   deskOf,
@@ -11,6 +11,7 @@ import {
   feedOf,
   isLong,
   mainOrder,
+  orderOutcome,
   reflectOrder,
   refitLine,
   refitOf,
@@ -221,7 +222,54 @@ describe("fallback commands", () => {
   });
 });
 
+describe("order outcomes", () => {
+  it("tells what each order changed in words, never teamster's raw output", () => {
+    const say = { route: "say", body: { slug: "t", text: "Дальше" } } as const;
+    expect(orderOutcome(say, "sent to t (turn 4), pid 12")).toBe("Указание передано: корабль начал ход 4");
+    expect(orderOutcome(say, "")).toBe("Указание передано");
+    expect(orderOutcome(say, "queued for t: 2 waiting; sent when the current cycle ends", { queued: true })).toBe(
+      "Указание в очереди: уйдёт одним ходом, когда корабль закончит цикл",
+    );
+    expect(orderOutcome({ route: "verdict", body: { slug: "t", verdict: "accepted" } }, "verdict accepted recorded for t (repo)")).toBe(
+      "Вердикт «принято» записан — это оценка для статистики; PR этим не сливается",
+    );
+    expect(orderOutcome({ route: "verdict", body: { slug: "t", verdict: "dropped" } }, "")).toMatch(/^Вердикт «не берём» записан/);
+    expect(orderOutcome({ route: "review", body: { slug: "t" } }, "reviewing t, pid 3")).toBe("Внеочередная инспекция вызвана: корабль ушёл на ревью");
+    expect(orderOutcome(reflectOrder("t"), "said", { slug: "reflect-1110-120000" })).toBe("Разбор отправлен на научную станцию: reflect-1110-120000");
+    expect(orderOutcome({ route: "stop", body: { slug: "t" } }, "stopped t")).toBe("Корабль остановлен");
+    expect(orderOutcome({ route: "clean", body: { slug: "t", keep_branch: true } }, "cleaned t")).toBe("Корабль списан: worktree удалён, ветка осталась");
+    expect(orderOutcome({ route: "clean", body: { slug: "t", keep_branch: false } }, "cleaned t")).toBe("Корабль списан: worktree и ветка удалены");
+  });
+});
+
 describe("console", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps teamster's output for the title and drops an outcome once the ship moves on past its own effect", async () => {
+    vi.useFakeTimers();
+    const ship = ref(task({ slug: "a" }));
+    const detail = ref({ ...ship.value, timeline: [], files: [], cargo: null, actions: { enabled: true, reason: null, queue: true } } as TaskDetail);
+    const outputs = ["queued for a: 2 waiting; sent when the current cycle ends", "stopped a"];
+    const desk = createShipDesk({ slug: ref("a"), task: ship, detail, act: (async () => ({ ok: true, output: outputs.shift()! })) as never });
+    desk.reply.value = "Потом слей main";
+    await desk.send();
+    expect([desk.groups.reply.done, desk.groups.reply.output]).toEqual([
+      "Указание в очереди: уйдёт одним ходом, когда корабль закончит цикл",
+      "queued for a: 2 waiting; sent when the current cycle ends",
+    ]);
+    vi.advanceTimersByTime(OWN_CHANGE_MS + 1);
+    await desk.stop();
+    // The stop's own effect, soon after it, keeps its outcome; the queued say is out of date.
+    ship.value = { ...ship.value, alive: false, column: "attention", phase: "idle", outcome: "stopped" };
+    await nextTick();
+    expect([desk.groups.reply.done, desk.groups.reply.output]).toEqual(["", ""]);
+    expect(desk.groups.recall.done).toBe("Корабль остановлен");
+    vi.advanceTimersByTime(OWN_CHANGE_MS + 1);
+    ship.value = { ...ship.value, column: "closed" };
+    await nextTick();
+    expect(desk.groups.recall.done).toBe("");
+  });
+
   it("leaves another ship's console alone when an order's answer comes late", async () => {
     const slug = ref("a");
     const detail = ref({ ...task({ slug: "a", alive: false }), timeline: [], files: [], cargo: null, actions: { enabled: true, reason: null } } as TaskDetail);

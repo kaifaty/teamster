@@ -7,7 +7,7 @@ import { readOnlyReason, type ActionSender, type ReviewAngles, type Reviewer } f
 import type { Verdict } from "../../lib/commands";
 import type { TaskDetail, TaskSummary } from "../../types";
 import type { Copied } from "../station/console";
-import { blankRefit, deskOf, fallbackCommand, lastLine, reflectOrder, refitOf, type Echo, type RefitDraft, type ShipOrder } from "./orders";
+import { blankRefit, deskOf, fallbackCommand, orderOutcome, reflectOrder, refitOf, type Echo, type RefitDraft, type ShipOrder } from "./orders";
 
 export type GroupId = "reply" | "accept" | "review" | "reflect" | "recall";
 
@@ -15,12 +15,19 @@ export type GroupId = "reply" | "accept" | "review" | "reflect" | "recall";
 export interface GroupState {
   /** Which button waits for the server. */
   busy: string | null;
+  /** What the last order changed, in words; `output`: teamster's own output, for the line's title. */
   done: string;
+  output: string;
+  /** When `done` came, ms: the ship's state that changes within OWN_CHANGE_MS is the order's own effect. */
+  doneAt: number;
   error: string;
   copied: Copied | null;
 }
 
-const blank = (): GroupState => ({ busy: null, done: "", error: "", copied: null });
+const blank = (): GroupState => ({ busy: null, done: "", output: "", doneAt: 0, error: "", copied: null });
+
+/** A change of the ship's state this soon after an order's outcome is the order's own effect and keeps the outcome. */
+export const OWN_CHANGE_MS = 5000;
 
 async function clipboard(text: string): Promise<boolean> {
   try {
@@ -68,11 +75,22 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
     for (const id of Object.keys(groups) as GroupId[]) groups[id] = blank();
   });
 
+  // The ship moved on: an outcome older than its own effect is out of date.
+  watch(
+    () => (task.value ? `${task.value.slug} ${task.value.column} ${task.value.phase}` : ""),
+    (now, before) => {
+      if (now.split(" ")[0] !== before.split(" ")[0]) return;
+      for (const state of Object.values(groups)) {
+        if (state.done && Date.now() - state.doneAt > OWN_CHANGE_MS) Object.assign(state, { done: "", output: "", doneAt: 0 });
+      }
+    },
+  );
+
   /**
    * Runs the order, or copies its command; `done` words the success. Returns whether the server carried it out. An
    * answer that comes once another ship is open changes nothing: its console was cleaned for that ship.
    */
-  async function run(group: GroupId, button: string, order: ShipOrder, done: (output: string, slug?: string) => string = lastLine): Promise<boolean> {
+  async function run(group: GroupId, button: string, order: ShipOrder, queued = false): Promise<boolean> {
     const state = groups[group];
     if (state.busy) return false;
     const asked = slug.value;
@@ -90,7 +108,7 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
         state.error = result.error;
         return false;
       }
-      state.done = done(result.output, result.slug) || "Готово";
+      Object.assign(state, { done: orderOutcome(order, result.output, { queued, slug: result.slug }), output: result.output.trim(), doneAt: Date.now() });
       return true;
     } finally {
       state.busy = null;
@@ -121,7 +139,7 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
     }
     const body = Object.keys(options).length ? { slug: slug.value, text, options } : { slug: slug.value, text };
     const toQueue = view.value?.queue === true;
-    if (await run("reply", "send", { route: "say", body }, (output) => lastLine(output) || (toQueue ? "Указание в очереди" : "Указание передано"))) {
+    if (await run("reply", "send", { route: "say", body }, toQueue)) {
       echo.value = [...echo.value, toQueue ? { at: Date.now() / 1000, text, queued: true } : { at: Date.now() / 1000, text }];
       reply.value = "";
       Object.assign(refit, blankRefit());
@@ -138,7 +156,7 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
     return run("review", "review", { route: "review", body });
   }
 
-  const reflect = () => run("reflect", "reflect", reflectOrder(slug.value), (output, made) => (made ? `Разбор запущен: ${made}` : lastLine(output)));
+  const reflect = () => run("reflect", "reflect", reflectOrder(slug.value));
   const stop = () => run("recall", "stop", { route: "stop", body: { slug: slug.value } });
   const clean = (keepBranch: boolean) => run("recall", "clean", { route: "clean", body: { slug: slug.value, keep_branch: keepBranch } });
 

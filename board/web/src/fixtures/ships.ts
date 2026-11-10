@@ -19,12 +19,15 @@ export interface FixtureShips {
 
 const fail = (error: string): ActionResult => ({ ok: false, error });
 
-/** `tasks`: the board as the fixtures show it now; `emit` tells the board what an order changed; `queues`: the ship's detail has `actions.queue`. */
+/**
+ * `tasks`: the board as the fixtures show it now; `emit` tells the board what an order changed; `queues`: the queue the
+ * ship's fixture detail already has, null when its teamster does not queue.
+ */
 export function fixtureShips(
   tasks: () => Record<string, TaskSummary>,
   clock: () => number,
   emit: (message: ServerMessage) => void,
-  queues: (slug: string) => boolean = () => false,
+  queues: (slug: string) => TaskQueue | null = () => null,
 ): FixtureShips {
   const stopped = new Map<string, number>();
   const removed = new Set<string>();
@@ -68,10 +71,12 @@ export function fixtureShips(
       if (!isTask(task)) return task;
       if (archived(slug) || !(judged(task) || task.kind === "reflect")) return fail("Задача сейчас не принимает указание");
       if (task.alive) {
-        if (!queues(slug)) return fail("Задача сейчас не принимает указание");
+        const own = queues(slug);
+        if (!own) return fail("Задача сейчас не принимает указание");
         const queue = queueOf(slug);
         queued.set(slug, { ...queue, waiting: [...queue.waiting, { at: clock(), text: text.trim() }] });
-        return ok(`queued for ${slug}: ${queue.waiting.length + 1} waiting; sent when the current cycle ends`);
+        const waiting = own.waiting.length + queue.waiting.length + 1;
+        return ok(`queued for ${slug}: ${waiting} waiting; sent when the current cycle ends`);
       }
       const list = messages.get(slug) ?? [];
       list.push({ at: clock(), source: "lead", text: text.trim() });

@@ -90,7 +90,7 @@ function onKey(event: KeyboardEvent) {
         </template>
         <p v-else class="hint wait">{{ hint }}</p>
       </div>
-      <p v-if="state.done" class="result ok" role="status">{{ state.done }}</p>
+      <p v-if="state.done" class="result ok" role="status" :title="state.output">{{ state.done }}</p>
       <p v-if="state.error" class="result bad" role="alert">{{ state.error }}</p>
       <CopiedNote v-if="state.copied" :copied="state.copied" />
     </form>

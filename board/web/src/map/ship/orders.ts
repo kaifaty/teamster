@@ -323,5 +323,28 @@ export function mainOrder(task: TaskSummary, now: number): MainOrder | null {
   return null;
 }
 
-/** The last line of the command's output, for the line under a group. */
-export const lastLine = (output: string) => output.trim().split("\n").filter((line) => line.trim()).pop()?.trim() ?? "";
+const VERDICT_WORDS: Record<Verdict, string> = { accepted: "принято", revised: "принят с моими правками", redone: "переделан в другом месте", dropped: "не берём" };
+
+/**
+ * The line under a group once the server carried its order out: what changed, in the human's words. teamster's own
+ * output stays in the line's title. `queued`: the say went into the busy ship's queue; `slug`: the study a reflect made.
+ */
+export function orderOutcome(order: ShipOrder, output: string, { queued = false, slug }: { queued?: boolean; slug?: string } = {}): string {
+  switch (order.route) {
+    case "say": {
+      if (queued) return "Указание в очереди: уйдёт одним ходом, когда корабль закончит цикл";
+      const turn = /\(turn (\d+)\)/.exec(output)?.[1];
+      return turn ? `Указание передано: корабль начал ход ${turn}` : "Указание передано";
+    }
+    case "verdict":
+      return `Вердикт «${VERDICT_WORDS[order.body.verdict]}» записан — это оценка для статистики; PR этим не сливается`;
+    case "review":
+      return "Внеочередная инспекция вызвана: корабль ушёл на ревью";
+    case "reflect":
+      return slug ? `Разбор отправлен на научную станцию: ${slug}` : "Разбор отправлен на научную станцию";
+    case "stop":
+      return "Корабль остановлен";
+    case "clean":
+      return order.body.keep_branch === false ? "Корабль списан: worktree и ветка удалены" : "Корабль списан: worktree удалён, ветка осталась";
+  }
+}

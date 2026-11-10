@@ -143,7 +143,9 @@ back in the field; the stop's confirmation counts what the queue will lose. With
 off while the ship works. «Пульт приказов» has acceptance (`verdict`), the refit (`say` options: model, effort, limits, rounds,
 reviewer and angles), an extra inspection (`review`), a flight review at the science station (`reflect` of this task)
 and the recall (`stop`, `clean` with the branch kept by default), each group only where the server takes its order, and
-the line «what next» gets a button when the board can carry its order out. The logic lives in `orders.ts` and
+the line «what next» gets a button when the board can carry its order out. Under a group, a carried-out order tells in
+Russian what changed (`orderOutcome`), with teamster's own output in the line's title; the line goes once the ship's
+column or phase changes later than the order's own effect. The logic lives in `orders.ts` and
 `desk.ts`; a board that only reads copies the equal command, and `dev:fixture` plays the orders on its own tasks.
 
 Like the tanks, the station stays live during a replay.

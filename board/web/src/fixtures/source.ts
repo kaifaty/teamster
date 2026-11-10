@@ -81,7 +81,7 @@ export function fixtureSource(): BoardSource {
     () => ({ ...fixtureTasks, ...state.tasks }),
     () => Date.now() / 1000,
     (message) => push?.(message),
-    (slug) => details[slug]?.actions?.queue ?? true,
+    (slug) => (details[slug]?.actions?.queue === false ? null : (details[slug]?.queue ?? { waiting: [], dropped: [] })),
   );
   const studied = (slug: string | undefined) =>
     research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);

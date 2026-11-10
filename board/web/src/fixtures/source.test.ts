@@ -27,6 +27,8 @@ describe("fixture source", () => {
       expect(await act("say", { slug: "board-web-frontend", text: "Потом слей main" })).toMatchObject({ ok: true });
       expect((await source.fetchDetail("board-web-frontend"))?.queue?.waiting.map((order) => order.text)).toEqual(["Потом слей main"]);
       expect(await act("say", { slug: "nightly-bench", text: "Потом слей main" })).toMatchObject({ ok: false });
+      // The count takes in what the fixture's queue already holds.
+      expect(await act("say", { slug: "ml-eval-pipeline", text: "И обнови README" })).toMatchObject({ output: expect.stringMatching(/: 2 waiting;/) });
       expect(await act("stop", { slug: "board-web-frontend" })).toMatchObject({ ok: true });
       expect((await source.fetchDetail("board-web-frontend"))?.queue).toMatchObject({ waiting: [], dropped: [{ text: "Потом слей main", outcome: "stopped" }] });
       expect(await act("say", { slug: "reflect-review-patterns", text: "demo-wallet" })).toEqual({ ok: true, output: "said to reflect-review-patterns" });
