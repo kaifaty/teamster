@@ -5,7 +5,7 @@
 import { computed, ref, watch } from "vue";
 import type { BoardSource } from "../../lib/source";
 import type { LogEvent, TaskLimits, TaskMessage, TaskSummary } from "../../types";
-import { TAPE_STOPS, logSlug, recorderWindow, tapeOf, tapeTicks } from "./recorder";
+import { TAPE_STOPS, logSlug, recordedTape, recorderWindow, tapeTicks } from "./recorder";
 
 const props = defineProps<{
   task: TaskSummary;
@@ -52,7 +52,7 @@ watch(
   },
 );
 
-const tape = computed(() => (events.value?.length ? tapeOf(events.value, props.task, props.messages, props.limits?.rotations ?? [], props.now, truncated.value) : null));
+const tape = computed(() => recordedTape(events.value, props.task, props.messages, props.limits?.rotations ?? [], props.now, truncated.value));
 const ticks = computed(() => (tape.value ? tapeTicks(tape.value.start, tape.value.end, props.task.column !== "closed" && tape.value.end >= props.now) : []));
 const colors = Object.fromEntries(TAPE_STOPS.map((stop) => [stop.id, stop.color]));
 const lanes = computed(() => Math.max(1, ...(tape.value?.marks.map((mark) => mark.lane + 1) ?? [])));

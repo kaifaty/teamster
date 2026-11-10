@@ -257,6 +257,23 @@ export function tapeOf(
   return { truncated, start, end, segments, marks };
 }
 
+/**
+ * The tape the deck draws once the log is read, or null when there is nothing to draw. A ship on its first phase has
+ * no event in the log yet, but its live segment already makes a tape.
+ */
+export function recordedTape(
+  events: readonly LogEvent[] | null,
+  task: TaskSummary,
+  messages: readonly TaskMessage[],
+  rotations: TaskLimits["rotations"],
+  now: number,
+  truncated = false,
+): Tape | null {
+  if (events === null) return null;
+  const tape = tapeOf(events, task, messages, rotations, now, truncated);
+  return tape.segments.length || tape.marks.length ? tape : null;
+}
+
 // The time scale under the tape.
 
 export interface Tick {

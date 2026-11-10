@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { logEvent } from "../../fixtures/events";
 import type { Activity, LogEvent, TaskSummary } from "../../types";
-import { logSlug, recorderWindow, tapeMarks, tapeOf, tapeSegments, tapeTicks } from "./recorder";
+import { logSlug, recordedTape, recorderWindow, tapeMarks, tapeOf, tapeSegments, tapeTicks } from "./recorder";
 import { TELEMETRY_LIMIT, mergeTelemetry } from "./telemetry";
 
 const NOW = 1_800_000_000;
@@ -92,6 +92,19 @@ describe("tape segments", () => {
       ["roadstead", NOW - 40 * M, NOW - 30 * M, false],
       ["cryo", NOW - 30 * M, NOW, true],
     ]);
+  });
+});
+
+describe("recorded tape", () => {
+  it("draws a ship on its first phase before the log has any of its events", () => {
+    const first = task({ alive: true, column: "running", phase: "turn", phase_started_at: NOW - 46 * M, created: NOW - 46 * M });
+    const tape = recordedTape([], first, [], [], NOW);
+    expect(tape?.segments.map((segment) => [segment.stop, segment.from, segment.to, segment.live])).toEqual([["yard", NOW - 46 * M, NOW, true]]);
+  });
+
+  it("has nothing to draw while the log is unread, or for a docked ship with an empty log", () => {
+    expect(recordedTape(null, task({ alive: true, column: "running", phase: "turn", phase_started_at: NOW - M }), [], [], NOW)).toBeNull();
+    expect(recordedTape([], task(), [], [], NOW)).toBeNull();
   });
 });
 
