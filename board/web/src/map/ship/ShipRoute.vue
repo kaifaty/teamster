@@ -170,13 +170,11 @@ const loops = computed(() => loopsOf(props.task, props.limits, props.cargo));
 }
 
 .loop > span {
+  flex: none;
   padding: 0 6px;
   height: 15px;
-  overflow: hidden;
-  max-width: 100%;
   background: #090b10;
   line-height: 15px;
-  text-overflow: ellipsis;
   white-space: nowrap;
   transform: translateY(-11px);
 }

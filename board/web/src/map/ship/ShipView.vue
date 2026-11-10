@@ -124,9 +124,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           <div class="names">
             <h2 id="ship-title">{{ heading }}</h2>
             <div class="sub">
-              <span v-if="shown && shown.kind !== 'session'" class="mono">{{ shown.slug }}</span>
               <template v-if="shown">
-                <span> · система {{ shown.repo }}</span>
+                <template v-if="shown.kind !== 'session'"><span class="mono">{{ shown.slug }}</span> · </template>
+                <span>система {{ shown.repo }}</span>
                 <template v-if="shown.branch"> · ветка <span class="mono">{{ shown.branch }}</span></template>
               </template>
             </div>
