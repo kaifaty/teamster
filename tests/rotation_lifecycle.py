@@ -1212,6 +1212,9 @@ worker.notifications.reap_notifications = reap
         self.assertFalse(self.invocations())
         dropped = self.notification("say-sleep", "queue_dropped")
         self.assertEqual((dropped["outcome"], dropped["texts"]), ("stopped", ["Отправить после сброса"]))
+        self.cli("clean", "say-sleep")
+        archived = list((self.home / "claude-tasks" / ".archive").glob("say-sleep-*/queue.json"))
+        self.assertEqual([json.loads(path.read_text()) for path in archived], [queue])
 
     def test_delayed_reset_sleeps_again_before_continuing(self):
         self.configure()
