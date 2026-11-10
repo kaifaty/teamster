@@ -203,7 +203,7 @@ Run all commands as `teamster <command>`.
 | `start <slug> --brief FILE [--repo DIR] [--base origin/BRANCH] [--no-push] [--model M] [--review-model M] [--effort E] [--sandbox off\|workspace] [--max-minutes M] [--max-weekly P] [--review [--review-angles LIST] [--fix-rounds N]] [--ci] [--ci-rounds N] [--check CMD] [--guard GLOB] [--base-check]` | Create a worktree and start implementation; `--brief -` reads stdin; repeat `--guard` for extra protected paths; `--no-push` keeps commits local and disables branch and PR publication throughout the task. |
 | `scout <slug> "question"` or `scout <slug> --file FILE [--repo DIR] [--effort E]` | Read the existing directory and return a concise report with source references. |
 | `wait <slug> [--timeout SEC] [--through-sleep]` | Wait for the turn, show its report and changes; optionally wait through limit resets. |
-| `say <slug> "message"` or `say <slug> --file FILE` | Follow up while idle; set `--model M`, `--review-model M`, `--effort E`, `--max-minutes M` or `--max-weekly P`, add `--review [--review-angles LIST] --fix-rounds N`, change saved CI with `--ci` / `--no-ci` or `--ci-rounds N`, replace the check with `--check CMD`, remove it with `--no-check`, or disable base tests with `--no-base-check`. A task re-runs `say` in the version it started on while that is installed; `--upgrade` moves it to the current version. |
+| `say <slug> "message"` or `say <slug> --file FILE` | Follow up while idle; set `--model M`, `--review-model M`, `--effort E`, `--max-minutes M` or `--max-weekly P`, add `--review [--review-angles LIST] --fix-rounds N`, change saved CI with `--ci` / `--no-ci` or `--ci-rounds N`, replace the check with `--check CMD`, remove it with `--no-check`, or disable base tests with `--no-base-check`. A task re-runs `say` in the version it started on while that is installed; `--upgrade` moves it to the current version. With `--queue`, a busy task keeps the message and its options until the current cycle completes, then sends all queued messages as one turn; any other outcome drops them. |
 | `review <slug> [--review-model M] [--effort E] [--review-angles LIST] [--max-weekly P]` | Run the first review in a fresh Codex thread while the task is idle. |
 | `status [<slug>]` | Show task state, account, thread, PR, commits, last message, and latest result. |
 | `stats <slug>` | Show per-turn runtime, tool calls, tokens, and available usage estimates. |
@@ -418,7 +418,8 @@ and a short `message`. Event types are `turn_finished` (`outcome`, `result`, als
 `guarded_changed`, the number of changed guarded files, and `ci`, the final CI result),
 `needs_input` (`result` and the first question for `blocked` or `needs_decision`), `paused` (`until`),
 `woke`, `rotated` (`from` and `to`), `needs_login`, `reset_credit_used`, `check_failed`, and `review_done`
-(`verdict`, finding count, `round`, and `angles`), plus `budget_exhausted`, `stuck`, and `interrupted`.
+(`verdict`, finding count, `round`, and `angles`), `queue_sent` (`count` and `turn`) and `queue_dropped`
+(`outcome` and `texts`) for messages queued with `say --queue`, plus `budget_exhausted`, `stuck`, and `interrupted`.
 `turn_finished` is sent once when the entire cycle ends, with `outcome` including `budget_exhausted`,
 `stuck`, or `interrupted`. The outcome is frozen when finalization starts; later signals are logged
 without changing the outcome or task state. Separate guard and interruption events also obey

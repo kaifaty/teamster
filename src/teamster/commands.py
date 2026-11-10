@@ -106,9 +106,9 @@ def cmd_start(a):
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
 
 
-def require_idle(st):
+def require_idle(st, queue_hint=False):
     # The early check; spawn repeats it under the state lock against the state on disk.
-    busy = task_state.busy_message(st)
+    busy = task_state.busy_message(st, queue_hint)
     if busy is not None:
         procs.die(busy)
 
@@ -209,73 +209,50 @@ def cmd_lesson(a):
     print(reflection.set_lesson_status(config.TASKS / ".archive", a.entry, a.status, a.note))
 
 
+# say's arguments that are not options it saves or passes to the turn.
+SAY_CALL_ARGUMENTS = ("cmd", "slug", "message", "file", "queue", "upgrade")
+
+
+def say_options(a):
+    """say's options as given, by argument name; say --queue saves them with the message."""
+    return {name: value for name, value in vars(a).items()
+            if name not in SAY_CALL_ARGUMENTS and value is not None and value is not False}
+
+
 def cmd_say(a):
     st = task_state.load(a.slug)
+    queued = getattr(a, "queue", False)
+    if queued and getattr(a, "upgrade", False):
+        procs.die("say --queue cannot be combined with --upgrade, which moves the task when say runs; "
+                  "send the message with say --upgrade once the current cycle ends")
     move = installs.follow_pin(st, upgrade=getattr(a, "upgrade", False))
-    reflecting = st.get("kind") == "reflect"
+    options = say_options(a)
     scouting = st.get("kind") in ("scout", "reflect")
-    angles = getattr(a, "review_angles", None)
-    reviewer = getattr(a, "reviewer", None)
-    review_model = getattr(a, "review_model", None)
-    ci_command = getattr(a, "ci_command", None)
-    no_ci_command = getattr(a, "no_ci_command", False)
-    if st.get("no_push") and (a.ci or ci_command is not None):
+    if st.get("no_push") and (options.get("ci") or options.get("ci_command") is not None):
         procs.die("--no-push task cannot enable --ci or --ci-command; CI requires a published branch")
-    if scouting and (a.check is not None or a.review or a.check_timeout is not None or a.fix_rounds is not None
-                     or a.no_base_check or angles is not None or reviewer is not None or review_model is not None
-                     or a.ci or a.no_ci or ci_command is not None or no_ci_command or a.ci_rounds is not None):
+    if scouting and any(name in options for name in (
+            "check", "review", "check_timeout", "fix_rounds", "no_base_check", "review_angles", "reviewer",
+            "review_model", "ci", "no_ci", "ci_command", "no_ci_command", "ci_rounds")):
         procs.die(f"{st['kind']} is read-only; say --check, --check-timeout, --review, --reviewer, --review-model, --review-angles, --fix-rounds, --ci, --no-ci, --ci-command, --no-ci-command, --ci-rounds and --no-base-check are not supported")
-    require_idle(st)
+    if not queued:
+        require_idle(st, queue_hint=True)
     msg = Path(a.file).read_text() if a.file else a.message
     if not msg or not msg.strip():
         procs.die("empty message")
     cfg = config.accounts_config()
-    try:
-        executor = executors.from_state(st)
-        if scouting:
-            executor.prepare_scout(a.effort or st.get("effort"), cfg, st["worktree"])
-        else:
-            executor.prepare(a.effort or st.get("effort"), cfg)
-    except ValueError as exc:
-        procs.die(str(exc))
-    budgets.set_weekly_budget(st, getattr(a, "max_weekly", None), cfg)
-    if getattr(a, "model", None) is not None:
-        st["task_model"] = None if a.model == "default" else a.model
-    if review_model is not None:
-        st["review_model"] = None if review_model == "default" else review_model
-    if getattr(a, "task_type", None) is not None:
-        st["task_type"] = a.task_type
-    minutes = getattr(a, "max_minutes", None)
-    if minutes is not None or not reflecting:
-        st["max_turn_minutes"] = minutes if minutes is not None else cfg.get("max_turn_minutes")
-    if no_ci_command:
-        st["ci_command"] = None
-    elif ci_command is not None:
-        st["ci_command"] = ci_command
-    if getattr(a, "no_ci", False):
-        st["ci_enabled"] = False
-    elif getattr(a, "ci", False) or ci_command is not None:
-        st["ci_enabled"] = True
-    if getattr(a, "ci_rounds", None) is not None:
-        st["ci_rounds"] = a.ci_rounds
-    st["ci_timeout_minutes"] = cfg.get("ci_timeout_minutes", 30)
-    st["review_angles"] = angles
-    if reviewer is not None:
-        st["reviewer"] = reviewer
-    if a.no_check:
-        st["check"] = None
-        st["check_paths"] = []
-    elif a.check is not None:
-        st["check"] = a.check
-    if a.no_base_check:
-        st["base_check"] = False
-    if a.check_timeout is not None:
-        st["check_timeout"] = a.check_timeout
+    supervisor.apply_say(st, options, cfg)
+    if queued:
+        # The supervisor applies the options again when it sends the queue, as a say then would.
+        waiting = task_state.enqueue(a.slug, {"at": clock.CLOCK.time(), "text": msg, "options": options})
+        if waiting is not None:
+            print(f"queued for {a.slug}: {waiting} waiting; sent when the current cycle ends")
+            return
+        # The cycle may have ended since st was loaded: send from the state it left.
+        st = task_state.load(a.slug)
+        supervisor.apply_say(st, options, cfg)
     # If no thread was created (all accounts exhausted on start), retain the brief too.
     # spawn journals the message only once this turn is claimed: a refused say leaves no trace.
-    supervisor.spawn(st, lambda: threads.followup_prompt(st, msg, cfg), a.effort or st.get("effort"),
-          current_message=True, kind=st["kind"] if scouting else "work", review_after=a.review,
-          fix_rounds=a.fix_rounds or 0)
+    supervisor.spawn(st, lambda: threads.followup_prompt(st, msg, cfg), **supervisor.say_turn(st, options))
     if move:
         print(move)
     print(f"sent to {a.slug} (turn {st['turns']}), pid {st['pid']}")
@@ -324,6 +301,9 @@ def describe(st, detail):
             + "  sandbox " + ("read-only" if scouting else st.get("sandbox", "off")))
     if st.get("no_push"):
         line += "  push disabled (--no-push)"
+    queued = len(task_state.locked_queue(st["slug"])["waiting"])
+    if queued:
+        line += f"  queued orders {queued}"
     if reviewing:
         line += executor.review_status(st)
     if st.get("task_model"):
