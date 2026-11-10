@@ -153,6 +153,9 @@ export interface Implementation {
   updated_at: number;
 }
 
+/** «scanning» until the first search ends; «denied» when it skipped a repository it could not read. */
+export type ReposAccess = "ok" | "scanning" | "denied";
+
 /** A repository a lesson can be implemented in. */
 export interface ResearchRepo {
   name: string;
@@ -231,6 +234,8 @@ export interface ResearchView {
   lessons: Lesson[];
   /** Where «Внедрить» can start a task; absent on older servers. */
   repos?: ResearchRepo[];
+  /** Whether the search for `repos` could read every repository's disk; absent on older servers. */
+  repos_access?: ReposAccess;
   studies: Study[];
   batch: ResearchBatch | null;
   /** Archived records after the newest batch: the next batch's material. */

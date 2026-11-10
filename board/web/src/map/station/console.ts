@@ -437,11 +437,10 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     timers.clear();
   }
 
-  const repos = computed(() => research.value.repos);
-
   return {
     studies,
-    repos,
+    repos: computed(() => research.value.repos),
+    reposAccess: computed(() => research.value.reposAccess),
     index,
     filed,
     live,
