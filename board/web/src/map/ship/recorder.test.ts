@@ -121,7 +121,10 @@ describe("tape marks", () => {
 
     // Placed on the tape: from the launch to now, close marks in separate rows.
     const tape = tapeOf(events, task(), messages, rotations, NOW);
-    expect([tape.start, tape.end]).toEqual([NOW - 200 * M, NOW]);
+    expect([tape.truncated, tape.start, tape.end]).toEqual([false, NOW - 200 * M, NOW]);
+    // A truncated log has lost the launch: the tape starts at the ship's first event.
+    const cut = tapeOf(events, task(), messages, rotations, NOW, true);
+    expect([cut.truncated, cut.start, cut.end]).toEqual([true, NOW - 190 * M, NOW]);
     expect(tape.marks.map((mark) => mark.left)).toEqual([30, 50, 76, 77.5, 97.5]);
     expect(tape.marks.map((mark) => mark.lane)).toEqual([0, 0, 0, 1, 0]);
     expect(tape.segments[0]).toMatchObject({ left: 5, width: 15 });

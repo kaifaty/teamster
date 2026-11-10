@@ -17,6 +17,7 @@ const props = defineProps<{
 
 const events = ref<LogEvent[] | null>(null);
 const error = ref<string | null>(null);
+const truncated = ref(false);
 
 let request = 0;
 async function load() {
@@ -28,6 +29,7 @@ async function load() {
     const result = await props.source.fetchEvents(since, until);
     if (asked !== request) return;
     events.value = result.events.filter((event) => event.slug === slug);
+    truncated.value = result.truncated === true;
   } catch (failure) {
     if (asked !== request) return;
     error.value = failure instanceof Error ? failure.message : String(failure);
@@ -50,7 +52,7 @@ watch(
   },
 );
 
-const tape = computed(() => (events.value?.length ? tapeOf(events.value, props.task, props.messages, props.limits?.rotations ?? [], props.now) : null));
+const tape = computed(() => (events.value?.length ? tapeOf(events.value, props.task, props.messages, props.limits?.rotations ?? [], props.now, truncated.value) : null));
 const ticks = computed(() => (tape.value ? tapeTicks(tape.value.start, tape.value.end, props.task.column !== "closed" && tape.value.end >= props.now) : []));
 const colors = Object.fromEntries(TAPE_STOPS.map((stop) => [stop.id, stop.color]));
 const lanes = computed(() => Math.max(1, ...(tape.value?.marks.map((mark) => mark.lane + 1) ?? [])));
@@ -69,7 +71,8 @@ const lanes = computed(() => Math.max(1, ...(tape.value?.marks.map((mark) => mar
     </p>
     <p v-else-if="events === null" class="empty">Читаю журнал…</p>
     <p v-else-if="!tape" class="empty">Журнал пуст: рейс ещё не записан</p>
-    <div v-else class="tape-wrap">
+    <p v-if="tape?.truncated" class="empty">Журнал неполный: ранние события не вошли</p>
+    <div v-if="tape" class="tape-wrap">
       <div class="tape">
         <div class="pins" :style="{ height: `${lanes * 16 + 2}px` }">
           <span

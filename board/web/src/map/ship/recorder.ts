@@ -78,6 +78,8 @@ export interface TapeMark {
 }
 
 export interface Tape {
+  /** The log dropped earlier rows: the tape starts at the ship's first event, not at its launch. */
+  truncated: boolean;
   start: number;
   end: number;
   segments: TapeSegment[];
@@ -221,17 +223,21 @@ const LANES = 3;
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
-/** The whole tape: its stops and marks placed between the launch (or the first record) and now (or the last record). */
+/**
+ * The whole tape: its stops and marks placed between the launch (or the first record) and now (or the last record).
+ * When the log came `truncated`, the launch is not on it: the tape starts at the first record.
+ */
 export function tapeOf(
   events: readonly LogEvent[],
   task: TaskSummary,
   messages: readonly TaskMessage[],
   rotations: TaskLimits["rotations"],
   now: number,
+  truncated = false,
 ): Tape {
   const bare = tapeSegments(events, task, now);
   const times = [...bare.flatMap((segment) => [segment.from, segment.to]), ...events.map((event) => event.at)];
-  const created = task.created !== null && task.created >= now - LOG_DAYS * DAY ? task.created : Infinity;
+  const created = !truncated && task.created !== null && task.created >= now - LOG_DAYS * DAY ? task.created : Infinity;
   const start = Math.min(created, ...times);
   const closed = task.column === "closed";
   const end = Math.max(start + 60, closed ? Math.max(task.updated_at, ...times) : Math.max(now, ...times));
@@ -248,7 +254,7 @@ export function tapeOf(
       lastLeft[lane] = left;
       return { ...mark, left, lane };
     });
-  return { start, end, segments, marks };
+  return { truncated, start, end, segments, marks };
 }
 
 // The time scale under the tape.
