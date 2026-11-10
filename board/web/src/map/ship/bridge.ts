@@ -103,16 +103,51 @@ const HOLE_SPOTS: readonly { x: number; y: number }[] = [
   { x: -0.12, y: 0.22 },
 ];
 
-/** The picture fills this share of its frame, centred. */
-const ART_SHARE = 0.82;
-const toPercent = (share: number) => Math.round((50 + share * ART_SHARE * 100) * 10) / 10;
+/**
+ * The opaque part of each hull's picture, in shares of its square: its longest side, which is its length, and its
+ * centre. Measured from the PNGs, so that every class fills the hangar alike.
+ */
+const ART_BOX: Partial<Record<ArtName, { span: number; cx: number; cy: number }>> = {
+  shipBlue: { span: 0.896, cx: 0.5, cy: 0.469 },
+  shipBlueFrigate: { span: 0.96, cx: 0.5, cy: 0.489 },
+  shipBlueCruiser: { span: 0.951, cx: 0.5, cy: 0.49 },
+  shipCopper: { span: 0.875, cx: 0.5, cy: 0.484 },
+  shipCopperFrigate: { span: 0.978, cx: 0.502, cy: 0.502 },
+  shipCopperCruiser: { span: 0.965, cx: 0.5, cy: 0.497 },
+  shipScout: { span: 0.906, cx: 0.496, cy: 0.477 },
+  flagship: { span: 0.971, cx: 0.5, cy: 0.499 },
+};
+
+/** The hull's length in shares of the hangar's side, and where it starts from the top: above the caption's band. */
+export const HULL_SHARE = 0.77;
+const HULL_TOP = 0.03;
+
+/** Where the hull's picture stands in its square hangar, in percent of the side: its size and its top left corner. */
+export interface HullFrame {
+  size: number;
+  left: number;
+  top: number;
+}
+
+const round1 = (value: number) => Math.round(value * 1000) / 10;
+
+/** The picture scaled so that its opaque part is HULL_SHARE of the hangar's side, centred across, near the top. */
+export function hullFrame(art: ArtName): HullFrame {
+  const box = ART_BOX[art] ?? { span: 1, cx: 0.5, cy: 0.5 };
+  const size = HULL_SHARE / box.span;
+  return { size: round1(size), left: round1(0.5 - box.cx * size), top: round1(HULL_TOP + HULL_SHARE / 2 - box.cy * size) };
+}
 
 /** Holes for the open review findings and patches for the fix rounds, at spots that depend only on the slug. */
-export function hullMarks(slug: string, holes: number, rounds: number): HullMark[] {
+export function hullMarks(slug: string, holes: number, rounds: number, frame: HullFrame): HullMark[] {
+  // The spots are shares of the picture's side from its centre, as the scene places them.
+  const at = (spot: { x: number; y: number }) => ({
+    left: Math.round((frame.left + frame.size / 2 + spot.x * frame.size) * 10) / 10,
+    top: Math.round((frame.top + frame.size / 2 + spot.y * frame.size) * 10) / 10,
+  });
   const marks: HullMark[] = patchSpots(slug, rounds).map((spot, index) => ({
     kind: "patch",
-    left: toPercent(spot.x),
-    top: toPercent(spot.y),
+    ...at(spot),
     title: `Заплата: круг исправления ${index + 1}`,
   }));
   const count = Math.max(0, Math.min(MAX_HOLES, Math.floor(holes)));
@@ -120,7 +155,7 @@ export function hullMarks(slug: string, holes: number, rounds: number): HullMark
   for (let i = 0; i < slug.length; i++) seed = (seed * 31 + slug.charCodeAt(i)) >>> 0;
   for (let i = 0; i < count; i++) {
     const spot = HOLE_SPOTS[(seed + i) % HOLE_SPOTS.length]!;
-    marks.push({ kind: "hole", left: toPercent(spot.x), top: toPercent(spot.y), title: "Открытая находка ревью" });
+    marks.push({ kind: "hole", ...at(spot), title: "Открытая находка ревью" });
   }
   return marks;
 }
@@ -133,16 +168,19 @@ export function damageLine(holes: number, rounds: number): string {
   return parts.join(" · ");
 }
 
-/** What the ship does now, under its picture: its latest activity while it works, else why it stands. */
-export function activityLine(task: TaskSummary, now: number): string {
-  const activity = task.alive ? task.activity : null;
+/**
+ * The caption in the hangar: what the ship does now while it works, else what its last turn came back with. A sleeping
+ * ship still works: its supervisor waits for the reset.
+ */
+export function hangarCaption(task: TaskSummary, now: number): { label: "сейчас" | "итог"; text: string } {
+  if (!task.alive) return { label: "итог", text: task.summary ?? problemLabel(task) ?? "—" };
+  const activity = task.activity;
   if (activity) {
     const age = activity.at !== null ? ` · ${formatAge(activity.at, now)}` : "";
-    return `${ACTIVITY[activity.kind].label}: ${activity.text}${age}`;
+    return { label: "сейчас", text: `${ACTIVITY[activity.kind].label}: ${activity.text}${age}` };
   }
-  if (task.column === "sleeping") return task.sleeping_until !== null ? `спит до ${formatClock(task.sleeping_until, now)}` : "спит";
-  if (task.alive) return "нет активности";
-  return task.summary ?? problemLabel(task) ?? "стоит";
+  if (task.column === "sleeping") return { label: "сейчас", text: task.sleeping_until !== null ? `спит до ${formatClock(task.sleeping_until, now)}` : "спит" };
+  return { label: "сейчас", text: "нет активности" };
 }
 
 export interface PaperRow {

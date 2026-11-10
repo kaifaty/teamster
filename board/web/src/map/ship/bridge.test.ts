@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
-import { bridgeView, gaugesOf, hullMarks, hullReport, loopsOf, routeOf } from "./bridge";
+import { HULL_SHARE, bridgeView, gaugesOf, hangarCaption, hullFrame, hullMarks, hullReport, loopsOf, routeOf } from "./bridge";
 
 const NOW = 1_800_000_000;
 
@@ -167,10 +167,24 @@ describe("the screen of a session and a scout", () => {
   });
 
   it("marks holes for open findings and patches for rounds, stable per slug", () => {
-    const marks = hullMarks("ship", 2, 2);
+    const frame = hullFrame("shipBlue");
+    const marks = hullMarks("ship", 2, 2, frame);
     expect(marks.filter((mark) => mark.kind === "hole")).toHaveLength(2);
     expect(marks.filter((mark) => mark.kind === "patch")).toHaveLength(2);
-    expect(hullMarks("ship", 2, 2)).toEqual(marks);
-    expect(hullMarks("ship", 40, 9).length).toBe(8);
+    expect(hullMarks("ship", 2, 2, frame)).toEqual(marks);
+    expect(hullMarks("ship", 40, 9, frame).length).toBe(8);
+  });
+
+  it("scales every hull class to the same length in the hangar", () => {
+    // The opaque part of the light ship is 0.896 of its picture, the copper frigate's 0.978.
+    expect(hullFrame("shipBlue").size * 0.896).toBeCloseTo(HULL_SHARE * 100, 0);
+    expect(hullFrame("shipCopperFrigate").size * 0.978).toBeCloseTo(HULL_SHARE * 100, 0);
+  });
+
+  it("captions a working ship with its activity and a stopped one with its result", () => {
+    const working = task({ activity: { at: NOW - 5, kind: "edit", text: "a.ts" } });
+    expect(hangarCaption(working, NOW)).toEqual({ label: "сейчас", text: "правка: a.ts · 5 с назад" });
+    const stopped = task({ alive: false, column: "review_me", summary: "Готово", activity: { at: NOW - 5, kind: "edit", text: "a.ts" } });
+    expect(hangarCaption(stopped, NOW)).toEqual({ label: "итог", text: "Готово" });
   });
 });

@@ -4,18 +4,20 @@
 import { computed } from "vue";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
 import { ART } from "../art";
-import { activityLine, damageLine, hullArt, hullClass, hullMarks, papersOf, roundsOf } from "./bridge";
+import { damageLine, hangarCaption, hullArt, hullClass, hullFrame, hullMarks, papersOf, roundsOf } from "./bridge";
 
 const props = defineProps<{ task: TaskSummary; limits: TaskLimits | null | undefined; cargo: Cargo | null | undefined; now: number }>();
 
 const session = computed(() => props.task.kind === "session");
 const holes = computed(() => (session.value ? 0 : props.task.findings_left));
 const rounds = computed(() => (session.value ? 0 : roundsOf(props.task, props.limits)));
-const marks = computed(() => hullMarks(props.task.slug, holes.value, rounds.value));
-const picture = computed(() => ART[hullArt(props.task)]);
+const art = computed(() => hullArt(props.task));
+const frame = computed(() => hullFrame(art.value));
+const marks = computed(() => hullMarks(props.task.slug, holes.value, rounds.value, frame.value));
+const picture = computed(() => ART[art.value]);
 const alt = computed(() => `${hullClass(props.task)}: исполнитель ${props.task.executor === "codex" ? "Codex" : "Claude"}${props.task.effort ? `, форсаж ${props.task.effort}` : ""}`);
 const damage = computed(() => damageLine(holes.value, rounds.value));
-const now = computed(() => activityLine(props.task, props.now));
+const caption = computed(() => hangarCaption(props.task, props.now));
 const papers = computed(() => papersOf(props.task, props.limits, props.cargo, props.now));
 </script>
 
@@ -27,18 +29,22 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
       <span class="aside num">ход {{ task.turn }}</span>
     </div>
     <div class="hangar" :class="{ alive: task.alive }">
-      <img :src="picture" :alt="alt" />
-      <span
-        v-for="(mark, index) in marks"
-        :key="index"
-        class="mark"
-        :class="mark.kind"
-        :style="{ left: `${mark.left}%`, top: `${mark.top}%` }"
-        :title="mark.title"
-        aria-hidden="true"
-        >{{ mark.kind === "hole" ? "!" : "" }}</span
-      >
-      <p class="now" :class="{ live: task.alive }" role="status"><span class="dim">сейчас ·</span> {{ now }}</p>
+      <div class="bay">
+        <img :src="picture" :alt="alt" :style="{ width: `${frame.size}%`, height: `${frame.size}%`, left: `${frame.left}%`, top: `${frame.top}%` }" />
+        <span
+          v-for="(mark, index) in marks"
+          :key="index"
+          class="mark"
+          :class="mark.kind"
+          :style="{ left: `${mark.left}%`, top: `${mark.top}%` }"
+          :title="mark.title"
+          aria-hidden="true"
+          >{{ mark.kind === "hole" ? "!" : "" }}</span
+        >
+      </div>
+      <p class="now" :class="{ live: task.alive }" role="status" :title="`${caption.label} · ${caption.text}`">
+        <span class="dim">{{ caption.label }} ·</span> {{ caption.text }}
+      </p>
     </div>
     <div class="cls">
       <span><b>{{ hullClass(task) }}</b></span>
@@ -54,8 +60,11 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
 </template>
 
 <style scoped>
+/* The hangar is square, and no taller than 240 px on a narrow window; the bay inside it is the largest square that
+   fits, centred, and the ship's picture is laid out in the bay's percent. */
 .hangar {
   position: relative;
+  container-type: size;
   aspect-ratio: 1;
   max-width: 100%;
   overflow: hidden;
@@ -64,15 +73,21 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
   background: radial-gradient(circle at 50% 55%, rgba(224, 145, 90, 0.16), transparent 62%), var(--sh-well);
 }
 
-.hangar img {
+.bay {
   position: absolute;
-  inset: 9%;
-  width: 82%;
-  height: 82%;
+  left: 50%;
+  top: 0;
+  width: 100cqmin;
+  height: 100cqmin;
+  transform: translateX(-50%);
+}
+
+.bay img {
+  position: absolute;
   object-fit: contain;
 }
 
-.hangar.alive img {
+.hangar.alive .bay img {
   animation: hover 4s ease-in-out infinite;
 }
 
@@ -108,14 +123,21 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
   background: #6d6a62;
 }
 
+/* The caption keeps to two lines in the hangar's bottom band, under the hull; the full text is in its title. */
 .now {
   position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: 8px;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  display: -webkit-box;
+  max-height: 25%;
   margin: 0;
-  padding: 5px 8px;
+  padding: 4px 8px;
+  overflow: hidden;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   border: 1px solid rgba(214, 170, 96, 0.25);
   border-radius: 6px;
   background: rgba(3, 5, 8, 0.85);
@@ -160,8 +182,14 @@ const papers = computed(() => papersOf(props.task, props.limits, props.cargo, pr
   overflow-wrap: anywhere;
 }
 
+@media (max-width: 760px) {
+  .hangar {
+    max-height: 240px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .hangar.alive img {
+  .hangar.alive .bay img {
     animation: none;
   }
 }
