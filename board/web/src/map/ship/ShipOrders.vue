@@ -43,9 +43,11 @@ const CONFIRM = { stop: "Остановить корабль посреди хо
 async function recall() {
   const what = confirming.value;
   if (!what) return;
+  const asked = props.task.slug;
   if (what === "stop") await props.desk.stop();
   else await props.desk.clean(keepBranch.value);
-  confirming.value = null;
+  // Another ship opened meanwhile keeps its own confirmation.
+  if (props.task.slug === asked) confirming.value = null;
 }
 
 watch(

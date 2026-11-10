@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { Cargo, TaskLimits, TaskSummary } from "../../types";
+import { nextTick, ref } from "vue";
+import type { ActionResult } from "../../lib/actions";
+import type { Cargo, TaskDetail, TaskLimits, TaskSummary } from "../../types";
+import { createShipDesk } from "./desk";
 import { blankRefit, deskOf, fallbackCommand, feedOf, isLong, mainOrder, reflectOrder, refitLine, refitOf, toggleAngle, type DeskView } from "./orders";
 
 const NOW = 1_800_000_000;
@@ -127,5 +130,29 @@ describe("fallback commands", () => {
     expect(fallbackCommand({ route: "stop", body: { slug: "fix-login" } })).toBe("teamster stop fix-login");
     expect(fallbackCommand({ route: "clean", body: { slug: "fix-login", keep_branch: true } })).toBe("teamster clean fix-login --keep-branch");
     expect(fallbackCommand({ route: "clean", body: { slug: "fix-login", keep_branch: false } })).toBe("teamster clean fix-login");
+  });
+});
+
+describe("console", () => {
+  it("leaves another ship's console alone when an order's answer comes late", async () => {
+    const slug = ref("a");
+    const detail = ref({ ...task({ slug: "a", alive: false }), timeline: [], files: [], cargo: null, actions: { enabled: true, reason: null } } as TaskDetail);
+    const answers: ((result: ActionResult) => void)[] = [];
+    const act = () => new Promise<ActionResult>((resolve) => answers.push(resolve));
+    const desk = createShipDesk({ slug, task: ref(task({ slug: "a", alive: false })), detail, act: act as never });
+    desk.reply.value = "Продолжай";
+    const sent = desk.send();
+    const judged = desk.verdict("accepted");
+    slug.value = "b";
+    await nextTick();
+    desk.reply.value = "черновик для b";
+    desk.refit.model = "gpt-7";
+    for (const answer of answers) answer({ ok: true, output: "done" });
+    await sent;
+    expect(await judged).toBe(false);
+    expect(desk.reply.value).toBe("черновик для b");
+    expect(desk.refit.model).toBe("gpt-7");
+    expect(desk.echo.value).toEqual([]);
+    expect([desk.groups.reply.done, desk.groups.accept.done, desk.groups.reply.busy]).toEqual(["", "", null]);
   });
 });

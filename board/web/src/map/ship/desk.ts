@@ -62,18 +62,24 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
     for (const id of Object.keys(groups) as GroupId[]) groups[id] = blank();
   });
 
-  /** Runs the order, or copies its command; `done` words the success. Returns whether the server carried it out. */
+  /**
+   * Runs the order, or copies its command; `done` words the success. Returns whether the server carried it out. An
+   * answer that comes once another ship is open changes nothing: its console was cleaned for that ship.
+   */
   async function run(group: GroupId, button: string, order: ShipOrder, done: (output: string, slug?: string) => string = lastLine): Promise<boolean> {
     const state = groups[group];
     if (state.busy) return false;
+    const asked = slug.value;
     Object.assign(state, blank(), { busy: button });
     try {
       if (!live.value) {
         const command = fallbackCommand(order);
-        state.copied = { command, copied: await copy(command), reason: offReason.value };
+        const copied = await copy(command);
+        if (slug.value === asked) state.copied = { command, copied, reason: offReason.value };
         return false;
       }
       const result = await act(order.route, order.body as never);
+      if (slug.value !== asked) return false;
       if (!result.ok) {
         state.error = result.error;
         return false;
