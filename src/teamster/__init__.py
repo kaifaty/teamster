@@ -40,11 +40,12 @@ Layer 9:
     review_cycle (implemented): review angles, review turns, and automatic fixes.
     ci_runs (implemented): CI waits, failure excerpts, prompts, and fix cycles.
 Layer 10:
-    supervisor (implemented): detached task supervision and spawning.
     wait_view (implemented): wait output rendering and the wait command.
 Layer 11:
-    commands (implemented): task commands, descriptions, and main repositories.
+    supervisor (implemented): detached task supervision, spawning and the say --queue handoff.
 Layer 12:
+    commands (implemented): task commands, descriptions, and main repositories.
+Layer 13:
     cli (implemented): argument types, option registry, dispatch, and command table.
 Entrypoints:
     __main__ (implemented) starts the installed teamster command and runs
@@ -63,7 +64,7 @@ namespaces. Only config.py and __main__.py may use __file__; usage text stays in
 The executors and reviewers registries share the register, get and names API.
 """
 
-__version__ = "1.59.3"
+__version__ = "1.60.0"
 # Raised by a release whose supervisors cannot run beside those of a different value;
 # upgrade --yes then refuses while a supervisor of another data layout is alive.
 DATA_LAYOUT = 1

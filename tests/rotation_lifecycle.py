@@ -1,6 +1,7 @@
 """Supervisor lifecycle, signals, rotation and subscription sleep tests."""
 import argparse
 import datetime
+import fcntl
 import io
 import json
 import os
@@ -765,8 +766,8 @@ worker.notifications.reap_notifications = reap
             resume = {name: threading.Event() for name in ("first", "second")}
             exits, supervisors = {}, []
 
-            def paused_require_idle(st):
-                original_require_idle(st)
+            def paused_require_idle(st, *args, **kwargs):
+                original_require_idle(st, *args, **kwargs)
                 arrived[threading.current_thread().name].set()
                 resume[threading.current_thread().name].wait(60)
 
@@ -838,6 +839,85 @@ worker.notifications.reap_notifications = reap
         self.assertFalse(self.review_invocations())
         self.assertEqual([message["text"] for message in self.worker().threads.followup_messages(self.state(slug))],
                          ["First message", "Second message"])
+
+    def test_say_queue_sends_queued_orders_as_one_turn_when_the_cycle_ends(self):
+        self.configure(language="en")
+        self.configure_notify()
+        gate = self.root / "finish-first-turn"
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "delay_gate": str(gate), "reply": "First turn done"},
+            {"mode": "complete", "reply": "Queued orders done"},
+            {"mode": "complete", "reply": "Idle order done"}])
+        slug = "say-queue"
+        record = self.home / "claude-tasks" / slug
+        # With a versions directory, its lock held exclusively stops the supervisor inside the handoff.
+        versions = self.worker().installs.versions_dir()
+        versions.mkdir()
+        self.start(slug)
+        self.until(lambda: len(self.invocations()) == 1)
+
+        def run(*args):
+            return subprocess.run([PYTHON, "-I", str(SCRIPT), *args], cwd=self.repo, env=self.env,
+                                  text=True, capture_output=True, timeout=30)
+
+        self.assertEqual(self.cli("say", slug, "--queue", "First order", "--effort", "low",
+                                  "--task-type", "alpha", "--check", "exit 1"),
+                         f"queued for {slug}: 1 waiting; sent when the current cycle ends\n")
+        for args, error in ((("say", slug, "--queue", "--upgrade", "Moved"), "--queue cannot be combined with --upgrade"),
+                            (("say", slug, "--queue", " "), "empty message")):
+            result = run(*args)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(error, result.stderr)
+        self.assertIn("queued orders 1", self.cli("status", slug))
+        waiter = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "wait", slug, "--timeout", "120"], cwd=self.repo,
+                                  env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        order = self.root / "second-order.md"
+        order.write_text("Second order")
+        with (versions / ".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                gate.touch()
+                self.notification(slug, "turn_finished")
+                busy = run("say", slug, "Plain message")
+                self.assertNotEqual(busy.returncode, 0)
+                self.assertIn(f"{slug} is still running a turn; wait for it (or stop it) first; "
+                              "or queue the message with say --queue", busy.stderr)
+                busy = run("review", slug)
+                self.assertNotEqual(busy.returncode, 0)
+                self.assertIn(f"{slug} is still running a turn", busy.stderr)
+                self.assertEqual(self.cli("say", slug, "--queue", "--file", str(order), "--effort", "high",
+                                          "--no-check", "--max-minutes", "30"),
+                                 f"queued for {slug}: 2 waiting; sent when the current cycle ends\n")
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+        output, errors = waiter.communicate(timeout=150)
+        self.assertEqual(waiter.returncode, 0, errors)
+        lines = output.splitlines()
+        sent = lines.index("== queued orders sent: 2, turn 2 started")
+        self.assertIn("First turn done", lines[:sent])
+        self.assertIn("Queued orders done", lines[sent:])
+        first, queued = self.invocations()
+        self.assertEqual(queued["prompt"], "First order\n\nSecond order")
+        self.assertTrue(queued["resume"])
+        self.assertIn('model_reasoning_effort="high"', queued["argv"])
+        state = self.state(slug)
+        self.assertEqual((state["turns"], state["outcome"], state["task_type"], state["max_turn_minutes"],
+                          state["check"], state["checks"]), (2, "completed", "alpha", 30, None, []))
+        messages = [json.loads(line) for line in (record / "messages.jsonl").read_text().splitlines()]
+        self.assertEqual([(message["text"], message["source"]) for message in messages],
+                         [("First order", "lead"), ("Second order", "lead")])
+        self.assertEqual(messages[0]["at"], messages[1]["at"])
+        self.assertTrue(messages[0]["queued_at"] < messages[1]["queued_at"] <= messages[1]["at"])
+        self.assertEqual(json.loads((record / "queue.json").read_text()), {"waiting": [], "dropped": []})
+        notification = self.notification(slug, "queue_sent")
+        self.assertEqual((notification["count"], notification["turn"]), (2, 2))
+        self.assertNotIn("queued orders", self.cli("status", slug))
+
+        idle = self.cli("say", slug, "--queue", "Idle order")
+        self.assertRegex(idle, rf"^sent to {slug} \(turn 3\), pid [0-9]+\n$")
+        self.assertIn("Idle order done", self.wait(slug))
+        self.assertEqual(self.invocations()[-1]["prompt"], "Idle order")
+        self.assertNotIn("queued_at", json.loads((record / "messages.jsonl").read_text().splitlines()[-1]))
 
     def test_review_limit_restarts_fresh_on_another_account(self):
         self.configure()
@@ -1102,6 +1182,7 @@ worker.notifications.reap_notifications = reap
         self.fixture_timeout = 180
         self.enable_fake_clock(auto_advance=False)
         self.configure()
+        self.configure_notify()
         self.exhaust_accounts((self.home, "A", self.reset),
                               (self.other, "B", self.reset + 3600))
         self.start("say-sleep")
@@ -1112,12 +1193,25 @@ worker.notifications.reap_notifications = reap
         self.assertNotEqual(result.returncode, 0)
         expected = datetime.datetime.fromtimestamp(state["sleeping"]["until"]).strftime("%Y-%m-%d %H:%M")
         self.assertIn("waiting for limit reset until " + expected +
-                      "; stop first to send a new message", result.stderr)
+                      "; stop first to send a new message; or queue it with say --queue", result.stderr)
+        self.assertEqual(self.cli("say", "say-sleep", "--queue", "Отправить после сброса"),
+                         "queued for say-sleep: 1 waiting; sent when the current cycle ends\n")
         self.assertFalse((self.home / "claude-tasks" / "say-sleep" / "messages.jsonl").exists())
         self.assertEqual(self.state("say-sleep")["turns"], 1)
         self.assertFalse(self.invocations())
         self.cli("stop", "say-sleep")
-        self.wait("say-sleep")
+        output = self.wait("say-sleep")
+        # A stop drops the queue: nothing is journaled or sent.
+        self.assertIn("== queued orders not sent (outcome stopped):\n- Отправить после сброса", output)
+        queue = json.loads((self.home / "claude-tasks" / "say-sleep" / "queue.json").read_text())
+        self.assertEqual(queue["waiting"], [])
+        self.assertEqual([(order["text"], order["outcome"]) for order in queue["dropped"]],
+                         [("Отправить после сброса", "stopped")])
+        self.assertFalse((self.home / "claude-tasks" / "say-sleep" / "messages.jsonl").exists())
+        self.assertEqual(self.state("say-sleep")["turns"], 1)
+        self.assertFalse(self.invocations())
+        dropped = self.notification("say-sleep", "queue_dropped")
+        self.assertEqual((dropped["outcome"], dropped["texts"]), ("stopped", ["Отправить после сброса"]))
 
     def test_delayed_reset_sleeps_again_before_continuing(self):
         self.configure()

@@ -191,13 +191,76 @@ def save(st):
         write_state(st)
 
 
-def busy_message(st):
-    """Why no new turn may start beside the live supervisor of st, or None when it is idle."""
+def busy_message(st, queue_hint=False):
+    """Why no new turn may start beside the live supervisor of st, or None when it is idle.
+
+    queue_hint adds the say --queue alternative to the refusal of a say.
+    """
     if not procs.alive(st.get("pid")):
         return None
     if st.get("outcome") == "sleeping":
-        return f"waiting for limit reset until {config.local_time(st['sleeping']['until'])}; stop first to send a new message"
-    return f"{st['slug']} is still running a turn; wait for it (or stop it) first"
+        return (f"waiting for limit reset until {config.local_time(st['sleeping']['until'])}; stop first to send a new message"
+                + ("; or queue it with say --queue" if queue_hint else ""))
+    return (f"{st['slug']} is still running a turn; wait for it (or stop it) first"
+            + ("; or queue the message with say --queue" if queue_hint else ""))
+
+
+QUEUE_DROPPED_LIMIT = 10
+
+
+def queue_path(slug):
+    return config.TASKS / slug / "queue.json"
+
+
+def read_queue(slug):
+    """The say --queue orders of slug, {"waiting": [...], "dropped": [...]}; the caller holds state_lock."""
+    p = queue_path(slug)
+    queue = json.loads(p.read_text()) if p.exists() else {}
+    return {"waiting": queue.get("waiting", []), "dropped": queue.get("dropped", [])}
+
+
+def write_queue(slug, queue):
+    """Replace queue.json atomically, keeping the newest dropped orders; the caller holds state_lock."""
+    p = queue_path(slug)
+    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"waiting": queue["waiting"], "dropped": queue["dropped"][-QUEUE_DROPPED_LIMIT:]},
+                              ensure_ascii=False, indent=2))
+    tmp.replace(p)
+
+
+def locked_queue(slug):
+    # queue.json is replaced, never removed: without one there is nothing to lock for.
+    if not queue_path(slug).exists():
+        return {"waiting": [], "dropped": []}
+    with state_lock(slug):
+        return read_queue(slug)
+
+
+def enqueue(slug, order):
+    """Append a say --queue order while the supervisor of slug is alive; return the waiting count, or None when idle.
+
+    Its supervisor reads the queue under the same lock when its cycle ends, so the order cannot miss that read.
+    """
+    with state_lock(slug):
+        if not procs.alive(load(slug).get("pid")):
+            return None
+        queue = read_queue(slug)
+        queue["waiting"].append(order)
+        write_queue(slug, queue)
+        return len(queue["waiting"])
+
+
+def queue_sent_path(slug):
+    """One line per cycle whose end sent the queue: the finished turn, the turn it started and its wait report."""
+    return config.TASKS / slug / "queue-sent.jsonl"
+
+
+def locked_queue_sends(slug):
+    if not queue_path(slug).exists():
+        return []
+    with state_lock(slug):
+        p = queue_sent_path(slug)
+        return [json.loads(line) for line in p.read_text().splitlines()] if p.exists() else []
 
 
 def stop_outcome(st, stopped):

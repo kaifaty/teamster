@@ -103,3 +103,7 @@ result with numbers and attempts. The wrap-up has a 10-minute cap and is stopped
 - `== sandbox: workspace` and publication results: see [sandbox.md](sandbox.md).
 - CI outcome, checks, and failed-check log tails, when CI waiting is enabled.
 - Account switches, `auto-continue at` and `needs login`: see [accounts.md](accounts.md).
+- Messages queued with `say --queue`: when the cycle completes and sends them, `wait` prints that
+  cycle's report, then `== queued orders sent: N, turn T started`, and waits for the new cycle in the same
+  call. When the cycle ends with another outcome, its report ends with `== queued orders not sent
+  (outcome X):` and each dropped message.

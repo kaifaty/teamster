@@ -106,6 +106,7 @@ Without `--reviewer`, Claude tasks use Codex reviews; Codex tasks keep the confi
 | Lesson decision | `teamster lesson "<entry>" accepted\|applied\|declined\|proposed [--note TEXT]`; replaces the status cell of that lesson's `INDEX.md` row (see [Applying](reflection.md#applying)) |
 | Wait for the cycle | `teamster wait <slug> [--through-sleep]` as a background task that reports completion when the whole review/fix cycle ends; if your harness has no such tasks, run `teamster wait` as an ordinary command or check `teamster status`; read its [output](results.md#what-wait-prints) |
 | Follow-up / fix request | `teamster say <slug> "…"` or `teamster say <slug> --file FILE`, with `--max-minutes M [--max-weekly P] [--effort E] [--review] [--review-angles LIST] [--fix-rounds 2] [--ci\|--no-ci] [--ci-rounds N]` (only when idle), then `teamster wait` again; the saved check is inherited unless replaced with `--check CMD` or removed with `--no-check`; `--no-base-check` drops inherited base tests |
+| Queue a follow-up | `teamster say <slug> --queue "…"` (or `--file FILE`) with any `say` option except `--upgrade`: on an idle task it sends at once like `say`; while a turn runs or sleeps until a limit reset it prints `queued for <slug>: N waiting; sent when the current cycle ends`. When the cycle (turn, check, review, fix rounds, CI) ends `completed`, every queued message goes out as one turn, in order, separated by blank lines, with their options merged (later ones win); any other outcome, including `stop`, drops them unsent. A running `wait` reports the finished cycle, `== queued orders sent: N, turn T started`, and follows the new turn; `status` shows `queued orders N`. The queue is `queue.json` in the task record ([notifications](notifications.md)) |
 | First review | `teamster review <slug> [--effort E] [--review-angles LIST] [--max-weekly P]` (only when idle), then `teamster wait` |
 | Look | `teamster status [<slug>]` — executor, account, state, PR, commits, last message (up to three saved messages for Claude), and the last turn's `result` |
 | Cost | `teamster stats <slug>` — per-turn time, tool calls, tokens, weekly-limit % across all Codex threads; Claude work shows UTC start, active minutes, account, session, model, effort, input/output/cache tokens, dollar cost and seven-day usage growth with totals, followed by Codex reviews |
@@ -117,7 +118,7 @@ Without `--reviewer`, Claude tasks use Codex reviews; Codex tasks keep the confi
 | Rename a Claude account | `teamster claude-rename <old> <new>` — rename its pool entry and cached limits, keeping its config directory and Keychain service |
 | Duty account | `teamster duty tick` — refresh stale limits and elect the duty account that new work skips; `teamster duty status [--json]` — duty, reason, rooms and check age, warning after 90 minutes; `teamster duty clear` — no duty; `teamster duty plist [--minutes 30]` — print a launchd job for `teamster duty tick` ([accounts.md](accounts.md#duty-account)) |
 | Remove a Claude account | `teamster claude-remove <name>` — remove its pool entry and cached limits, leaving its directory and Keychain entry for manual deletion; the last account cannot be removed |
-| Interrupt | `teamster stop <slug>` (there is no mid-turn steer for exec; stop, then `teamster say`) |
+| Interrupt | `teamster stop <slug>` (there is no mid-turn steer for exec; stop, then `teamster say`); a stop drops messages queued with `say --queue` |
 | Finish | `teamster clean <slug>` after the PR is merged: removes the worktree, deletes the local branch, archives every thread, and saves the task record in `~/.teamster/tasks/.archive/` except `events.jsonl` and `state.lock`; it reminds you when the task has no `teamster verdict` |
 
 The worktree is `~/.teamster/worktrees/claude-<slug>/<repo>` on branch `codex/<slug>` (or `--branch NAME`); state and logs are in
@@ -183,6 +184,9 @@ reports. Verify key facts by reading only the cited `file:line` locations; use `
 
    The supervisor's check result is objective evidence for that command; the summary, finding decisions
    and rejection reasons are worker claims to verify.
+
+   You can queue a message with `say --queue` instead of waiting for the turn to end: it goes out as the
+   next turn when the current cycle completes, and the same background `wait` follows that turn too.
 3. Read the actual diff (`gh pr diff <n>` or `git -C <worktree> diff <base>`), the latest review and
    every rejection reason. Check each finding and rejection against the code, then review the parts the
    findings did not cover for real failures. On `guarded files changed`, read every named file in full

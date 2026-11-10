@@ -418,7 +418,8 @@ and a short `message`. Event types are `turn_finished` (`outcome`, `result`, als
 `guarded_changed`, the number of changed guarded files, and `ci`, the final CI result),
 `needs_input` (`result` and the first question for `blocked` or `needs_decision`), `paused` (`until`),
 `woke`, `rotated` (`from` and `to`), `needs_login`, `reset_credit_used`, `check_failed`, and `review_done`
-(`verdict`, finding count, `round`, and `angles`), plus `budget_exhausted`, `stuck`, and `interrupted`.
+(`verdict`, finding count, `round`, and `angles`), `queue_sent` (`count` and `turn`) and `queue_dropped`
+(`outcome` and `texts`) for messages queued with `say --queue`, plus `budget_exhausted`, `stuck`, and `interrupted`.
 `turn_finished` is sent once when the entire cycle ends, with `outcome` including `budget_exhausted`,
 `stuck`, or `interrupted`. The outcome is frozen when finalization starts; later signals are logged
 without changing the outcome or task state. Separate guard and interruption events also obey
