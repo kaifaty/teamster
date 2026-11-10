@@ -54,7 +54,7 @@ const panels = useMapPanels({
   onMachine: (id, opener) => emit("machine", id, opener),
   onPanel: () => emit("panel"),
 });
-const { repo, repoModel, selected, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close } = panels;
+const { repo, repoModel, selected, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip } = panels;
 const { openMachine, flying, enter, leave, logEvents, replayTime, goTo, seekTo, summaryOpen, closeSummary } = panels;
 const { compactDock, logOpen, replayVisible, toggleReplay, fleetVisible, toggleFleet, showStation } = panels;
 
@@ -161,6 +161,7 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
       :refresh="loadResearch"
       @close="closeResearch"
       @open="open"
+      @ship="openShip"
     />
     <TaskPanel
       v-if="selected && active"

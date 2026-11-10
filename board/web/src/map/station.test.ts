@@ -318,7 +318,7 @@ describe("nextStep", () => {
     const busy = { ...proposing, proposed: [] };
     expect(nextStep(busy, 1000, clock).text).toBe("Аналитик работает: Compare CI · 10 мин");
     const agents = { ...busy, studies: [], running: false };
-    expect(nextStep(agents, 1000, clock)).toEqual({ text: "Агент внедряет урок U4", action: null, tone: "live" });
+    expect(nextStep(agents, 1000, clock)).toEqual({ text: "Агент внедряет урок U4", action: { kind: "watch", label: "Посмотреть", lesson: live }, tone: "live" });
     const many = { ...agents, accepted: [...agents.accepted, lesson("accepted", task({ alive: true }), "U5")] };
     expect(nextStep(many, 1000, clock).text).toBe("Агенты внедряют уроки: 2");
     const done = { ...agents, accepted: [ready, lesson("accepted")] };

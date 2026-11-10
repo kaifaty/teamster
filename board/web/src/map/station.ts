@@ -335,12 +335,13 @@ export interface NextStep {
   text: string;
   /**
    * «Ответить» opens the waiting channel, or the card whose agent needs a decision; «Разобрать» the lessons to decide;
-   * «Показать» the card of a ready PR, or the accepted lessons.
+   * «Показать» the card of a ready PR, or the accepted lessons; «Посмотреть» the ship of the one agent at work.
    */
   action:
     | { kind: "reply"; label: "Ответить"; study: Study }
     | { kind: "agent"; label: "Ответить"; lesson: Lesson }
     | { kind: "review"; label: "Разобрать" }
+    | { kind: "watch"; label: "Посмотреть"; lesson: Lesson }
     | { kind: "pr"; label: "Показать"; lesson: Lesson }
     | { kind: "accepted"; label: "Показать" }
     | null;
@@ -369,8 +370,9 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
   }
   const agents = research.accepted.filter((lesson) => lineOf(lesson)?.kind === "working");
   if (agents.length) {
-    const text = agents.length > 1 ? `Агенты внедряют уроки: ${agents.length}` : `Агент внедряет урок ${lessonId(agents[0]!.entry)}`;
-    return { text, action: null, tone: "live" };
+    if (agents.length > 1) return { text: `Агенты внедряют уроки: ${agents.length}`, action: null, tone: "live" };
+    const lesson = agents[0]!;
+    return { text: `Агент внедряет урок ${lessonId(lesson.entry)}`, action: { kind: "watch", label: "Посмотреть", lesson }, tone: "live" };
   }
   const ready = research.accepted.find((lesson) => lineOf(lesson)?.kind === "pr");
   if (ready) {

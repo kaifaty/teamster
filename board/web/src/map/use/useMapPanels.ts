@@ -61,6 +61,14 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     onPanel();
   }
 
+  /** From the station to a task's ship: its system, with the ship selected and its card open, while it is on the board. */
+  function openShip(slug: string, name: string) {
+    researchOpen.value = false;
+    if (model.systemNames.value.has(name)) repo.value = name;
+    selected.value = sources.allTasks.value.some((task) => task.slug === slug) ? slug : null;
+    onPanel();
+  }
+
   function openResearch() {
     selected.value = null;
     researchOpen.value = true;
@@ -230,7 +238,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   });
 
   return {
-    repo, repoModel, selected, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openMachine,
+    repo, repoModel, selected, hovered, selectedTask, researchOpen, open, openShip, openResearch, closeResearch, close, openMachine,
     openMachineAt, flying, enter, leave, logEvents, replayTime, goTo, seekTo, summaryOpen, closeSummary, narrow, replayShown,
     compactDock, replayOpen, logOpen, replayVisible, toggleReplay, dockFolded, fleetVisible, toggleFleet, showStation,
   };
