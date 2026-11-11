@@ -78,6 +78,7 @@ trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(),
        "token_matches": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") == "fixture-claude-reviewer-oauth-secret",
        "config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
        "disable_background_tasks": os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"),
+       "copyfile_disable": os.environ.get("COPYFILE_DISABLE"),
        "inherited_provider_keys": sorted(key for key in os.environ
            if (key.startswith("CLAUDE") or key.startswith("ANTHROPIC"))
            and key not in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
@@ -173,6 +174,7 @@ sys.exit(run.get("exit_code", 0))
 
 class ClaudeReviewTests(RotationTestCase):
     def test_claude_work_turn_argv_environment_and_result(self):
+        self.env["COPYFILE_DISABLE"] = "0"
         result = self.work_result()
         raw_line = '\n \t\n{"type" : "fixture", "note" : "café"}\r'
         self.claude_fixture(runs=[{"mode": "modify", "reply": result, "non_json": raw_line},
@@ -218,6 +220,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertTrue(entry["token_matches"])
                 self.assertEqual(entry["config_dir"], str(self.claude_config_dir))
                 self.assertEqual(entry["disable_background_tasks"], "1")
+                self.assertEqual(entry["copyfile_disable"], "1")
                 self.assertEqual(entry["inherited_provider_keys"], [])
                 self.assertEqual(entry["cwd"], str(self.repo))
                 self.assertEqual(entry["pid"], entry["pgid"])

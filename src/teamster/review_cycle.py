@@ -259,37 +259,45 @@ def fix_code_findings(st, review):
 
 
 def check_base_merge(st, stopped):
-    """Fetch the task base and probe its merge without changing HEAD or the index."""
+    """Fetch remote bases and probe the merge without changing HEAD or the index."""
     base = st["base"]
     entry = {"base": base, "outcome": "skipped"}
-    stage = "fetch"
+    stage = "git remote"
     try:
-        for _ in range(2):
-            remote, branch = base.split("/", 1)
-            try:
-                subprocess.run(config.GIT + ["fetch", "--quiet", remote,
-                               f"+refs/heads/{branch}:refs/remotes/{base}"],
-                               cwd=st["worktree"], text=True, capture_output=True, errors="replace",
-                               timeout=60, check=True, env=dict(os.environ, LC_ALL="C", LANGUAGE="C"))
-                break
-            except subprocess.CalledProcessError as exc:
-                if stopped():
-                    return None
-                missing = f"fatal: couldn't find remote ref refs/heads/{branch}"
-                if st.get("base_switch") or missing not in (exc.stderr or "").splitlines():
-                    raise
-                default = subprocess.run(config.GIT + ["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"],
-                                         cwd=st["worktree"], text=True, capture_output=True, errors="replace",
-                                         timeout=60)
-                target = default.stdout.strip()
-                if default.returncode or not target.startswith(remote + "/"):
-                    raise ValueError(f"{missing}; cannot resolve default branch from refs/remotes/{remote}/HEAD") from exc
-                if target == base:
-                    raise
-                st["base_switch"] = {"from": base, "to": target, "at": clock.CLOCK.time()}
-                st["base"] = base = target
-                entry["base"] = base
-                task_state.save(st)
+        remotes = subprocess.run(config.GIT + ["remote"], cwd=st["worktree"], text=True,
+                                 capture_output=True, errors="replace", timeout=60, check=True).stdout.splitlines()
+        if "/" in base and base.split("/", 1)[0] in remotes:
+            stage = "fetch"
+            for _ in range(2):
+                remote, branch = base.split("/", 1)
+                try:
+                    subprocess.run(config.GIT + ["fetch", "--quiet", remote,
+                                   f"+refs/heads/{branch}:refs/remotes/{base}"],
+                                   cwd=st["worktree"], text=True, capture_output=True, errors="replace",
+                                   timeout=60, check=True, env=dict(os.environ, LC_ALL="C", LANGUAGE="C"))
+                    break
+                except subprocess.CalledProcessError as exc:
+                    if stopped():
+                        return None
+                    missing = f"fatal: couldn't find remote ref refs/heads/{branch}"
+                    if st.get("base_switch") or missing not in (exc.stderr or "").splitlines():
+                        raise
+                    default = subprocess.run(config.GIT + ["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"],
+                                             cwd=st["worktree"], text=True, capture_output=True, errors="replace",
+                                             timeout=60)
+                    target = default.stdout.strip()
+                    if default.returncode or not target.startswith(remote + "/"):
+                        raise ValueError(f"{missing}; cannot resolve default branch from refs/remotes/{remote}/HEAD") from exc
+                    if target == base:
+                        raise
+                    st["base_switch"] = {"from": base, "to": target, "at": clock.CLOCK.time()}
+                    st["base"] = base = target
+                    entry["base"] = base
+                    task_state.save(st)
+        else:
+            stage = "rev-parse"
+            subprocess.run(config.GIT + ["rev-parse", "--verify", base], cwd=st["worktree"], text=True,
+                           capture_output=True, errors="replace", timeout=60, check=True)
         stage = "merge-tree"
         merged = subprocess.run(config.GIT + ["merge-tree", "--write-tree", "--name-only", "-z", "HEAD", base],
                                 cwd=st["worktree"], text=True, capture_output=True, errors="replace", timeout=60)

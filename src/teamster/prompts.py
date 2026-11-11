@@ -252,6 +252,20 @@ def review_prompt(st, cfg=None, *, with_angles=False):
             "P1/P2/P3, file, line, title, detail and verify. For clean, findings is empty; summary is a short recap.")
 
 
+def long_check_warning(repo, command, max_minutes, cfg):
+    minutes = checking.long_check_median(repo, command, max_minutes)
+    if minutes is None:
+        return None
+    if cfg.get("language", "en") == "ru":
+        return (f"- Сохранённая проверка `{command}` идёт долго (медиана прошлых прогонов — {minutes:g} мин), "
+                'её целиком запустит надзиратель после хода. Перед `status: "done"` прогони выборку тестов '
+                "из брифа и укажи её в `checks`; полную проверку сам не запускай — ни в фоне, ни через nohup.")
+    return (f"- The saved check `{command}` is long (median of past runs {minutes:g} min); "
+            'the supervisor runs it in full after the turn. Before finishing with status "done", '
+            "run the subset of tests the brief names and report it in `checks`; do not run the full check "
+            "yourself, not in the background and not through nohup.")
+
+
 def fix_prompt(st, review, check, cfg, base_merge=None):
     ru = cfg.get("language", "en") == "ru"
     commit = (("Коммить локально. Не публикуй ветку и не открывай PR." if ru else
@@ -263,6 +277,9 @@ def fix_prompt(st, review, check, cfg, base_merge=None):
             raise ValueError(f"Automatic merge of {base} is unavailable in workspace sandbox; "
                              "merge the base outside the sandbox and retry.")
         files = "\n".join("- " + path for path in base_merge["files"])
+        check_warning = (long_check_warning(st["repo"], st["check"],
+                                           st.get("max_turn_minutes", cfg.get("max_turn_minutes")), cfg)
+                         if st.get("check") and st.get("repo") else None)
         if ru:
             prompt = (f"Ветка задачи конфликтует с текущей базой {base}.\n"
                       f"Конфликтующие файлы:\n{files}\n\n"
@@ -271,7 +288,7 @@ def fix_prompt(st, review, check, cfg, base_merge=None):
                       + ("Не делай rebase. " if st.get("no_push") else "Не делай rebase или force-push. ") +
                       "Разреши конфликты, сохранив смысл изменений обеих сторон.\n")
             if st.get("check"):
-                prompt += f"Запусти сохранённую проверку целиком: `{st['check']}`.\n"
+                prompt += (check_warning or f"Запусти сохранённую проверку целиком: `{st['check']}`.") + "\n"
             return prompt + (commit + " Верни итог по схеме работы; "
                              "findings — пустой массив.\n")
         prompt = (f"The task branch conflicts with the current base {base}.\n"
@@ -281,7 +298,7 @@ def fix_prompt(st, review, check, cfg, base_merge=None):
                   + ("Do not rebase. " if st.get("no_push") else "Do not rebase or force-push. ") +
                   "Resolve the conflicts while preserving the intent of both sides.\n")
         if st.get("check"):
-            prompt += f"Run the saved check in full: `{st['check']}`.\n"
+            prompt += (check_warning or f"Run the saved check in full: `{st['check']}`.") + "\n"
         return prompt + (commit + " Return the work result schema; "
                          "use an empty findings array.\n")
     if check is not None:

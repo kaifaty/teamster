@@ -4,13 +4,34 @@ import os
 import re
 import shlex
 import signal
+import statistics
 import subprocess
 import tempfile
 import time
 from collections import Counter, deque
 from pathlib import Path
 
-from . import accounts, clock, config, notifications, procs, sandboxing, task_state, telemetry_log
+from . import accounts, clock, config, notifications, procs, reflection, sandboxing, task_state, telemetry_log
+
+
+def long_check_median(repo, command, max_minutes):
+    """Minutes of a saved check whose past median exceeds a third of the turn."""
+    if max_minutes is None:
+        return None
+    seconds = []
+    for root in (config.TASKS, config.TASKS / ".archive"):
+        for path in root.glob("*/state.json"):
+            state = reflection.record_state(path.parent)
+            if state.get("repo") != str(repo):
+                continue
+            seconds.extend(check["seconds"] for check in state.get("checks", [])
+                           if check.get("cmd") == command and "seconds" in check
+                           and check.get("outcome") in ("passed", "failed"))
+    if len(seconds) >= 3:
+        minutes = statistics.median(seconds) / 60
+        if minutes > max_minutes / 3:
+            return minutes
+    return None
 
 
 def check_paths(st):
@@ -262,6 +283,7 @@ def execute_check(st, stopped, cwd, filename):
             if st.get("sandbox") == "workspace":
                 args = [config.codex_binary(), "sandbox"] + sandboxing.sandbox_args(st) + ["--"] + args
                 env = accounts.account_env({"home": str(config.CODEX_HOME)})
+            env["COPYFILE_DISABLE"] = "1"
             # The wall-clock second at which the supervisor kills the check.
             env["TEAMSTER_CHECK_DEADLINE"] = env["CODEX_TASK_CHECK_DEADLINE"] = str(int(time.time() + st.get("check_timeout", 1800)))
             proc = subprocess.Popen(args, cwd=cwd, env=env,

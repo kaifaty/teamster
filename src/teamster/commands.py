@@ -67,14 +67,15 @@ def cmd_start(a):
     d.mkdir(parents=True)
     base = a.base.removeprefix("origin/")
     prompt = brief.rstrip() + "\n\n" + rules.replace("{branch}", branch).replace("{base}", base)
+    max_minutes = a.max_minutes if a.max_minutes is not None else cfg.get("max_turn_minutes")
     if a.check:
-        prompt += "\n" + (
+        prompt += "\n" + (prompts.long_check_warning(repo, a.check, max_minutes, cfg) or (
             f'- Перед `status: "done"` запусти сохранённую проверку целиком: `{a.check}` — '
             f'и укажи её в `checks`. Если она падает и на чистой {base}, укажи это с числами, а не чини.'
             if cfg.get("language", "en") == "ru" else
             f'- Before finishing with status "done", run the saved check in full: `{a.check}`, '
             f'and report it in `checks`. If it also fails on a clean {base}, '
-            'report that with the numbers instead of fixing it.')
+            'report that with the numbers instead of fixing it.'))
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "repo": str(repo), "worktree": str(wt), "branch": branch, "base": a.base,
           "executor": executor.name, "effort": a.effort, "task_type": a.task_type,
@@ -86,7 +87,7 @@ def cmd_start(a):
           "sandbox": sandbox, "writable_dirs": cfg["writable_dirs"], "no_push": no_push,
           "review_angles": a.review_angles,
           "reviewer": reviewer,
-          "max_turn_minutes": a.max_minutes if a.max_minutes is not None else cfg.get("max_turn_minutes"),
+          "max_turn_minutes": max_minutes,
           "ci_enabled": not no_push and (a.ci or bool(a.ci_command) or cfg["ci"]), "ci_command": a.ci_command,
           "ci_rounds": a.ci_rounds if a.ci_rounds is not None else 1,
           "ci_timeout_minutes": cfg["ci_timeout_minutes"],
