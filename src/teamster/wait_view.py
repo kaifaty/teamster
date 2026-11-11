@@ -136,15 +136,16 @@ def wait_check_lines(st):
         for name, item in ((f"check `{check['cmd']}`", check), ("base tests", check.get("base_check"))):
             if not item:
                 continue
+            load = f"; load {item['load'][0]:.1f} → {item['load'][1]:.1f}" if "load" in item else ""
             if name == "base tests" and item["outcome"] == "skipped":
                 yield f"== base tests: skipped ({item['reason']})"
             elif item["outcome"] == "unavailable":
                 yield (f"== {name}: unavailable (exit {item['exit']}) after {item['seconds']:.0f} s; "
-                       "the check did not run, run it yourself before merging")
+                       f"the check did not run, run it yourself before merging{load}")
             else:
                 label = item["outcome"] if item["outcome"] in ("passed", "stopped", "interrupted") else "FAILED"
                 reason = "timeout, " if item["outcome"] == "timeout" else ""
-                yield f"== {name}: {label} ({reason}exit {item['exit']}, {item['seconds']:.0f} s)"
+                yield f"== {name}: {label} ({reason}exit {item['exit']}, {item['seconds']:.0f} s){load}"
             if name != "base tests" and item["outcome"] in ("failed", "timeout", "unavailable"):
                 yield item.get("tail", checking.check_tail(st))
             elif name == "base tests" and item.get("tail"):

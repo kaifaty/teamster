@@ -238,12 +238,20 @@ UNAVAILABLE_EXIT = 75
 CHECK_NOT_FAILED = ("passed", "unavailable")
 
 
+def _check_load():
+    try:
+        return round(os.getloadavg()[0], 1)
+    except (AttributeError, OSError):
+        return None
+
+
 def execute_check(st, stopped, cwd, filename):
     """Run the saved check after work, owning and reaping its process group."""
     if stopped():
         return None
     started = time.monotonic()
     measured_started = clock.CLOCK.monotonic()
+    load_started = _check_load()
     proc = None
     outcome = "failed"
     code = None
@@ -280,11 +288,14 @@ def execute_check(st, stopped, cwd, filename):
                 procs.signal_group(proc, signal.SIGKILL)
                 code = proc.wait()
             st.pop("check_pid", None)
+    load_finished = _check_load()
     if stopped():
         outcome = task_state.stop_outcome(st, stopped)
         st["outcome"] = outcome
     result = {"cmd": st["check"], "exit": code, "seconds": round(clock.CLOCK.monotonic() - measured_started, 3),
               "at": clock.CLOCK.time(), "outcome": outcome}
+    if load_started is not None and load_finished is not None:
+        result["load"] = [load_started, load_finished]
     if outcome in ("failed", "timeout", "unavailable"):
         result["tail"] = check_tail(st, filename)
     return result

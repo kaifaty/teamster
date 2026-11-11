@@ -20,6 +20,10 @@ not to rerun the full suite; only focused checks that confirm a specific finding
 
 The review prompt lists deleted tests and asks the reviewer to account for each contract, treating a still-valid contract removed without replacement as P2.
 
+Both the ordinary review prompt and the `tests` angle ask the reviewer to identify, for each test
+required by "Done when" (a limit, guard or value), a small break in the tested code that leaves the
+test green, and report a finding naming the break and explaining why the test misses it.
+
 Before the first automatic review and every repeat review after a fix, the supervisor fetches the
 task's base and runs `git merge-tree --write-tree HEAD <base>`. A clean merge proceeds to review
 without changing the task branch. If fetching or merge-tree fails (for example, without network
@@ -110,6 +114,10 @@ the others, and the verdict uses the other results.
 Each round sends the review's findings straight to the implementation thread, with the same account
 rotation and reset waiting as `say`. Codex must verify each finding against the code, fix real defects
 (with tests where useful), reject incorrect findings with a one-line reason, then commit and push.
+
+When the review ran more than one angle, the fix prompt asks the worker to group findings from
+different angles that describe one defect, fix it once, and list every id in `findings` with the
+same `note`. This instruction is absent for a single angle and for base merge rounds.
 
 Severity follows a realistic trigger: P1/P2 require behavior reachable with inputs or states from this
 repository, the brief or normal use; hypothetical or synthetic inputs are P3. Unrequested scope is a

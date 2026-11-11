@@ -1163,7 +1163,8 @@ class ReviewFixTests(RotationTestCase):
             self.assertIn(str(self.home / "claude-tasks" / "angles-merge" / "brief.md"), entry["prompt"])
             self.assert_output_schema(entry, "angles-merge", review=True)
         state = self.state("angles-merge")
-        self.assertIn(self.worker().prompts.review_prompt(state, {"language": "en"}), executions[-1]["prompt"])
+        self.assertIn(self.worker().prompts.review_prompt(state, {"language": "en"}, with_angles=True),
+                      executions[-1]["prompt"])
         self.assertEqual([entry["angle"] for entry in state["reviews"]],
                          ["correctness", "concurrency"])
         self.assertEqual([entry["thread"] for entry in executions[1:]],

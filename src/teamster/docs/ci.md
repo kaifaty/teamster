@@ -6,6 +6,10 @@ CI starts after work, review and automatic fixes, only for a completed turn with
 (exit 75) or absent local check and a published GitHub PR whose head SHA equals local HEAD. Otherwise state records CI as
 `skipped` with a reason. The supervisor polls every 30 seconds, allows three minutes for checks to
 appear (`none` if none appear), and waits for pending checks up to `ci_timeout_minutes` (`timeout`).
+A check that never starts is not a CI result: when every pending check is `QUEUED` or `PENDING` without
+a start time for `ci_queued_minutes` (default 20), CI records `skipped` with reason
+`CI queued: never started in <N> min: <names>` and starts no repair round, as with exit 75 below.
+The checks keep their `QUEUED`/`PENDING` state; a check that starts restarts this clock.
 Waiting spends no task weekly budget and does not count toward `--max-minutes`; `stop` or an external
 signal interrupts it. A changed PR head also skips the wait.
 
