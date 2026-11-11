@@ -293,7 +293,13 @@ def wait_ci_command(st, stopped, deadline):
         return "skipped", "CI command unavailable: " + str(exc)
 
 
-def wait_ci(st, stopped, sleep):
+def never_started(item):
+    """A check that is only queued: no runner picked it up, so it is not a CI result."""
+    return (item["bucket"] == "pending" and item["state"] in ("QUEUED", "PENDING")
+            and item.get("startedAt") in (None, "", "0001-01-01T00:00:00Z"))
+
+
+def wait_ci(st, stopped, sleep, queued_minutes=20):
     """Wait without a model phase: no quota samples or active exec clock advance."""
     previous = st.get("ci") or {}
     ci = {"sha": "", "outcome": "pending", "checks": [], "seconds": previous.get("seconds", 0),
@@ -335,13 +341,14 @@ def wait_ci(st, stopped, sleep):
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return finish("skipped", "stopped" if stopped() else "PR head unavailable: " + str(exc))
     empty_deadline = started + 3 * config.MINUTE_SECONDS
+    queued_deadline = None
     seen_checks = False
     while not stopped():
         now = clock.CLOCK.monotonic()
         if now >= deadline:
             return finish("timeout", "timeout")
         try:
-            values = ci_json(st, [gh, "pr", "checks", pr, "--json", "name,state,bucket,link"],
+            values = ci_json(st, [gh, "pr", "checks", pr, "--json", "name,state,bucket,link,startedAt"],
                              stopped, timeout=min(60, deadline - now))
             if not isinstance(values, list) or any(
                     not isinstance(item, dict) or any(not isinstance(item.get(key), str)
@@ -351,6 +358,15 @@ def wait_ci(st, stopped, sleep):
             ci["checks"] = [{key: item[key] for key in ("name", "state", "bucket", "link")}
                             for item in values]
             ci.pop("error", None)
+            pending = [item for item in values if item["bucket"] == "pending"]
+            if pending and all(never_started(item) for item in pending):
+                if queued_deadline is None:
+                    queued_deadline = now + queued_minutes * config.MINUTE_SECONDS
+                elif clock.CLOCK.monotonic() >= queued_deadline:
+                    names = ", ".join(item["name"] for item in pending)
+                    return finish("skipped", f"CI queued: never started in {queued_minutes:g} min: {names}")
+            else:
+                queued_deadline = None
             if values:
                 seen_checks = True
                 if all(item["bucket"] in ("pass", "skipping", "fail", "cancel") for item in values):
@@ -381,6 +397,8 @@ def wait_ci(st, stopped, sleep):
         ci["seconds"] = round(prior_seconds + now - started, 3)
         task_state.save(st)
         boundary = min(deadline, empty_deadline) if not seen_checks and not ci.get("error") else deadline
+        if queued_deadline is not None and not ci.get("error"):
+            boundary = min(boundary, queued_deadline)
         sleep(max(0, min(config.CI_POLL_SECONDS, boundary - now)))
     return finish("skipped", "stopped")
 
@@ -442,7 +460,7 @@ def ci_cycle(st, cfg, effort, stopped, sleep):
     if not st.get("ci_enabled"):
         return
     while True:
-        ci = wait_ci(st, stopped, sleep)
+        ci = wait_ci(st, stopped, sleep, cfg.get("ci_queued_minutes", 20))
         if stopped() or ci["outcome"] != "failed" or ci["rounds"] >= st.get("ci_rounds", 1):
             return
         if budgets.stop_at_weekly_budget(st):
