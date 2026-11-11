@@ -241,25 +241,64 @@ def wait_stop_lines(st):
         yield "== uncommitted:\n" + dirty
 
 
+def wait_report_lines(st, slug):
+    """What wait prints for a cycle that ended; the supervisor also saves it when its cycle sends the queue."""
+    for section in (wait_rotation_lines(st), wait_publication_lines(st), wait_turn_lines(st, slug),
+                    wait_round_lines(st), wait_check_lines(st), wait_review_lines(st, slug),
+                    wait_stop_lines(st)):
+        yield from section
+
+
+def wait_queue_sent_lines(slug, turn, st):
+    """The reports of cycles from turn on whose end started a later turn of st with queued orders."""
+    if st.get("turns", 0) <= turn:
+        return
+    for sent in task_state.locked_queue_log(slug, task_state.queue_sent_path(slug)):
+        if turn <= sent["turn"] < st["turns"]:
+            yield sent["report"]
+            yield f"== queued orders sent: {sent['count']}, turn {sent['next_turn']} started"
+
+
+def wait_queue_dropped_lines(st):
+    """Every message the end of this cycle dropped, including those past the dropped history in queue.json."""
+    for dropped in task_state.locked_queue_log(st["slug"], task_state.queue_dropped_path(st["slug"])):
+        if dropped["turn"] == st.get("turns", 0):
+            yield f"== queued orders not sent (outcome {dropped['outcome']}):"
+            yield from ("- " + text for text in dropped["texts"])
+
+
 def cmd_wait(a):
     st = task_state.load(a.slug)
     start = time.monotonic()
-    while procs.alive(st.get("pid")):
-        if st.get("outcome") == "sleeping" and not getattr(a, "through_sleep", False):
+    # A cycle that sends queued orders starts the next turn: report it and follow that turn.
+    turn = st.get("turns", 0)
+    while True:
+        while procs.alive(st.get("pid")):
+            if st.get("outcome") == "sleeping" and not getattr(a, "through_sleep", False):
+                break
+            if a.timeout and time.monotonic() - start > a.timeout:
+                print(f"{a.slug}: still running after {a.timeout} s")
+                return
+            time.sleep(config.WAIT_POLL_SECONDS)
+            st = task_state.load(a.slug)
+            for line in wait_queue_sent_lines(a.slug, turn, st):
+                print(line, flush=True)
+            turn = max(turn, st.get("turns", 0))
+        if not st.get("pid") or procs.alive(st["pid"]):
             break
-        if a.timeout and time.monotonic() - start > a.timeout:
-            print(f"{a.slug}: still running after {a.timeout} s")
-            return
-        time.sleep(config.WAIT_POLL_SECONDS)
+        # The supervisor may have published its final state, or handed its queue to a new one, since the last poll.
         st = task_state.load(a.slug)
-    if st.get("pid") and not procs.alive(st["pid"]):
-        # The supervisor may have published its final state since the last poll.
-        st = task_state.load(a.slug)
+        sent = list(wait_queue_sent_lines(a.slug, turn, st))
+        for line in sent:
+            print(line, flush=True)
+        turn = max(turn, st.get("turns", 0))
+        if sent and procs.alive(st.get("pid")):
+            continue
         if st.get("pid") and not procs.alive(st["pid"]):
             st["pid"] = None
             task_state.save(st)
-    for section in (wait_rotation_lines(st), wait_publication_lines(st), wait_turn_lines(st, a.slug),
-                    wait_round_lines(st), wait_check_lines(st), wait_review_lines(st, a.slug),
-                    wait_stop_lines(st)):
-        for line in section:
-            print(line)
+        break
+    for line in wait_report_lines(st, a.slug):
+        print(line)
+    for line in wait_queue_dropped_lines(st):
+        print(line)

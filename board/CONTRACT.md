@@ -1,9 +1,9 @@
 # Board data contract (v1)
 
 The board is a local web view of teamster tasks and Claude Code sessions from the Claude
-desktop app. The server reads existing files and pushes changes over a WebSocket. Its sole write
-exception is the science station: lesson decisions, replies to reflection tasks and new reflection
-orders run the installed `teamster` command. Ordinary task control remains unavailable.
+desktop app. The server reads existing files and pushes changes over a WebSocket. Task orders and
+science station actions run the installed `teamster` command: replies, verdicts, reviews, stopping
+and cleaning tasks, lesson decisions, implementations and new reflection orders.
 
 ## Sources
 
@@ -12,7 +12,7 @@ orders run the installed `teamster` command. Ordinary task control remains unava
   `~/.codex` (legacy) if it holds `claude-tasks/` or `codex-worker.json`, else `~/.teamster`. Live tasks are
   in `tasks/<slug>/` (legacy: `claude-tasks/<slug>/`), archived ones in `tasks/.archive/<slug-and-timestamp>/`
   (legacy: `claude-tasks/.archive/`). Each holds `state.json` and, when present, `brief.md`,
-  `last.md`, `review.md`, `check.log`.
+  `last.md`, `review.md`, `check.log`, `messages.jsonl`.
 - Live activity: `events.jsonl` (Codex executor, `codex exec --json` lines) and `claude-events.jsonl` (Claude
   executor, `claude --output-format stream-json` lines; written by teamster 1.47+). Either may be missing.
 - Completed events: `log.jsonl` in the task home (legacy: `codex-worker-log.jsonl`), one JSON line per
@@ -150,9 +150,45 @@ interface TaskSummary {
 }
 
 interface TaskDetail extends TaskSummary {
+  report: string | null;      // full last result summary, with newlines, ≤ 8000 chars; null for sessions
+  changes: { commits: number; files: number; insertions: number; deletions: number;
+             uncommitted: number } | null; // branch statistics; null when unavailable or for sessions
   timeline: { at: number; text: string }[];   // task events (≤ 200), or session creation and last activity
   files: ("brief" | "last" | "review" | "check")[];   // which files exist
   cargo: Cargo | null;        // always an object for tasks, possibly empty; null for sessions
+  limits: TaskLimits | null;  // null for desktop sessions
+  messages: TaskMessage[];    // ≤ 50 newest by at, ascending at; [] for sessions
+  activity_log: Activity[];   // ≤ 10 latest, newest first; [] unless the task is alive; [] for sessions
+  actions: { enabled: boolean; reason: "read_only" | "no_teamster" | null; // same as ResearchView.actions
+             queue: boolean };   // the installed teamster queues say to a busy task (1.60.0 and later)
+  queue: TaskQueue;           // queue.json; empty lists for sessions
+}
+
+interface TaskQueue {         // orders sent with `say --queue` while the task was busy; options are not exposed
+  waiting: { at: number; text: string }[];   // sent as one turn when the current cycle completes
+  dropped: { at: number; text: string; dropped_at: number | null; outcome: string | null }[];
+  // dropped when the cycle ended otherwise: outcome "stopped", "interrupted", "failed", …
+}
+
+interface TaskLimits {
+  max_turn_minutes: number | null;
+  weekly_used_percent: number | null;
+  max_weekly_percent: number | null; // state.max_task_weekly_percent
+  fix_rounds: number | null;        // permitted review fix rounds, state.fix_rounds
+  review_rounds: number;            // completed rounds in this cycle, len(state.rounds); 0 without a list
+  ci_rounds: number | null;         // permitted CI repair attempts, state.ci_rounds
+  ci_enabled: boolean;             // state.ci_enabled is true or state.ci_command is a nonempty string
+  review_angles: string[];          // state.review_angles only if a list of strings, else []
+  check: string | null;            // state.check, one line ≤ 200 chars
+  rotations: { at: number; from: string | null; to: string | null; reason: string | null }[];
+  // state.rotations: ≤ 20 newest by at, ascending at; strings are one line ≤ 200 chars
+}
+
+interface TaskMessage {
+  at: number;
+  source: "lead" | "review" | "ci"; // claude, missing and any other source map to lead
+  text: string;                    // ≤ 4000 chars
+  queued_at: number | null;        // when an order sent from the queue was queued; null otherwise
 }
 
 interface Cargo {             // every string is one line, ≤ 200 chars
@@ -282,6 +318,7 @@ interface Lesson {             // one row of INDEX.md, in file order
   title: string | null;        // own archive file's lesson heading
   lesson: string | null;       // own section's fields, trimmed, ≤ 2000 chars each
   proposal: string | null;
+  outside: string[];           // proposal paths outside every git repository, as ~/ paths; at most 10
   evidence: string | null;     // preserves line breaks, including evidence lists
   caveats: string | null;
   implementation: Implementation | null;
@@ -546,6 +583,23 @@ what waits for the next batch, including its planned schedule. Material and less
   Values are trimmed and cut to 2000 characters; empty or missing fields, files or sections give `null`.
   Later files' additions are ignored. Lesson files share the batch file signature cache and 64 KiB
   read limit, and symbolic links are skipped.
+- Each lesson's `outside` is computed only from `proposal`; a `null` proposal gives `[]`.
+  Home-path candidates start with `~/`, `$HOME/`, `${HOME}/` or the board user's absolute home
+  directory (`Path.home()`). After the prefix, take the longest run of `[A-Za-z0-9._@+/-]`,
+  stripping trailing `.`, `,`, `:`, `;` and `/`. Absolute paths outside home are ignored without
+  probing them. A check-script token `name.ext` or `dir/name.ext`, with no leading `/` or `~`
+  and an alphanumeric extension, is also a candidate when it names an existing regular file,
+  not a symbolic link, at `<home>/.codex/checks/<repo>/<token>` for one of the lesson's `repos`,
+  or at `<home>/.codex/checks/<token>` when the token contains `/`.
+  The home directory itself and existing directories, including symbolic links to directories,
+  are excluded. Nonexistent file paths remain eligible, even without an extension.
+  Detection never follows a candidate outside home. Resolve a candidate only for home containment
+  and `.git` ancestry: it is outside when neither its nearest existing ancestor directory nor any
+  parent up to `/` has a `.git` entry (file or directory). Detection reads the filesystem only,
+  without git or subprocesses. Results use `~/` plus the original lexical path relative to home,
+  normalized without `.` or `..`, preserving symbolic-link directory names. Check-script paths use
+  `.codex/checks/<repo>/<token>` or `.codex/checks/<token>`. Deduplicate in first-appearance order,
+  retaining at most 10 paths.
 - `repos`: `state.json`'s `repo` from all live task and archive directories, excluding `kind: "scout"`,
   `kind: "reflect"` and the archive directory itself. A missing `kind` counts as work.
   Only existing repositories whose common git directory's `config` contains a `[remote "origin"]`
@@ -650,12 +704,17 @@ reply, and `running` includes both alive studies and legacy sessions. Probes use
 batch repositories when its file matches the current batch; otherwise they retain the pending-then-batch
 fallback.
 
-#### Science station actions
+#### Task and science station actions
 
 `actions.enabled` is true when the server starts without `--read-only` and an installed `teamster`
 executable is available. `--teamster PATH` selects it; the default is `shutil.which("teamster")` at
 startup, independently of the accounts/report script. Otherwise `actions.reason` is `read_only`
-(taking precedence) or `no_teamster`; an enabled station has `reason: null`.
+(taking precedence) or `no_teamster`; enabled actions have `reason: null`. Task details return the
+same `actions` value as `/api/research`, including for desktop sessions, with one more field: `queue`
+is true when the installed `teamster` is 1.60.0 or later. The server runs `teamster --version` (stdin
+closed, 10-second timeout, the user's home as working directory) once, for the first task detail or
+order that needs it, and keeps the answer until it restarts; the first `X.Y.Z` in its stdout is the
+version. A failed, timed-out or unparsable probe means `queue: false`; disabled actions never probe.
 
 Only these POST endpoints execute commands:
 
@@ -681,6 +740,29 @@ Only these POST endpoints execute commands:
   that order, omitting empty fields and their labels. Its fixed completion criteria require implementing
   the proposal in the selected repository, tests and affected documentation, reporting work outside
   the repository in `remaining`, and `needs_decision` with questions when a choice is needed.
+  These criteria stay unchanged when the lesson's `outside` is empty. Otherwise, the brief takes
+  `outside` from the server's current research view, never from the request, and adds this paragraph
+  before `Готово, когда:` (one list item per permitted path):
+
+  ```text
+  Файлы вне репозитория: пользователь разрешил этой задаче менять только эти файлы вне репозитория:
+  - <path from outside>
+  Перед первой правкой существующего файла сохрани его копию рядом: <файл>.bak-<YYYY-MM-DD>-<id урока>. Проверь изменённое поведение на копии файла во временном каталоге, не на живых задачах и системах. Если в репозитории менять нечего, не коммить и не пушь ветку.
+  ```
+
+  `YYYY-MM-DD` is the UTC start date from the same timestamp as the slug; `id урока` is the
+  slug's normalized lesson id (for X4 started on 2026-11-10: `.bak-2026-11-10-x4`).
+  For these lessons, the completion criteria are:
+
+  ```text
+  - предложение урока внедрено в той форме, которую оно называет, в этом репозитории и в разрешённых файлах вне него; если эта форма не подходит к коду — в ближайшей, которая даёт тот же результат, предпочитая проверку или защиту в коде правилу в тексте;
+  - изменённое поведение закреплено тестом в репозитории, а для файла вне репозитория — проверкой на копии, записанной в checks;
+  - документация репозитория, которую задевает изменение, обновлена;
+  - в summary перечислены изменённые файлы вне репозитория, их копии .bak и команда `diff -u <копия> <файл>` для каждого;
+  - части предложения для других файлов вне репозитория и для других репозиториев не сделаны, а перечислены в remaining.
+  ```
+
+  The existing criterion requiring `needs_decision` with questions when a choice is needed remains.
   Only for a `proposed` lesson, first run
   `teamster lesson <entry> accepted --note=внедряется: <slug>` (the note is one argv word).
   A nonzero exit returns 422 and prevents the start step. Then run
@@ -689,10 +771,39 @@ Only these POST endpoints execute commands:
   succeeds and its stdout contains `github.com`. A missing origin, failed probe or timeout omits `--ci`.
   Success returns the start step's output and `slug`; a nonzero start exit returns 422, leaving the
   lesson `accepted`. A successful acceptance invalidates research even if the start step fails.
-- `/api/actions/say`: `{slug: string, text: string}` runs `teamster say <slug> --file <temporary file>`
-  for a study in `studies` or the task in any lesson's `implementation`. Unknown slugs get 404;
-  alive or archived studies and implementations get 409. Trimmed text
-  must contain 1–8000 characters and is written to the temporary file, never passed as an argv word.
+- `/api/actions/say`: `{slug: string, text: string, options?: object}` runs
+  `teamster say <slug> [options] --file <temporary file>` for any non-archived, idle task of kind
+  `work`, `review` or `reflect`, including studies and lesson implementations. An alive task of these
+  kinds (its turn runs or its supervisor sleeps until a limit reset) gets
+  `teamster say <slug> [options] --file <temporary file> --queue` when the installed `teamster` supports
+  the queue (`actions.queue`), and 409 otherwise. Archived tasks,
+  scouts and desktop sessions get 409; unknown slugs get 404. The station's base-slug addresses for
+  archived studies and implementations also return 409. Trimmed text must contain 1–8000 characters
+  and is written to the temporary file, never passed as an argv word. Every option is optional;
+  an unknown option key or invalid value gets 400. Flags appear in this order, before `--file`:
+  - `model`: matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` → `--model=<value>`.
+  - `effort`: `low`, `medium`, `high`, `xhigh`, `max` or `ultra` → `--effort=<value>`.
+  - `max_minutes`: integer 5–600 → `--max-minutes=<value>`.
+  - `max_weekly`: finite JSON number 0.5–100, excluding booleans → `--max-weekly=<value>`;
+    integral values have no `.0` suffix.
+  - `fix_rounds`: integer 0–5 → `--fix-rounds=<value>`.
+  - `ci_rounds`: integer 0–5 → `--ci-rounds=<value>`.
+  - `reviewer`: `codex` or `claude` → `--reviewer=<value>`.
+  - `review_angles`: `"auto"` or a list of 1–4 distinct values from `correctness`, `concurrency`,
+    `security`, `tests` → `--review-angles=auto` or `--review-angles=<comma-separated values>`.
+- `/api/actions/verdict`: `{slug: string, verdict: "accepted" | "revised" | "redone" | "dropped", note?: string}`
+  runs `teamster verdict <slug> <verdict>`, adding `--note=<note>` for a nonempty trimmed note ≤ 200
+  characters. Live and archived `work` and `review` tasks are allowed, even while alive; other kinds
+  and sessions get 409.
+- `/api/actions/review`: `{slug: string, review_angles?: string | string[], reviewer?: string, effort?: string}`
+  runs `teamster review <slug>`, followed by `--effort`, `--reviewer`, `--review-angles` when present,
+  each as one `--option=value` word. Values have the same rules as say options. Only non-archived,
+  idle `work` and `review` tasks are allowed; other kinds, alive or archived tasks and sessions get 409.
+- `/api/actions/stop`: `{slug: string}` runs `teamster stop <slug>`. Only a non-archived, alive task
+  is allowed; idle or archived tasks and sessions get 409 with `error: "not running"`.
+- `/api/actions/clean`: `{slug: string, keep_branch?: boolean}` runs `teamster clean <slug>`, adding
+  `--keep-branch` unless `keep_branch` is `false`. Only a non-archived, idle task is allowed; alive or
+  archived tasks and sessions get 409. The branch is kept by default.
 - `/api/actions/reflect`: `{order?: string, tasks?: string[], since?: string, repos?: string[]}`
   runs `teamster reflect <slug>`, then repeated `--task T`, `--since S`, repeated `--repo R`, and
   `--file <temporary file>` for a nonempty trimmed order. Tasks cannot be combined with since or repos
@@ -714,7 +825,11 @@ Commands run one at a time under a shared lock, outside the event loop, as argv 
 with stdin closed, inherited environment and the user's home as working directory. Temporary files are
 deleted after execution. Each execution logs one line with its route, argv (without say/order text) and
 exit code. Success invalidates the research view, so the next GET sees changes immediately regardless
-of `BOARD_RESEARCH_SECONDS`. There are no stop, clean, verdict or merge endpoints for ordinary tasks.
+of `BOARD_RESEARCH_SECONDS`. Task orders validate slugs with the same safe-name check as task details:
+one path component, no leading dot, backslash or NUL. Invalid input gets 400, unknown tasks get 404.
+Tasks are store records, distinct from desktop sessions. Archived tasks use their archive folder name
+in requests; the command receives that name without the `-YYYYMMDDTHHMMSSZ` suffix.
+There is no merge endpoint for ordinary tasks.
 
 ## REST
 
@@ -735,13 +850,39 @@ of `BOARD_RESEARCH_SECONDS`. There are no stop, clean, verdict or merge endpoint
   the report runs on demand and is cached per argument pair as described above.
 - `GET /api/tasks/{slug}` → `TaskDetail`; 404 for an unknown slug. Archived tasks are addressed by their
   archive folder name. Sessions have an empty `files` array, creation/last-activity timeline entries and
-  `cargo: null`.
+  `report: null`, `changes: null`, `cargo: null`, `limits: null`, `messages: []`, `activity_log: []`.
+  Report comes from `state.json` → `result.summary`, preserving newlines; a missing or empty summary
+  gives `null`. Reports longer than 8000 characters are cut to 8000, including a final `…`.
+  `TaskSummary.summary` still carries only the first line. Changes use only `state.json` → `worktree`
+  and `base`: `git rev-list --count <base>..HEAD` counts commits, `git diff --shortstat <base>...HEAD`
+  supplies files, insertions and deletions (zero for empty output), and the number of lines from
+  `git status --porcelain` counts uncommitted files. A missing worktree, a path outside a git worktree,
+  an invalid or missing base ref, disk access errors, git errors or a five-second command timeout give
+  `changes: null`. Ref names are validated before starting git; whitespace and leading `-` are rejected.
+  Detail data is collected under the store lock; git runs afterward, outside the locks used by board
+  polling, with argument lists, no shell and closed stdin.
+  Limits come from `state.json`: numeric fields accept only finite JSON numbers, excluding booleans;
+  missing or invalid values are `null`, except `review_rounds: 0` and empty lists. Rotations without
+  a finite numeric `at` are skipped. Messages come from the last 256 KiB of the task's `messages.jsonl`,
+  live or archived, through the same safe file lookup as other task files, without following symbolic
+  links. If reading starts after the beginning of the file, discard the first, partial line. Malformed
+  lines, non-object rows, non-finite or non-numeric `at` (including booleans), and non-string or missing
+  `text` are skipped. `queued_at` is a finite number or `null`. Keep the newest 50 messages by `at`, ascending.
+  The queue comes from the task's `queue.json` through the same safe lookup, read whole up to 1 MiB:
+  a missing, larger or malformed file, or one that is not an object, gives empty lists. Rows of
+  `waiting` and `dropped` that are not objects, or lack a finite numeric `at` or a string `text`,
+  are skipped; text is cut to 4000 characters, `outcome` is one line ≤ 200 characters, and each list
+  keeps its last 50 rows in file order. Activity logs retain every
+  activity parsed from newly read executor lines across polls, capped to the latest 10, newest first;
+  they are empty when the task is not alive. Summary activity and WebSocket activity messages still
+  carry only the latest activity.
   Session paths come only from scanned records, never from a requested slug; path-like slugs return 404.
 - `GET /api/tasks/{slug}/files/{name}` with `name` in `brief`, `last`, `review`, `check` → `text/plain;
   charset=utf-8`, at most the last 256 KiB; 404 when missing or for a session. No other names, no paths.
 - `GET /api/research` → `ResearchView`; other methods get 405.
-- `POST /api/actions/lesson`, `/api/actions/implement`, `/api/actions/say`, `/api/actions/reflect`
-  → the science station actions above.
+- `POST /api/actions/lesson`, `/api/actions/implement`, `/api/actions/say`, `/api/actions/reflect`,
+  `/api/actions/verdict`, `/api/actions/review`, `/api/actions/stop`, `/api/actions/clean`
+  → the task and science station actions above.
 - `GET /api/constellations` → `{"constellations": [{"name": string, "repos": string[]}], "error": string | null}`.
   At most 32 constellations; a name is 1 to 60 characters and unique; `repos` lists 1 to 64 repository names or
   patterns, each at most 100 characters without slashes, where `*` stands for any run of characters. Names and

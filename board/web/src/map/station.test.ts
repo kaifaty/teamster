@@ -4,7 +4,10 @@ import { fixtureSource } from "../fixtures/source";
 import { research } from "./research";
 import {
   analystOnDuty,
+  backupSuffix,
   canImplement,
+  manualAssignment,
+  outsideOf,
   defaultRepo,
   filedLessons,
   implementBody,
@@ -180,7 +183,7 @@ describe("stationCounts", () => {
   it("counts the open questions of every waiting study and the material in the hold", async () => {
     const station = research(await fixtureSource().fetchResearch(), [], [])!;
     expect(stationCounts(station)).toEqual({
-      questions: 1, waiting: 1, proposed: 3, accepted: 6, applied: 2, declined: 1, records: 7, signals: 4,
+      questions: 1, waiting: 1, proposed: 4, accepted: 7, applied: 2, declined: 1, records: 7, signals: 4,
     });
   });
 });
@@ -277,6 +280,71 @@ describe("a lesson's implementation", () => {
     // The research carries the task the card started: its own state wins.
     expect(implementationLine(task({ alive: true }), { slug: "lesson-u1", repo: "teamster" })).toMatchObject({ kind: "working" });
   });
+
+  const OUTSIDE = ["~/.codex/checks/home-infra/ci_wait.py"];
+
+  it("asks to check a change outside the repository by the report, since it has no PR", () => {
+    expect(outsideOf({})).toEqual([]);
+    expect(outsideOf({ outside: OUTSIDE })).toEqual(OUTSIDE);
+    expect(implementationLine(task({ result_status: "done", summary: "Changed ci_wait.py, copy ci_wait.py.bak-2026-11-10-x4" }), null, OUTSIDE)).toEqual({
+      kind: "outside",
+      text: "Правка вне репозитория готова: проверь её по отчёту агента и отметь «Внедрено»",
+      summary: "Changed ci_wait.py, copy ci_wait.py.bak-2026-11-10-x4",
+      answer: true,
+    });
+    // A PR, a question and a closed task read as before; so does a done task of a lesson inside the repository.
+    expect(implementationLine(task({ result_status: "done", pr: "https://github.com/o/r/pull/41" }), null, OUTSIDE)).toMatchObject({ kind: "pr" });
+    expect(implementationLine(task({ result_status: "needs_decision" }), null, OUTSIDE)).toMatchObject({ kind: "decision" });
+    expect(implementationLine(task({ result_status: "done", archived: true }), null, OUTSIDE)).toMatchObject({ kind: "closed" });
+    expect(implementationLine(task({ result_status: "partial" }), null, OUTSIDE)).toMatchObject({ kind: "stopped", text: "Агент остановился (partial)" });
+    expect(implementationLine(task({ result_status: "done" }), null, [])).toMatchObject({ kind: "stopped" });
+  });
+
+  it("words the change outside the repositories as an assignment for a session, with the backup the brief names", () => {
+    const now = new Date("2026-11-10T23:30:00Z");
+    expect(backupSuffix(" batch-2026-11-10.md X4 ", now)).toBe(".bak-2026-11-10-x4");
+    expect(backupSuffix("study-2026-11-10-ci.md a_b", now)).toBe(".bak-2026-11-10-a-b");
+    const x4: Lesson = {
+      date: "2026-11-10",
+      entry: "batch-2026-11-10.md X4",
+      scope: "domain",
+      scope_text: "domain home-infra",
+      repos: ["home-infra"],
+      cue: "ci_wait.py reports «no CI run» as failure",
+      status: "proposed",
+      status_text: "proposed",
+      title: null,
+      lesson: "«no run for this commit» is CI unavailable: exit 75.",
+      proposal: "`~/.codex/checks/home-infra/ci_wait.py`: exit 75 when no run exists.",
+      evidence: "- home-infra-nas-snapshots: no CI run\n- wayveil: applied",
+      caveats: null,
+      outside: OUTSIDE,
+    };
+    expect(manualAssignment(x4, now)).toBe(
+      [
+        "Внедри урок «batch-2026-11-10.md X4»: ci_wait.py reports «no CI run» as failure.",
+        "",
+        "Урок из файла batch-2026-11-10.md в архиве задач teamster. Его предложение меняет файлы вне git-репозиториев:",
+        "- ~/.codex/checks/home-infra/ci_wait.py",
+        "",
+        "Признак: ci_wait.py reports «no CI run» as failure",
+        "Что делать: «no run for this commit» is CI unavailable: exit 75.",
+        "Предложение: `~/.codex/checks/home-infra/ci_wait.py`: exit 75 when no run exists.",
+        "Доказательства:",
+        "- home-infra-nas-snapshots: no CI run",
+        "- wayveil: applied",
+        "",
+        "Как делать:",
+        "- перед первой правкой существующего файла сохрани копию рядом: <файл>.bak-2026-11-10-x4;",
+        "- проверь изменённое поведение на копии файла во временном каталоге, не на живых задачах и системах;",
+        "- покажи `diff -u <копия> <файл>` для каждого изменённого файла;",
+        "- часть предложения для репозитория делай обычной задачей с PR.",
+        "",
+        "Когда готово, отметь урок внедрённым:",
+        "teamster lesson 'batch-2026-11-10.md X4' applied --note '<что и где изменено>'",
+      ].join("\n"),
+    );
+  });
 });
 
 describe("nextStep", () => {
@@ -318,11 +386,17 @@ describe("nextStep", () => {
     const busy = { ...proposing, proposed: [] };
     expect(nextStep(busy, 1000, clock).text).toBe("Аналитик работает: Compare CI · 10 мин");
     const agents = { ...busy, studies: [], running: false };
-    expect(nextStep(agents, 1000, clock)).toEqual({ text: "Агент внедряет урок U4", action: null, tone: "live" });
+    expect(nextStep(agents, 1000, clock)).toEqual({ text: "Агент внедряет урок U4", action: { kind: "watch", label: "Посмотреть", lesson: live }, tone: "live" });
     const many = { ...agents, accepted: [...agents.accepted, lesson("accepted", task({ alive: true }), "U5")] };
     expect(nextStep(many, 1000, clock).text).toBe("Агенты внедряют уроки: 2");
     const done = { ...agents, accepted: [ready, lesson("accepted")] };
     expect(nextStep(done, 1000, clock)).toMatchObject({ text: "PR готов по уроку U3", action: { kind: "pr", label: "Показать", lesson: ready } });
+    // A change outside the repository has no PR: it comes after the ready PRs.
+    const changed = { ...lesson("accepted", task({ result_status: "done" }), "X4"), outside: ["~/.codex/checks/home-infra/ci_wait.py"] };
+    expect(nextStep({ ...done, accepted: [changed, ready] }, 1000, clock).text).toBe("PR готов по уроку U3");
+    expect(nextStep({ ...done, accepted: [changed, lesson("accepted")] }, 1000, clock)).toEqual({
+      text: "Правка вне репозитория готова по уроку X4", action: { kind: "outside", label: "Показать", lesson: changed }, tone: "teal",
+    });
     expect(nextStep({ ...done, accepted: [lesson("accepted")] }, 1000, clock).text).toBe("Приняты и ждут внедрения: 1");
   });
 });

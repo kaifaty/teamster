@@ -135,6 +135,8 @@ export interface Lesson {
   proposal?: string | null;
   evidence?: string | null;
   caveats?: string | null;
+  /** Files outside every git repository that the proposal names, as `~/…`; absent on older servers. */
+  outside?: string[];
   /** The task that implements the lesson, the newest one; absent on older servers. */
   implementation?: Implementation | null;
 }
@@ -301,10 +303,58 @@ export interface Cargo {
   decisions: { fixed: number; rejected: number }; // the executor's decisions on review findings
 }
 
+/** A task's limits and the rounds it has spent against them. */
+export interface TaskLimits {
+  max_turn_minutes: number | null; // the turn's limit, minutes
+  weekly_used_percent: number | null; // how much of the account's week the task has spent, %
+  max_weekly_percent: number | null; // the task's budget, % of the week; null without a budget
+  fix_rounds: number | null; // fix rounds allowed after a review
+  review_rounds: number; // rounds done in the current cycle
+  ci_rounds: number | null; // attempts allowed to repair CI
+  ci_enabled: boolean;
+  review_angles: string[];
+  check: string | null; // the check's command
+  rotations: { at: number; from: string | null; to: string | null; reason: string | null }[]; // account changes
+}
+
+/** A message to the task: the lead's order, a review's or CI's report. */
+export interface TaskMessage {
+  at: number;
+  source: "lead" | "review" | "ci";
+  text: string;
+  queued_at?: number | null; // an order sent from the queue: when it was queued; absent from older servers
+}
+
+/** Orders queued with `say --queue` while the ship was busy: waiting for the end of its cycle, or dropped by it. */
+export interface TaskQueue {
+  waiting: { at: number; text: string }[];
+  dropped: { at: number; text: string; dropped_at: number | null; outcome: string | null }[];
+}
+
 export interface TaskDetail extends TaskSummary {
   timeline: { at: number; text: string }[]; // task events (≤ 200), or session creation and last activity
   files: TaskFile[]; // which files exist
   cargo: Cargo | null; // null for sessions; always an object for tasks, possibly empty
+  // Absent from older servers.
+  limits?: TaskLimits | null; // null for sessions
+  messages?: TaskMessage[];
+  activity_log?: Activity[];
+  /** `queue`: the installed teamster queues a say to a busy ship (1.60.0 and later); absent from older servers. */
+  actions?: { enabled: boolean; reason: "read_only" | "no_teamster" | null; queue?: boolean };
+  queue?: TaskQueue;
+  /** The last result's summary in full, with its line breaks; null without one and for sessions. */
+  report?: string | null;
+  /** What the task's branch changed against its base; null when the worktree cannot be read, and for sessions. */
+  changes?: TaskChanges | null;
+}
+
+/** The branch against its base: commits, the files and lines of `git diff --shortstat`, and uncommitted paths. */
+export interface TaskChanges {
+  commits: number;
+  files: number;
+  insertions: number;
+  deletions: number;
+  uncommitted: number;
 }
 
 export interface Accounts {

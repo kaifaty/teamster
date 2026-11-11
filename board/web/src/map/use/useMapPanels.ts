@@ -1,4 +1,4 @@
-// What the viewer opened over the map: the system, a ship's card, the science station's screen, the day's summary, the
+// What the viewer opened over the map: the system, a ship's bridge, the science station's screen, the day's summary, the
 // ships' list and the dock with the replay and the log. The list's and the replay's choice outlive the page.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
@@ -26,7 +26,7 @@ export interface PanelOptions {
   summaryButton: Readonly<Ref<HTMLButtonElement | null>>;
   /** A machine's reactor was clicked, with the label to give the focus back to. */
   onMachine: (id: string, opener: HTMLElement | null) => void;
-  /** The map opened a task's card or the science station's screen, which replace the machine's card. */
+  /** The map opened a ship's bridge or the science station's screen, which replace the machine's card. */
   onPanel: () => void;
 }
 
@@ -35,7 +35,9 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
 
   // The open system; null means the whole galaxy is shown.
   const repo = ref<string | null>(null);
+  /** The ship picked in its system; its bridge stands over the map while `shipOpen`. */
   const selected = ref<string | null>(null);
+  const shipOpen = ref(false);
   const hovered = ref<string | null>(null);
   const researchOpen = ref(false);
   const selectedTask = computed(() => (selected.value ? (sources.source.value.state.value.tasks[selected.value] ?? null) : null));
@@ -44,6 +46,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   watch(sources.sourceKind, () => {
     repo.value = null;
     selected.value = null;
+    shipOpen.value = false;
   });
   const repoModel = computed({
     get: () => repo.value ?? "",
@@ -55,14 +58,32 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     if (repo.value && !list.some((star) => star.repo === repo.value)) repo.value = null;
   });
 
-  /** A task's card; over the station's screen it stands on top, and closing it returns there. */
+  /** A ship's bridge; over the station's screen it stands on top, and closing it returns there. */
   function open(slug: string) {
     selected.value = slug;
+    shipOpen.value = true;
+    onPanel();
+  }
+
+  /**
+   * From the station to a task's ship: its bridge over the station while the task is on the board, else its system.
+   * «Показать на карте» on the bridge then leaves the station for the system.
+   */
+  function openShip(slug: string, name: string) {
+    if (sources.allTasks.value.some((task) => task.slug === slug)) {
+      open(slug);
+      return;
+    }
+    researchOpen.value = false;
+    if (model.systemNames.value.has(name)) repo.value = name;
+    selected.value = null;
+    shipOpen.value = false;
     onPanel();
   }
 
   function openResearch() {
     selected.value = null;
+    shipOpen.value = false;
     researchOpen.value = true;
     onPanel();
   }
@@ -73,6 +94,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     (id) => {
       if (!id) return;
       selected.value = null;
+      shipOpen.value = false;
       researchOpen.value = false;
     },
   );
@@ -82,17 +104,31 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     void nextTick(() => overlay.value?.querySelector<HTMLElement>(".station")?.focus());
   }
 
-  function close() {
-    const slug = selected.value;
-    selected.value = null;
-    if (researchOpen.value) {
-      void nextTick(() => document.querySelector<HTMLElement>(".station-screen .back")?.focus());
-      return;
-    }
+  /** The focus goes back to the ship's row in the list, or to the map. */
+  function focusShip(slug: string | null) {
     void nextTick(() => {
       const row = slug ? host.value?.querySelector<HTMLElement>(`.fleet [data-ship="${CSS.escape(slug)}"]`) : null;
       (row ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus();
     });
+  }
+
+  function close() {
+    const slug = selected.value;
+    selected.value = null;
+    shipOpen.value = false;
+    if (researchOpen.value) {
+      void nextTick(() => document.querySelector<HTMLElement>(".station-screen .back")?.focus());
+      return;
+    }
+    focusShip(slug);
+  }
+
+  /** «Показать на карте»: the bridge closes, leaving its ship picked in its system, the station closed. */
+  function showOnMap(name: string) {
+    shipOpen.value = false;
+    researchOpen.value = false;
+    if (model.systemNames.value.has(name)) repo.value = name;
+    focusShip(selected.value);
   }
 
   function openMachine(id: string, opener: HTMLElement | null) {
@@ -123,10 +159,14 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   function leave() {
     repo.value = null;
     selected.value = null;
+    shipOpen.value = false;
   }
 
+  /** Escape lets go of a ship picked without its bridge, then leaves the system. */
   function onKey(event: KeyboardEvent) {
-    if (event.key === "Escape" && props.active && repo.value && !selected.value && !researchOpen.value && !props.machine) leave();
+    if (event.key !== "Escape" || !props.active || !repo.value || shipOpen.value || researchOpen.value || props.machine) return;
+    if (selected.value) selected.value = null;
+    else leave();
   }
 
   // Ship's log and the day's summary.
@@ -145,7 +185,11 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     if (!event.repo) return;
     repo.value = event.repo;
     const ship = event.slug ? systemTasks(sources.tasks.value, event.repo).shown.find((task) => task.slug === event.slug) : undefined;
-    selected.value = ship ? ship.slug : null;
+    if (ship) open(ship.slug);
+    else {
+      selected.value = null;
+      shipOpen.value = false;
+    }
   }
 
   /** A line of the log in replay: the scale moves to its time, and the map to its system. */
@@ -215,6 +259,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     (active) => {
       if (active) return;
       selected.value = null;
+      shipOpen.value = false;
       summaryOpen.value = false;
       researchOpen.value = false;
     },
@@ -230,7 +275,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   });
 
   return {
-    repo, repoModel, selected, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openMachine,
+    repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openShip, openResearch, closeResearch, close, showOnMap, openMachine,
     openMachineAt, flying, enter, leave, logEvents, replayTime, goTo, seekTo, summaryOpen, closeSummary, narrow, replayShown,
     compactDock, replayOpen, logOpen, replayVisible, toggleReplay, dockFolded, fleetVisible, toggleFleet, showStation,
   };

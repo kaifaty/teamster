@@ -162,7 +162,15 @@
         "text": "последняя активность"
       }
     ],
-    "files": {}
+    "files": {},
+    "limits": null,
+    "activity_log": [
+      {
+        "at": 1793999994,
+        "kind": "tool",
+        "text": "Read src/cart/merge.ts"
+      }
+    ]
   },
   "local_8d1e5b7a-2c3f-4a6b-8e9d-0f1a2b3c4d5e": {
     "timeline": [
@@ -304,6 +312,40 @@
         "fixed": 2,
         "rejected": 1
       }
+    },
+    "limits": {
+      "max_turn_minutes": 90,
+      "weekly_used_percent": 9.4,
+      "max_weekly_percent": 10,
+      "fix_rounds": 2,
+      "review_rounds": 2,
+      "ci_rounds": null,
+      "ci_enabled": false,
+      "review_angles": [
+        "correctness",
+        "docs"
+      ],
+      "check": "python3 -I tests/test_rotation.py",
+      "rotations": [
+        {
+          "at": 1793994000,
+          "from": "personal",
+          "to": "work",
+          "reason": "limit"
+        }
+      ]
+    },
+    "actions": {
+      "enabled": true,
+      "reason": null
+    },
+    "report": "Описал схему вывода accounts --json, добавил поля five_hour и seven_day.\n\nОба замечания P3 оставил: пример в README обновлю отдельно, а порядок аккаунтов тест не проверяет намеренно.",
+    "changes": {
+      "commits": 4,
+      "files": 6,
+      "insertions": 210,
+      "deletions": 35,
+      "uncommitted": 0
     }
   },
   "merge-conflict-fix": {
@@ -344,6 +386,14 @@
         "fixed": 0,
         "rejected": 0
       }
+    },
+    "report": "Конфликт с main в vault/sync.ts\n\nОбе стороны меняют `mergeRemote`: в main добавили повтор при сетевой ошибке, в ветке — порядок слияния. Сам не разрешаю: нужен выбор, чья логика главнее.",
+    "changes": {
+      "commits": 2,
+      "files": 3,
+      "insertions": 40,
+      "deletions": 12,
+      "uncommitted": 1
     }
   },
   "demo-tunnel-land": {
@@ -384,6 +434,277 @@
         "fixed": 0,
         "rejected": 0
       }
+    },
+    "limits": {
+      "max_turn_minutes": 120,
+      "weekly_used_percent": 3.2,
+      "max_weekly_percent": null,
+      "fix_rounds": 3,
+      "review_rounds": 1,
+      "ci_rounds": 2,
+      "ci_enabled": true,
+      "review_angles": [
+        "correctness"
+      ],
+      "check": "cargo test",
+      "rotations": []
+    },
+    "messages": [
+      {
+        "at": 1793995000,
+        "source": "ci",
+        "text": "CI прошёл: 3 из 3."
+      }
+    ],
+    "actions": {
+      "enabled": true,
+      "reason": null,
+      "queue": true
+    },
+    "queue": {
+      "waiting": [],
+      "dropped": [
+        {
+          "at": 1793994400,
+          "text": "Потом подними версию и допиши CHANGELOG.",
+          "dropped_at": 1793996000,
+          "outcome": "budget_exhausted"
+        }
+      ]
+    },
+    "report": "Нужно решение: сливать через скрипт слияния или ждать ручного ревью?\n\nТуннель для демо готов: `scripts/land.sh` собирает ветку, прогоняет `npm test` и поднимает стенд. Проверка прошла, ревью чистое, но в этом репозитории правило: слияние только после ручного ревью, а скрипт слияния обходит его.\n\nЕсли сливать скриптом, демо будет сегодня; если ждать ревью — завтра утром. Я ничего не сливал.",
+    "changes": {
+      "commits": 3,
+      "files": 5,
+      "insertions": 142,
+      "deletions": 18,
+      "uncommitted": 0
+    }
+  },
+  "ml-eval-pipeline": {
+    "timeline": [
+      {
+        "at": 1793970000,
+        "text": "задача создана"
+      },
+      {
+        "at": 1793985000,
+        "text": "ревью codex: 3 находки"
+      },
+      {
+        "at": 1793998100,
+        "text": "ход 5: исправление ревью, круг 2"
+      }
+    ],
+    "files": {
+      "brief": "# Конвейер оценки\n\nСобрать `eval/` в один конвейер: метрики, отчёт, сравнение с прошлым прогоном.\n\n## Готово, когда\n\n- `make eval` строит отчёт;\n- метрики совпадают с ручным расчётом.\n",
+      "last": "Сделано частично: метрики и отчёт готовы, осталось сравнение прогонов.\n",
+      "review": "## F1 · P1 · Метрика F1 считается по обучающей выборке\n\n`eval/metrics.py:88` берёт `train` вместо `test`.\n\n## F2 · P2 · Отчёт падает на пустом прогоне\n",
+      "check": "$ pytest -q eval\n........ 8 passed in 4.1s\n"
+    },
+    "cargo": {
+      "check": {
+        "command": "pytest -q eval",
+        "outcome": "passed",
+        "exit": 0,
+        "seconds": 4.1,
+        "at": 1793997000
+      },
+      "claims": [],
+      "review": {
+        "verdict": "defects",
+        "summary": "Метрика считается не по той выборке",
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "P1",
+            "title": "Метрика F1 считается по обучающей выборке",
+            "file": "eval/metrics.py",
+            "line": 88
+          },
+          {
+            "id": "F2",
+            "severity": "P2",
+            "title": "Отчёт падает на пустом прогоне",
+            "file": "eval/report.py",
+            "line": 41
+          }
+        ],
+        "reviews": 2
+      },
+      "stop": null,
+      "ci": null,
+      "base": {
+        "base": "origin/main",
+        "outcome": "passed",
+        "files": []
+      },
+      "remaining": [],
+      "questions": [],
+      "decisions": {
+        "fixed": 0,
+        "rejected": 0
+      }
+    },
+    "limits": {
+      "max_turn_minutes": 120,
+      "weekly_used_percent": 6.5,
+      "max_weekly_percent": 15,
+      "fix_rounds": 3,
+      "review_rounds": 2,
+      "ci_rounds": 1,
+      "ci_enabled": true,
+      "review_angles": [
+        "correctness",
+        "ux"
+      ],
+      "check": "pytest -q eval",
+      "rotations": [
+        {
+          "at": 1793990000,
+          "from": "claude-pool-2",
+          "to": "claude-pool-3",
+          "reason": "limit"
+        }
+      ]
+    },
+    "messages": [
+      {
+        "at": 1793970000,
+        "source": "lead",
+        "text": "Собрать eval/ в один конвейер."
+      },
+      {
+        "at": 1793981100,
+        "source": "lead",
+        "text": "Добавь в отчёт метрики ux и прогоняй eval на полном наборе.",
+        "queued_at": 1793979900
+      },
+      {
+        "at": 1793985000,
+        "source": "review",
+        "text": "Codex нашёл 3 дефекта: P1 ×1, P2 ×2."
+      }
+    ],
+    "activity_log": [
+      {
+        "at": 1793999952,
+        "kind": "tool",
+        "text": "Read eval/metrics.py"
+      },
+      {
+        "at": 1793999900,
+        "kind": "edit",
+        "text": "eval/metrics.py"
+      }
+    ],
+    "actions": {
+      "enabled": true,
+      "reason": null,
+      "queue": true
+    },
+    "queue": {
+      "waiting": [
+        {
+          "at": 1793990400,
+          "text": "Когда закончишь, слей main и прогони eval ещё раз."
+        }
+      ],
+      "dropped": []
+    }
+  },
+  "nightly-bench": {
+    "timeline": [
+      {
+        "at": 1793960000,
+        "text": "задача создана"
+      },
+      {
+        "at": 1793997300,
+        "text": "лимит аккаунта work: спит до сброса"
+      }
+    ],
+    "files": {
+      "brief": "# Ночной бенчмарк\n\nПрогнать `bench/` и сравнить с прошлой ночью.\n"
+    },
+    "cargo": {
+      "check": null,
+      "claims": [],
+      "review": null,
+      "stop": null,
+      "ci": null,
+      "base": null,
+      "remaining": [],
+      "questions": [],
+      "decisions": {
+        "fixed": 0,
+        "rejected": 0
+      }
+    },
+    "limits": {
+      "max_turn_minutes": 120,
+      "weekly_used_percent": 22.0,
+      "max_weekly_percent": 25,
+      "fix_rounds": 3,
+      "review_rounds": 0,
+      "ci_rounds": 1,
+      "ci_enabled": false,
+      "review_angles": [],
+      "check": "make bench",
+      "rotations": []
+    },
+    "actions": {
+      "enabled": true,
+      "reason": null,
+      "queue": false
+    }
+  },
+  "scout-cache-layout": {
+    "timeline": [
+      {
+        "at": 1793999300,
+        "text": "задача создана"
+      }
+    ],
+    "files": {
+      "brief": "# Разведка: как устроен кэш\n\nНайти, где и как кэшируются ответы API. Ничего не менять.\n"
+    },
+    "cargo": {
+      "check": null,
+      "claims": [],
+      "review": null,
+      "stop": null,
+      "ci": null,
+      "base": null,
+      "remaining": [],
+      "questions": [],
+      "decisions": {
+        "fixed": 0,
+        "rejected": 0
+      }
+    },
+    "limits": {
+      "max_turn_minutes": 30,
+      "weekly_used_percent": 0.8,
+      "max_weekly_percent": 2,
+      "fix_rounds": null,
+      "review_rounds": 0,
+      "ci_rounds": null,
+      "ci_enabled": false,
+      "review_angles": [],
+      "check": null,
+      "rotations": []
+    },
+    "activity_log": [
+      {
+        "at": 1793999990,
+        "kind": "command",
+        "text": "rg -n \"cache\" src/"
+      }
+    ],
+    "actions": {
+      "enabled": true,
+      "reason": null
     }
   }
 }

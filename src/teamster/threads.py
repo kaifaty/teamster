@@ -154,11 +154,17 @@ def followup_messages(st):
     return [json.loads(line) for line in messages.read_text().splitlines()] if messages.exists() else []
 
 
-def followup_prompt(st, message, cfg, source="lead"):
-    """Journal follow-ups before dispatch so rotation includes the current request."""
+def followup_prompt(st, message, cfg, source="lead", queued=()):
+    """Journal follow-ups before dispatch so rotation includes the current request.
+
+    queued holds the say --queue orders that message joins: each is journaled as its own lead message.
+    """
+    at = clock.CLOCK.time()
+    rows = ([{"at": at, "text": order["text"], "source": "lead", "queued_at": order["at"]} for order in queued]
+            or [{"at": at, "text": message, "source": source}])
     with (config.TASKS / st["slug"] / "messages.jsonl").open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({"at": clock.CLOCK.time(), "text": message, "source": source},
-                                ensure_ascii=False) + "\n")
+        for row in rows:
+            stream.write(json.dumps(row, ensure_ascii=False) + "\n")
     if st.get("thread") or executors.from_state(st).cursor(st):
         switch = st.get("base_switch")
         if switch:
@@ -278,13 +284,16 @@ def handoff(st, current_message=False, cfg=None):
                     "Continue the existing work without starting over or reverting it.\n\n"))
     prompt += "Сообщения от ведущего и ревью по порядку:\n" if ru else "Messages from the lead and review, in order:\n"
     messages = followup_messages(st)
-    for n, message in enumerate(messages, 1):
-        text = message["text"]
-        if current_message and n == len(messages):
-            heading = "Текущее сообщение — выполни его" if ru else "Current message — carry it out"
-            prompt += f"\n### {heading}\n\n{text}\n"
-        else:
-            prompt += f"\n{n}. {text}\n"
+    # The current message is the last one, or every queued order sent with it in one turn.
+    current = 1 if current_message and messages else 0
+    while (current and current < len(messages) and "queued_at" in messages[-1]
+           and "queued_at" in messages[-current - 1] and messages[-current - 1]["at"] == messages[-1]["at"]):
+        current += 1
+    for n, message in enumerate(messages[:len(messages) - current], 1):
+        prompt += f"\n{n}. {message['text']}\n"
+    if current:
+        heading = "Текущее сообщение — выполни его" if ru else "Current message — carry it out"
+        prompt += f"\n### {heading}\n\n" + "\n\n".join(message["text"] for message in messages[-current:]) + "\n"
     if not scouting:
         prompt += f"\n{'Коммиты' if ru else 'Commits'} (git log --oneline {st['base']}..HEAD):\n"
         prompt += procs.sh(config.GIT + ["log", "--oneline", f"{st['base']}..HEAD"], cwd=st["worktree"], check=False) or ("(нет)" if ru else "(none)")

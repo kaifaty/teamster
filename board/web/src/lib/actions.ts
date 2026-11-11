@@ -1,10 +1,20 @@
-// The science station's actions: the board server runs `teamster lesson`, `say` and `reflect`, and starts a lesson's
-// implementation, for the station's buttons (POST /api/actions/*). Only the station acts; every other screen of the
-// board only reads.
+// The board's actions: the board server runs `teamster lesson`, `say`, `reflect`, `verdict`, `review`, `stop` and
+// `clean`, and starts a lesson's implementation (POST /api/actions/*), for the science station's buttons and the orders
+// on a ship's bridge. The board tab's task card only copies commands.
 
 import type { ActionsOff } from "../types";
+import type { Verdict } from "./commands";
 
-export type ActionRoute = "lesson" | "say" | "reflect" | "implement";
+export type ActionRoute = "lesson" | "say" | "reflect" | "implement" | "verdict" | "review" | "stop" | "clean";
+
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type Effort = (typeof EFFORTS)[number];
+export const REVIEWERS = ["codex", "claude"] as const;
+export type Reviewer = (typeof REVIEWERS)[number];
+export const ANGLES = ["correctness", "concurrency", "security", "tests"] as const;
+export type Angle = (typeof ANGLES)[number];
+/** `auto`, or 1–4 distinct presets. */
+export type ReviewAngles = "auto" | Angle[];
 
 export interface LessonBody {
   entry: string;
@@ -19,9 +29,51 @@ export interface ImplementBody {
   note?: string;
 }
 
+/** A ship's refit with the next order; each option replaces the saved one, in the contract's bounds. */
+export interface SayOptions {
+  /** `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` */
+  model?: string;
+  effort?: Effort;
+  /** An integer, 5–600. */
+  max_minutes?: number;
+  /** 0.5–100. */
+  max_weekly?: number;
+  /** An integer, 0–5. */
+  fix_rounds?: number;
+  /** An integer, 0–5. */
+  ci_rounds?: number;
+  reviewer?: Reviewer;
+  review_angles?: ReviewAngles;
+}
+
 export interface SayBody {
   slug: string;
   text: string;
+  options?: SayOptions;
+}
+
+export interface VerdictBody {
+  slug: string;
+  verdict: Verdict;
+  /** ≤ 200 characters. */
+  note?: string;
+}
+
+export interface ReviewBody {
+  slug: string;
+  review_angles?: ReviewAngles;
+  reviewer?: Reviewer;
+  effort?: Effort;
+}
+
+export interface StopBody {
+  slug: string;
+}
+
+/** The branch stays unless `keep_branch` is false. */
+export interface CleanBody {
+  slug: string;
+  keep_branch?: boolean;
 }
 
 /** `tasks` does not go with `since` or `repos`. */
@@ -37,6 +89,10 @@ export interface ActionBodies {
   say: SayBody;
   reflect: ReflectBody;
   implement: ImplementBody;
+  verdict: VerdictBody;
+  review: ReviewBody;
+  stop: StopBody;
+  clean: CleanBody;
 }
 
 export type ActionResult = { ok: true; output: string; slug?: string } | { ok: false; error: string };
@@ -89,7 +145,7 @@ export async function requestAction<R extends ActionRoute>(
 }
 
 /**
- * Runs a station action and, once it succeeded, asks for the research again: the server shows the change on the
+ * Runs an action and, once it succeeded, asks for the research or the task again: the server shows the change on the
  * next GET. `send` is the fixtures' stand-in in `dev:fixture` mode.
  */
 export async function postAction<R extends ActionRoute>(

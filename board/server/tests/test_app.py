@@ -19,6 +19,7 @@ from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 
 from teamster_board import access, actions as actions_module
 from teamster_board import app as board_app
+from teamster_board import store as store_module
 from teamster_board.app import Settings, create_app
 from teamster_board.research import Research
 
@@ -95,7 +96,10 @@ def test_stale_days_environment_reaches_store(tmp_path, monkeypatch):
 
 
 def test_rest_contract_files_and_unknown_paths(board):
-    client, _, directory, _, _ = board
+    client, application, directory, state, _ = board
+    state["result"] = {"summary": "Change completed.\nThis preserves the reason for the change."}
+    (directory / "state.json").write_text(json.dumps(state))
+    client.portal.call(application.state.board.poll)
     snapshot = client.get("/api/snapshot").json()
     assert set(snapshot) == {"generated_at", "tasks", "accounts", "machines"}
     assert snapshot["machines"] == {"config_error": None, "items": []}
@@ -105,6 +109,7 @@ def test_rest_contract_files_and_unknown_paths(board):
     assert snapshot["tasks"][0]["title"] is None
     assert snapshot["tasks"][0]["link"] is None
     assert snapshot["tasks"][0]["scheduled"] is None
+    assert snapshot["tasks"][0]["summary"] == "Change completed."
     assert set(snapshot["accounts"]) == {"fetched_at", "error", "data"}
     for name, filename in (("brief", "brief.md"), ("last", "last.md"),
                            ("review", "review.md"), ("check", "check.log")):
@@ -115,7 +120,13 @@ def test_rest_contract_files_and_unknown_paths(board):
         assert response.headers["content-type"] == "text/plain; charset=utf-8"
         assert response.content == b"x" * (256 * 1024)
     detail = client.get("/api/tasks/demo").json()
-    assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo"}
+    assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
+                                           "activity_log", "actions", "queue", "report", "changes"}
+    assert detail["report"] == state["result"]["summary"]
+    assert detail["summary"] == "Change completed."
+    assert detail["changes"] is None
+    assert detail["actions"] == {**client.get("/api/research").json()["actions"], "queue": False}
+    assert detail["queue"] == {"waiting": [], "dropped": []}
     assert set(detail["files"]) == {"brief", "last", "review", "check"}
     assert detail["scheduled"] is None
     assert len(detail["timeline"]) <= 200
@@ -127,6 +138,42 @@ def test_rest_contract_files_and_unknown_paths(board):
         "/api/tasks/%2e%2e%2fstate.json", "/api/tasks/demo/files/brief/other",
     ):
         assert client.get(path).status_code == 404, path
+
+
+def test_detail_git_does_not_block_board_polling(board, monkeypatch):
+    client, application, directory, state, _ = board
+    state.update(worktree=str(directory), base="origin/main")
+    (directory / "state.json").write_text(json.dumps(state))
+    client.portal.call(application.state.board.poll)
+    entered, release = threading.Event(), threading.Event()
+    original_run = subprocess.run
+
+    def git(argv, **kwargs):
+        if argv[0] != "git":
+            return original_run(argv, **kwargs)
+        assert argv[:3] == ["git", "-C", str(directory)]
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["timeout"] == 5
+        entered.set()
+        assert release.wait(5)
+        output = {"rev-parse": "true\n", "rev-list": "0\n", "diff": "", "status": ""}
+        return subprocess.CompletedProcess(argv, 0, stdout=output[argv[3]])
+
+    async def poll_and_snapshot():
+        with anyio.fail_after(2):
+            await application.state.board.poll()
+            return await application.state.board.snapshot()
+
+    monkeypatch.setattr(store_module.subprocess, "run", git)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        detail = executor.submit(client.get, "/api/tasks/demo")
+        try:
+            assert entered.wait(5)
+            assert client.portal.call(poll_and_snapshot)["tasks"][0]["slug"] == "demo"
+        finally:
+            release.set()
+        assert detail.result(timeout=5).json()["changes"] == {
+            "commits": 0, "files": 0, "insertions": 0, "deletions": 0, "uncommitted": 0}
 
 
 def test_events_window_limit_and_websocket(board):
@@ -477,7 +524,13 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
         assert task["kind"] == "session"
         assert task["alive"] is False
         detail = client.get("/api/tasks/local_example").json()
-        assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo"}
+        assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
+                                               "activity_log", "actions", "queue", "report", "changes"}
+        assert detail["report"] is detail["changes"] is None
+        assert detail["limits"] is None
+        assert detail["messages"] == detail["activity_log"] == []
+        assert detail["queue"] == {"waiting": [], "dropped": []}
+        assert detail["actions"] == {**client.get("/api/research").json()["actions"], "queue": False}
         assert detail["files"] == []
         assert len(detail["timeline"]) == 2
         assert "secret" not in json.dumps(detail)
@@ -500,6 +553,9 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
             activity = receive_until(socket, "activity")
             assert activity == {"type": "activity", "slug": "local_example",
                                 "activity": {"at": 1793872802.0, "kind": "message", "text": "First update"}}
+            detail = client.get("/api/tasks/local_example").json()
+            assert detail["limits"] is None
+            assert detail["messages"] == detail["activity_log"] == []
             event["message"]["content"][0]["text"] = "Appended update"
             with transcript.open("a") as stream:
                 stream.write(json.dumps(event) + "\n")
@@ -850,6 +906,11 @@ def station(tmp_path, monkeypatch):
 from pathlib import Path
 args = sys.argv[1:]
 control = json.loads(Path(os.environ["STATION_CONTROL"]).read_text())
+if args == ["--version"]:
+    with (Path(os.environ["STATION_CALLS"]).parent / "versions.log").open("a") as stream:
+        stream.write("asked\\n")
+    print(control.get("version", "1.59.2"))
+    sys.exit(control.get("version_exit", 0))
 record = {"argv": args, "cwd": os.getcwd(), "stdin": sys.stdin.read(), "pid": os.getpid()}
 if "--file" in args:
     record["file"] = Path(args[args.index("--file") + 1]).read_text()
@@ -1076,6 +1137,81 @@ Keep its run id.
     assert "Keep it focused" not in caplog.text
 
 
+def test_station_implement_outside_brief_from_research(station, lesson_repo, monkeypatch):
+    client, application, settings, _, calls, _ = station
+
+    class FixedDatetime(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, zone):
+            assert zone is timezone.utc
+            cls.calls += 1
+            assert cls.calls == 1
+            return cls(2026, 11, 10, 23, 4, 5, tzinfo=zone)
+
+    monkeypatch.setattr(actions_module, "datetime", FixedDatetime)
+    script = Path.home() / ".codex" / "checks" / "home-infra" / "ci_wait.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("raise SystemExit(0)\n")
+    entry = "batch-2026-11-10.md X4"
+    archive = settings.path("tasks") / ".archive"
+    (archive / "INDEX.md").write_text(
+        f"| 2026-11-10 | {entry} | domain home-infra | CI | proposed |\n")
+    (archive / "batch-2026-11-10.md").write_text(
+        "## X4. Wait for a run\nproposal: ci_wait.py: when no run exists, exit 75.\n")
+    application.state.board.research.invalidate()
+    before = client.get("/api/research").json()["lessons"][0]
+    assert before["outside"] == ["~/.codex/checks/home-infra/ci_wait.py"]
+    assert before["status"] == "proposed"
+    response = client.post("/api/actions/implement", json={
+        "entry": entry, "repo": str(lesson_repo), "outside": ["~/.claude/settings.json"],
+    })
+    slug = "lesson-x4-1110"
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "output": "finished", "slug": slug}
+    records = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(records) == 2
+    assert records[0]["argv"] == ["lesson", entry, "accepted", f"--note=внедряется: {slug}"]
+    start = records[1]
+    brief_path = start["argv"][3]
+    assert start["argv"] == [
+        "start", slug, "--brief", brief_path, "--repo", str(lesson_repo), "--executor", "claude",
+        "--sandbox", "off", "--effort", "high", "--task-type", "feature", "--max-minutes", "60",
+        "--review", "--fix-rounds", "2", "--parallel",
+    ]
+    expected = """Внедрить урок «batch-2026-11-10.md X4»: Wait for a run.
+
+Зачем: пользователь принял этот урок рефлексии на научной станции и попросил его внедрить. Урок из файла batch-2026-11-10.md в архиве задач.
+
+Признак: CI
+Предложение: ci_wait.py: when no run exists, exit 75.
+
+Файлы вне репозитория: пользователь разрешил этой задаче менять только эти файлы вне репозитория:
+- ~/.codex/checks/home-infra/ci_wait.py
+Перед первой правкой существующего файла сохрани его копию рядом: <файл>.bak-2026-11-10-x4. Проверь изменённое поведение на копии файла во временном каталоге, не на живых задачах и системах. Если в репозитории менять нечего, не коммить и не пушь ветку.
+
+Готово, когда:
+- предложение урока внедрено в той форме, которую оно называет, в этом репозитории и в разрешённых файлах вне него; если эта форма не подходит к коду — в ближайшей, которая даёт тот же результат, предпочитая проверку или защиту в коде правилу в тексте;
+- изменённое поведение закреплено тестом в репозитории, а для файла вне репозитория — проверкой на копии, записанной в checks;
+- документация репозитория, которую задевает изменение, обновлена;
+- в summary перечислены изменённые файлы вне репозитория, их копии .bak и команда `diff -u <копия> <файл>` для каждого;
+- части предложения для других файлов вне репозитория и для других репозиториев не сделаны, а перечислены в remaining.
+
+Проверки: тесты и проверки, которые требуют AGENTS.md и README этого репозитория.
+Не трогать: ничего, что не нужно для этого урока; записи задач и INDEX.md в архиве teamster.
+Если предложение неясно или для него нужен выбор пользователя — закончи ход со статусом needs_decision и задай вопросы.
+"""
+    assert start["brief"] == expected
+    assert (calls.parent / f"{slug}.brief.md").read_text() == expected
+    assert not Path(brief_path).exists()
+    assert all(row["cwd"] == str(Path.home()) and row["stdin"] == "" for row in records)
+    after = client.get("/api/research").json()["lessons"][0]
+    assert after["status"] == "accepted"
+    assert after["implementation"]["slug"] == slug
+    assert FixedDatetime.calls == 1
+
+
 @pytest.mark.parametrize("lesson_id,expected", [("W2", "w2"), ("W_Ä.2", "w---2")])
 def test_station_implement_slug_characters_and_collisions(station, lesson_repo, lesson_id, expected):
     client, application, settings, entry, _, _ = station
@@ -1280,3 +1416,196 @@ def test_station_nonzero_output_limits_and_timeout_cleanup(station, monkeypatch)
     assert not Path(last["argv"][3]).exists()
     with pytest.raises(ProcessLookupError):
         os.kill(last["pid"], 0)
+
+
+@pytest.fixture
+def ships(station):
+    _, application, settings, _, _, _ = station
+    tasks = settings.path("tasks")
+    for kind in ("work", "review", "reflect", "scout"):
+        for state in ("idle", "alive", "archived"):
+            slug = f"{kind}-{state}"
+            root = tasks / ".archive" if state == "archived" else tasks
+            if state == "archived":
+                slug += "-20261110T000000Z"
+            directory = root / slug
+            directory.mkdir()
+            (directory / "state.json").write_text(json.dumps({
+                "kind": kind, "pid": os.getpid() if state == "alive" else None,
+            }))
+    desktop = settings.task_home / "desktop"
+    directory = desktop / "claude-code-sessions" / "account" / "device"
+    directory.mkdir(parents=True)
+    (directory / "local_ship.json").write_text(json.dumps({
+        "sessionId": "local_ship", "createdAt": 1000, "lastActivityAt": 2000,
+    }))
+    application.state.board.store.claude_desktop_dir = desktop
+    application.state.board.store.poll()
+    return station
+
+
+@pytest.mark.parametrize("route,body,expected", [
+    ("say", {"text": "  --private\nContinue.  ", "options": {
+        "review_angles": ["tests", "security"], "reviewer": "claude", "ci_rounds": 5,
+        "fix_rounds": 0, "max_weekly": 10.0, "max_minutes": 600, "effort": "ultra", "model": "gpt-5.2",
+    }}, ["--model=gpt-5.2", "--effort=ultra", "--max-minutes=600", "--max-weekly=10",
+         "--fix-rounds=0", "--ci-rounds=5", "--reviewer=claude", "--review-angles=tests,security"]),
+    ("say", {"text": "Continue", "options": {"max_weekly": 0.5, "review_angles": "auto"}},
+     ["--max-weekly=0.5", "--review-angles=auto"]),
+    ("verdict", {"verdict": "accepted", "note": "  --keep this  "}, ["accepted", "--note=--keep this"]),
+    ("verdict", {"verdict": "revised", "note": "  "}, ["revised"]),
+    ("verdict", {"verdict": "redone"}, ["redone"]),
+    ("verdict", {"verdict": "dropped"}, ["dropped"]),
+    ("review", {"review_angles": ["concurrency", "correctness"], "reviewer": "codex", "effort": "xhigh"},
+     ["--effort=xhigh", "--reviewer=codex", "--review-angles=concurrency,correctness"]),
+    ("review", {"review_angles": "auto"}, ["--review-angles=auto"]),
+    ("review", {}, []),
+    ("stop", {}, []),
+    ("clean", {}, ["--keep-branch"]),
+    ("clean", {"keep_branch": True}, ["--keep-branch"]),
+    ("clean", {"keep_branch": False}, []),
+])
+def test_ship_action_argv(ships, caplog, route, body, expected):
+    client, _, _, _, calls, _ = ships
+    slug = "work-alive" if route == "stop" else "work-idle"
+    caplog.set_level("INFO", logger="uvicorn.error")
+    response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "output": "finished"}
+    record = json.loads(calls.read_text())
+    argv = [route, slug, *expected]
+    if route == "say":
+        argv.extend(["--file", record["argv"][-1]])
+        assert record["file"] == body["text"].strip()
+        assert not Path(argv[-1]).exists()
+    assert record["argv"] == argv
+    logs = [row.message for row in caplog.records if row.message.startswith("/api/actions/")]
+    assert len(logs) == 1 and f"/api/actions/{route} argv=" in logs[0] and "exit=0" in logs[0]
+    assert "--private" not in logs[0]
+
+
+@pytest.mark.parametrize("route,body,allowed", [
+    ("say", {"text": "Continue"}, {"work-idle", "review-idle", "reflect-idle"}),
+    ("verdict", {"verdict": "accepted"}, {"work-idle", "work-alive", "work-archived",
+                                         "review-idle", "review-alive", "review-archived"}),
+    ("review", {}, {"work-idle", "review-idle"}),
+    ("stop", {}, {"work-alive", "review-alive", "reflect-alive", "scout-alive"}),
+    ("clean", {}, {"work-idle", "review-idle", "reflect-idle", "scout-idle"}),
+])
+def test_ship_action_states_kinds_and_unknown_tasks(ships, route, body, allowed):
+    client, _, _, _, calls, _ = ships
+    for kind in ("work", "review", "reflect", "scout"):
+        for state in ("idle", "alive", "archived"):
+            base = f"{kind}-{state}"
+            slug = base + ("-20261110T000000Z" if state == "archived" else "")
+            before = calls.read_text() if calls.exists() else ""
+            response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
+            assert response.status_code == (200 if base in allowed else 409), (route, slug, response.text)
+            if base in allowed:
+                record = json.loads(calls.read_text().splitlines()[-1])
+                assert record["argv"][:2] == [route, base]
+            else:
+                assert (calls.read_text() if calls.exists() else "") == before
+                if route == "stop":
+                    assert response.json() == {"ok": False, "error": "not running"}
+    for slug, status in (("unknown", 404), ("local_ship", 409)):
+        response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
+        assert response.status_code == status
+        if route == "stop" and status == 409:
+            assert response.json() == {"ok": False, "error": "not running"}
+
+
+@pytest.mark.parametrize("version,exit_code,queue", [
+    ("1.60.0", 0, True), ("teamster 2.0.1", 0, True), ("1.59.9", 0, False), ("1.60.0", 1, False),
+    ("unknown", 0, False),
+])
+def test_ship_say_queues_to_a_live_ship_from_teamster_1_60(ships, version, exit_code, queue):
+    client, _, _, _, calls, control = ships
+    control.write_text(json.dumps({"version": version, "version_exit": exit_code}))
+    for _ in range(2):
+        assert client.get("/api/tasks/work-alive").json()["actions"] == {"enabled": True, "reason": None,
+                                                                        "queue": queue}
+    response = client.post("/api/actions/say", json={"slug": "work-alive", "text": " Next ",
+                                                      "options": {"effort": "low"}})
+    if queue:
+        assert response.json() == {"ok": True, "output": "finished"}
+        record = json.loads(calls.read_text())
+        assert record["argv"] == ["say", "work-alive", "--effort=low", "--file", record["argv"][4], "--queue"]
+        assert record["file"] == "Next"
+    else:
+        assert response.status_code == 409
+        assert not calls.exists()
+    # An idle ship takes the order at once; an archived ship and a scout refuse it as before.
+    assert client.post("/api/actions/say", json={"slug": "work-idle", "text": "Now"}).status_code == 200
+    assert len(json.loads(calls.read_text().splitlines()[-1])["argv"]) == 4
+    for slug in ("scout-alive", "work-archived-20261110T000000Z"):
+        assert client.post("/api/actions/say", json={"slug": slug, "text": "Now"}).status_code == 409
+    assert (calls.parent / "versions.log").read_text() == "asked\n"
+
+
+@pytest.mark.parametrize("options", [
+    None, [], {"unknown": "x"}, {"model": "-flag"}, {"model": "x" * 65}, {"model": True},
+    {"effort": "extreme"}, {"max_minutes": 4}, {"max_minutes": 601}, {"max_minutes": 5.5},
+    {"max_minutes": True}, {"max_weekly": 0.4}, {"max_weekly": 101}, {"max_weekly": True},
+    {"max_weekly": "10"}, {"fix_rounds": -1}, {"fix_rounds": 6}, {"fix_rounds": 1.5},
+    {"ci_rounds": -1}, {"ci_rounds": 6}, {"ci_rounds": False}, {"reviewer": "other"},
+    {"review_angles": "security"}, {"review_angles": []}, {"review_angles": ["security", "security"]},
+    {"review_angles": ["other"]}, {"review_angles": ["correctness", "concurrency", "security", "tests", "tests"]},
+])
+def test_ship_say_invalid_options(ships, options):
+    client, _, _, _, calls, _ = ships
+    response = client.post("/api/actions/say", json={"slug": "work-idle", "text": "Continue", "options": options})
+    assert response.status_code == 400
+    assert response.json()["ok"] is False
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("route,body", [
+    ("say", {}), ("say", {"text": None}), ("say", {"text": " "}), ("say", {"text": "x" * 8001}),
+    ("verdict", {}), ("verdict", {"verdict": "other"}),
+    ("verdict", {"verdict": "accepted", "note": "x" * 201}),
+    ("verdict", {"verdict": "accepted", "note": False}),
+    ("review", {"reviewer": "other"}), ("review", {"effort": "other"}),
+    ("review", {"review_angles": ["tests", "tests"]}), ("clean", {"keep_branch": 1}),
+])
+def test_ship_invalid_action_fields(ships, route, body):
+    client, _, _, _, calls, _ = ships
+    response = client.post(f"/api/actions/{route}", json={"slug": "work-idle", **body})
+    assert response.status_code == 400
+    assert response.json()["ok"] is False
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize("route", ["say", "verdict", "review", "stop", "clean"])
+def test_ship_action_slug_and_request_protection(ships, route):
+    client, _, settings, _, calls, _ = ships
+    body = {"text": "Continue", "verdict": "accepted"}
+    for slug in (None, "", "..", "../work-idle", ".hidden", "work\\idle", "bad\0name"):
+        response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
+        assert response.status_code == 400
+    for headers in ({"Origin": None}, {"Origin": "http://evil.example"},
+                    {"Host": "evil.example"}, {"X-Teamster-Board": None},
+                    {"Content-Type": "text/plain"}, {"Origin": ["http://localhost:8787"] * 2}):
+        request = client.build_request("POST", f"/api/actions/{route}", json={"slug": "work-idle", **body})
+        for name, value in headers.items():
+            del request.headers[name]
+            if isinstance(value, list):
+                for item in value:
+                    request.headers = request.headers.__class__([*request.headers.multi_items(), (name, item)])
+            elif value is not None:
+                request.headers[name] = value
+        response = client.send(request)
+        assert response.status_code == 403
+        assert response.json() == {"ok": False, "error": "forbidden"}
+    for read_only, command, reason in ((True, settings.action_teamster, "read_only"),
+                                       (False, None, "no_teamster")):
+        settings.read_only, settings.action_teamster = read_only, command
+        disabled = create_app(settings)
+        with TestClient(disabled, base_url=str(client.base_url), headers=dict(client.headers)) as other:
+            actions = other.get("/api/research").json()["actions"]
+            assert actions == {"enabled": False, "reason": reason}
+            assert other.get("/api/tasks/work-idle").json()["actions"] == {**actions, "queue": False}
+            response = other.post(f"/api/actions/{route}", json={"slug": "work-idle", **body})
+            assert response.status_code == 403
+            assert response.json() == {"ok": False, "error": reason}
+    assert not calls.exists()

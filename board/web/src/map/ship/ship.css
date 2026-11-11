@@ -1,0 +1,246 @@
+/* A ship's bridge: decks of one ship over the map's sky, in the science station's language. Teal is the ship at work,
+   gold waits for you, green is ready, ice sleeps, red is a failure, copper the fix rounds, blue the gate. Shared by
+   every deck; each deck keeps its own layout in its scoped style. */
+
+.ship-screen {
+  --sh-text: #e8e2d4;
+  --sh-dim: #9b907c;
+  --sh-faint: #7d7566;
+  --sh-title: #f3c27a;
+  --sh-wait: #f3c64e;
+  --sh-teal: #5fd6c8;
+  --sh-green: #6fcf8f;
+  --sh-red: #ff8d7a;
+  --sh-copper: #e0915a;
+  --sh-blue: #86b4ff;
+  --sh-ice: #9fd8f0;
+  --sh-line: rgba(214, 170, 96, 0.3);
+  --sh-panel: rgba(7, 9, 14, 0.88);
+  --sh-well: rgba(4, 6, 9, 0.9);
+  color: var(--sh-text);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.ship-screen *,
+.ship-screen *::before,
+.ship-screen *::after {
+  box-sizing: border-box;
+}
+
+/* A deck: a framed console with a title strip. */
+.ship-screen .deck {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  border: 12px solid transparent;
+  border-image: var(--frame) 30 / 12px / 0 stretch;
+  background: var(--sh-panel);
+  background-clip: padding-box;
+}
+
+.ship-screen .deck-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid var(--sh-line);
+}
+
+.ship-screen .deck-head h3 {
+  margin: 0;
+  color: var(--sh-title);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.ship-screen .deck-head .sigil {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--sh-line);
+  border-radius: 50%;
+  color: var(--sh-title);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ship-screen .deck-head .aside {
+  margin-left: auto;
+  color: var(--sh-dim);
+  font-size: 12px;
+  text-align: right;
+}
+
+.ship-screen .well {
+  border: 1px solid rgba(214, 170, 96, 0.14);
+  border-radius: 8px;
+  background: var(--sh-well);
+}
+
+/* Text. */
+.ship-screen .dim {
+  color: var(--sh-dim);
+}
+
+.ship-screen .mono {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+.ship-screen .num {
+  font-variant-numeric: tabular-nums;
+}
+
+.ship-screen .empty {
+  margin: 0;
+  color: var(--sh-dim);
+  font-size: 12.5px;
+}
+
+.ship-screen .tone-ok {
+  color: var(--sh-green);
+}
+
+.ship-screen .tone-warn {
+  color: var(--sh-wait);
+}
+
+.ship-screen .tone-bad {
+  color: var(--sh-red);
+}
+
+.ship-screen .tone-muted {
+  color: var(--sh-dim);
+}
+
+/* Controls. */
+.ship-screen .key {
+  padding: 5px 12px;
+  border: 1px solid rgba(214, 170, 96, 0.4);
+  border-radius: 6px;
+  background: rgba(7, 9, 14, 0.8);
+  color: var(--sh-text);
+  font: inherit;
+  font-size: 12.5px;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ship-screen .key:hover {
+  border-color: var(--sh-wait);
+  background: rgba(243, 194, 122, 0.1);
+}
+
+.ship-screen a {
+  color: #8fd8ff;
+}
+
+.ship-screen button:focus-visible,
+.ship-screen a:focus-visible,
+.ship-screen [tabindex]:focus-visible {
+  outline: 2px solid var(--sh-wait);
+  outline-offset: 2px;
+}
+
+.ship-screen .visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.ship-screen .key.main {
+  border-color: var(--sh-wait);
+  background: rgba(243, 198, 78, 0.16);
+  color: var(--sh-title);
+}
+
+.ship-screen .key.danger {
+  border-color: rgba(255, 141, 122, 0.55);
+  color: var(--sh-red);
+}
+
+.ship-screen .key:disabled,
+.ship-screen .chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Fields and chips of the comms room and the order desk. */
+.ship-screen textarea,
+.ship-screen .field {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--sh-line);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--sh-text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.ship-screen textarea {
+  resize: vertical;
+}
+
+.ship-screen textarea:focus-visible,
+.ship-screen .field:focus-visible,
+.ship-screen input:focus-visible {
+  outline: 2px solid var(--sh-wait);
+  outline-offset: 1px;
+}
+
+.ship-screen .chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ship-screen .chip {
+  padding: 2px 10px;
+  border: 1px solid var(--sh-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sh-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ship-screen .chip:hover {
+  background: rgba(243, 194, 122, 0.12);
+}
+
+.ship-screen .chip[aria-pressed="true"] {
+  border-color: var(--sh-teal);
+  background: rgba(95, 214, 200, 0.14);
+  color: var(--sh-teal);
+}
+
+/* An order's outcome under its group. */
+.ship-screen .result {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.ship-screen .result.ok {
+  color: var(--sh-green);
+}
+
+.ship-screen .result.bad {
+  color: var(--sh-red);
+}

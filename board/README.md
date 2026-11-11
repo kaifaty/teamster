@@ -116,20 +116,52 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
   «Внедрить» asks where — a repository from `repos` in `GET /api/research`, a domain lesson's own one or `teamster`
   first — and for an optional note, and «Запустить» starts a teamster task whose brief the server builds from the
   lesson (`POST /api/actions/implement`; a proposed lesson becomes accepted). The agent makes the change and opens a
-  PR; changes outside the repositories it only lists in its report. The card then follows the task (`implementation`
+  PR; changes outside the repositories it only lists in its report. A lesson whose proposal names files outside every
+  git repository (`outside` of the lesson, such as `~/.codex/checks/<repo>/ci_wait.py`) lists them on its card above
+  the buttons. «Внедрить» then lets the agent change exactly those files: it saves a `.bak` copy next to each file
+  first and checks the change on a copy, and these changes have no PR. «Скопировать задание» copies the same change
+  as an assignment for a Claude session that makes it by hand, ending with the `teamster lesson … applied` command; when
+  the clipboard refuses, the assignment is shown to copy. The card then follows the task (`implementation`
   of the lesson): the agent works; it needs a decision, with its questions and a reply field; its PR is ready, to be
-  checked, merged and then marked «Внедрено», whose note starts with the PR's URL; it stopped, with its summary and a
-  reply field to go on; or the task is closed. A reply goes to the task with `say`. While a lesson's task is open,
-  «Внедрить» is not offered.
+  checked, merged and then marked «Внедрено», whose note starts with the PR's URL; for a lesson with `outside` files,
+  its change outside the repository is done, to be checked by the agent's report and marked «Внедрено»; it stopped,
+  with its summary and a reply field to go on; or the task is closed. A reply goes to the task with `say`. While a lesson's task is open,
+  «Внедрить» is not offered, and «Посмотреть» leaves the station for the task's ship: the map flies to its system and
+  opens its card. The line under the station's title offers the same while exactly one agent is at work, and shows
+  a ready PR first, then a done change outside the repository.
 - «Трюм архива»: one capsule per record the next planned reflection will read, lit when it carries a signal, the records per
   project and per signal, and the signalled records, each of which can be ordered into a study.
 
 The station's buttons act at once: the board server runs `teamster lesson`, `say` or `reflect` (`POST /api/actions/*`)
-and the screen shows the result. These are the only actions the board runs; every other screen only reads. When the
-server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
+and the screen shows the result. These and a ship's orders below are the only actions the board runs; every other
+screen only reads. When the server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
 button copies the equivalent command for the terminal instead and says why; «Внедрить» has no such command and stays
 off. In `npm run dev:fixture` the actions play on the fixtures, so the whole station can be clicked through without a
 server: an implementation started there works for a few seconds, asks a question, and after the answer opens a PR.
+
+A ship's own screen, its bridge (`board/web/src/map/ship/`), leads with «Сейчас» across the screen: the ship's state
+in plain words with short facts (the turn, the branch's changes, the PR, the stations' results), a strip of the route
+with the ship's stop, the message that set off its turn, the agent's full report (`TaskDetail.report`; the cards keep
+the first line) or, while it works, its latest actions, and on the right what is needed from you, with one main
+button by state (`needOf` in `orders.ts`): the agent's questions, each with «Да», «Нет» or «Своё…», which make one
+reply shown before it goes; your reply with the state's suggestion; «Принять» or «Вернуть на доработку» on the
+roadstead; «Вернуть на исправление» when the check, CI or the base failed; or nothing to do while the ship works,
+where a teamster of 1.60 or later (`actions.queue`) takes an order into the ship's queue (`say --queue`): it goes out
+as one turn when the cycle completes, and any other end, a stop included, drops it. With an older teamster the field
+stays off while the ship works. Every reply goes with the refit's changed fields. Under «Сейчас», «Что сделано» lists
+the branch's changes (`TaskDetail.changes`), the PR, the saved check, the agent's own checks, the review, CI, the base
+merge, the fix loop's stop and what is left undone, each only when known; «Журнал рейса» has the correspondence by time
+(the lead's orders, the review's and CI's reports, the first line of the last report, the orders waiting in the queue,
+the dropped ones with «Отправить снова») and the flight recorder, where the time a stopped ship waited for you is its
+own hatched stripe «ждал тебя». Beside them: the ship's card (papers with the plain word first and the bridge's word
+after it, meters only where there is data, «Весь паспорт» folded), «Другие приказы» with the refit (`say` options:
+model, effort, limits, rounds, reviewer and angles), an extra review (`review`), the verdict (`verdict`), a flight
+review at the science station (`reflect` of this task) and the recall (`stop`, `clean` with the branch kept by
+default), folded and each only where the server takes its order, and the documents the task has. Under a group, a
+carried-out order tells in Russian what changed (`orderOutcome`), with teamster's own output in the line's title; the
+line goes once the ship's column or phase changes later than the order's own effect. The logic lives in `bridge.ts`,
+`now.ts`, `done.ts`, `orders.ts` and `desk.ts`; a board that only reads copies the equal command, and `dev:fixture`
+plays the orders on its own tasks.
 
 Like the tanks, the station stays live during a replay.
 The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and

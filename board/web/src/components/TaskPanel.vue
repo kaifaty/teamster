@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { BoardSource } from "../lib/source";
 import type { TaskDetail, TaskFile, TaskSummary } from "../types";
 import { formatAge, formatClock, formatDuration, formatFullTime } from "../lib/format";
-import { renderMarkdown } from "../lib/markdown";
+import { useTaskFile } from "../lib/taskFile";
 import { cargoRows, findingLine, hasCargo } from "../lib/cargo";
 import TaskCommands from "./TaskCommands.vue";
 import { COLUMNS, EXECUTORS, FILES, KINDS, PHASES, RESULT, ciChip, claudeLink, prLabel, taskTitle } from "../lib/labels";
@@ -21,10 +21,7 @@ const detail = ref<TaskDetail | null>(null);
 const detailError = ref<string | null>(null);
 const notFound = ref(false);
 const tab = ref<TaskFile | null>(null);
-const fileText = ref<string | null>(null);
-const fileState = ref<"idle" | "loading" | "missing" | "error">("idle");
 const closeButton = ref<HTMLButtonElement | null>(null);
-const cache = new Map<string, string | null>();
 
 const shown = computed<TaskSummary | null>(() => props.task ?? detail.value);
 const session = computed(() => shown.value?.kind === "session");
@@ -50,42 +47,6 @@ async function loadDetail() {
   }
 }
 
-let fileRequest = 0;
-/** The tab whose text `fileText` holds, so that another tab never shows it while its own text loads. */
-let fileTab: TaskFile | null = null;
-async function loadFile() {
-  const name = tab.value;
-  const request = ++fileRequest;
-  if (name !== fileTab) {
-    fileTab = name;
-    fileText.value = null;
-  }
-  if (!name) {
-    fileText.value = null;
-    fileState.value = "idle";
-    return;
-  }
-  const key = `${props.slug}\n${name}\n${props.task?.updated_at ?? detail.value?.updated_at ?? ""}`;
-  if (cache.has(key)) {
-    fileText.value = cache.get(key)!;
-    fileState.value = fileText.value === null ? "missing" : "idle";
-    return;
-  }
-  fileState.value = "loading";
-  try {
-    const text = await props.source.fetchFile(props.slug, name);
-    if (request !== fileRequest) return;
-    cache.set(key, text);
-    fileText.value = text;
-    fileState.value = text === null ? "missing" : "idle";
-  } catch {
-    if (request !== fileRequest) return;
-    fileState.value = "error";
-  }
-}
-
-const html = computed(() => (fileText.value !== null && tab.value !== "check" ? renderMarkdown(fileText.value) : ""));
-
 watch(
   () => props.slug,
   () => {
@@ -106,7 +67,13 @@ watch(
 watch(files, (list) => {
   if (!tab.value || !list.includes(tab.value)) tab.value = list[0] ?? null;
 });
-watch([tab, () => props.task?.updated_at], () => void loadFile());
+const { text: fileText, state: fileState, html } = useTaskFile({
+  source: () => props.source,
+  slug: () => props.slug,
+  tab,
+  version: () => props.task?.updated_at ?? detail.value?.updated_at ?? "",
+  changed: () => props.task?.updated_at,
+});
 
 function onKey(event: KeyboardEvent) {
   if (event.key === "Escape") {

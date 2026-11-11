@@ -30,14 +30,16 @@ function setup(actions: ResearchActions | null = { enabled: true, reason: null }
   const act = vi.fn(async (_route: string, _body: unknown): Promise<ActionResult> => answer);
   const copied: string[] = [];
   const jumps: Deck[] = [];
+  const ships: [string, string][] = [];
   const desk = createConsole(station, ref(NOW), {
     act: act as never,
     copy: async (text) => (copied.push(text), true),
     jump: (deck) => jumps.push(deck),
+    openShip: (slug, repo) => ships.push([slug, repo]),
   });
   const lesson = (entry: string) => [...station.value.proposed, ...station.value.accepted].find((item) => item.entry === entry)!;
   const study = (slug: string) => station.value.studies.find((item) => item.slug === slug)!;
-  return { view, station, update, act, copied, jumps, desk, lesson, study, answer: (next: ActionResult) => (answer = next) };
+  return { view, station, update, act, copied, jumps, ships, desk, lesson, study, answer: (next: ActionResult) => (answer = next) };
 }
 
 afterEach(() => {
@@ -221,6 +223,38 @@ describe("«Внедрить»", () => {
     await nextTick();
     expect(implementationLine(lesson(U1).implementation, desk.cardOf(u1).started)).toMatchObject({ kind: "closed" });
     expect(desk.offersImplement(lesson(U1))).toBe(true);
+    desk.dispose();
+  });
+
+  it("«Посмотреть» flies to the ship of the lesson's open task, also before the lesson shows it", async () => {
+    const { desk, lesson, update, answer, ships } = setup();
+    const t1 = lesson(T1);
+    expect(desk.shipOf(t1)).toBeNull();
+    desk.openForm(t1, "implement");
+    desk.setRepo(t1, "/Users/demo/dev/demo-vault");
+    answer({ ok: true, output: "", slug: "lesson-t1" });
+    await desk.implement(t1, "proposed");
+    expect(desk.shipOf(t1)).toEqual({ slug: "lesson-t1", repo: "demo-vault" });
+    desk.watchAgent(t1);
+    expect(ships).toEqual([["lesson-t1", "demo-vault"]]);
+
+    // A start the server named no slug for has no ship to find until the lesson shows its task.
+    const u1 = lesson(U1);
+    desk.openForm(u1, "implement");
+    answer({ ok: true, output: "started" });
+    await desk.implement(u1, "accepted");
+    expect(desk.shipOf(u1)).toBeNull();
+    const task: Implementation = {
+      slug: "lesson-u1", archived: false, alive: true, repo: "teamster", result_status: null, pr: null, questions: [], summary: null, created: NOW, updated_at: NOW,
+    };
+    update((view) => (view.lessons.find((item) => item.entry === U1)!.implementation = task));
+    expect(desk.shipOf(lesson(U1))).toEqual({ slug: "lesson-u1", repo: "teamster" });
+
+    // A closed task's ship has left the map.
+    update((view) => Object.assign(view.lessons.find((item) => item.entry === U1)!.implementation!, { alive: false, archived: true }));
+    desk.watchAgent(lesson(U1));
+    expect(desk.shipOf(lesson(U1))).toBeNull();
+    expect(ships).toHaveLength(1);
     desk.dispose();
   });
 

@@ -24,8 +24,14 @@ export interface AgentReplyState {
 
 const BLANK_AGENT: Readonly<AgentReplyState> = Object.freeze({ text: "", busy: false, error: "", copied: null, sent: null });
 
+/** What the station's screen lends the console to leave for the map. */
+export interface ShipOptions {
+  /** Opens the system of the task `slug` on the map, with its card. */
+  openShip?: (slug: string, repo: string) => void;
+}
+
 /** What the console lends: its research, its actions and its lessons' cards. */
-export interface ImplementContext {
+export interface ImplementContext extends ShipOptions {
   research: Ref<Research>;
   live: Readonly<Ref<boolean>>;
   act: ActionSender;
@@ -36,7 +42,7 @@ export interface ImplementContext {
   hold: (lesson: Lesson, stage: Stage, index: number) => void;
 }
 
-export function createImplementation({ research, live, act, run, cardOf, edit, listOf, hold }: ImplementContext) {
+export function createImplementation({ research, live, act, run, cardOf, edit, listOf, hold, openShip }: ImplementContext) {
   /** «Внедрить» is off on a board that only reads, with the reason as its hint. */
   const implementOff = computed(() => (live.value ? null : IMPLEMENT_OFF));
   /** Whether the card offers «Внедрить»: not while its implementation goes, nor while the one it started does not show yet. */
@@ -69,6 +75,20 @@ export function createImplementation({ research, live, act, run, cardOf, edit, l
     Object.assign(state, { form: null, note: "", started: { slug: result.slug ?? "", repo: repo?.name ?? state.repo } });
     // A proposed lesson moves to «к внедрению»: it stays on its tab a moment, like an accepted one.
     if (stage === "proposed") hold(lesson, stage, index);
+  }
+
+  /** The ship that implements the lesson: its task's slug and system, while the task is open. */
+  function shipOf(lesson: Lesson): { slug: string; repo: string } | null {
+    const started = cardOf(lesson).started;
+    const task = lesson.implementation;
+    if (started && startPending(task, started)) return started.slug ? { slug: started.slug, repo: started.repo } : null;
+    return task && !task.archived ? { slug: task.slug, repo: task.repo } : null;
+  }
+
+  /** «Посмотреть»: the station gives way to the ship's system on the map, with the ship's card open. */
+  function watchAgent(lesson: Lesson) {
+    const ship = shipOf(lesson);
+    if (ship) openShip?.(ship.slug, ship.repo);
   }
 
   // ---- replies to an implementation's agent
@@ -108,5 +128,5 @@ export function createImplementation({ research, live, act, run, cardOf, edit, l
     if (outcome.kind === "copied") state.copied = outcome.copied;
     else state.sent = sent;
   }
-  return { implementOff, offersImplement, implement, agentOf, setAgentText, agentSent, sayToAgent };
+  return { implementOff, offersImplement, implement, shipOf, watchAgent, agentOf, setAgentText, agentSent, sayToAgent };
 }

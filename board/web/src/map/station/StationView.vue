@@ -31,11 +31,13 @@ const props = defineProps<{
   /** Asks the server for the research again. */
   refresh: () => Promise<void>;
 }>();
-const emit = defineEmits<{ close: []; open: [slug: string] }>();
+/** `open`: a task's card over the screen; `ship`: the screen gives way to a task's system, with its card. */
+const emit = defineEmits<{ close: []; open: [slug: string]; ship: [slug: string, repo: string] }>();
 
 const desk = createConsole(toRef(props, "research"), toRef(props, "now"), {
   act: (route, body) => postAction(route, body, { send: props.source.act, refresh: props.refresh }),
   jump: (deck) => jump(deck),
+  openShip: (slug, repo) => emit("ship", slug, repo),
 });
 provide(CONSOLE, desk);
 
@@ -48,6 +50,7 @@ async function act() {
   const action = next.value.action;
   if (!action) return;
   if (action.kind === "reply") return desk.answer(action.study);
+  if (action.kind === "watch") return desk.watchAgent(action.lesson);
   desk.showStage(action.kind === "review" ? "proposed" : "accepted");
   if (action.kind === "accepted") return;
   await nextTick();

@@ -149,8 +149,12 @@ def test_archive_cap_and_removed_message(tmp_path):
 def test_details_and_file_allowlist(tmp_path):
     directory = write_state(tmp_path, executor="claude", claude_account="pool", task_model="opus",
                             reasoning_effort="high", publish={"pr": "https://example.test/pr/1"},
+                            result={"summary": "First line\n\nWhy this change was needed.\n"},
                             rounds=[{}], ci={"outcome": "failed", "rounds": 2}, checks=[{"at": i, "outcome": "passed", "cmd": "x" * 250}
                                                for i in range(250)])
+    write_state(tmp_path, "empty")
+    for size in (8000, 8001):
+        write_state(tmp_path, f"long-{size}", result={"summary": "x" * size})
     (directory / "brief.md").write_text("brief")
     (directory / "last.md").write_text("last")
     (directory / "auth.json").write_text("must never be read")
@@ -168,11 +172,195 @@ def test_details_and_file_allowlist(tmp_path):
     assert detail["repo"] == "project"
     assert detail["fix_round"] == 3
     assert detail["pr"] == "https://example.test/pr/1"
+    assert detail["report"] == "First line\n\nWhy this change was needed.\n"
+    summary = next(row for row in store.summaries() if row["slug"] == "task")
+    assert detail["summary"] == summary["summary"] == "First line"
+    assert detail["changes"] is None
+    assert store.detail("empty")["report"] is None
+    assert store.detail("long-8000")["report"] == "x" * 8000
+    assert store.detail("long-8001")["report"] == "x" * 7999 + "…"
     assert store.detail("escape") is None
     assert store.detail("unknown") is None
     for name in ("../state.json", "state.json", "auth.json", "review", "missing"):
         assert store.file_path("task", name) is None
     assert store.file_path("task", "brief") == directory / "brief.md"
+
+
+def test_detail_branch_changes(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.test",
+             "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+            cwd=tmp_path, stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=5,
+        )
+
+    repo, worktree, tasks = tmp_path / "repository", tmp_path / "branch", tmp_path / "tasks"
+    git("init", "--quiet", str(repo))
+    (repo / "modified.txt").write_text("before\nremoved\n")
+    git("-C", str(repo), "add", ".")
+    git("-C", str(repo), "commit", "--quiet", "-m", "Base")
+    git("-C", str(repo), "branch", "base")
+    git("-C", str(repo), "worktree", "add", "--quiet", "-b", "task", str(worktree), "base")
+    (worktree / "modified.txt").write_text("after\n")
+    (worktree / "added.txt").write_text("new\n")
+    git("-C", str(worktree), "add", ".")
+    git("-C", str(worktree), "commit", "--quiet", "-m", "Change files")
+    (worktree / "pending.txt").write_text("pending\n")
+    tracked = worktree / "modified.txt"
+    stamp = tracked.stat()
+    os.utime(tracked, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+    index = Path(git("-C", str(worktree), "rev-parse", "--git-path", "index").stdout.decode().strip())
+    original_index = index.read_bytes()
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
+    write_state(tasks, worktree=str(worktree), base="base")
+    write_state(tasks, "unchanged", worktree=str(repo), base="base")
+    write_state(tasks, "missing", repo=str(repo), worktree=str(tmp_path / "gone"), base="base")
+    write_state(tasks, "not-git", worktree=str(tmp_path), base="base")
+    write_state(tasks, "unknown-base", worktree=str(worktree), base="missing-ref")
+    store = Store(tasks)
+    store.poll()
+    assert store.detail("task")["changes"] == {
+        "commits": 1, "files": 2, "insertions": 2, "deletions": 2, "uncommitted": 1}
+    assert index.read_bytes() == original_index
+    assert store.detail("unchanged")["changes"] == {
+        "commits": 0, "files": 0, "insertions": 0, "deletions": 0, "uncommitted": 0}
+    for slug in ("missing", "not-git", "unknown-base"):
+        assert store.detail(slug)["changes"] is None
+
+    def no_git(*args, **kwargs):
+        pytest.fail("Invalid base refs must not start git")
+
+    monkeypatch.setattr(subprocess, "run", no_git)
+    for base in ("-base", "base name", "base..HEAD"):
+        write_state(tasks, worktree=str(worktree), base=base)
+        store.poll()
+        assert store.detail("task")["changes"] is None
+
+
+def test_detail_limits_from_state_and_invalid_fields(tmp_path):
+    rotations = [{"at": at, "from": "a\n b", "to": "x" * 250, "reason": "quota\n reached"}
+                 for at in reversed(range(25))]
+    rotations += [None, {"at": True}, {"at": float("inf")}, {"at": "30"}, {"reason": "missing at"}]
+    write_state(tmp_path, "full", max_turn_minutes=90, weekly_used_percent=4.5,
+                max_task_weekly_percent=20, fix_rounds=2, rounds=[{}, {}], ci_rounds=3,
+                ci_enabled=True, review_angles=["correctness", "tests"], check="uv run\n pytest",
+                rotations=rotations)
+    write_state(tmp_path, "old")
+    write_state(tmp_path, "broken", max_turn_minutes=True, weekly_used_percent=float("nan"),
+                max_task_weekly_percent="20", fix_rounds=False, rounds=None, ci_rounds=float("inf"),
+                ci_enabled="yes", ci_command=7, review_angles=["tests", None], check=[], rotations=5)
+    store = Store(tmp_path)
+    store.poll()
+    assert store.detail("full")["limits"] == {
+        "max_turn_minutes": 90, "weekly_used_percent": 4.5, "max_weekly_percent": 20,
+        "fix_rounds": 2, "review_rounds": 2, "ci_rounds": 3, "ci_enabled": True,
+        "review_angles": ["correctness", "tests"], "check": "uv run pytest",
+        "rotations": [{"at": at, "from": "a b", "to": "x" * 200, "reason": "quota reached"}
+                      for at in range(5, 25)],
+    }
+    empty = {"max_turn_minutes": None, "weekly_used_percent": None, "max_weekly_percent": None,
+             "fix_rounds": None, "review_rounds": 0, "ci_rounds": None, "ci_enabled": False,
+             "review_angles": [], "check": None, "rotations": []}
+    assert store.detail("old")["limits"] == store.detail("broken")["limits"] == empty
+    write_state(tmp_path, "command", ci_enabled=False, ci_command="make ci", review_angles="auto",
+                check="c" * 250, rotations=[{"at": 2, "from": False, "to": {}, "reason": " "}])
+    store.poll()
+    assert store.detail("command")["limits"] == {
+        **empty, "ci_enabled": True, "check": "c" * 200,
+        "rotations": [{"at": 2, "from": None, "to": None, "reason": None}],
+    }
+
+
+@pytest.mark.parametrize("archived", [False, True])
+def test_detail_messages_sources_invalid_rows_and_limit(tmp_path, archived):
+    root = tmp_path / ".archive" if archived else tmp_path
+    slug = "task-20261110T000000Z" if archived else "task"
+    directory = write_state(root, slug)
+    store = Store(tmp_path)
+    store.poll()
+    assert store.detail(slug)["messages"] == []
+    sources = ["lead", "review", "ci", "claude", None, "other"]
+    rows = [{"at": at, "source": sources[at % len(sources)], "text": "t" * 4100,
+             **({"queued_at": at - 0.5} if at % 2 else {"queued_at": "bad"} if at % 4 else {})}
+            for at in reversed(range(60))]
+    rows += [[], None, {"text": "missing at"}, {"at": "61", "text": "bad at"},
+             {"at": True, "text": "bool"}, {"at": float("nan"), "text": "nan"},
+             {"at": float("inf"), "text": "inf"}, {"at": 61}, {"at": 62, "text": []}]
+    path = directory / "messages.jsonl"
+    path.write_text("{bad json}\n" + "".join(json.dumps(row) + "\n" for row in rows))
+    expected = [
+        {"at": at, "source": sources[at % 6] if sources[at % 6] in ("review", "ci") else "lead",
+         "text": "t" * 4000, "queued_at": at - 0.5 if at % 2 else None} for at in range(10, 60)
+    ]
+    assert store.detail(slug)["messages"] == expected
+    path.write_bytes(b'{"at": 1001, "text": "before tail"}\n' + b" " * (256 * 1024)
+                     + b'{"at": 1000, "text": "cut first line"}\n' + path.read_bytes())
+    assert store.detail(slug)["messages"] == expected
+    path.write_text('{"at": 1, "text": ""}\n')
+    assert store.detail(slug)["messages"] == [{"at": 1, "source": "lead", "text": "", "queued_at": None}]
+    outside = tmp_path / "private.jsonl"
+    path.rename(outside)
+    path.symlink_to(outside)
+    assert store.detail(slug)["messages"] == []
+
+
+def test_detail_queue_waiting_dropped_and_broken_files(tmp_path):
+    directory = write_state(tmp_path, "task")
+    store = Store(tmp_path)
+    store.poll()
+    empty = {"waiting": [], "dropped": []}
+    assert store.detail("task")["queue"] == empty
+    path = directory / "queue.json"
+    for broken in ("{bad json", "[]", '{"waiting": {}, "dropped": 3}'):
+        path.write_text(broken)
+        assert store.detail("task")["queue"] == empty
+    path.write_text(json.dumps({
+        "waiting": [{"at": 5, "text": "Then merge main", "options": {"effort": "low"}},
+                    {"at": True, "text": "bool"}, {"at": 6}, None],
+        "dropped": [{"at": 1, "text": "x" * 4100, "options": {}, "dropped_at": 3, "outcome": "stopped"},
+                    {"at": 2, "text": "no outcome"}],
+    }))
+    assert store.detail("task")["queue"] == {
+        "waiting": [{"at": 5, "text": "Then merge main"}],
+        "dropped": [{"at": 1, "text": "x" * 4000, "dropped_at": 3, "outcome": "stopped"},
+                    {"at": 2, "text": "no outcome", "dropped_at": None, "outcome": None}],
+    }
+    path.write_text(json.dumps({"waiting": [{"at": 7, "text": "Only waiting"}]}))
+    assert store.detail("task")["queue"] == {"waiting": [{"at": 7, "text": "Only waiting"}], "dropped": []}
+
+
+def test_detail_activity_log_retains_all_new_lines_across_polls(tmp_path, pids):
+    directory = write_state(tmp_path, pid=pids[0])
+    codex = directory / "events.jsonl"
+    claude = directory / "claude-events.jsonl"
+    store = Store(tmp_path)
+    for batch in (range(1, 5), range(5, 15)):
+        for at in batch:
+            path = codex if at % 2 else claude
+            event = ({"type": "item.completed", "item": {"type": "agent_message", "text": str(at)}}
+                     if at % 2 else {"type": "assistant", "message": {"content": [{"type": "text", "text": str(at)}]}})
+            with path.open("a") as stream:
+                stream.write(json.dumps({**event, "timestamp": at}) + "\n")
+        messages = store.poll()
+        latest = {"at": batch[-1], "kind": "message", "text": str(batch[-1])}
+        assert store.detail("task")["activity"] == latest
+        assert [m for m in messages if m["type"] == "activity"] == [
+            {"type": "activity", "slug": "task", "activity": latest}]
+        assert store.detail("task")["activity_log"] == [
+            {"at": at, "kind": "message", "text": str(at)}
+            for at in range(batch[-1], max(0, batch[-1] - 10), -1)
+        ]
+        assert store.poll() == []
+    with codex.open("a") as stream:
+        for label in ("first", "last"):
+            stream.write(json.dumps({"type": "item.completed", "timestamp": 15,
+                                     "item": {"type": "agent_message", "text": label}}) + "\n")
+    store.poll()
+    assert [item["text"] for item in store.detail("task")["activity_log"]] == [
+        "last", "first", *map(str, range(14, 6, -1))]
+    write_state(tmp_path, pid=pids[1])
+    store.poll()
+    assert store.detail("task")["activity_log"] == []
 
 
 FULL_CARGO = {
@@ -480,10 +668,13 @@ def test_session_repo_and_allowlisted_summary(tmp_path, cwd, origin, expected):
     assert detail["created"] == 1.0
     assert detail["updated_at"] == detail["phase_started_at"] == 2.0
     assert all(detail[key] is None for key in (
-        "reviewer", "account", "task_type", "ci", "outcome", "result_status", "summary", "sleeping_until"))
+        "reviewer", "account", "task_type", "ci", "outcome", "result_status", "summary", "sleeping_until",
+        "report", "changes"))
     assert {key: detail[key] for key in ("check", "review", "findings_left", "stop", "left", "cargo")} == {
         "check": None, "review": None, "findings_left": 0, "stop": None, "left": 0, "cargo": None}
     assert detail["files"] == []
+    assert detail["limits"] is None
+    assert detail["messages"] == detail["activity_log"] == []
     assert detail["timeline"] == [{"at": 1.0, "text": "Session created"},
                                     {"at": 2.0, "text": "Last activity"}]
     assert "private" not in json.dumps(detail)
