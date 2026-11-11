@@ -910,7 +910,9 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual((Path(state["worktree"]) / "clean.sh").read_text(), script)
         self.assertEqual((Path(state["worktree"]) / "tracked.txt").read_text(), "worker change\n")
         events = [json.loads(line) for line in trace_path.read_text().splitlines()]
-        worktree_events = [event for event in events if event["cwd"] == state["worktree"]]
+        # Origin discovery reads metadata before the publication filter guard.
+        worktree_events = [event for event in events if event["cwd"] == state["worktree"]
+                           and event["argv"][-3:] != ["remote", "get-url", "origin"]]
         self.assertTrue(worktree_events)
         self.assertIn("config", worktree_events[0]["argv"])
         self.assertTrue(any("--get-regexp" in event["argv"] for event in worktree_events))
