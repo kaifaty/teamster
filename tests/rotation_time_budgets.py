@@ -383,6 +383,36 @@ class TimeBudgetTests(RotationTestCase):
                 self.assertEqual([control.repeated(event) for _ in range(3)], [False, False, stuck])
                 self.assertEqual(control.reason is not None, stuck)
 
+    def test_empty_redirected_output_does_not_trigger_stuck(self):
+        worker = self.worker()
+        redirected = (
+            "cmake --build build > /tmp/build.log 2>&1",
+            "cmake --build build >> /tmp/build.log 2>&1",
+            "cmake --build build 1>/tmp/build.log",
+            "cmake --build build &>/tmp/build.log",
+            "cmake --build build &>>/tmp/build.log",
+            "cmake --build build 1>>'/tmp/build log'",
+            "/bin/zsh -lc 'cmake --build build > /tmp/build.log 2>&1'",
+        )
+        visible = (
+            "cmake --build build", "cmake --build build 2>/tmp/build.log",
+            "cmake --build build 2>>/tmp/build.log", "cmake --build build 1>&2",
+            "echo '>' /tmp/build.log", 'echo "1>/tmp/build.log"',
+            r"echo \>/tmp/build.log", "echo prefix'>'suffix",
+        )
+        for command in redirected + visible:
+            for output in ("", " \t\n", "build failed"):
+                with self.subTest(command=command, output=output):
+                    control = worker.turn_monitor.TurnControl(None, 3)
+                    event = {"type": "item.completed", "item": {
+                        "type": "command_execution", "command": command,
+                        "exit_code": 2, "aggregated_output": output}}
+                    stuck = bool(output.strip()) or command in visible
+                    self.assertEqual([control.repeated(event) for _ in range(3)], [False, False, stuck])
+                    self.assertEqual(control.reason is not None, stuck)
+                    if not stuck:
+                        self.assertNotIn(command, control.failures)
+
     def test_repeat_limit_and_russian_wrap_prompt_follow_settings(self):
         self.configure(repeat_limit=2)
         command = {"command": "pytest tests/widget.py", "exit_code": 2,
