@@ -312,7 +312,7 @@ def ci_run_info(st, gh, run_id, repo, stopped, deadline):
 def ci_rerun_failed(st, gh, stopped, deadline):
     """Request one batch of failed-job reruns per SHA before any repair turn."""
     ci = st["ci"]
-    reruns = st.setdefault("ci_reruns", ci.get("reruns", []))
+    reruns = st.setdefault("ci_reruns", [])
     ci["reruns"] = reruns
     if any(item["sha"] == ci["sha"] for item in reruns):
         return False
@@ -365,7 +365,7 @@ def wait_ci(st, stopped, sleep, queued_minutes=20):
     previous = st.get("ci") or {}
     ci = {"sha": "", "outcome": "pending", "checks": [], "seconds": previous.get("seconds", 0),
           "rounds": previous.get("rounds", 0), "reason": ""}
-    reruns = st.get("ci_reruns", previous.get("reruns", []))
+    reruns = st.get("ci_reruns", [])
     if reruns and not st.get("ci_command"):
         ci["reruns"] = reruns
     st["ci"] = ci
@@ -478,7 +478,7 @@ def ci_lines(ci):
     sha = ci.get("sha", "")[:7] or "unknown"
     rerun_lines = [f"== CI {item['sha'][:7]}: rerun failed jobs in run {item['run_id']}: {item['outcome']}" +
                    (": " + item["error"] if item.get("error") else "")
-                   for item in ci.get("reruns", [])]
+                   for item in ci.get("reruns", []) if item["sha"] == ci["sha"]]
     checks = ci.get("checks", [])
     failed = [check for check in checks if check["bucket"] in ("fail", "cancel")]
     passed = sum(check["bucket"] in ("pass", "skipping") for check in checks)
