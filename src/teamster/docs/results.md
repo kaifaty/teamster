@@ -22,6 +22,14 @@ The supervisor saves valid implementation JSON in state as `result`; `status` sh
 | `remaining` | unfinished work, including findings deferred as `out of scope` |
 | `findings` | in a fix turn, `{id, decision, note}` per supplied finding, `decision` being `fixed` or `rejected` with a one-line reason; an empty array in ordinary turns |
 
+With `--review`, a completed `partial` or `blocked` work turn still gets the saved check and one
+review if it has commits beyond the task base and HEAD is published to `origin`, or with `--no-push`.
+A fix turn must add commits of its own to qualify for that check and repeat review. Findings are
+saved in `reviews` as usual; `result` keeps the implementation status. These statuses stop further
+fix rounds with `auto_fix_stop: "result partial"` or `"result blocked"`, without `review_skipped`.
+Without eligible commits, review remains skipped. `needs_decision` keeps the existing checks and
+skips review until the lead answers. See [review-cycle.md](review-cycle.md).
+
 After every work turn, including fixes and wrap-ups, the supervisor creates or updates the PR only
 when `origin` has the local branch's HEAD. The `publish` receipt records its URL, action (`created`,
 `updated`, `unchanged`, or `skipped`), and error. `wait` prints `== PR created <URL>`,
@@ -95,8 +103,11 @@ result with numbers and attempts. The wrap-up has a 10-minute cap and is stopped
   code additions/deletions for ordinary fix rounds excluding guarded files, check results, the latest
   review in full, a finding-count history, and the stop reason. For `escalate`, the stop line names each
   P1/P2 finding targeting code from a fix round, that round's number, and its short commit SHA.
-- Base merge rounds name the base and conflicting files. A base conflict without remaining fix
-  rounds stops before automatic review with `auto_fix_stop: "base conflict"`; `wait` prints the base
+- A reviewed `partial` or `blocked` result appears before its review and findings. The cycle stop
+  line names the status, for example `== auto-fix: 0 rounds, findings 2; stop: result partial`,
+  including when `--fix-rounds` is zero.
+- Base merge rounds name the base and conflicting files. For turns that allow fixes, a base conflict
+  without remaining fix rounds stops before automatic review with `auto_fix_stop: "base conflict"`; `wait` prints the base
   and conflicting files even when `--fix-rounds` is zero. Failed fetch or merge-tree checks print
   their recorded skip reason and allow review to proceed; see [review-cycle.md](review-cycle.md).
 - `guarded files changed` and `== base tests`: see [checks.md](checks.md).
