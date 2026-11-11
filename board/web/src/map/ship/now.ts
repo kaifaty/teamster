@@ -18,7 +18,7 @@ export const failedOutcome = (outcome: string | null | undefined) => outcome ===
 export const count = (n: number, one: string, few: string, many: string) => `${n} ${plural(n, one, few, many)}`;
 
 function headlineOf(task: TaskSummary, cargo: Cargo | null | undefined, limits: TaskLimits | null | undefined, now: number): { tone: StateTone; headline: string } {
-  if (task.column === "closed") return { tone: "dim", headline: "Рейс окончен" };
+  if (task.column === "closed") return { tone: "dim", headline: "Задача закрыта" };
   if (task.kind === "session") {
     return task.alive ? { tone: "work", headline: "Сессия ведёт ход" } : { tone: "ready", headline: "Сессия ждёт тебя в приложении Claude" };
   }

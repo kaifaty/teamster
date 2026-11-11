@@ -40,7 +40,7 @@ function onKey(event: KeyboardEvent) {
       <p v-else class="line">
         {{ line.text }}<template v-if="line.kind === 'closed' && line.pr"> · <a :href="line.pr" target="_blank" rel="noopener">{{ line.label }}</a></template>
       </p>
-      <button v-if="ship" type="button" class="chip small watch" :title="`Открыть систему ${ship.repo} на карте с кораблём агента`" @click="desk.watchAgent(lesson)">
+      <button v-if="ship" type="button" class="chip small watch" :title="`Открыть репозиторий ${ship.repo} на карте с задачей агента`" @click="desk.watchAgent(lesson)">
         Посмотреть
       </button>
     </div>

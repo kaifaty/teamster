@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// The deck «Корабль»: the hull as the scene draws it, with a hole per open review finding and a patch per fix round,
-// its class, its papers with the plain word first, the meters that have something to show, and the rest of its papers
-// under «Весь паспорт».
+// The deck «Параметры»: the hull as the scene draws it, with a hole per open review finding and a patch per fix round,
+// its kind, its papers, the meters that have something to show, and the rest of its papers under «Все параметры».
 import { computed } from "vue";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
 import { ART } from "../art";
@@ -27,7 +26,7 @@ const meters = computed(() => metersOf(props.task, props.limits, props.cargo, pr
   <section class="deck ship" aria-labelledby="ship-deck">
     <div class="deck-head">
       <span class="sigil" aria-hidden="true">◈</span>
-      <h3 id="ship-deck">Корабль</h3>
+      <h3 id="ship-deck">Параметры</h3>
       <span v-if="task.turn > 0" class="aside num">ход {{ task.turn }}</span>
     </div>
     <div class="top">
@@ -47,29 +46,29 @@ const meters = computed(() => metersOf(props.task, props.limits, props.cargo, pr
       <div class="cls">
         <b>{{ hullClass(task) }}</b>
         <span class="dim">{{ crew }}</span>
-        <span v-if="damage" class="dim" :title="'Пробоины — открытые находки ревью, заплаты — круги исправления'">{{ damage }}</span>
+        <span v-if="damage" class="dim" :title="'На картинке: «!» — открытое замечание ревью, заплатка — круг исправления'">{{ damage }}</span>
       </div>
     </div>
     <dl class="papers">
       <template v-for="row in papers.main" :key="row.label">
-        <dt>{{ row.label }}<i v-if="row.meta"> · {{ row.meta }}</i></dt>
+        <dt>{{ row.label }}</dt>
         <dd :class="{ mono: row.mono }" :title="row.title">{{ row.value }}</dd>
       </template>
     </dl>
     <div v-if="meters.length" class="meters">
       <div v-for="item in meters" :key="item.id" class="meter">
         <div class="line">
-          <span class="dim">{{ item.label }}<i v-if="item.meta"> · {{ item.meta }}</i></span>
+          <span class="dim">{{ item.label }}</span>
           <span class="num">{{ item.value }}</span>
         </div>
         <div v-if="item.share !== null" class="track" aria-hidden="true"><div class="fill" :class="item.tone" :style="{ width: `${Math.round(item.share * 100)}%` }"></div></div>
       </div>
     </div>
     <details v-if="papers.more.length" class="fold">
-      <summary>Весь паспорт</summary>
+      <summary>Все параметры</summary>
       <dl class="papers">
         <template v-for="row in papers.more" :key="row.label">
-          <dt>{{ row.label }}<i v-if="row.meta"> · {{ row.meta }}</i></dt>
+          <dt>{{ row.label }}</dt>
           <dd :class="{ mono: row.mono }" :title="row.title">{{ row.value }}</dd>
         </template>
       </dl>

@@ -137,7 +137,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             <div class="sub">
               <template v-if="shown">
                 <template v-if="shown.kind !== 'session'"><span class="mono">{{ shown.slug }}</span> · </template>
-                <span>система {{ shown.repo }}</span>
+                <span>репозиторий {{ shown.repo }}</span>
                 <template v-if="shown.branch"> · ветка <span class="mono">{{ shown.branch }}</span></template>
               </template>
             </div>
@@ -147,7 +147,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <nav class="links" aria-label="Переходы">
           <a v-if="shown?.pr" class="key" :href="shown.pr" target="_blank" rel="noopener">{{ prLabel(shown.pr) }} ↗</a>
           <a v-if="link" class="key" :href="link">Открыть в Claude</a>
-          <button v-if="shown" type="button" class="key" title="Закрыть экран и показать корабль в его системе" @click="emit('show', shown.repo)">Показать на карте</button>
+          <button v-if="shown" type="button" class="key" title="Закрыть экран и показать задачу на карте её репозитория" @click="emit('show', shown.repo)">Показать на карте</button>
         </nav>
       </header>
 

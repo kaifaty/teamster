@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The deck «Другие приказы»: what «Сейчас» does not lead with — a verdict, the refit, an extra review, a flight review
+// The deck «Другие действия»: what «Сейчас» does not lead with — a verdict, the refit, an extra review, a flight review
 // at the science station and the recall. The forms stay folded until opened. A group shows only where the board server
 // takes its order; every button acts at once, and a board that only reads copies the equal command. Stopping and
 // writing off ask on the screen itself first.
@@ -70,29 +70,29 @@ watch(
   <section class="deck orders" aria-labelledby="orders-deck">
     <div class="deck-head">
       <span class="sigil" aria-hidden="true">⌘</span>
-      <h3 id="orders-deck">Другие приказы</h3>
+      <h3 id="orders-deck">Другие действия</h3>
     </div>
     <p v-if="!desk.live.value" class="readonly" role="note">Доска только читает ({{ desk.offReason.value }}): кнопки копируют команды teamster.</p>
 
     <div class="desk">
       <details v-if="view.refit" class="group fold">
-        <summary>Переоснащение <small>{{ view.queue ? "уйдёт с указанием в очередь" : "уйдёт со следующим ответом" }}</small></summary>
+        <summary>Изменить параметры <small>{{ view.queue ? "уйдёт с указанием в очередь" : "уйдёт со следующим ответом" }}</small></summary>
         <div class="body">
           <div class="refit">
-            <label>Модель <i>· двигатель</i><input v-model="refit.model" class="field mono" type="text" maxlength="64" :placeholder="asIs(task.model)" /></label>
+            <label>Модель<input v-model="refit.model" class="field mono" type="text" maxlength="64" :placeholder="asIs(task.model)" /></label>
             <label
-              >Усилие <i>· форсаж</i>
+              >Усилие
               <select v-model="refit.effort" class="field">
                 <option value="">{{ `как сейчас${task.effort ? ` · ${task.effort}` : ""}` }}</option>
                 <option v-for="effort in efforts" :key="effort" :value="effort">{{ effort }}</option>
               </select>
             </label>
             <label>Лимит хода, мин<input v-model="refit.max_minutes" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.max_turn_minutes)" /></label>
-            <label>Бюджет, % недели <i>· топливо</i><input v-model="refit.max_weekly" class="field num" type="text" inputmode="decimal" :placeholder="asIs(limits?.max_weekly_percent)" /></label>
+            <label>Бюджет, % недели<input v-model="refit.max_weekly" class="field num" type="text" inputmode="decimal" :placeholder="asIs(limits?.max_weekly_percent)" /></label>
             <label>Круги исправления<input v-model="refit.fix_rounds" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.fix_rounds)" /></label>
             <label>Попытки CI<input v-model="refit.ci_rounds" class="field num" type="text" inputmode="numeric" :placeholder="asIs(limits?.ci_rounds)" /></label>
             <label
-              >Ревьюер <i>· инспектор</i>
+              >Ревьюер
               <select v-model="refit.reviewer" class="field">
                 <option value="">{{ `как сейчас${task.reviewer ? ` · ${EXECUTORS[task.reviewer]}` : ""}` }}</option>
                 <option v-for="name in REVIEWERS" :key="name" :value="name">{{ EXECUTORS[name] }}</option>
@@ -100,7 +100,7 @@ watch(
             </label>
           </div>
           <div class="chips" role="group" aria-label="Углы ревью">
-            <span class="dim small">Углы ревью · ракурсы{{ savedAngles.length ? ` · сейчас ${savedAngles.join(", ")}` : "" }}</span>
+            <span class="dim small">Углы ревью{{ savedAngles.length ? ` · сейчас ${savedAngles.join(", ")}` : "" }}</span>
             <button
               v-for="angle in ANGLE_CHIPS"
               :key="angle"
@@ -118,7 +118,7 @@ watch(
 
       <!-- A called review sets the ship to work: its outcome stays under the group. -->
       <details v-if="view.review || groups.review.done" class="group fold" :open="!!groups.review.done || undefined" :aria-busy="busy('review')">
-        <summary>Внеочередное ревью <small>инспекция</small></summary>
+        <summary>Внеочередное ревью</summary>
         <div class="body">
           <div v-if="view.review" class="chips" role="group" aria-label="Углы внеочередного ревью">
             <button
@@ -168,8 +168,8 @@ watch(
 
       <div v-if="view.reflect" class="group" :aria-busy="busy('reflect')">
         <div class="row">
-          <button type="button" class="key" :disabled="busy('reflect')" @click="desk.reflect()">{{ groups.reflect.busy ? "Отправляю…" : "Разбор полёта" }}</button>
-          <span class="dim small">отправить рейс на научную станцию</span>
+          <button type="button" class="key" :disabled="busy('reflect')" @click="desk.reflect()">{{ groups.reflect.busy ? "Отправляю…" : "Разобрать задачу" }}</button>
+          <span class="dim small">отправить задачу на рефлексию</span>
         </div>
         <p v-if="groups.reflect.done" class="result ok" role="status" :title="groups.reflect.output">{{ groups.reflect.done }}</p>
         <p v-if="groups.reflect.error" class="result bad" role="alert">{{ groups.reflect.error }}</p>
@@ -179,7 +179,7 @@ watch(
       <div v-if="view.stop || view.clean" class="group" :aria-busy="busy('recall')">
         <div class="row">
           <button v-if="view.stop" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'stop'">Остановить ход</button>
-          <button v-if="view.clean" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'clean'">Списать корабль</button>
+          <button v-if="view.clean" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'clean'">Убрать задачу</button>
           <label v-if="view.clean" class="check"><input v-model="keepBranch" type="checkbox" /> оставить ветку</label>
         </div>
         <div v-if="confirming" class="confirm" role="alertdialog" aria-label="Подтверждение" @keydown.esc.stop="confirming = null">

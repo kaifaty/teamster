@@ -58,7 +58,7 @@ export function doneRows(task: TaskSummary, cargo: Cargo | null | undefined, cha
   if (check) {
     const word = check.outcome === "passed" ? "Пройдена" : check.outcome === "failed" ? "Упала" : check.outcome === "timeout" ? "Не уложилась во время" : check.outcome;
     const aside = [check.at !== null ? `в ${formatClock(check.at, now)}` : null, check.seconds !== null ? formatDuration(check.seconds) : null, failedOutcome(check.outcome) && check.exit !== null ? `код ${check.exit}` : null];
-    row({ key: "check", title: "Проверка", meta: "полигон", tone: check.outcome === "passed" ? "ok" : failedOutcome(check.outcome) ? "bad" : "muted", text: [word, ...aside].filter(Boolean).join(" · "), hint: check.command });
+    row({ key: "check", title: "Проверка", meta: "", tone: check.outcome === "passed" ? "ok" : failedOutcome(check.outcome) ? "bad" : "muted", text: [word, ...aside].filter(Boolean).join(" · "), hint: check.command });
   }
   if (cargo.claims.length) {
     const items = cargo.claims.map((claim) => ({ ...(CLAIMS[claim.outcome] ?? { mark: "·", tone: "muted" as Tone }), text: claim.command, where: claim.details || null }));
@@ -78,7 +78,7 @@ export function doneRows(task: TaskSummary, cargo: Cargo | null | undefined, cha
     row({
       key: "review",
       title: "Ревью",
-      meta: task.reviewer ? `инспекция · ${EXECUTORS[task.reviewer]}` : "инспекция",
+      meta: task.reviewer ? EXECUTORS[task.reviewer] : "",
       tone,
       text: [head, after, decided].filter(Boolean).join(" · "),
       hint: review.summary ?? undefined,
@@ -99,7 +99,7 @@ export function doneRows(task: TaskSummary, cargo: Cargo | null | undefined, cha
     row({
       key: "ci",
       title: "CI",
-      meta: "врата",
+      meta: "",
       tone: bad ? "bad" : ci.outcome === "passed" ? "ok" : "muted",
       text: [word, ...aside].filter(Boolean).join(" · "),
       hint: ci.reason ?? undefined,

@@ -92,7 +92,7 @@ const gauges = computed<Gauge[]>(() => {
       tone: c.applied ? "green" : "dim", deck: "lab", title: "Уроки, которые уже изменили правила",
     },
     {
-      id: "hold", sigil: "▣", value: String(c.records), label: c.signals ? `в трюме · ${c.signals} ⚠` : "в трюме",
+      id: "hold", sigil: "▣", value: String(c.records), label: c.signals ? `не разобрано · ${c.signals} ⚠` : "не разобрано",
       tone: c.signals ? "amber" : "dim", deck: "hold", title: "Записи для следующего разбора и сколько из них с сигналом",
     },
     {
@@ -159,18 +159,18 @@ onBeforeUnmount(() => {
     :style="{ '--frame': `url(${frame})`, '--sky': `url(${nebula})` }"
   >
     <header class="hud">
-      <button ref="back" type="button" class="back" title="Вернуться к галактике (Esc)" @click="emit('close')">← Галактика</button>
+      <button ref="back" type="button" class="back" title="Вернуться к карте (Esc)" @click="emit('close')">← Карта</button>
       <div class="ident">
         <img class="emblem" :src="stationArt" alt="" />
         <span class="titles">
-          <h2 id="station-title">Научная станция</h2>
+          <h2 id="station-title">Рефлексия</h2>
           <span class="next" role="status">
             <span class="headline" :class="next.tone">{{ next.text }}</span>
             <button v-if="next.action" type="button" class="next-key" :class="next.tone" @click="act">{{ next.action.label }}</button>
           </span>
         </span>
       </div>
-      <nav class="gauges" aria-label="Показатели станции">
+      <nav class="gauges" aria-label="Показатели рефлексии">
         <button
           v-for="gauge in gauges"
           :key="gauge.id"

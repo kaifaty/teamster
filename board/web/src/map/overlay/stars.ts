@@ -11,7 +11,7 @@ export function starTitle(star: Star): string {
     star.ready ? `ждут ${star.ready}` : "",
     star.sleeping ? `спят ${star.sleeping}` : "",
   ].filter(Boolean);
-  const ships = star.live ? `кораблей ${star.live}` : "тихо";
+  const ships = star.live ? `задач ${star.live}` : "тихо";
   return [`${star.repo}: ${ships}`, ...notes].join(" · ");
 }
 

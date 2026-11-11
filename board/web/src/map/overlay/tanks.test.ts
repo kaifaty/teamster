@@ -36,15 +36,15 @@ describe("tank labels", () => {
         `Сброс недели: ${when(NOW + 3600)}`,
         `5 часов: занято 37%, сброс ${formatClock(resetsAt, NOW)}`,
         `Бесплатных сбросов: 2 · сгорают ${expires.map((time) => formatClock(time, NOW)).join(", ")}`,
-        "Лампы у бака: дни до сброса",
+        "Лампы: дни до сброса недели",
       ].join("\n"),
     );
   });
 
-  it("call a spent tank's refill a refuel and leave out what it does not know", () => {
+  it("say when a spent account is available again and leave out what it does not know", () => {
     const title = tankTitle(tank({ executor: "claude", fuel: null, bad: true, refillAt: NOW + 600, burst: { percent: 80, resetsAt: null }, resets: { count: 0, expires: [] } }), NOW);
     expect(title).toBe(
-      ["main · Claude", "Неделя: нет данных", `Заправка: ${when(NOW + 600)}`, "5 часов: занято 80%", "Бесплатных сбросов: 0", "Лампы у бака: дни до сброса"].join("\n"),
+      ["main · Claude", "Неделя: нет данных", `Снова доступен: ${when(NOW + 600)}`, "5 часов: занято 80%", "Бесплатных сбросов: 0", "Лампы: дни до сброса недели"].join("\n"),
     );
   });
 

@@ -138,7 +138,7 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
     }
     const { options, errors } = refitNow.value;
     if (errors.length) {
-      Object.assign(state, blank(), { error: `Переоснащение: ${errors.join(" · ")}` });
+      Object.assign(state, blank(), { error: `Изменить параметры: ${errors.join(" · ")}` });
       return false;
     }
     const body = Object.keys(options).length ? { slug: slug.value, text: words, options } : { slug: slug.value, text: words };

@@ -27,7 +27,7 @@ export interface AccountRow {
 }
 
 /** What the admiral's account is, for titles: the duty account kept for the orchestrator. */
-export const ADMIRAL_NOTE = "Адмирал: подписка в резерве оркестратора, новые задачи её не берут";
+export const ADMIRAL_NOTE = "Резерв оркестратора: новые задачи эту подписку не берут";
 
 export interface DutyInfo {
   /** Why this account was elected, as `duty tick` wrote it. */

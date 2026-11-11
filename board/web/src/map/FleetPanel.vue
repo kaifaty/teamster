@@ -67,8 +67,8 @@ const glyph = (row: FleetRow) => (row.executor === "codex" ? "◆" : "✳");
 <template>
   <aside id="fleet-panel" class="fleet" :style="{ '--frame': `url(${frame})` }" aria-labelledby="fleet-title">
     <header class="f-head">
-      <h2 id="fleet-title">Корабли системы<span class="num"> · {{ total }}</span></h2>
-      <button type="button" class="f-close" aria-label="Скрыть список кораблей" title="Скрыть список кораблей" @click="emit('close')">
+      <h2 id="fleet-title">Задачи репозитория<span class="num"> · {{ total }}</span></h2>
+      <button type="button" class="f-close" aria-label="Скрыть список задач" title="Скрыть список задач" @click="emit('close')">
         <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
           <path d="M3 3l6 6M9 3l-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
         </svg>
@@ -77,7 +77,7 @@ const glyph = (row: FleetRow) => (row.executor === "codex" ? "◆" : "✳");
     <div ref="list" class="f-list">
       <section v-for="group in groups" :key="group.place" class="f-group" :class="{ lit: lit === group.place }" :data-place="group.place">
         <h3 class="f-station">
-          <span class="f-name">{{ group.name }}<span class="f-note"> · {{ group.note }}</span></span>
+          <span class="f-name">{{ group.name }}<span v-if="group.note" class="f-note"> · {{ group.note }}</span></span>
           <span class="num f-count">{{ group.ships.length }}</span>
         </h3>
         <button
@@ -96,7 +96,7 @@ const glyph = (row: FleetRow) => (row.executor === "codex" ? "◆" : "✳");
           <span class="r-phase num">{{ ship.phase }}</span>
         </button>
       </section>
-      <p v-if="!groups.length" class="f-quiet">В системе никого.</p>
+      <p v-if="!groups.length" class="f-quiet">Задач нет.</p>
       <p v-if="hidden.count" class="f-quiet" :title="hidden.title">Не показано на карте: {{ hidden.count }}</p>
     </div>
   </aside>

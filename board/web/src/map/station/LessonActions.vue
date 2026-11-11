@@ -24,7 +24,7 @@ const note = computed({
   get: () => card.value.note,
   set: (text: string) => desk.setNote(props.lesson, text),
 });
-/** «Где внедрять», two-way: the picked repository's path. */
+/** «Репозиторий», two-way: the picked repository's path. */
 const repo = computed({
   get: () => card.value.repo,
   set: (path: string) => desk.setRepo(props.lesson, path),
@@ -76,22 +76,26 @@ function submit() {
 
     <form v-else-if="card.form === 'implement'" class="form" @submit.prevent="submit" @keydown.esc.stop="desk.closeForm(lesson)">
       <label class="field">
-        <span class="label">Где внедрять</span>
+        <span class="label">Репозиторий</span>
         <select v-model="repo" :title="repo || 'Выбери репозиторий'" :disabled="!!card.busy">
           <option value="" disabled>Выбери репозиторий</option>
           <option v-for="item in repos" :key="item.path" :value="item.path" :title="item.path">{{ item.name }}</option>
         </select>
       </label>
+      <p class="hint">
+        В нём агент заведёт ветку, сделает правку с тестами и откроет PR. Части урока для других репозиториев он
+        перечислит в отчёте.
+      </p>
       <p v-if="desk.reposAccess.value === 'scanning'" class="hint" role="status">Ищу репозитории…</p>
       <p v-else-if="desk.reposAccess.value === 'denied'" class="hint warn" role="note">
         Часть репозиториев не видна: у доски нет доступа к диску. Разреши Python доски доступ к файлам на съёмных
         томах: Системные настройки → Конфиденциальность и безопасность → Файлы и папки или Полный доступ к диску.
       </p>
       <p v-if="outside.length" class="hint">
-        Агенту разрешено менять файлы вне репозитория из списка выше: перед правкой он сохранит копию .bak рядом и
-        проверит изменение на копии. PR для них не будет — проверь их по отчёту агента.
+        Файлы из списка выше агент поменяет при любом выборе: с копией .bak рядом, без PR — проверь их по отчёту. Если в
+        самом репозитории менять нечего, ветки и PR не будет.
       </p>
-      <p v-else class="hint">Правки вне репозиториев (~/.codex/AGENTS.md, ~/.claude/…) агент не делает — он перечислит их в отчёте.</p>
+      <p v-else class="hint">Файлы вне репозиториев (~/.codex, ~/.claude) агент не трогает — перечислит их в отчёте.</p>
       <textarea v-model="note" rows="2" placeholder="Уточнение — необязательно" aria-label="Уточнение" :disabled="!!card.busy"></textarea>
       <span class="buttons">
         <button type="submit" class="key gold" :class="{ busy: busy('implement') }" :disabled="!!card.busy || !repo">Запустить</button>

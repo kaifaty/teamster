@@ -61,7 +61,7 @@ const asked = computed(() => cargo.value?.questions ?? []);
     </div>
 
     <template v-if="view.route">
-      <ol class="strip" aria-label="Маршрут корабля">
+      <ol class="strip" aria-label="Этапы задачи">
         <li v-for="stop in route.stops" :key="stop.id" :class="stop.state" :aria-current="stop.state === 'here' ? 'step' : undefined">
           <span class="ic"><img :src="ART[stop.art]" alt="" /></span>
           <span class="nm">{{ stop.name }}</span>

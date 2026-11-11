@@ -86,12 +86,13 @@ describe("routeOf", () => {
   it("says that a stopped ship waits for you where it stands, so the strip agrees with the recorder", () => {
     const stopped = routeOf(task({ column: "attention", phase: "idle", alive: false, result_status: "needs_decision" }), NOW);
     const here = stopped.stops.find((stop) => stop.state === "here")!;
-    expect([here.id, here.name, here.note]).toEqual(["yard", "Верфь", "ждёт тебя"]);
-    expect(stopped.line).toBe("Стоит у Верфи: ход кончился, дальше корабль пойдёт по твоему слову");
-    expect(routeOf(task({ column: "review_me", phase: "idle", alive: false }), NOW).line).toBe("На Рейде: ждёт твоей приёмки");
+    expect([here.id, here.name, here.note]).toEqual(["yard", "Работа", "ждёт тебя"]);
+    expect(stopped.line).toBe("Стоит на этапе «Работа»: ход кончился, дальше — по твоему слову");
+    expect(routeOf(task({ column: "review_me", phase: "idle", alive: false }), NOW).line).toBe("Готово: ждёт твоей приёмки");
     const working = routeOf(task({ phase: "turn" }), NOW);
-    expect(working.line).toBe("Сейчас: Верфь · ход");
-    expect(working.stops.map((stop) => stop.note)).toEqual(["работа", "проверка", "ревью", "CI", "приёмка", "в main"]);
+    expect(working.line).toBe("Сейчас: Работа · ход");
+    expect(working.stops.map((stop) => stop.name)).toEqual(["Работа", "Проверка", "Ревью", "CI", "Приёмка", "В main"]);
+    expect(working.stops.every((stop) => stop.note === "")).toBe(true);
   });
 
   it("puts a sleeping ship into the cryo field with its waking time, and gives a closed one no stop", () => {
@@ -101,7 +102,7 @@ describe("routeOf", () => {
     const closed = routeOf(task({ column: "closed", phase: "idle", alive: false }), NOW);
     expect(closed.ended).toBe(true);
     expect(closed.stops.some((stop) => stop.state === "here")).toBe(false);
-    expect(closed.line).toMatch(/Рейс окончен/);
+    expect(closed.line).toBe("Задача закрыта");
   });
 });
 
@@ -215,7 +216,7 @@ describe("nowOf", () => {
     expect(head({ alive: false, column: "review_me", phase: "idle", ci: "failed" }, { ci: ci(1) })).toMatchObject({ tone: "bad", headline: "CI не прошёл: 2 из 7 упали" });
     expect(head({ alive: false, column: "attention", phase: "idle", result_status: "blocked" }).headline).toBe("Агент заблокирован: нужна твоя помощь");
     expect(head({ alive: true, column: "sleeping", phase: "sleeping" }).tone).toBe("sleep");
-    expect(head({ alive: false, column: "closed", phase: "idle" })).toMatchObject({ tone: "dim", headline: "Рейс окончен" });
+    expect(head({ alive: false, column: "closed", phase: "idle" })).toMatchObject({ tone: "dim", headline: "Задача закрыта" });
   });
 });
 
@@ -250,12 +251,12 @@ describe("the screen of a session and a scout", () => {
     expect(metersOf(scout, limits(), null, NOW).map((meter) => meter.id)).toEqual(["turn", "fuel"]);
   });
 
-  it("puts the plain word first in the papers and the metaphor after it", () => {
+  it("names the papers in plain words", () => {
     const papers = papersOf(task({ executor: "claude", account: "main", model: "claude-opus-5-5", effort: "high" }), limits(), null, NOW);
-    expect(papers.main.slice(0, 3).map((row) => [row.label, row.meta, row.value])).toEqual([
-      ["Исполнитель", "капитан", "Claude · main"],
-      ["Модель", "двигатель", "claude-opus-5-5"],
-      ["Усилие", "форсаж", "high"],
+    expect(papers.main.slice(0, 3).map((row) => [row.label, row.value])).toEqual([
+      ["Исполнитель", "Claude · main"],
+      ["Модель", "claude-opus-5-5"],
+      ["Усилие", "high"],
     ]);
     expect(papers.more.map((row) => row.label)).toEqual(["Проверка", "Круги исправления", "CI", "Лимит хода", "Бюджет", "Смены аккаунта"]);
   });

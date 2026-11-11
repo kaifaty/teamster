@@ -55,7 +55,7 @@ export interface CardState {
   /** The decision just taken, which «Отменить» takes back to `undo`. */
   done: { status: "accepted" | "declined" | "applied"; undo: "proposed" | "accepted" } | null;
   copied: Copied | null;
-  /** «Где внедрять»: a repository's path, empty until one is picked. */
+  /** «Репозиторий»: a repository's path, empty until one is picked. */
   repo: string;
   /** The implementation this card started, shown until the research carries it. */
   started: Started | null;

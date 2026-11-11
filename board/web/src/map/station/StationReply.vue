@@ -14,7 +14,7 @@ const state = computed(() => desk.replyOf(props.study));
 const reach = computed(() => desk.replyReach(props.study));
 const NOTE = {
   working: "Аналитик работает — ответить можно после его хода",
-  closed: "Исследование закрыто. Продолжить можно новым приказом",
+  closed: "Разговор закрыт. Продолжить можно новым разбором",
 } as const;
 
 function setField(element: unknown) {

@@ -52,7 +52,7 @@ const LABEL: Record<Clock["state"], string> = {
 const waiting = computed(() => props.research.waiting > 0);
 const scheduleTitle = computed(() => {
   const schedule = props.research.schedule;
-  if (!schedule) return "Сервер доски не знает плановой рефлексии: разбор идёт только по приказу.";
+  if (!schedule) return "Сервер доски не знает плановой рефлексии: разбор идёт только по запросу.";
   return [schedule.name ?? "Плановая рефлексия", `cron ${schedule.cron}`, "Запланированная задача десктопа Claude"].join("\n");
 });
 
@@ -63,7 +63,7 @@ const run = computed(() => props.research.run);
   <section class="deck core" data-deck="core" aria-labelledby="deck-core">
     <header class="deck-head">
       <span class="sigil" aria-hidden="true">◷</span>
-      <h3 id="deck-core">Ядро станции</h3>
+      <h3 id="deck-core">Расписание</h3>
       <span class="aside" :title="scheduleTitle">{{ clock.rule ?? "без расписания" }}</span>
     </header>
     <div class="deck-body">

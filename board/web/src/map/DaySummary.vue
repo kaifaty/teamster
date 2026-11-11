@@ -75,7 +75,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey, true));
       <p v-else-if="state === 'error'" class="d-note bad">
         Отчёт не собрался: {{ error }}. <a href="#" @click.prevent="load">Повторить</a>
       </p>
-      <p v-else-if="!summary" class="d-note">Сегодня флот ещё не выходил: ни ходов, ни вердиктов.</p>
+      <p v-else-if="!summary" class="d-note">Сегодня задач ещё не было: ни ходов, ни вердиктов.</p>
       <template v-else>
         <p v-if="error" class="d-note bad">Отчёт мог устареть: {{ error }}</p>
         <dl class="stats">
@@ -89,24 +89,24 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey, true));
           <li class="ok">принято <b>{{ summary.verdicts.accepted }}</b></li>
           <li class="ok">с правками <b>{{ summary.verdicts.revised }}</b></li>
           <li class="bad">переделано <b>{{ summary.verdicts.redone }}</b></li>
-          <li class="bad">списано <b>{{ summary.verdicts.dropped }}</b></li>
+          <li class="bad">отброшено <b>{{ summary.verdicts.dropped }}</b></li>
         </ul>
 
-        <h3>Испытания</h3>
+        <h3>Проверки и CI</h3>
         <div class="meters">
           <div class="meter">
-            <span>Полигон, проверки</span>
+            <span>Проверки</span>
             <span class="bar"><span :style="{ width: `${summary.checkPercent ?? 0}%` }"></span></span>
             <span class="num">{{ share(summary.checkPercent) }} <small>из {{ summary.checks }}</small></span>
           </div>
           <div class="meter">
-            <span>Ворота, CI</span>
+            <span>CI</span>
             <span class="bar"><span :style="{ width: `${summary.ciPercent ?? 0}%` }"></span></span>
             <span class="num">{{ share(summary.ciPercent) }} <small>из {{ summary.ci }}</small></span>
           </div>
         </div>
         <p class="line num">
-          Инспекция: с замечаниями {{ summary.reviewsWithFindings }} из {{ summary.reviews }}<template v-if="summary.averageFindings !== null">,
+          Ревью: с замечаниями {{ summary.reviewsWithFindings }} из {{ summary.reviews }}<template v-if="summary.averageFindings !== null">,
             в среднем {{ summary.averageFindings.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) }} замечания</template>
         </p>
         <p v-if="summary.roundsToClean.length" class="line num">

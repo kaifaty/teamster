@@ -69,7 +69,7 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
 </script>
 
 <template>
-  <section class="map" aria-label="Карта флота">
+  <section class="map" aria-label="Карта задач">
     <MapToolbar
       ref="toolbar"
       v-model:repoModel="repoModel"
@@ -145,9 +145,9 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
         @seek="seekTo"
       />
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
-      <p v-else-if="!starList.length" class="status">Пока ни одной задачи: галактика пуста.</p>
+      <p v-else-if="!starList.length" class="status">Пока ни одной задачи.</p>
       <p v-else-if="repo && !entries.length" class="status">
-        {{ replay.at === null ? "В этой системе сейчас никого: все задачи закрыты." : "В этот момент в системе никого." }}
+        {{ replay.at === null ? "В этом репозитории сейчас нет задач: все закрыты." : "В этот момент в репозитории нет задач." }}
       </p>
     </div>
 

@@ -72,15 +72,15 @@ describe("tape segments", () => {
     expect([lastWait!.from, lastWait!.to]).toEqual([NOW - 40 * M, NOW]);
     expect(segments.filter((segment) => segment.failed).map((segment) => segment.stop)).toEqual(["inspection", "range"]);
     expect(segments.some((segment) => segment.live)).toBe(false);
-    expect(segments[0]!.title).toBe("Верфь, ход 1: 30 мин · завершено");
-    expect(segments[3]!.title).toBe("Инспекция, ревью: 14 мин · есть замечания: 2");
+    expect(segments[0]!.title).toBe("Работа, ход 1: 30 мин · завершено");
+    expect(segments[3]!.title).toBe("Ревью: 14 мин · есть замечания: 2");
     expect([firstWait!.title, lastWait!.title]).toEqual(["Ждал тебя 30 мин", "Ждёт тебя 40 мин"]);
   });
 
   it("sums the voyage up by what the ship did", () => {
     const tape = tapeOf(VOYAGE, task(), [], [], NOW);
-    expect(tapeSummary(tape)).toMatch(/^\d.* в рейсе: работа .+, проверки и ревью .+, ждал тебя 1 ч 10 мин$/);
-    expect(tapeSummary({ start: NOW - 30, end: NOW, segments: [] })).toBe("30 с в рейсе");
+    expect(tapeSummary(tape)).toMatch(/^\d.* всего: работа .+, проверки и ревью .+, ждал тебя 1 ч 10 мин$/);
+    expect(tapeSummary({ start: NOW - 30, end: NOW, segments: [] })).toBe("30 с всего");
   });
 
   it("maps a scout's phase to the yard", () => {
@@ -91,7 +91,7 @@ describe("tape segments", () => {
     const working = tapeSegments(VOYAGE.slice(0, 5), task({ alive: true, column: "running", phase: "check", phase_started_at: NOW - 100 * M }), NOW);
     const live = working[working.length - 1]!;
     expect(live).toMatchObject({ stop: "range", from: NOW - 100 * M, to: NOW, live: true });
-    expect(live.title).toBe("Полигон: идёт 1 ч 40 мин");
+    expect(live.title).toBe("Проверка: идёт 1 ч 40 мин");
 
     // «Ждал тебя» after a turn ends where the live phase starts.
     const asleep = tapeSegments(VOYAGE, task({ alive: true, column: "sleeping", phase: "sleeping", phase_started_at: NOW - 30 * M }), NOW);
@@ -132,11 +132,11 @@ describe("tape marks", () => {
     expect(marks.map((mark) => [mark.kind, mark.label, (NOW - mark.at) / M])).toEqual([
       ["fail", "✗", 140],
       ["say", "▼ указание", 100],
-      ["fuel", "⛽ заправка", 48],
+      ["fuel", "⇄ аккаунт", 48],
       ["fail", "✗", 45],
       ["verdict", "✓ вердикт", 5],
     ]);
-    expect(marks.find((mark) => mark.kind === "fuel")!.title).toBe("Заправка: смена аккаунта pool-1 → pool-2 · limit");
+    expect(marks.find((mark) => mark.kind === "fuel")!.title).toBe("Смена аккаунта pool-1 → pool-2 · limit");
     expect(marks.find((mark) => mark.kind === "verdict")!.title).toBe("Вердикт: на переделку · again");
 
     // Placed on the tape: from the launch to now, close marks in separate rows.

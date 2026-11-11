@@ -12,13 +12,13 @@ import type { ShipEntry } from "../scene";
 import { at } from "./style";
 
 export const STATION_TEXT: Record<Place, { name: string; note: string }> = {
-  command: { name: "Штаб", note: "твои сессии" },
-  yard: { name: "Верфь", note: "работа и фиксы" },
-  range: { name: "Полигон", note: "проверка" },
-  inspection: { name: "Инспекция", note: "ревью" },
-  gate: { name: "Гиперврата", note: "CI" },
-  roadstead: { name: "Рейд", note: "ждёт тебя" },
-  cryo: { name: "Криополе", note: "сон" },
+  command: { name: "Твои сессии", note: "" },
+  yard: { name: "Работа", note: "ход и исправления" },
+  range: { name: "Проверка", note: "" },
+  inspection: { name: "Ревью", note: "" },
+  gate: { name: "CI", note: "" },
+  roadstead: { name: "Приёмка", note: "ждёт тебя" },
+  cryo: { name: "Сон", note: "до сброса лимита" },
 };
 
 /** What a ship is doing, at `now`: its phase and for how long, why it waits, or until when it sleeps. */

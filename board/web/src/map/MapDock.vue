@@ -61,7 +61,7 @@ const logOpen = defineModel<boolean>("logOpen", { required: true });
           </svg>
         </button>
         <!-- The way back to the live map while the scale with its own button is hidden. -->
-        <button v-if="replay.active && !replayVisible" type="button" class="dock-live" @click="replay.live()">В эфир</button>
+        <button v-if="replay.active && !replayVisible" type="button" class="dock-live" @click="replay.live()" title="Вернуться к текущему моменту">Сейчас</button>
       </template>
     </ShipLog>
   </div>

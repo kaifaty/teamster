@@ -33,12 +33,12 @@ const hideImage = (event: Event) => {
 
 <template>
   <div class="toolbar">
-    <button v-if="repo" type="button" class="btn" @click="emit('leave')">← Галактика</button>
+    <button v-if="repo" type="button" class="btn" @click="emit('leave')">← Все репозитории</button>
     <label class="picker">
       <img v-if="emblemOf(repo)" :key="emblemOf(repo)!" class="emblem" :src="emblemOf(repo)!" alt="" @error="hideImage" />
-      <span>Система</span>
+      <span>Репозиторий</span>
       <select v-model="repoModel" class="btn" :disabled="!starList.length">
-        <option value="">вся галактика</option>
+        <option value="">все</option>
         <optgroup v-for="group in pickerGroups.grouped" :key="group.name" :label="group.name">
           <option v-for="star in group.stars" :key="star.repo" :value="star.repo">{{ star.repo }} · {{ star.live }}</option>
         </optgroup>
@@ -56,10 +56,10 @@ const hideImage = (event: Event) => {
       class="btn"
       :aria-expanded="fleetVisible"
       aria-controls="fleet-panel"
-      :title="fleetVisible ? 'Скрыть список кораблей' : 'Показать список кораблей'"
+      :title="fleetVisible ? 'Скрыть список задач' : 'Показать список задач'"
       @click="emit('toggleFleet')"
     >
-      Корабли · {{ entries.length }}
+      Задачи · {{ entries.length }}
     </button>
     <span class="legend" aria-hidden="true">
       <span class="codex">◆ Codex</span>
@@ -70,7 +70,7 @@ const hideImage = (event: Event) => {
         <span class="key"><i class="badge b-sleep" />спят</span>
       </template>
     </span>
-    <span class="hint">{{ repo ? "Колесо назад, щипок или Esc — к галактике" : "Нажми на звезду · колесо или щипок — масштаб · тяни — обзор" }}</span>
+    <span class="hint">{{ repo ? "Колесо назад, щипок или Esc — ко всем репозиториям" : "Нажми на репозиторий · колесо или щипок — масштаб · тяни — обзор" }}</span>
   </div>
 </template>
 

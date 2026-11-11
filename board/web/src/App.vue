@@ -149,7 +149,7 @@ function close() {
 const connectionText = computed(() => {
   switch (board.connection.value) {
     case "open":
-      return "в эфире";
+      return "онлайн";
     case "reconnecting":
       return "переподключение…";
     default:
