@@ -36,7 +36,7 @@ wait_for_reset (true), max_turn_minutes (no cap), max_task_weekly_percent (no ca
 executor (codex), reviewer (codex), claude (isolated account pool settings), review_angles_min_lines (400), repeat_limit (3), sandbox (off), writable_dirs ([]), notify and notify_events.
 start --ci (or ci: true) enables PR CI for the task; say inherits it and --ci-rounds (initially 1).
 start/say --ci-command CMD enables CI via sh -c; say inherits it, and --no-ci-command removes it.
-say --ci/--no-ci enables/disables CI; --ci-rounds N replaces the saved round limit. ci_timeout_minutes defaults to 30.
+say --ci/--no-ci enables/disables CI; --ci-rounds N replaces the saved round limit. ci_timeout_minutes defaults to 30, ci_queued_minutes to 20.
 Without an accounts setting, tasks use main (~/.codex) without rotation; weekly budgets still monitor rollout usage.
 State/logs: ~/.teamster/tasks/<slug>/; worktree: ~/.teamster/worktrees/claude-<slug>/<repo>.
 TEAMSTER_HOME selects the data home; TEAMSTER_CODEX_HOME overrides its Codex home; TEAMSTER_CODEX selects the CLI binary.
