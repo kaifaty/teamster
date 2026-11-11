@@ -961,7 +961,7 @@ class WorkspaceTests(RotationTestCase):
     def test_workspace_check_uses_codex_sandbox_and_keeps_the_saved_command_and_log(self):
         roots = [str(self.root / "cache")]
         self.configure(language="en", sandbox="workspace", writable_dirs=roots)
-        command = "printf 'sandbox check marker\\n'; test -f tracked.txt"
+        command = "printf 'sandbox check marker\\n'; test -f tracked.txt && test \"$COPYFILE_DISABLE\" = 1"
         self.start("sandbox-check", "--check", command)
         output = self.wait("sandbox-check")
         state = self.state("sandbox-check")

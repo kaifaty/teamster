@@ -19,13 +19,28 @@ place. If either sample is unavailable, the field is omitted. `wait` appends it 
 result line, for example `load 12.3 → 45.6`. These samples do not change the check's outcome or
 timeout and do not trigger a retry.
 
+With `start --check`, the brief normally asks the executor to run the saved check in full before
+reporting `done`. Teamster reads `checks[]` from active tasks' `state.json` files in
+`~/.teamster/tasks/*/` and archived tasks in `~/.teamster/tasks/.archive/*/` (or the configured task
+home). It uses only `passed` and `failed` runs with the same repository and exact `cmd` string.
+With at least three runs and a median duration greater than one third of the turn limit
+(`--max-minutes`, otherwise the `max_turn_minutes` setting), the brief instead asks for the test
+subset named in the brief, reported in `checks`. The executor must leave the full check to the
+supervisor after the turn, without starting it in the background or through `nohup`. Base-merge
+fix prompts use the same rule. With no turn limit, fewer runs, or a median at or below the
+threshold, the instruction to run the full check stays unchanged.
+
+Codex and Claude executors, saved checks and base checks receive `COPYFILE_DISABLE=1`. On macOS,
+this prevents `tar` and `cp` from adding AppleDouble `._*` metadata files to archives and copies
+that may be sent to Linux hosts.
+
 ## Check deadline and an unavailable environment
 
 Every run of the saved check and of the base check gets `TEAMSTER_CHECK_DEADLINE` (also `CODEX_TASK_CHECK_DEADLINE` for compatibility) in its
 environment, also under `--sandbox workspace`: the whole Unix time in seconds at which the supervisor
-kills it (the start time plus `--check-timeout`). The rest of the environment is unchanged. A check
-that waits for a remote machine or a queue can compare an expected start with this deadline and give up
-early.
+kills it (the start time plus `--check-timeout`). Apart from these deadlines and `COPYFILE_DISABLE=1`,
+the environment is unchanged. A check that waits for a remote machine or a queue can compare an
+expected start with this deadline and give up early.
 
 Exit code 75 (`EX_TEMPFAIL`) means "the environment is unavailable, the check did not run". Its
 outcome is `unavailable` and the record keeps the `check.log` tail. It does not skip the review, start

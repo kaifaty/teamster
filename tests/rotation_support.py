@@ -64,6 +64,7 @@ def fixture():
 
 def trace(value):
     value["home"] = str(home)
+    value["copyfile_disable"] = os.environ.get("COPYFILE_DISABLE")
     value.setdefault("pid", os.getpid())
     value.setdefault("ppid", os.getppid())
     value.setdefault("pgid", os.getpgrp())

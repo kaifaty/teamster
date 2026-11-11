@@ -15,6 +15,7 @@ def account_environment(account, timeout):
                    if not key.startswith(("CLAUDE", "ANTHROPIC"))}
     environment["CLAUDE_CONFIG_DIR"] = str(Path(account["config_dir"]).expanduser())
     environment["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+    environment["COPYFILE_DISABLE"] = "1"
     try:
         credential = subprocess.run(
             ["security", "find-generic-password", "-s", account["token_keychain"],
