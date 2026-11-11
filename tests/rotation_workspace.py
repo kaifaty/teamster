@@ -1505,7 +1505,7 @@ class WorkspaceTests(RotationTestCase):
         self.configure(language="en", sandbox="workspace")
         self.configure_ci([[self.ci_check("fail")], [self.ci_check("fail")], [self.ci_check()]],
                           rerun_error="", jobs={"123": "fixture persistent failure"})
-        self.account(self.home, "A", self.reset, runs=[self.ci_work(), self.ci_work()])
+        self.account(self.home, "A", self.reset, runs=[self.ci_work(), self.ci_work("fixed\n")])
         self.start("ci-rerun-red", "--ci")
         output = self.wait("ci-rerun-red")
         ci = self.state("ci-rerun-red")["ci"]
@@ -1513,7 +1513,8 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual([item["outcome"] for item in ci["reruns"]], ["failed"])
         self.assertEqual(len(self.invocations()), 2)
         self.assertEqual(len(self.ci_polls()), 3)
-        self.assertIn("rerun failed jobs in run 42: failed", output)
+        self.assertNotEqual(ci["sha"], ci["reruns"][0]["sha"])
+        self.assertNotIn("rerun failed jobs in run 42: failed", output)
         self.assertIn("rerun failed jobs in run 42: failed", self.invocations()[1]["prompt"])
         self.assertIn("fixture persistent failure", self.invocations()[1]["prompt"])
 
