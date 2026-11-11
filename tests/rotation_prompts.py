@@ -392,7 +392,7 @@ class PromptTests(unittest.TestCase):
             with self.subTest(language=language, context="none"):
                 with mock.patch.object(self.worker.checking, "guarded_changes", return_value=[]):
                     prompt = self.worker.prompts.review_prompt(self.st, cfg)
-                self.assertIn(weak_tests[language], prompt)
+                self.assertEqual(prompt.count(weak_tests[language]), 1)
                 for part in parts[language][:17] + parts[language][-2:] + (str(self.task / "brief.md"),):
                     self.assertIn(part, prompt)
                 for part in ("severity", "file, line, title, detail", "verify", "findings", "summary"):
@@ -407,6 +407,7 @@ class PromptTests(unittest.TestCase):
             with self.subTest(language=language, context="angles"):
                 angles = list(self.worker.prompts.REVIEW_ANGLES)
                 with mock.patch.object(self.worker.task_state, "save"), \
+                        mock.patch.object(self.worker.checking, "guarded_changes", return_value=[]), \
                         mock.patch.object(self.worker.budgets, "stop_at_weekly_budget", return_value=False), \
                         mock.patch.object(self.worker.notifications, "notify"), \
                         mock.patch.object(self.worker.turns, "run_turn", side_effect=lambda st, *a, **kw:
@@ -414,8 +415,10 @@ class PromptTests(unittest.TestCase):
                     self.worker.review_cycle.review_turn(dict(self.st), cfg, prompt, None,
                                                          lambda: False, mock.Mock(), angles=angles)
                 self.assertEqual(run_turn.call_count, len(angles))
-                for call in run_turn.call_args_list:
+                for angle, call in zip(angles, run_turn.call_args_list):
                     self.assertIn(parts[language][-1], call.args[2])
+                    self.assertEqual(sum(call.args[2].count(text) for text in weak_tests.values()),
+                                     1 if angle == "tests" else 0, angle)
             for base in (None, {"outcome": "skipped", "reason": "fixture base skipped"},
                          {"outcome": "failed", "exit": 9, "seconds": 2.2, "tail": "fixture base output"}):
                 with self.subTest(language=language, context="saved", base=base):

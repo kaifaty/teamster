@@ -134,7 +134,7 @@ def study_prompt(order, records, cfg=None):
     return (order.strip() + "\n\n" if order and order.strip() else "") + prompt
 
 
-def review_prompt(st, cfg=None):
+def review_prompt(st, cfg=None, *, with_angles=False):
     cfg = config.accounts_config() if cfg is None else cfg
     brief = config.TASKS / st["slug"] / "brief.md"
     ru = cfg.get("language", "en") == "ru"
@@ -148,6 +148,12 @@ def review_prompt(st, cfg=None):
                        "amendments to the brief; later `lead` or `claude` entries take precedence over the brief and earlier "
                        "amendments. Entries with source `review` or `ci` are supervisor fix requests, not task requirements.\n"))
     context = ""
+    if not with_angles:
+        context += (("Для каждого теста, которого требует «Готово, когда» (предел, защита или значение), назови маленькую "
+                     "поломку проверяемого кода, при которой тест остаётся зелёным; выдай это находкой, указав поломку "
+                     "и почему тест её не ловит.\n") if ru else
+                    ('For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
+                     "that leaves the test green; report it as a finding naming the break and explaining why the test misses it.\n"))
     if any(entry.get("review") is not None for entry in st.get("rounds", [])):
         context += (("Начиная со второго ревью ищи регрессии, внесённые исправлениями, и невыполненные "
                      "пункты «Готово, когда». Новые граничные случаи вне брифа отмечай только как P3.\n") if ru else
@@ -222,9 +228,6 @@ def review_prompt(st, cfg=None):
                 "и укажи, что убрать.\n"
                 "Для каждого дефекта укажи файл:строка, что не так и как это проверить. "
                 "Без замечаний по стилю.\n"
-                "Для каждого теста, которого требует «Готово, когда» (предел, защита или значение), назови маленькую "
-                "поломку проверяемого кода, при которой тест остаётся зелёным; выдай это находкой, указав поломку "
-                "и почему тест её не ловит.\n"
                 + context +
                 "Файлы не меняй, ничего не коммить. Ответь JSON по схеме ревью: verdict clean, если "
                 "дефектов нет, иначе defects. Находки нумеруй F1, F2 и далее; severity P1/P2/P3, "
@@ -243,8 +246,6 @@ def review_prompt(st, cfg=None):
             "behavior nobody asked for, otherwise P3, and say what to remove.\n"
             "For each defect, give file:line, explain what is wrong and how to verify it. "
             "Do not comment on style.\n"
-            'For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
-            "that leaves the test green; report it as a finding naming the break and explaining why the test misses it.\n"
             + context +
             "Do not change files or create commits. Return JSON matching the review schema: verdict clean "
             "when there are no defects, otherwise defects. Number findings F1, F2, etc.; include severity "
