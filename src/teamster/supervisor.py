@@ -66,16 +66,13 @@ def launch(st, prompt, effort, current_message, kind, review_after, fix_rounds):
             last.unlink()
     turn = {"pending": {"prompt": prompt, "effort": effort, "current_message": current_message,
                         "review_after": review_after}, "kind": kind, "fix_rounds": fix_rounds}
-    reruns = (st.get("ci") or {}).get("reruns", [])
+    if (st.get("ci") or {}).get("reruns"):
+        st.setdefault("ci_reruns", st["ci"]["reruns"])
     st.update({key: field.spawn_reset(st, turn) for key, field in task_state.STATE_FIELDS.items()
                if field.spawn_reset is not None and field.spawn_reset is not task_state.STATE_DELETE})
     for key, field in task_state.STATE_FIELDS.items():
         if field.spawn_reset is task_state.STATE_DELETE:
             st.pop(key, None)
-    if reruns and kind == "work" and st.get("ci_enabled") and not st.get("ci_command"):
-        # A new turn restarts the repair limit, but must not rerun the same SHA again.
-        st["ci"] = {"sha": "", "outcome": "pending", "checks": [], "seconds": 0,
-                    "rounds": 0, "reason": "", "reruns": reruns}
     if kind != "review":
         # Standalone review preserves the last work result and publication receipt.
         st.pop("publish", None)

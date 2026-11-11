@@ -42,7 +42,8 @@ failure on GitHub first gets one batch of reruns per SHA: the supervisor extract
 from failed-check links and runs `gh run rerun <run-id> --failed` once per run, pinning its repository.
 It records the requests and errors in `ci.reruns`, then waits for a newer completed run attempt and
 reads PR checks again. A green rerun gives `passed` without a repair turn. Another failure, or an
-error requesting a rerun, follows the normal repair path. Reruns do not consume `ci_rounds`, including
+error requesting a rerun (including an invalid `gh run view` response), follows the normal repair path.
+The task's `ci_reruns` history survives standalone reviews and other launches. Reruns do not consume `ci_rounds`, including
 when the limit is zero; `--ci-command` does not rerun anything automatically.
 
 A remaining repair round sends failed-check names and selected log lines to the same implementation thread. GitHub

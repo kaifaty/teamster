@@ -629,11 +629,12 @@ elif args[:2] in (["pr", "view"], ["pr", "checks"], ["run", "view"], ["run", "re
         index = polls.get(run_id, 0)
         value = snapshots[min(index, len(snapshots) - 1)] if snapshots else {
             "attempt": attempt, "status": "completed", "conclusion": "failure"}
-        if "status" in args[-1]:
+        if attempt == 1 and "run_info" in scenario:
+            value = scenario["run_info"]
+        if attempt > 1 and "status" in args[-1]:
             polls[run_id] = index + 1
             scenario_path.write_text(json.dumps(scenario))
-        fields = args[args.index("--json") + 1].split(",")
-        print(json.dumps({key: value[key] for key in fields}))
+        print(json.dumps(value))
     else:
         job = args[args.index("--job") + 1]
         repository = (args[args.index("--repo") + 1] if "--repo" in args

@@ -50,7 +50,6 @@ def cmd_start(a):
     rules = sandboxing.rules_text(cfg, no_push=no_push)
     if sandbox == "workspace":
         rules += "\n\n" + sandboxing.sandbox_rules(cfg, no_push=no_push)
-    rules = sandboxing.repository_rules(rules, a.repo)
     repo = main_repo(a.repo)
     branch = a.branch if a.branch is not None else f"codex/{a.slug}"
     if subprocess.run(config.GIT + ["check-ref-format", "--branch", branch], cwd=repo,
@@ -60,6 +59,11 @@ def cmd_start(a):
     if wt.exists():
         procs.die(f"{wt} exists")
     procs.sh(config.GIT + ["fetch", "--quiet", "origin"], cwd=repo)
+    try:
+        rules = sandboxing.repository_rules(rules, repo)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = (exc.stderr or str(exc)) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+        procs.die("cannot read origin for PR rules: " + detail.strip())
     a.base = a.base or procs.sh(config.GIT + ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd=repo,
                           check=False) or "origin/main"
     wt.parent.mkdir(parents=True, exist_ok=True)

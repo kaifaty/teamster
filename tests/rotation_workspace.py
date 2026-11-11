@@ -423,6 +423,45 @@ class WorkspaceTests(RotationTestCase):
                         self.assertNotIn(old, prompt)
                         self.assertNotIn("pr_title/pr_body", prompt)
 
+    def test_origin_rule_errors_stop_start_after_fetch_but_keep_workspace_turns_running(self):
+        self.configure(language="en", sandbox="workspace")
+        _ = self.repo
+        real_git = shutil.which("git", path=self.env["PATH"])
+        trace = self.root / "origin-calls.jsonl"
+        fake_git = self.root / "git"
+        fake_git.write_text(
+            "#!" + PYTHON + "\n"
+            "import json, os, sys\n"
+            "with open(" + repr(str(trace)) + ", 'a') as stream:\n"
+            "    stream.write(json.dumps({'argv': sys.argv[1:], 'cwd': os.getcwd()}) + '\\n')\n"
+            "if sys.argv[-3:] == ['remote', 'get-url', 'origin']:\n"
+            "    if os.environ['CODEX_FAKE_ORIGIN_ERROR'] == 'start' or os.getcwd() != " + repr(str(self.repo)) + ":\n"
+            "        sys.exit('fixture origin unavailable')\n"
+            "    print('https://github.com/fixture/repo.git')\n"
+            "else:\n"
+            "    os.execv(" + repr(real_git) + ", [" + repr(real_git) + "] + sys.argv[1:])\n")
+        fake_git.chmod(0o700)
+        self.env["CODEX_FAKE_ORIGIN_ERROR"] = "start"
+        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "start", "origin-error",
+                                 "--brief", str(self.brief), "--repo", str(self.repo)],
+                                cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("teamster: cannot read origin for PR rules: fixture origin unavailable", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        calls = [json.loads(line) for line in trace.read_text().splitlines()]
+        fetch = next(index for index, item in enumerate(calls) if item["argv"][-3:] == ["fetch", "--quiet", "origin"])
+        origin = next(index for index, item in enumerate(calls) if item["argv"][-3:] == ["remote", "get-url", "origin"])
+        self.assertLess(fetch, origin)
+        self.assertEqual(calls[origin]["cwd"], str(self.repo))
+        self.assertFalse((self.home / "claude-tasks" / "origin-error").exists())
+        self.env["CODEX_FAKE_ORIGIN_ERROR"] = "worktree"
+        self.account(self.home, "A", self.reset, runs=[self.ci_work()])
+        self.start("origin-monitor")
+        self.wait("origin-monitor")
+        state = self.state("origin-monitor")
+        self.assertEqual((state["outcome"], state["result"]["status"]), ("completed", "done"))
+        self.assertIn(self.worker().sandboxing.sandbox_rules({"language": "en"}), self.invocations()[0]["prompt"])
+
     def test_pr_supervisor_ignores_fork_prs_with_the_same_branch_name(self):
         self.configure(language="en")
         for own_state in ("OPEN", "CLOSED", "MERGED", None):
@@ -1481,6 +1520,31 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(len([event for event in self.gh_invocations()
                               if event["argv"][:2] == ["run", "rerun"]]), 2)
 
+    def test_ci_invalid_run_info_records_a_rerun_error_and_uses_the_repair_prompt(self):
+        self.configure(language="en", sandbox="workspace")
+        for phase in ("before", "after"):
+            with self.subTest(phase=phase):
+                (self.home / "exec-count").unlink(missing_ok=True)
+                scenario = {"run_info": {}} if phase == "before" else {"run_snapshots": [{}]}
+                self.configure_ci([[self.ci_check("fail")]], rerun_error="", **scenario)
+                blocked = self.work_result("blocked", summary="Invalid GitHub Actions response.")
+                self.account(self.home, "A", self.reset, runs=[self.ci_work(phase + "\n"),
+                                                              {"mode": "complete", "reply": blocked}])
+                before = len(self.invocations())
+                slug = "ci-run-info-" + phase
+                self.start(slug, "--ci")
+                output = self.wait(slug)
+                state = self.state(slug)
+                self.assertEqual((state["outcome"], state["ci"]["outcome"], state["ci"]["rounds"]),
+                                 ("completed", "failed", 1))
+                self.assertEqual([(item["outcome"], item["error"]) for item in state["ci"]["reruns"]],
+                                 [("error", "invalid gh run view response")])
+                executions = self.invocations()[before:]
+                self.assertEqual(len(executions), 2)
+                self.assertIn("CI failed for this branch.", executions[1]["prompt"])
+                self.assertIn("invalid gh run view response", executions[1]["prompt"])
+                self.assertIn("rerun failed jobs in run 42: error: invalid gh run view response", output)
+
     def test_ci_failed_round_uses_same_thread_log_checks_and_no_second_review(self):
         self.configure(language="en", sandbox="workspace")
         self.env["GH_REPO"] = "unrelated/host-repository"
@@ -1736,22 +1800,39 @@ class WorkspaceTests(RotationTestCase):
     def test_say_preserves_task_ci_and_rounds_without_flags(self):
         self.configure(language="en", sandbox="workspace")
         self.configure_ci([[self.ci_check("fail")]])
-        self.account(self.home, "A", self.reset, runs=[self.ci_work()])
+        self.account(self.home, "A", self.reset, runs=[self.ci_work(),
+                     {"mode": "complete", "reply": self.review_result(False)},
+                     {"mode": "complete", "reply": self.work_result()}])
         self.start("ci-inherited", "--ci", "--ci-rounds", "0")
         self.wait("ci-inherited")
         original = self.state("ci-inherited")["ci"]
+        self.cli("review", "ci-inherited")
+        self.wait("ci-inherited")
+        reviewed = self.state("ci-inherited")
+        self.assertNotIn("ci", reviewed)
+        self.assertEqual(reviewed["ci_reruns"], original["reruns"])
         self.cli("say", "ci-inherited", "Inspect the existing CI failure")
         self.wait("ci-inherited")
         state = self.state("ci-inherited")
         self.assertTrue(state["ci_enabled"])
         self.assertEqual(state["ci_rounds"], 0)
         self.assertEqual((state["ci"]["outcome"], state["ci"]["reason"]), ("failed", "rounds_exhausted"))
-        self.assertEqual(len(self.invocations()), 2)
+        self.assertEqual(len(self.invocations()), 3)
         self.assertEqual(len(self.ci_polls()), 2)
         self.assertEqual((state["ci"]["sha"], state["ci"]["reruns"]),
                          (original["sha"], original["reruns"]))
         self.assertEqual(len([event for event in self.gh_invocations()
                               if event["argv"][:2] == ["run", "rerun"]]), 1)
+        self.exhaust_accounts((self.home, "A", self.reset), (self.other, "B", self.reset + 3600))
+        self.cli("say", "ci-inherited", "Wait for capacity before continuing")
+        output = self.wait("ci-inherited")
+        sleeping = self.state("ci-inherited")
+        self.assertEqual(sleeping["outcome"], "sleeping")
+        self.assertNotIn("ci", sleeping)
+        self.assertEqual(sleeping["ci_reruns"], original["reruns"])
+        self.assertNotIn("== CI ", output)
+        self.cli("stop", "ci-inherited")
+        self.wait("ci-inherited")
 
     def test_say_ci_enables_task_ci(self):
         self.configure(language="en", sandbox="workspace")
@@ -1950,7 +2031,8 @@ class WorkspaceTests(RotationTestCase):
             if args[:2] == ["run", "rerun"]:
                 return subprocess.CompletedProcess(args, 1, "", "fixture rerun unavailable")
             if args[:2] == ["run", "view"] and "--job" not in args:
-                return subprocess.CompletedProcess(args, 0, json.dumps({"attempt": 1}), "")
+                return subprocess.CompletedProcess(args, 0, json.dumps({
+                    "attempt": 1, "status": "completed", "conclusion": "failure"}), "")
             self.assertEqual(args[:2], ["run", "view"])
             return subprocess.CompletedProcess(args, 0, (jobs or {})[args[args.index("--job") + 1]], "")
 

@@ -204,7 +204,10 @@ def monitor_command(st, cfg, prompt, effort, reviewing, review_fallback, wrapup,
         args += sandboxing.sandbox_args(st)
         if st.get("sandbox") == "workspace":
             rules = sandboxing.sandbox_rules(cfg, reviewing=reviewing, no_push=st.get("no_push", False))
-            rules = sandboxing.repository_rules(rules, st["worktree"])
+            try:
+                rules = sandboxing.repository_rules(rules, st["worktree"])
+            except (OSError, subprocess.CalledProcessError):
+                pass  # Keep the standard GitHub rules when origin cannot be read.
             if not prompt.endswith(rules):
                 prompt += "\n\n" + rules
     if st.get("kind") == "reflect":

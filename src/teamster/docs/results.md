@@ -51,8 +51,10 @@ pass, exhausted repair rounds, an incomplete repair result, a budget stop, timeo
 why waiting was skipped, such as checks that stayed queued without starting. See [ci.md](ci.md) for waiting and repair mechanics.
 
 For GitHub failures, `ci.reruns` lists each rerun's `sha`, `run_id`, `repo`, original `attempt`,
-`outcome` (`pending`, `passed`, `failed`, or `error`) and `error` text. Receipts survive repeated waits,
-automatic repairs and work follow-ups with GitHub CI still enabled, so the same SHA is rerun only once.
+`outcome` (`pending`, `passed`, `failed`, or `error`) and `error` text. The task's `ci_reruns` history
+preserves these receipts across every launch, including standalone reviews, so the same SHA is rerun
+only once. Each GitHub CI wait copies that history into `ci.reruns`; a new work turn has no `ci`
+result until waiting actually begins, including while it sleeps for account capacity.
 Older state without `reruns` remains readable. Reruns do not increase the repair-round count;
 `--ci-command` keeps its existing fields.
 

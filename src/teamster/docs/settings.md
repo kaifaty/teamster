@@ -133,6 +133,8 @@ At `start`, known non-GitHub `origin` hosts (including local paths and SSH alias
 the supervisor does not publish PRs there, so the worker opens or edits a PR only when the brief
 asks, otherwise it pushes the branch and stops. GitHub rules stay unchanged. `--no-push` still
 keeps work local; custom rules without the standard publication sentence stay unchanged.
+Origin discovery runs after fetching in the main repository; a Git error stops `start` with an
+explanation. In an existing workspace turn, an origin lookup error keeps the standard GitHub rules.
 With `--check`, `start` appends a rule to run the saved check in full before finishing with status `done`, including when a custom rules file is used. Historically long checks instead use the brief's test subset when a turn limit is set; see [checks.md](checks.md).
 
 ## Data home

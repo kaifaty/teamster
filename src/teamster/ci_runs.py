@@ -299,10 +299,21 @@ def never_started(item):
             and item.get("startedAt") in (None, "", "0001-01-01T00:00:00Z"))
 
 
+def ci_run_info(st, gh, run_id, repo, stopped, deadline):
+    info = ci_json(st, [gh, "run", "view", run_id, "--repo", repo,
+                        "--json", "attempt,status,conclusion"], stopped,
+                   timeout=min(60, max(0.001, deadline - clock.CLOCK.monotonic())))
+    if (not isinstance(info, dict) or not isinstance(info.get("attempt"), int)
+            or any(not isinstance(info.get(key), str) for key in ("status", "conclusion"))):
+        raise ValueError("invalid gh run view response")
+    return info
+
+
 def ci_rerun_failed(st, gh, stopped, deadline):
     """Request one batch of failed-job reruns per SHA before any repair turn."""
     ci = st["ci"]
-    reruns = ci.setdefault("reruns", [])
+    reruns = st.setdefault("ci_reruns", ci.get("reruns", []))
+    ci["reruns"] = reruns
     if any(item["sha"] == ci["sha"] for item in reruns):
         return False
     runs = {}
@@ -318,9 +329,7 @@ def ci_rerun_failed(st, gh, stopped, deadline):
         # Save before requesting a rerun so a resumed supervisor cannot submit it twice.
         task_state.save(st)
         try:
-            args = [gh, "run", "view", run_id, "--repo", repo, "--json", "attempt"]
-            info = ci_json(st, args, stopped,
-                           timeout=min(60, max(0.001, deadline - clock.CLOCK.monotonic())))
+            info = ci_run_info(st, gh, run_id, repo, stopped, deadline)
             item["attempt"] = info["attempt"]
             task_state.save(st)
             response = ci_command(st, [gh, "run", "rerun", run_id, "--failed", "--repo", repo], stopped,
@@ -339,9 +348,11 @@ def ci_reruns_pending(st, gh, stopped, deadline):
     for item in st["ci"].get("reruns", []):
         if item["sha"] != st["ci"]["sha"] or item["outcome"] != "pending":
             continue
-        info = ci_json(st, [gh, "run", "view", item["run_id"], "--repo", item["repo"],
-                            "--json", "attempt,status,conclusion"], stopped,
-                       timeout=min(60, max(0.001, deadline - clock.CLOCK.monotonic())))
+        try:
+            info = ci_run_info(st, gh, item["run_id"], item["repo"], stopped, deadline)
+        except ValueError as exc:
+            item.update(outcome="error", error=str(exc))
+            return False
         if info["attempt"] <= item["attempt"] or info["status"] != "completed":
             pending = True
         else:
@@ -354,8 +365,9 @@ def wait_ci(st, stopped, sleep, queued_minutes=20):
     previous = st.get("ci") or {}
     ci = {"sha": "", "outcome": "pending", "checks": [], "seconds": previous.get("seconds", 0),
           "rounds": previous.get("rounds", 0), "reason": ""}
-    if previous.get("reruns") and not st.get("ci_command"):
-        ci["reruns"] = previous["reruns"]
+    reruns = st.get("ci_reruns", previous.get("reruns", []))
+    if reruns and not st.get("ci_command"):
+        ci["reruns"] = reruns
     st["ci"] = ci
     started = clock.CLOCK.monotonic()
     deadline = started + st.get("ci_timeout_minutes", 30) * config.MINUTE_SECONDS
