@@ -10,6 +10,69 @@ from rotation_support import IMPOSSIBLE_PID, PYTHON, SCRIPT, RotationTestCase
 
 
 class CheckGuardTests(RotationTestCase):
+    def test_long_saved_check_uses_only_matching_completed_runs_and_the_median(self):
+        worker = self.worker()
+        command = "python3 check.py"
+        task = worker.config.TASKS / "history"
+        archive = worker.config.TASKS / ".archive" / "history-archived"
+        other = worker.config.TASKS / ".archive" / "other-repo"
+        for directory in (task, archive, other):
+            directory.mkdir(parents=True)
+        (task / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
+            {"cmd": command, "seconds": 60, "outcome": "passed"},
+            {"cmd": command, "seconds": 900, "outcome": "failed"},
+            {"cmd": command, "outcome": "passed"},
+            *({"cmd": command, "seconds": 9000, "outcome": outcome}
+              for outcome in ("timeout", "unavailable", "stopped")),
+            {"cmd": "another check", "seconds": 9000, "outcome": "passed"}]}))
+        (other / "state.json").write_text(json.dumps({"repo": str(self.root / "other"), "checks": [
+            {"cmd": command, "seconds": 9000, "outcome": "passed"}]}))
+        self.assertIsNone(worker.checking.long_check_median(self.repo, command, 30))
+        (archive / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
+            {"cmd": command, "seconds": 1200, "outcome": "passed"}]}))
+        for limit, expected in ((None, None), (60, None), (45, None), (30, 15)):
+            with self.subTest(limit=limit):
+                self.assertEqual(worker.checking.long_check_median(self.repo, command, limit), expected)
+
+    def test_start_and_base_merge_defer_long_checks_in_both_languages(self):
+        worker = self.worker()
+        expected = {
+            "ru": '- Сохранённая проверка `{command}` идёт долго (медиана прошлых прогонов — 15 мин), '
+                  'её целиком запустит надзиратель после хода. Перед `status: "done"` прогони выборку тестов '
+                  'из брифа и укажи её в `checks`; полную проверку сам не запускай — ни в фоне, ни через nohup.',
+            "en": '- The saved check `{command}` is long (median of past runs 15 min); '
+                  'the supervisor runs it in full after the turn. Before finishing with status "done", '
+                  'run the subset of tests the brief names and report it in `checks`; do not run the full check '
+                  'yourself, not in the background and not through nohup.'}
+        for language in ("en", "ru"):
+            for override in (False, True):
+                with self.subTest(language=language, override=override):
+                    self.configure(language=language, max_turn_minutes=60 if override else 30)
+                    slug = f"long-{language}-{int(override)}"
+                    command = f"true # {slug}"
+                    for name, runs in (("history", [("passed", 900), ("failed", 900)]),
+                                       (".archive/history", [("passed", 1200)])):
+                        directory = worker.config.TASKS / name
+                        directory.mkdir(parents=True, exist_ok=True)
+                        (directory / "state.json").write_text(json.dumps({
+                            "slug": "history", "repo": str(self.repo), "checks": [
+                                {"cmd": command, "seconds": seconds, "outcome": outcome}
+                                for outcome, seconds in runs]}))
+                    self.start(slug, "--check", command, *(["--max-minutes", "30"] if override else []))
+                    self.wait(slug)
+                    rule = expected[language].format(command=command)
+                    brief = (worker.config.TASKS / slug / "brief.md").read_text()
+                    self.assertTrue(brief.endswith("\n" + rule), brief)
+                    state = self.state(slug)
+                    self.assertEqual(state["max_turn_minutes"], 30)
+                    self.assertEqual(state["checks"][-1]["outcome"], "passed")
+                    merge = {"base": "origin/main", "files": ["tracked.txt"]}
+                    cfg = {"language": language, "max_turn_minutes": 60 if override else 30}
+                    prompt = worker.prompts.fix_prompt(state, None, None, cfg, merge)
+                    self.assertIn(rule + "\n", prompt)
+                    self.assertNotIn("Run the saved check in full:", prompt)
+                    self.assertNotIn("Запусти сохранённую проверку целиком:", prompt)
+
     def test_check_options_reject_invalid_timeouts_and_conflicting_say_flags(self):
         for timeout in ("0", "-1", "nan", "inf"):
             with self.subTest(timeout=timeout):
@@ -28,6 +91,7 @@ class CheckGuardTests(RotationTestCase):
 
     def test_check_passes_after_completed_work_before_automatic_review(self):
         self.configure(language="en")
+        self.env["COPYFILE_DISABLE"] = "0"
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "create_files": ["done.txt"]},
             {"mode": "complete", "reply": "Review after objective check"}])
@@ -48,6 +112,7 @@ class CheckGuardTests(RotationTestCase):
         self.assertEqual(self.sandbox_invocations(), [])
         for event in self.invocations():
             self.assert_no_workspace_sandbox(event)
+            self.assertEqual(event["copyfile_disable"], "1")
         prompt = self.review_invocations()[0]["prompt"]
         self.assertIn(command, prompt)
         self.assertEqual(prompt, self.worker().prompts.review_prompt(state, {"language": "en"}))
@@ -1000,11 +1065,13 @@ class CheckGuardTests(RotationTestCase):
 
     def test_check_and_base_check_receive_their_deadline_and_base_exit_75_is_unavailable(self):
         self.configure(language="en")
+        self.env["COPYFILE_DISABLE"] = "0"
         deadlines = self.root / "deadlines"
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "create_files": ["done.txt"]},
             {"mode": "complete", "reply": self.review_result(False)}])
         command = (f"printf '%s\\n' \"$CODEX_TASK_CHECK_DEADLINE\" >> {shlex.quote(str(deadlines))}; "
+                   'test "$COPYFILE_DISABLE" = 1 && '
                    'test "$TEAMSTER_CHECK_DEADLINE" = "$CODEX_TASK_CHECK_DEADLINE" && '
                    "{ test -f done.txt || { echo 'base queue busy'; exit 75; }; }")
         self.start("check-deadline", "--review", "--check", command, "--base-check", "--check-timeout", "600")

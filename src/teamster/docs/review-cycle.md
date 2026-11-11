@@ -25,16 +25,21 @@ required by "Done when" (a limit, guard or value), a small break in the tested c
 test green, and report a finding naming the break and explaining why the test misses it.
 
 Before the first automatic review and every repeat review after a fix, the supervisor fetches the
-task's base and runs `git merge-tree --write-tree HEAD <base>`. A clean merge proceeds to review
-without changing the task branch. If fetching or merge-tree fails (for example, without network
-access or with an older Git), the supervisor records the reason, skips this check and proceeds to
-review. Standalone `review`, the CI cycle and PR publication do not run this check.
+task's base when its first slash-separated segment names a configured remote (`git remote`),
+such as `origin/main`, then runs `git merge-tree --write-tree HEAD <base>`. A SHA or local branch
+(including names such as `claude/topic`) is verified with `git rev-parse --verify` and checked as is,
+without a fetch. A clean merge proceeds to review without changing the task branch.
+If fetching or merge-tree fails (for example, without network
+access or with an older Git), or a local base cannot be resolved, the supervisor records the reason,
+skips this check and proceeds to review. `teamster wait` prints `== base merge <base>: skipped (<reason>)`
+for each skipped check. Standalone `review`, the CI cycle and PR publication do not run this check.
 If a stacked remote base is missing, the supervisor switches once to the same remote's default branch from `refs/remotes/<remote>/HEAD` and checks that base; if the default cannot be resolved or another fetch error occurs, it records a skip reason.
 
 When the base conflicts and a `--fix-rounds` round remains, the supervisor uses that round to merge
 the base instead of starting review. The implementation prompt lists the conflicting files and asks
 for an ordinary merge commit, without rebase or force-push, preserving the intent of both sides and
-running the saved check in full. The merge is recorded in `rounds` and counts toward the same fix
+running the saved check in full, or only the brief's test subset for a historically long check
+(see [checks.md](checks.md)). The merge is recorded in `rounds` and counts toward the same fix
 limit. The saved check and review then follow as after any other fix round, including another base
 merge check before review.
 For a review-only `partial` or `blocked` result, a base conflict is recorded but does not prevent

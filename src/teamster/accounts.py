@@ -19,7 +19,7 @@ def account_named(cfg, name):
 
 
 def account_env(account):
-    return dict(os.environ, CODEX_HOME=account["home"])
+    return dict(os.environ, CODEX_HOME=account["home"], COPYFILE_DISABLE="1")
 
 
 def prepare_home(account):

@@ -726,6 +726,42 @@ class ReviewFixTests(RotationTestCase):
         self.git("-C", str(checkout), "push", "--quiet", "origin", "main")
         return self.git("-C", str(checkout), "rev-parse", "HEAD")
 
+    def test_base_merge_sha_and_local_branches_probe_without_fetch(self):
+        clean = self.git("rev-parse", "--short", "HEAD")
+        self.git("branch", "local-clean")
+        self.git("branch", "claude/local-clean")
+        self.git("checkout", "--quiet", "-b", "claude/local-base")
+        (self.repo / "tracked.txt").write_text("base change\n")
+        self.git("commit", "--quiet", "-am", "Advance local base")
+        conflicting = self.git("rev-parse", "--short", "HEAD")
+        self.git("branch", "local-base")
+        self.git("checkout", "--quiet", "main")
+        (self.repo / "tracked.txt").write_text("task change\n")
+        self.git("commit", "--quiet", "-am", "Advance task")
+        head = self.git("rev-parse", "HEAD")
+        index = self.git("ls-files", "--stage")
+        calls = self.record_git_calls()
+        worker = self.worker()
+        bases = ((clean, "passed"), ("local-clean", "passed"), ("claude/local-clean", "passed"),
+                 (conflicting, "conflict"), ("local-base", "conflict"), ("claude/local-base", "conflict"),
+                 ("claude/missing", "skipped"))
+        for number, (base, outcome) in enumerate(bases):
+            with self.subTest(base=base), mock.patch.dict(os.environ, self.env, clear=True):
+                state = {"slug": f"local-base-{number}", "base": base, "worktree": str(self.repo)}
+                (worker.config.TASKS / state["slug"]).mkdir(parents=True)
+                entry = worker.review_cycle.check_base_merge(state, lambda: False)
+                self.assertEqual(entry["outcome"], outcome, entry)
+                self.assertEqual(entry["base"], base)
+                self.assertNotIn("base_switch", state)
+                if outcome == "conflict":
+                    self.assertEqual(entry["files"], ["tracked.txt"])
+                if outcome == "skipped":
+                    self.assertIn("rev-parse:", entry["reason"])
+        self.assertFalse(any("fetch" in json.loads(line)["argv"] for line in calls.read_text().splitlines()))
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)
+        self.assertEqual(self.git("ls-files", "--stage"), index)
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
     def test_base_merge_deleted_stacked_base_checks_default_and_preserves_it_for_followups(self):
         self.configure(language="en")
         self.git("push", "--quiet", "origin", "main:stacked")
