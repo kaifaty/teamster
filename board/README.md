@@ -31,7 +31,8 @@ npm --prefix board/web ci && npm --prefix board/web run build
 Until that directory exists, `/` returns a short build instruction. The API is available independently.
 
 The header switches between two views of the same data: «Доска», the columns, and «Карта», a space fleet
-in painted art, drawn with PixiJS (loaded only when the tab opens). The galaxy shows every repository as a star, and nothing joins them: no supply lines and no
+in painted art, drawn with PixiJS (loaded only when the tab opens). The space theme lives in the art only: every text on
+the map names the real thing in plain words — a repository, a task, its stage, an account, a machine. The galaxy shows every repository as a star, and nothing joins them: no supply lines and no
 tankers. The stars stand on a hexagonal lattice whose step follows their count, so a few stand wide apart and many fill
 the galaxy evenly, clear of the science station, the columns at the edges, the toolbar and the ship's log; a star keeps
 its place while it fits there (`galaxyLayout` in `board/web/src/map/layout/stars.ts`).
@@ -39,7 +40,7 @@ Every subscription stands as a fuel tank in a column on the left edge of the gal
 and above the ship's log (`fuelPositions`); on a phone the tanks stand in a row under the toolbar. The fuel in a tank's
 glass is the week's limit left, in the family's colour and red at 20% or less, where a warning light blinks; an
 exhausted, limited or logged-out tank turns grey. Seven lamps beside it burn one per day until it refills: the weekly
-reset, or the end of the limit that ran out. The admiral's badge crowns the duty account, the one teamster keeps for the
+reset, or the end of the limit that ran out. A star badge, «★ резерв», marks the duty account, the one teamster keeps for the
 orchestrator and new tasks skip. The label on the right tells the name, the share left and the time to the refill
 («83% · ↻ 5 д»), with a spare cell for every free reset of a Codex account; its title has the five-hour window, the
 reset times and when the free resets expire.
@@ -53,21 +54,22 @@ left tells the name and what is free, each figure after a dot of its ring's colo
 status instead when the machine is offline, and the name alone on a phone. A click on the reactor or its label opens the
 same machine card as on «Доска»; like the tanks, the reactors stay live during a replay. The map
 tab has no machines strip: there the machines live in the galaxy, as the accounts do.
-A busy star's label is one line: its name, its ships and badges for alarms, ships waiting for you and sleeping ones.
+A busy star's label is one line: its name, its tasks and badges for alarms, tasks waiting for you and sleeping ones.
 Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,
 and a quiet star's name, shows on zooming in or under the pointer. A click on a star flies into its system: the
-sun is the main branch, and each task is a ship that moves towards it, from the yard through the range, the
-inspection and the hypergate to the roadstead, where it waits for you. The yard is an orbital dock over the limb of
+sun is the main branch, and each task is a ship that moves towards it, from the yard («Работа») through the range («Проверка»), the
+inspection («Ревью») and the hypergate («CI») to the roadstead («Приёмка»), where it waits for you; the plates name
+the stages, never the places. The yard is an orbital dock over the limb of
 the system's home world, a large planet at its left edge from which new ships fly in. The inspection is a checkpoint, an
 open frame with its name over it like a sign: the ships under review stand in its lanes, each under a scanner beam of its
 reviewer's colour, and the rest queue before its entrance (`lanesOf` in `board/web/src/map/layout/parking.ts`). A ship leaves it
 with a green tick over a clean review, or with a red ring back to the yard, where it carries a red mark per finding while
-it fixes them, and «Корабли системы» tells their count. Sleeping ships drift in the
-cryofield, the lead's sessions stay at the command station. A system is laid out in the part of the window the toolbar, the list of
+it fixes them, and «Задачи репозитория» tells their count. Sleeping ships drift in the
+cryofield («Сон»), the lead's sessions stay at the command station («Твои сессии»). A system is laid out in the part of the window the toolbar, the list of
 its ships and the folded log leave free, and its world takes that part's shape. Each station parks its ships on one
 arc on its own side, away from its name, the ships in trouble first; a station shows a few ships, and a count «+N»
 stands for the rest and opens the list at that station (`parkingOf` in `board/web/src/map/layout/parking.ts`). The list
-«Корабли системы» names every ship by station at the right of the map, and «Корабли» in the toolbar hides it; on a
+«Задачи репозитория» names every task by stage at the right of the map, and «Задачи» in the toolbar hides it; on a
 phone it opens over the map. The galaxy and a system move alike: a mouse wheel zooms around the
 pointer, two fingers on a trackpad move the camera in any direction and a pinch zooms, dragging moves the camera, and
 `+`, `-`, the arrows and `0` (the whole view) work on the focused map; zoomed in, every edge of a system can be brought
@@ -84,37 +86,37 @@ constellation's name and its repositories, where `*` stands for any run of chara
 `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse", "my-support"]}]}`. The galaxy
 gathers their stars in one place under a faint cloud with the constellation's name, and the system picker groups them.
 The server reads the file on each request through `GET /api/constellations`; it stays outside this public repository.
-In the lower right corner of the galaxy, apart from the systems it studies, stands the science station, fed by
-`GET /api/research`. It shows the reflection
+In the lower right corner of the galaxy, apart from the systems it studies, stands the science station, labelled
+«Рефлексия» and fed by `GET /api/research`. It shows the reflection
 ([reflection.md](../src/teamster/docs/reflection.md)): a gold light while lessons wait for your decision, gold rings running out
 from its core while the analyst waits for your answer, and probes flying to the systems with archived records while a run
 is going. A run is a `teamster reflect` task (or, before it, a desktop session of the reflection's scheduled task); it stays
 at the station and is not counted in any system.
-A click on the station opens its own screen over the map (`board/web/src/map/station/`; «← Галактика» or Esc goes back,
+A click on the station opens its own screen over the map (`board/web/src/map/station/`, titled «Рефлексия»; «← Карта» or Esc goes back,
 and the galaxy stops drawing meanwhile). Under its title one line says what to do next, with at most one button, in this
 order: answer the analyst who waits («Ответить»), answer an implementing agent that needs a decision («Ответить» focuses
 the reply on its card), decide the proposed lessons («Разобрать»), wait while the analyst works, wait while agents
 implement lessons, check a ready PR («Показать» brings its card), apply the accepted lessons («Показать»), or nothing
 until the planned run. A resource bar on top counts the analyst's open
-questions, lessons to decide, accepted lessons waiting for their change, applied lessons, the records in the hold with
+questions, lessons to decide, accepted lessons waiting for their change, applied lessons, the records not yet reflected on («не разобрано») with
 how many carry a signal, and the time to the planned reflection; each gauge brings its deck into view. The decks:
-- «Ядро станции»: the station inside a chronometer ring that fills from the last planned run to the next one
+- «Расписание»: the station inside a chronometer ring that fills from the last planned run to the next one
   (`schedule` in `GET /api/research`, read from the Claude desktop scheduled task; `board/web/src/map/schedule.ts` puts the
   cron into words), a teal sweep while a run works, the last run and batch, «Внеочередной разбор» and «Вопрос к архиву».
-- «Приказ», under the comms room: a new study — an extra batch, named tasks, or a question to the archive over a period
-  or projects. «Отдать приказ» starts it, and its channel opens in the comms room above; «Команда» shows the equivalent `teamster reflect`.
-- «Экипаж»: the analyst (at work, waiting for your answer, stopped by a failed turn, or free; a click opens its channel) and
-  the archive keeper with the hold's count.
-- «Рубка связи»: one channel per study and the open channel's conversation — your order, the analyst's reports with dockets
+- «Новый разбор», under «Переписка»: a new study — an extra batch, named tasks, or a question to the archive over a period
+  or projects. «Запустить» starts it, and its channel opens in «Переписка» above; «Команда» shows the equivalent `teamster reflect`.
+- «Агенты»: the analyst (at work, waiting for your answer, stopped by a failed turn, or free; a click opens its channel) and
+  «Архив» with the count of records not yet reflected on.
+- «Переписка»: one channel per study and the open channel's conversation — your request, the analyst's reports with lessons
   and questions with answer options, and your replies — with the reply field under it: «Отправить» or Cmd/Ctrl+Enter
   sends the picked options and your text to the study, unless the analyst is at work or the study is closed.
-- «Лаборатория»: lessons on one line, «на решение» › «к внедрению» › «внедрено», with «отклонено» aside. A card shows the
+- «Уроки»: lessons on one line, «на решение» › «к внедрению» › «внедрено», with «отклонено» aside. A card shows the
   lesson's title, what to do and the proposal, with its evidence and caveats under «Подробнее». A proposed lesson is
   implemented, accepted without a task, declined with an optional reason, or discussed — in the study that filed it when
   that study can take a reply, otherwise in a new study over the last 30 days; an accepted one is implemented or marked
   «Внедрено» with where it landed. For a few seconds after a decision the card offers «Отменить».
-  «Внедрить» asks where — a repository from `repos` in `GET /api/research`, a domain lesson's own one or `teamster`
-  first — and for an optional note, and «Запустить» starts a teamster task whose brief the server builds from the
+  «Внедрить» asks for «Репозиторий», where the task makes its branch, runs its tests and opens its PR — one from `repos`
+  in `GET /api/research`, a domain lesson's own one or `teamster` first — and for an optional note, and «Запустить» starts a teamster task whose brief the server builds from the
   lesson (`POST /api/actions/implement`; a proposed lesson becomes accepted). The agent makes the change and opens a
   PR; changes outside the repositories it only lists in its report. A lesson whose proposal names files outside every
   git repository (`outside` of the lesson, such as `~/.codex/checks/<repo>/ci_wait.py`) lists them on its card above
@@ -129,7 +131,7 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
   «Внедрить» is not offered, and «Посмотреть» leaves the station for the task's ship: the map flies to its system and
   opens its card. The line under the station's title offers the same while exactly one agent is at work, and shows
   a ready PR first, then a done change outside the repository.
-- «Трюм архива»: one capsule per record the next planned reflection will read, lit when it carries a signal, the records per
+- «Не разобрано»: one capsule per record the next planned reflection will read, lit when it carries a signal, the records per
   project and per signal, and the signalled records, each of which can be ordered into a study.
 
 The station's buttons act at once: the board server runs `teamster lesson`, `say` or `reflect` (`POST /api/actions/*`)
@@ -150,13 +152,13 @@ where a teamster of 1.60 or later (`actions.queue`) takes an order into the ship
 as one turn when the cycle completes, and any other end, a stop included, drops it. With an older teamster the field
 stays off while the ship works. Every reply goes with the refit's changed fields. Under «Сейчас», «Что сделано» lists
 the branch's changes (`TaskDetail.changes`), the PR, the saved check, the agent's own checks, the review, CI, the base
-merge, the fix loop's stop and what is left undone, each only when known; «Журнал рейса» has the correspondence by time
+merge, the fix loop's stop and what is left undone, each only when known; «Журнал» has the correspondence by time
 (the lead's orders, the review's and CI's reports, the first line of the last report, the orders waiting in the queue,
-the dropped ones with «Отправить снова») and the flight recorder, where the time a stopped ship waited for you is its
-own hatched stripe «ждал тебя». Beside them: the ship's card (papers with the plain word first and the bridge's word
-after it, meters only where there is data, «Весь паспорт» folded), «Другие приказы» with the refit (`say` options:
-model, effort, limits, rounds, reviewer and angles), an extra review (`review`), the verdict (`verdict`), a flight
-review at the science station (`reflect` of this task) and the recall (`stop`, `clean` with the branch kept by
+the dropped ones with «Отправить снова») and «Время по этапам», where the time a stopped ship waited for you is its
+own hatched stripe «ждал тебя». Beside them: the task's card «Параметры» (papers in plain words, meters only where
+there is data, «Все параметры» folded), «Другие действия» with «Изменить параметры» (`say` options:
+model, effort, limits, rounds, reviewer and angles), an extra review (`review`), the verdict (`verdict`), «Разобрать
+задачу» (`reflect` of this task) and the recall (`stop`, `clean` with the branch kept by
 default), folded and each only where the server takes its order, and the documents the task has. Under a group, a
 carried-out order tells in Russian what changed (`orderOutcome`), with teamster's own output in the line's title; the
 line goes once the ship's column or phase changes later than the order's own effect. The logic lives in `bridge.ts`,
@@ -164,13 +166,13 @@ line goes once the ship's column or phase changes later than the order's own eff
 plays the orders on its own tasks.
 
 Like the tanks, the station stays live during a replay.
-The ship's log at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
-live `event` messages) in the map's words, newest first; in a system it shows only that system and folds to its newest
+The log «События» at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
+live `event` messages) in plain words, newest first; in a system it shows only that system and folds to its newest
 line, as on a phone, opening over the map on demand together with the replay's scale. A line leads to its
 system and selects the ship while it is still there. «Сводка дня» shows today's `teamster report --by executor` and
 the day's verdicts. The scale over the log replays a day — the last 24 hours, or any of the 31 days before
-today: a slider, play and pause at ×60, ×600 or ×3600, marks at verdicts and CI failures, and «В эфир» back to the
-live fleet. `board/web/src/map/replay.ts` rebuilds the fleet at each moment from the log's events alone (with two
+today: a slider, play and pause at ×60, ×600 or ×3600, marks at verdicts and CI failures, and «Сейчас» back to the
+live map. `board/web/src/map/replay.ts` rebuilds the fleet at each moment from the log's events alone (with two
 hours before the day for ships already under way), shaped like live tasks, so ships, stars and storms show the past
 while live updates wait; the tanks stay live, since the accounts' past is not recorded. In replay the log
 marks the lines up to the moment, and a click on a line moves the scale to it. A task card, on both views, has a «Команды» block that copies ready `teamster` commands

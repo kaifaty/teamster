@@ -85,7 +85,7 @@ describe("studyTitle", () => {
 
   it("names a study without an order by its mode", () => {
     expect(studyTitle(study())).toBe("Плановый разбор");
-    expect(studyTitle(study({ mode: "study" }))).toBe("Разбор по приказу");
+    expect(studyTitle(study({ mode: "study" }))).toBe("Разбор по запросу");
   });
 });
 

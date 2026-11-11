@@ -45,13 +45,13 @@ const keeperLine = computed(() => {
   <section class="deck hold" data-deck="hold" aria-labelledby="deck-hold">
     <header class="deck-head">
       <span class="sigil" aria-hidden="true">▣</span>
-      <h3 id="deck-hold">Трюм архива</h3>
+      <h3 id="deck-hold">Не разобрано</h3>
       <span class="aside num">{{ research.pending.records }}<template v-if="research.pending.signals"> · <b class="hot">{{ research.pending.signals }} с сигналом</b></template></span>
     </header>
     <div class="deck-body">
       <p class="keeper">
         <img :src="archivistPortrait" alt="" class="mini" />
-        <span><b>Хранитель архива:</b> {{ keeperLine }}</span>
+        <span><b>Архив:</b> {{ keeperLine }}</span>
       </p>
 
       <div v-if="research.pending.records" class="bay" role="img" :aria-label="`Записей ${research.pending.records}, с сигналом ${research.pending.signals}`">
@@ -76,7 +76,7 @@ const keeperLine = computed(() => {
         <li v-for="item in research.pending.items" :key="item.slug + item.stamp">
           <span class="mono ellipsis slug" :title="item.slug">{{ item.slug }}</span>
           <span class="dim repo ellipsis">{{ item.repo }}</span>
-          <button type="button" class="chip small" title="Добавить в приказ «Разобрать задачи»" @click="desk.studyRecord(item.slug)">Разобрать</button>
+          <button type="button" class="chip small" title="Добавить в запрос «Разобрать задачи»" @click="desk.studyRecord(item.slug)">Разобрать</button>
           <span class="signals">
             <span v-for="signal in item.signals" :key="signal" class="signal">{{ SIGNALS[signal] ?? signal }}</span>
           </span>

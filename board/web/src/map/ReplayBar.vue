@@ -7,8 +7,8 @@ import { REPLAY_SPEEDS, type Replay } from "./useReplay";
 const props = defineProps<{ replay: Replay; frame: string; now: number }>();
 
 const HINT =
-  "Перемотка собирает флот из бортового журнала: корабли, звёзды и штормы — как в тот момент. " +
-  "Танкеры и склады остаются живыми: прошлое аккаунтов не записано.";
+  "Перемотка показывает задачи по журналу событий такими, какими они были в тот момент. " +
+  "Аккаунты и машины показаны как сейчас: их прошлое не записано.";
 
 const clock = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
 const dayName = new Intl.DateTimeFormat("ru-RU", { weekday: "short", day: "numeric", month: "short" });
@@ -50,7 +50,7 @@ const KIND_TEXT = { sun: "вердикт", verdict: "вердикт", ci: "CI у
       >
         {{ replay.playing ? "❚❚" : "▶" }}
       </button>
-      <span class="r-now num" aria-live="off">{{ replay.at === null ? "эфир" : time(replay.at) }}</span>
+      <span class="r-now num" aria-live="off">{{ replay.at === null ? "сейчас" : time(replay.at) }}</span>
       <span class="r-seg" role="group" aria-label="Скорость">
         <button
           v-for="speed in REPLAY_SPEEDS"
@@ -66,7 +66,7 @@ const KIND_TEXT = { sun: "вердикт", verdict: "вердикт", ci: "CI у
       <select class="r-day" aria-label="День" :value="replay.day" @change="onDay">
         <option v-for="day in days" :key="day.value" :value="day.value">{{ day.text }}</option>
       </select>
-      <button type="button" class="r-btn r-live" :disabled="!replay.active" @click="replay.live()">В эфир</button>
+      <button type="button" class="r-btn r-live" :disabled="!replay.active" @click="replay.live()" title="Вернуться к текущему моменту">Сейчас</button>
       <span class="r-info" :title="HINT" aria-hidden="true">?</span>
       <span class="sr-only">{{ HINT }}</span>
     </div>

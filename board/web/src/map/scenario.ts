@@ -283,8 +283,8 @@ function timeline(index: number, step: number, start: number): { at: number; tex
 
 const BRIEF = `# Демо-сценарий карты
 
-Три агента — Codex, Claude и ревьюер — по кругу проходят все станции системы: верфь, полигон,
-инспекцию, гиперврата, рейд, криополе и сигнал бедствия. Каждые ${SCENARIO_STEP_SECONDS} с меняется
+Три агента — Codex, Claude и ревьюер — по кругу проходят все этапы: работу, проверку,
+ревью, CI, приёмку, сон и тревогу. Каждые ${SCENARIO_STEP_SECONDS} с меняется
 один из них. Это не настоящие задачи: сценарий есть только в режиме \`npm run dev:fixture\`.
 `;
 
@@ -419,7 +419,7 @@ export function scenarioSource(): BoardSource {
       if (index >= 0) return { ...tasks[index]!, timeline: timeline(index, step, start), files: ["brief"], cargo: null } satisfies TaskDetail;
       const ship = scenarioFleet(start, Date.now() / 1000).find((task) => task.slug === slug);
       if (!ship) return null;
-      return { ...ship, timeline: [{ at: ship.created!, text: "демо-корабль на месте" }], files: ["brief"], cargo: null } satisfies TaskDetail;
+      return { ...ship, timeline: [{ at: ship.created!, text: "демо-задача на месте" }], files: ["brief"], cargo: null } satisfies TaskDetail;
     },
     async fetchFile(slug, name) {
       const known = tasks.some((task) => task.slug === slug) || STANDING.some((ship) => ship.slug === slug);

@@ -65,7 +65,7 @@ const lanes = computed(() => Math.max(1, ...(tape.value?.marks.map((mark) => mar
       <button type="button" class="key retry" @click="load">Повторить</button>
     </p>
     <p v-else-if="events === null" class="empty">Читаю журнал…</p>
-    <p v-else-if="!tape" class="empty">Журнал пуст: рейс ещё не записан</p>
+    <p v-else-if="!tape" class="empty">Журнал пуст: событий ещё нет</p>
     <p v-if="tape?.truncated" class="empty">Журнал неполный: ранние события не вошли</p>
     <div v-if="tape" class="tape-wrap">
       <div class="tape">

@@ -52,7 +52,7 @@ const dutyTitle = (duty: DutyInfo) =>
               <span :class="level(item.row.weeklyPercent)" :style="{ width: `${Math.min(100, Math.max(0, item.row.weeklyPercent))}%` }"></span>
             </div>
             <div class="line sub">
-              <span v-if="item.row.duty" class="duty" :title="dutyTitle(item.row.duty)">★ адмирал</span>
+              <span v-if="item.row.duty" class="duty" :title="dutyTitle(item.row.duty)">★ резерв</span>
               <span v-if="item.row.status" class="status" :class="{ bad: item.row.bad }">
                 {{ item.row.status }}<template v-if="item.row.limitedUntil !== null"> · {{ formatUntil(item.row.limitedUntil, now) }}</template>
               </span>

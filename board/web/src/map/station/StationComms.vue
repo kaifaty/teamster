@@ -17,12 +17,12 @@ defineProps<{ research: Research; now: number }>();
 const desk = useConsole();
 
 const EXECUTOR: Record<string, string> = { claude: "Claude", codex: "Codex" };
-const MODE: Record<Study["mode"], string> = { batch: "пакет", study: "по приказу" };
+const MODE: Record<Study["mode"], string> = { batch: "плановый", study: "по запросу" };
 const SCOPE: Record<"invariant" | "domain", string> = { invariant: "общий", domain: "по проекту" };
 
 function speaker(study: Study, message: StudyMessage, at: number): string {
   if (message.from === "analyst") return `Аналитик · ${EXECUTOR[study.executor] ?? study.executor}`;
-  return at === 0 ? "Ты · приказ" : "Ты · ответ";
+  return at === 0 ? "Ты · запрос" : "Ты · ответ";
 }
 
 const docketsOf = (study: Study) => docketPlacement(study.messages);
@@ -50,7 +50,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
   <section class="deck comms" data-deck="comms" aria-labelledby="deck-comms">
     <header class="deck-head">
       <span class="sigil" aria-hidden="true">⌁</span>
-      <h3 id="deck-comms">Рубка связи</h3>
+      <h3 id="deck-comms">Переписка</h3>
       <span class="aside">
         {{ research.studies.length }} {{ plural(research.studies.length, "канал", "канала", "каналов") }}<template v-if="waitingCount(research.studies)"> · <b class="wait">ждут ответа {{ waitingCount(research.studies) }}</b></template>
       </span>
@@ -59,7 +59,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
     <div class="room">
       <p v-if="!research.studies.length" class="keeper empty">
         <img :src="archivistPortrait" alt="" class="mini" />
-        <span>Каналов пока нет. Нажми «Обсудить» на уроке или отдай приказ — аналитик откроет канал.</span>
+        <span>Разговоров пока нет. Нажми «Обсудить» на уроке или запусти разбор — аналитик ответит здесь.</span>
       </p>
 
       <ul v-else class="channels" aria-label="Каналы">
@@ -99,7 +99,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
             <img v-if="message.from === 'analyst'" :src="analystPortrait" alt="" class="avatar" />
             <div class="bubble-wrap">
               <span class="who">{{ speaker(desk.openStudy.value, message, at) }} · <time :datetime="new Date(message.at * 1000).toISOString()">{{ formatClock(message.at, now) }}</time></span>
-              <p v-if="message.from === 'lead'" class="bubble">{{ message.text ?? "Плановый разбор, без особого приказа." }}</p>
+              <p v-if="message.from === 'lead'" class="bubble">{{ message.text ?? "Плановый разбор, без особого запроса." }}</p>
               <p v-else-if="message.text" class="bubble">{{ message.text }}</p>
 
               <!-- Dockets: a lesson's card stands at the last report that carries it. -->
@@ -110,7 +110,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
                   :class="desk.index.value.get(lesson.entry.trim())?.status ?? 'unindexed'"
                 >
                   <header class="d-head">
-                    <span>Докладная · {{ lesson.id }}<template v-if="lesson.scope"> · {{ SCOPE[lesson.scope] }}</template></span>
+                    <span>Урок · {{ lesson.id }}<template v-if="lesson.scope"> · {{ SCOPE[lesson.scope] }}</template></span>
                     <span v-if="desk.index.value.get(lesson.entry.trim()) && desk.index.value.get(lesson.entry.trim())!.status !== 'proposed'" class="d-state">
                       {{ LESSON_STATE[desk.index.value.get(lesson.entry.trim())!.status] || desk.index.value.get(lesson.entry.trim())!.status_text }}
                     </span>
@@ -124,7 +124,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
                   <LessonImplementation v-if="docket(lesson.entry)?.implementation" :lesson="docket(lesson.entry)!.lesson" />
                   <LessonActions v-if="docket(lesson.entry)?.actions" :lesson="docket(lesson.entry)!.lesson" stage="proposed" />
                 </article>
-                <span v-else class="d-moved">докладная {{ lesson.id }} — пересмотрена ниже</span>
+                <span v-else class="d-moved">урок {{ lesson.id }} — пересмотрен ниже</span>
               </template>
 
               <!-- Questions: live only in the last report of a waiting study. -->
@@ -169,7 +169,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
           </li>
           <li v-else-if="studyState(desk.openStudy.value) === 'failed'" class="keeper inline bad">
             <img :src="archivistPortrait" alt="" class="mini" />
-            <span>Ход прервался{{ desk.openStudy.value.error ? `: ${desk.openStudy.value.error}` : "" }}. Повтори приказ или ответь аналитику «продолжай».</span>
+            <span>Ход прервался{{ desk.openStudy.value.error ? `: ${desk.openStudy.value.error}` : "" }}. Запусти разбор снова или ответь аналитику «продолжай».</span>
           </li>
         </ol>
         <StationReply :study="desk.openStudy.value" />

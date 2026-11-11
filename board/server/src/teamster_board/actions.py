@@ -121,7 +121,7 @@ def implementation_brief(lesson, note, started, lesson_id):
     entry = lesson["entry"]
     paragraphs = [
         f"Внедрить урок «{entry}»: {lesson['title'] or lesson['cue']}.",
-        "Зачем: пользователь принял этот урок рефлексии на научной станции и попросил его внедрить. "
+        "Зачем: пользователь принял этот урок рефлексии на доске и попросил его внедрить. "
         f"Урок из файла {entry.split()[0]} в архиве задач.",
     ]
     details = []

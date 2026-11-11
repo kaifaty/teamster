@@ -28,8 +28,8 @@ export interface FeedItem {
 
 const SOURCES: Record<TaskMessage["source"], { who: string; tone: FeedItem["tone"] }> = {
   lead: { who: "Ты · указание", tone: "you" },
-  review: { who: "Инспекция · круг исправления", tone: "sys" },
-  ci: { who: "Врата · починка CI", tone: "sys" },
+  review: { who: "Ревью · круг исправления", tone: "sys" },
+  ci: { who: "CI · починка", tone: "sys" },
 };
 
 const RESULTS: Record<string, string> = { done: "сделано", partial: "сделано частично", needs_decision: "ждёт решения", blocked: "заблокирована" };
@@ -103,7 +103,7 @@ export function feedOf(
     const text = task.summary ?? RESULTS[status ?? ""] ?? status ?? "";
     const asks = cargo?.questions.length ?? 0;
     const note = [status ? (RESULTS[status] ?? status) : null, asks ? `${asks} ${plural(asks, "вопрос", "вопроса", "вопросов")}` : null].filter(Boolean).join(" · ");
-    rows.push({ item: { key: "report", at, who: "Капитан · доклад", tone: "agent", text, note: note || null }, rank });
+    rows.push({ item: { key: "report", at, who: "Агент · доклад", tone: "agent", text, note: note || null }, rank });
   }
   const feed = rows
     .map((row, order) => ({ ...row, order }))
@@ -226,12 +226,12 @@ export function refitOf(draft: RefitDraft, task: Pick<TaskSummary, "executor" | 
   const errors: string[] = [];
   const model = draft.model.trim();
   if (model) {
-    if (!MODEL.test(model)) errors.push("Двигатель: латиница, цифры, «.», «_» и «-», до 64 знаков");
+    if (!MODEL.test(model)) errors.push("Модель: латиница, цифры, «.», «_» и «-», до 64 знаков");
     else if (model !== task.model) options.model = model;
   }
   const effort = draft.effort.trim();
   if (effort) {
-    if (!(effortsFor(task.executor) as readonly string[]).includes(effort)) errors.push(`Форсаж: ${effortsFor(task.executor).join(", ")}`);
+    if (!(effortsFor(task.executor) as readonly string[]).includes(effort)) errors.push(`Усилие: ${effortsFor(task.executor).join(", ")}`);
     else if (effort !== task.effort) options.effort = effort as Effort;
   }
   const numeric = (key: "max_minutes" | "max_weekly" | "fix_rounds" | "ci_rounds", label: string, min: number, max: number, integer: boolean, now: number | null | undefined) => {
@@ -241,7 +241,7 @@ export function refitOf(draft: RefitDraft, task: Pick<TaskSummary, "executor" | 
     else if (value !== now) options[key] = value;
   };
   numeric("max_minutes", "Лимит хода", 5, 600, true, limits?.max_turn_minutes);
-  numeric("max_weekly", "Топливо задачи", 0.5, 100, false, limits?.max_weekly_percent);
+  numeric("max_weekly", "Бюджет задачи", 0.5, 100, false, limits?.max_weekly_percent);
   numeric("fix_rounds", "Круги ремонта", 0, 5, true, limits?.fix_rounds);
   numeric("ci_rounds", "Попытки CI", 0, 5, true, limits?.ci_rounds);
   const reviewer = draft.reviewer.trim();
@@ -264,15 +264,15 @@ export function refitLine(refit: Refit, queued = false): string {
  * desk's `offReason`), null while it runs them; then the board cannot know whether teamster queues.
  */
 export function replyHint(view: Pick<DeskView, "send" | "queue">, off: string | null = null): string {
-  if (view.queue) return "Корабль в пути: указание встанет в очередь и уйдёт одним ходом, когда он закончит цикл. Срочно — «Остановить», но очередь тогда не уйдёт";
-  if (view.send) return "С изменёнными полями переоснащения · ⌘/Ctrl+Enter";
-  if (off !== null) return `Идёт ход, а доска только читает (${off}): указание кораблю в пути отсюда не уйдёт. Останови корабль или дождись конца хода`;
-  return "Идёт ход: teamster отклонит указание. Обнови teamster до 1.60, чтобы ставить указания в очередь, или останови корабль";
+  if (view.queue) return "Агент работает: указание встанет в очередь и уйдёт одним ходом, когда он закончит цикл. Срочно — «Остановить», но очередь тогда не уйдёт";
+  if (view.send) return "С изменёнными параметрами · ⌘/Ctrl+Enter";
+  if (off !== null) return `Идёт ход, а доска только читает (${off}): указание работающему агенту отсюда не уйдёт. Останови его или дождись конца хода`;
+  return "Идёт ход: teamster отклонит указание. Обнови teamster до 1.60, чтобы ставить указания в очередь, или останови агента";
 }
 
 /** The confirmation of «Остановить»: the orders waiting in the queue are lost with the cycle. */
 export function stopConfirm(waiting: number): string {
-  const base = "Остановить корабль посреди хода? Работа в worktree останется.";
+  const base = "Остановить агента посреди хода? Работа в worktree останется.";
   if (waiting <= 0) return base;
   return `${base} ${waiting} ${plural(waiting, "указание", "указания", "указаний")} в очереди не ${plural(waiting, "уйдёт", "уйдут", "уйдут")}.`;
 }
@@ -382,7 +382,7 @@ export function needOf(task: TaskSummary, cargo: Cargo | null | undefined, desk:
       : { kind: "none", title: "Сессия ждёт тебя в приложении Claude", tone: "warn", text: "" };
   }
   const order = recommendedOrder(task, now);
-  if (!order) return { kind: "none", title: "Рейс окончен: приказов не нужно", tone: "muted", text: "" };
+  if (!order) return { kind: "none", title: "Задача закрыта: действий не нужно", tone: "muted", text: "" };
   if (task.column === "sleeping") return { kind: "sleep", title: order.reason, tone: "muted", text: "" };
   if (task.alive) return { kind: "calm", title: "Вмешиваться не нужно", tone: "muted", text: "" };
   if (task.column === "review_me") {
@@ -406,19 +406,19 @@ const VERDICT_WORDS: Record<Verdict, string> = { accepted: "принято", rev
 export function orderOutcome(order: ShipOrder, output: string, { queued = false, slug }: { queued?: boolean; slug?: string } = {}): string {
   switch (order.route) {
     case "say": {
-      if (queued) return "Указание в очереди: уйдёт одним ходом, когда корабль закончит цикл";
+      if (queued) return "Указание в очереди: уйдёт одним ходом, когда агент закончит цикл";
       const turn = /\(turn (\d+)\)/.exec(output)?.[1];
-      return turn ? `Указание передано: корабль начал ход ${turn}` : "Указание передано";
+      return turn ? `Указание передано: агент начал ход ${turn}` : "Указание передано";
     }
     case "verdict":
       return `Вердикт «${VERDICT_WORDS[order.body.verdict]}» записан — это оценка для статистики; PR этим не сливается`;
     case "review":
-      return "Внеочередная инспекция вызвана: корабль ушёл на ревью";
+      return "Внеочередное ревью запущено";
     case "reflect":
-      return slug ? `Разбор отправлен на научную станцию: ${slug}` : "Разбор отправлен на научную станцию";
+      return slug ? `Задача отправлена на рефлексию: ${slug}` : "Задача отправлена на рефлексию";
     case "stop":
-      return "Корабль остановлен";
+      return "Агент остановлен";
     case "clean":
-      return order.body.keep_branch === false ? "Корабль списан: worktree и ветка удалены" : "Корабль списан: worktree удалён, ветка осталась";
+      return order.body.keep_branch === false ? "Задача убрана: worktree и ветка удалены" : "Задача убрана: worktree удалён, ветка осталась";
   }
 }

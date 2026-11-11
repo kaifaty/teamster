@@ -30,11 +30,11 @@ function setOrder(element: unknown) {
   <section class="deck order" data-deck="order" aria-labelledby="deck-order">
     <header class="deck-head">
       <span class="sigil" aria-hidden="true">⇡</span>
-      <h3 id="deck-order">Приказ</h3>
+      <h3 id="deck-order">Новый разбор</h3>
     </header>
 
     <form class="deck-body" @submit.prevent="desk.sendOrder">
-      <span class="kinds" role="group" aria-label="Вид приказа">
+      <span class="kinds" role="group" aria-label="Вид разбора">
         <button
           v-for="item in ORDER_KINDS"
           :key="item.kind"
@@ -54,15 +54,15 @@ function setOrder(element: unknown) {
         <input v-model="desk.draft.since" type="text" placeholder="За срок: 30d или 2026-11-01" aria-label="Срок" />
         <input v-model="desk.draft.repos" type="text" placeholder="Проекты — необязательно" aria-label="Проекты через пробел" />
       </div>
-      <textarea :ref="setOrder" v-model="desk.draft.text" rows="2" :placeholder="ORDER_HINT[desk.draft.kind]" aria-label="Текст приказа"></textarea>
+      <textarea :ref="setOrder" v-model="desk.draft.text" rows="2" :placeholder="ORDER_HINT[desk.draft.kind]" aria-label="Текст запроса"></textarea>
       <p v-if="desk.orderState.error" class="error" role="alert">{{ desk.orderState.error }}</p>
       <div class="send-row">
         <button type="button" class="link small" :aria-expanded="showCommand" @click="showCommand = !showCommand">Команда</button>
-        <button type="submit" class="key gold" :class="{ busy: desk.orderState.busy }" :disabled="desk.orderState.busy">Отдать приказ</button>
+        <button type="submit" class="key gold" :class="{ busy: desk.orderState.busy }" :disabled="desk.orderState.busy">Запустить</button>
       </div>
       <pre v-if="showCommand" class="preview" :class="{ empty: !('command' in desk.ordered.value) }">{{ "command" in desk.ordered.value ? desk.ordered.value.command : desk.ordered.value.error }}</pre>
       <p v-if="desk.orderState.done !== null" class="done" role="status">
-        Приказ принят<template v-if="desk.orderState.done">: <span class="mono">{{ desk.orderState.done }}</span></template>
+        Разбор запущен<template v-if="desk.orderState.done">: <span class="mono">{{ desk.orderState.done }}</span></template>
       </p>
       <CopiedNote v-if="desk.orderState.copied" :copied="desk.orderState.copied" />
     </form>

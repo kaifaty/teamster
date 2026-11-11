@@ -18,7 +18,7 @@ defineProps<{ label: ReturnType<typeof tankLabels>[number] }>();
       <span class="t-text">{{ label.info }}</span>
       <img v-for="cell in label.cells" :key="cell" class="cell" :src="fuelCell" alt="" />
       <span v-if="label.cells" class="visually-hidden">, бесплатных сбросов {{ label.cells }}</span>
-      <span v-if="label.tank.admiral" class="visually-hidden">, адмирал</span>
+      <span v-if="label.tank.admiral" class="visually-hidden">, резерв оркестратора</span>
     </span>
   </div>
 </template>

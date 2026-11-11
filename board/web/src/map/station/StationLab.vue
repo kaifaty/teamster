@@ -40,8 +40,8 @@ function toDocket(lesson: Lesson) {
   <section class="deck lab" data-deck="lab" aria-labelledby="deck-lab">
     <header class="deck-head">
       <span class="sigil" aria-hidden="true">⚗</span>
-      <h3 id="deck-lab">Лаборатория</h3>
-      <span class="aside">уроков {{ research.proposed.length + research.accepted.length + research.applied.length + research.declined.length + research.other.length }}</span>
+      <h3 id="deck-lab">Уроки</h3>
+      <span class="aside">всего {{ research.proposed.length + research.accepted.length + research.applied.length + research.declined.length + research.other.length }}</span>
     </header>
 
     <nav class="line" aria-label="Стадии уроков">
@@ -72,7 +72,7 @@ function toDocket(lesson: Lesson) {
           <p v-if="lesson.title" class="cue">{{ lesson.cue }}</p>
           <p class="meta">
             {{ shortDate(lesson.date) }} · {{ scopeText(lesson) }} ·
-            <button v-if="filedOf(lesson)" type="button" class="link mono" title="Открыть докладную в рубке связи" @click="toDocket(lesson)">{{ lesson.entry }}</button>
+            <button v-if="filedOf(lesson)" type="button" class="link mono" title="Открыть урок в переписке" @click="toDocket(lesson)">{{ lesson.entry }}</button>
             <span v-else class="mono">{{ lesson.entry }}</span>
           </p>
           <template v-if="(desk.labStage.value === 'proposed' || desk.labStage.value === 'accepted') && hasBody(lesson)">

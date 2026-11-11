@@ -84,7 +84,7 @@ const rows = computed(() => {
 
 const note = computed(() => {
   if (props.error) return `Журнал не загрузился: ${props.error}`;
-  if (!rows.value.length) return props.repo ? "В этой системе за сутки тихо." : "За сутки в журнале ни строчки.";
+  if (!rows.value.length) return props.repo ? "В этом репозитории за сутки тихо." : "За сутки в журнале ни строчки.";
   return null;
 });
 
@@ -129,7 +129,7 @@ const hideImage = (event: Event) => {
   <section class="log" :class="{ open: unfolded, compact, folded }" :style="{ '--frame': `url(${frame})` }" aria-labelledby="log-title">
     <header class="l-head">
       <slot name="head" />
-      <h2 id="log-title" :class="{ 'sr-only': folded }">Бортовой журнал<span v-if="repo" class="l-where"> · {{ repo }}</span></h2>
+      <h2 id="log-title" :class="{ 'sr-only': folded }">События<span v-if="repo" class="l-where"> · {{ repo }}</span></h2>
       <!-- Folded, the toggle is the log's one line. -->
       <button
         type="button"

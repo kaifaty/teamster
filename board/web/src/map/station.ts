@@ -32,7 +32,7 @@ export function studyTitle(study: Study): string {
   const order = study.messages[0]?.from === "lead" ? study.messages[0].text : null;
   const line = order?.trim().split("\n")[0]?.trim();
   if (line) return line.length > 90 ? `${line.slice(0, 89)}…` : line;
-  return study.mode === "batch" ? "Плановый разбор" : "Разбор по приказу";
+  return study.mode === "batch" ? "Плановый разбор" : "Разбор по запросу";
 }
 
 /** A study's own key: a slug may be reused after its record was archived. */

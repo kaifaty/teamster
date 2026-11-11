@@ -30,10 +30,10 @@ export function tankTitle(tank: Tank, now: number): string {
     tank.admiral ? ADMIRAL_NOTE : null,
     tank.fuel !== null ? `Неделя: осталось ${tank.fuel}%` : "Неделя: нет данных",
     tank.status ? `Состояние: ${tank.status}` : null,
-    tank.refillAt !== null ? `${tank.bad ? "Заправка" : "Сброс недели"}: ${when(tank.refillAt)}` : null,
+    tank.refillAt !== null ? `${tank.bad ? "Снова доступен" : "Сброс недели"}: ${when(tank.refillAt)}` : null,
     tank.burst ? `5 часов: занято ${Math.round(tank.burst.percent)}%${tank.burst.resetsAt !== null ? `, сброс ${formatClock(tank.burst.resetsAt, now)}` : ""}` : null,
     resets ? `Бесплатных сбросов: ${resets.count}${resets.expires.length ? ` · сгорают ${resets.expires.map((time) => formatClock(time, now)).join(", ")}` : ""}` : null,
-    "Лампы у бака: дни до сброса",
+    "Лампы: дни до сброса недели",
   ]
     .filter(Boolean)
     .join("\n");

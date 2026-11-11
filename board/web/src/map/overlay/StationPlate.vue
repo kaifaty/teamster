@@ -9,7 +9,7 @@ const emit = defineEmits<{ show: [place: Place] }>();
 </script>
 
 <template>
-  <span class="plate-st" :class="plate.side" :style="plate.style">{{ plate.text.name }}<span> · {{ plate.text.note }}</span></span>
+  <span class="plate-st" :class="plate.side" :style="plate.style">{{ plate.text.name }}<span v-if="plate.text.note"> · {{ plate.text.note }}</span></span>
   <button
     v-if="plate.count"
     type="button"

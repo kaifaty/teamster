@@ -16,7 +16,7 @@ const EXECUTOR: Record<string, string> = { claude: "Claude", codex: "Codex" };
 const duty = computed(() => analystOnDuty(props.research.studies));
 
 const ANALYST: Record<AnalystState, string> = {
-  working: "в эфире",
+  working: "работает",
   waiting: "ждёт твоего ответа",
   failed: "ход прервался",
   free: "свободен",
@@ -29,20 +29,20 @@ const analystLine = computed(() => {
     return since !== null ? `${ANALYST.working} · ${formatDuration(props.now - since)}` : ANALYST.working;
   }
   if (state === "waiting" && props.research.waiting > 1) return `${ANALYST.waiting} · ${props.research.waiting} ${plural(props.research.waiting, "канал", "канала", "каналов")}`;
-  return study || state !== "free" ? ANALYST[state] : "ждёт приказа";
+  return study || state !== "free" ? ANALYST[state] : "свободен";
 });
 
 const analystNote = computed(() => {
   const study = duty.value.study;
-  if (!study) return "Разбирает записи, пишет докладные и спрашивает.";
+  if (!study) return "Разбирает записи задач, предлагает уроки и задаёт вопросы.";
   const who = [EXECUTOR[study.executor] ?? study.executor, study.account].filter(Boolean).join(" · ");
   return `${who} · «${studyTitle(study)}»`;
 });
 
 const keeperLine = computed(() => {
   const { records, signals } = props.research.pending;
-  if (!records) return "трюм пуст";
-  return `в трюме ${records} ${plural(records, "запись", "записи", "записей")}${signals ? `, ${signals} с сигналом` : ""}`;
+  if (!records) return "всё разобрано";
+  return `не разобрано ${records} ${plural(records, "запись", "записи", "записей")}${signals ? `, ${signals} с сигналом` : ""}`;
 });
 const lessons = computed(() => {
   const r = props.research;
@@ -54,8 +54,8 @@ const lessons = computed(() => {
   <section class="deck crew" data-deck="crew" aria-labelledby="deck-crew">
     <header class="deck-head">
       <span class="sigil" aria-hidden="true">☉</span>
-      <h3 id="deck-crew">Экипаж</h3>
-      <span class="aside">{{ research.studies.length }} {{ plural(research.studies.length, "сеанс", "сеанса", "сеансов") }} за 30 дней</span>
+      <h3 id="deck-crew">Агенты</h3>
+      <span class="aside">{{ research.studies.length }} {{ plural(research.studies.length, "разговор", "разговора", "разговоров") }} за 30 дней</span>
     </header>
     <div class="deck-body">
       <button
@@ -63,7 +63,7 @@ const lessons = computed(() => {
         class="member analyst"
         :class="duty.state"
         :disabled="!duty.study"
-        :title="duty.study ? 'Открыть этот канал в рубке связи' : undefined"
+        :title="duty.study ? 'Открыть этот разговор в переписке' : undefined"
         @click="duty.study && desk.select(duty.study)"
       >
         <img class="face" :src="analystPortrait" alt="" />
@@ -76,7 +76,7 @@ const lessons = computed(() => {
       <div class="member keeper-card">
         <img class="face" :src="archivistPortrait" alt="" />
         <span class="who">
-          <b>Хранитель архива</b>
+          <b>Архив</b>
           <span class="state"><i class="lamp" aria-hidden="true"></i>на посту · {{ keeperLine }}</span>
           <span class="note">Уроков в индексе: {{ lessons }}. Считает сам, без агента.</span>
         </span>

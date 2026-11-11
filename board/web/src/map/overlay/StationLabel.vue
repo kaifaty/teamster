@@ -16,7 +16,7 @@ const emit = defineEmits<{ open: [] }>();
     :aria-expanded="researchOpen"
     @click="emit('open')"
   >
-    <span class="st-name">Научная станция</span>
+    <span class="st-name">Рефлексия</span>
     <span class="st-notes">{{ label.note }}</span>
   </button>
 </template>

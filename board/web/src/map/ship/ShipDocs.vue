@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The deck «Бортовые документы»: the task's brief, last answer, review and check log, those the task has; each opens
+// The deck «Документы»: the task's brief, last answer, review and check log, those the task has; each opens
 // in the viewer.
 import { computed } from "vue";
 import type { TaskFile } from "../../types";
@@ -8,10 +8,10 @@ const props = defineProps<{ files: readonly TaskFile[]; loading: boolean }>();
 const emit = defineEmits<{ open: [name: TaskFile, opener: HTMLElement] }>();
 
 const DOCS: readonly { name: TaskFile; sigil: string; title: string; file: string }[] = [
-  { name: "brief", sigil: "✦", title: "Полётное задание", file: "brief.md" },
-  { name: "last", sigil: "✎", title: "Последний доклад", file: "last.md" },
-  { name: "review", sigil: "⛨", title: "Акт инспекции", file: "review.md" },
-  { name: "check", sigil: "▣", title: "Протокол проверки", file: "check.log" },
+  { name: "brief", sigil: "✦", title: "Бриф", file: "brief.md" },
+  { name: "last", sigil: "✎", title: "Последний ответ агента", file: "last.md" },
+  { name: "review", sigil: "⛨", title: "Ревью", file: "review.md" },
+  { name: "check", sigil: "▣", title: "Проверка", file: "check.log" },
 ];
 const present = computed(() => DOCS.filter((doc) => props.files.includes(doc.name)));
 </script>
@@ -20,7 +20,7 @@ const present = computed(() => DOCS.filter((doc) => props.files.includes(doc.nam
   <section class="deck docs-deck" aria-labelledby="docs-deck">
     <div class="deck-head">
       <span class="sigil" aria-hidden="true">▥</span>
-      <h3 id="docs-deck">Бортовые документы</h3>
+      <h3 id="docs-deck">Документы</h3>
     </div>
     <p v-if="!present.length" class="empty">{{ loading ? "Загрузка…" : "Документов пока нет." }}</p>
     <div v-else class="docs">

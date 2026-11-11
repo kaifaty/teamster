@@ -32,7 +32,7 @@ export type StateTone = "work" | "wait" | "ready" | "sleep" | "bad" | "dim";
 
 /** The plate beside the title: where the ship is in words. */
 export function stateOf(task: TaskSummary): { text: string; tone: StateTone } {
-  if (task.column === "closed") return { text: "рейс окончен", tone: "dim" };
+  if (task.column === "closed") return { text: "закрыта", tone: "dim" };
   if (task.kind === "session") return task.alive ? { text: "идёт ход", tone: "work" } : { text: "ждёт тебя", tone: "ready" };
   if (task.column === "sleeping") return { text: "спит", tone: "sleep" };
   if (task.column === "review_me") return { text: "готово к приёмке", tone: "ready" };
@@ -46,7 +46,7 @@ export function stateOf(task: TaskSummary): { text: string; tone: StateTone } {
 
 // The ship.
 
-const HULL_NAMES: Record<Hull, string> = { light: "Лёгкий корабль", frigate: "Фрегат", cruiser: "Крейсер", scout: "Разведчик", flagship: "Флагман" };
+const HULL_NAMES: Record<Hull, string> = { light: "Задача", frigate: "Задача", cruiser: "Задача", scout: "Разведка", flagship: "Сессия" };
 
 /** The hull's picture: the same as the scene's, by the task's effort and its executor's colour. */
 export function hullArt(task: Pick<TaskSummary, "kind" | "effort" | "executor">): ArtName {
@@ -66,9 +66,7 @@ export function hullArt(task: Pick<TaskSummary, "kind" | "effort" | "executor">)
 }
 
 export function hullClass(task: Pick<TaskSummary, "kind" | "effort" | "executor">): string {
-  const kind = hullOf(task);
-  if (kind === "flagship" || kind === "scout") return HULL_NAMES[kind];
-  return `${HULL_NAMES[kind]} · ${task.executor === "codex" ? "синий" : "медный"} корпус`;
+  return HULL_NAMES[hullOf(task)];
 }
 
 /** Fix rounds done: the limits' count, else the summary's. */
@@ -139,33 +137,31 @@ export function hullMarks(slug: string, holes: number, rounds: number, frame: Hu
   const marks: HullMark[] = patchSpots(slug, rounds).map((spot, index) => ({
     kind: "patch",
     ...at(spot),
-    title: `Заплата: круг исправления ${index + 1}`,
+    title: `Круг исправления ${index + 1}`,
   }));
   const count = Math.max(0, Math.min(MAX_HOLES, Math.floor(holes)));
   let seed = 0;
   for (let i = 0; i < slug.length; i++) seed = (seed * 31 + slug.charCodeAt(i)) >>> 0;
   for (let i = 0; i < count; i++) {
     const spot = HOLE_SPOTS[(seed + i) % HOLE_SPOTS.length]!;
-    marks.push({ kind: "hole", ...at(spot), title: "Открытая находка ревью" });
+    marks.push({ kind: "hole", ...at(spot), title: "Открытое замечание ревью" });
   }
   return marks;
 }
 
-/** «заплат 2 · пробоин 2» under the picture; empty for a whole hull. */
+/** «исправлений 2 · замечаний 2» under the picture; empty for a whole hull. */
 export function damageLine(holes: number, rounds: number): string {
   const parts = [];
-  if (rounds > 0) parts.push(`заплат ${Math.min(MAX_PATCHES, rounds)}`);
-  if (holes > 0) parts.push(`пробоин ${Math.min(MAX_HOLES, holes)}`);
+  if (rounds > 0) parts.push(`исправлений ${Math.min(MAX_PATCHES, rounds)}`);
+  if (holes > 0) parts.push(`замечаний ${Math.min(MAX_HOLES, holes)}`);
   return parts.join(" · ");
 }
 
 
-// The ship's papers: the plain word first, the bridge's own word after it.
+// The task's papers, in plain words.
 
 export interface PaperRow {
   label: string;
-  /** The bridge's metaphor for the label, e.g. «двигатель» for the model. */
-  meta?: string;
   value: string;
   mono?: boolean;
   title?: string;
@@ -174,7 +170,7 @@ export interface PaperRow {
 export interface Papers {
   /** Always on the card. */
   main: PaperRow[];
-  /** Under «Весь паспорт». */
+  /** Under «Все параметры». */
   more: PaperRow[];
 }
 
@@ -182,30 +178,30 @@ export function papersOf(task: TaskSummary, limits: TaskLimits | null | undefine
   const session = task.kind === "session";
   const captain = session || !task.account ? EXECUTORS[task.executor] : `${EXECUTORS[task.executor]} · ${task.account}`;
   const main: PaperRow[] = [
-    { label: "Исполнитель", meta: "капитан", value: captain },
-    { label: "Модель", meta: "двигатель", value: task.model ?? "—", mono: task.model !== null },
-    { label: "Усилие", meta: "форсаж", value: task.effort ?? "—" },
+    { label: "Исполнитель", value: captain },
+    { label: "Модель", value: task.model ?? "—", mono: task.model !== null },
+    { label: "Усилие", value: task.effort ?? "—" },
   ];
   const more: PaperRow[] = [];
   if (!session) {
-    main.push({ label: "Ревьюер", meta: "инспектор", value: task.reviewer ? EXECUTORS[task.reviewer] : "—" });
+    main.push({ label: "Ревьюер", value: task.reviewer ? EXECUTORS[task.reviewer] : "—" });
     main.push({ label: "Задание", value: task.task_type ?? KINDS[task.kind] });
   }
-  main.push({ label: "Запущен", meta: "спущен", value: task.created !== null ? `${formatClock(task.created, now)} · ${formatAge(task.created, now)}` : "—" });
+  main.push({ label: "Запущен", value: task.created !== null ? `${formatClock(task.created, now)} · ${formatAge(task.created, now)}` : "—" });
   if (session) return { main, more };
 
   const check = limits?.check ?? cargo?.check?.command ?? null;
-  more.push({ label: "Проверка", meta: "полигон", value: check ?? "не задана", mono: check !== null });
+  more.push({ label: "Проверка", value: check ?? "не задана", mono: check !== null });
   const angles = limits?.review_angles ?? [];
-  if (angles.length) more.push({ label: "Углы ревью", meta: "ракурсы", value: angles.join(", ") });
+  if (angles.length) more.push({ label: "Углы ревью", value: angles.join(", ") });
   if (limits) {
     if (task.kind !== "scout") {
       more.push({ label: "Круги исправления", value: limits.fix_rounds === null ? "—" : limits.fix_rounds === 0 ? "0: находки ревью не чинятся сами" : String(limits.fix_rounds) });
-      more.push({ label: "CI", meta: "врата", value: limits.ci_enabled ? `включён · попыток починки ${limits.ci_rounds ?? "—"}` : "выключен" });
+      more.push({ label: "CI", value: limits.ci_enabled ? `включён · попыток починки ${limits.ci_rounds ?? "—"}` : "выключен" });
     }
     more.push({ label: "Лимит хода", value: limits.max_turn_minutes !== null ? `${limits.max_turn_minutes} мин` : "без лимита" });
-    more.push({ label: "Бюджет", meta: "топливо", value: limits.max_weekly_percent !== null ? `${percent.format(limits.max_weekly_percent)} % недели` : "без ограничения" });
-    more.push({ label: "Смены аккаунта", meta: "заправки", value: refuels(limits, now) });
+    more.push({ label: "Бюджет", value: limits.max_weekly_percent !== null ? `${percent.format(limits.max_weekly_percent)} % недели` : "без ограничения" });
+    more.push({ label: "Смены аккаунта", value: refuels(limits, now) });
   }
   return { main, more };
 }
@@ -221,16 +217,13 @@ function refuels(limits: TaskLimits, now: number): string {
 export type StopId = "yard" | "range" | "inspection" | "gate" | "roadstead" | "sun";
 
 export const STOPS: readonly { id: StopId; name: string; note: string; art: ArtName }[] = [
-  { id: "yard", name: "Верфь", note: "работа", art: "stationYard" },
-  { id: "range", name: "Полигон", note: "проверка", art: "planetRange" },
-  { id: "inspection", name: "Инспекция", note: "ревью", art: "stationInspection" },
-  { id: "gate", name: "Врата", note: "CI", art: "gate" },
-  { id: "roadstead", name: "Рейд", note: "приёмка", art: "planetRoadstead" },
-  { id: "sun", name: "Солнце", note: "в main", art: "sun" },
+  { id: "yard", name: "Работа", note: "", art: "stationYard" },
+  { id: "range", name: "Проверка", note: "", art: "planetRange" },
+  { id: "inspection", name: "Ревью", note: "", art: "stationInspection" },
+  { id: "gate", name: "CI", note: "", art: "gate" },
+  { id: "roadstead", name: "Приёмка", note: "", art: "planetRoadstead" },
+  { id: "sun", name: "В main", note: "", art: "sun" },
 ];
-
-/** «у Верфи», «у Врат»: where a stopped ship stands. */
-const AT_STOP: Record<StopId, string> = { yard: "у Верфи", range: "у Полигона", inspection: "у Инспекции", gate: "у Врат", roadstead: "на Рейде", sun: "у Солнца" };
 
 export interface RouteStop {
   id: StopId;
@@ -265,12 +258,12 @@ export function routeOf(task: TaskSummary, now: number): Route {
   });
   const wakes = task.sleeping_until !== null ? formatClock(task.sleeping_until, now) : null;
   let line: string;
-  if (ended) line = "Рейс окончен: корабль больше не на маршруте";
-  else if (sleeping) line = `Спит в Криополе${wakes ? `, проснётся в ${wakes}` : ""}`;
+  if (ended) line = "Задача закрыта";
+  else if (sleeping) line = `Спит до сброса лимита${wakes ? `, проснётся в ${wakes}` : ""}`;
   else if (here >= 0 && task.alive) line = `Сейчас: ${STOPS[here]!.name} · ${PHASES[task.phase]}`;
-  else if (here >= 0 && place === "roadstead") line = "На Рейде: ждёт твоей приёмки";
-  else if (here >= 0) line = `Стоит ${AT_STOP[STOPS[here]!.id]}: ход кончился, дальше корабль пойдёт по твоему слову`;
-  else line = "Корабль не на маршруте";
+  else if (here >= 0 && place === "roadstead") line = "Готово: ждёт твоей приёмки";
+  else if (here >= 0) line = `Стоит на этапе «${STOPS[here]!.name}»: ход кончился, дальше — по твоему слову`;
+  else line = "Этап неизвестен";
   return { stops, cryo: sleeping ? { wakes } : null, ended, line };
 }
 
@@ -301,7 +294,6 @@ export function loopsOf(task: TaskSummary, limits: TaskLimits | null | undefined
 export interface Meter {
   id: "turn" | "fuel" | "repairs" | "gate";
   label: string;
-  meta?: string;
   value: string;
   /** How full the bar is, 0 to 1; null draws no bar. */
   share: number | null;
@@ -311,9 +303,9 @@ export interface Meter {
 
 const percent = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
 
-function meter(id: Meter["id"], label: string, value: string, share: number | null, meta?: string): Meter {
+function meter(id: Meter["id"], label: string, value: string, share: number | null): Meter {
   const level = share ?? 0;
-  return { id, label, ...(meta ? { meta } : {}), value, share: share === null ? null : Math.max(0, Math.min(1, share)), tone: level >= 1 ? "bad" : level >= 0.75 ? "warn" : "ok" };
+  return { id, label, value, share: share === null ? null : Math.max(0, Math.min(1, share)), tone: level >= 1 ? "bad" : level >= 0.75 ? "warn" : "ok" };
 }
 
 const ratio = (done: number, allowed: number | null) => (allowed ? done / allowed : allowed === 0 && done > 0 ? 1 : null);
@@ -336,7 +328,7 @@ export function metersOf(task: TaskSummary, limits: TaskLimits | null | undefine
   const budget = limits?.max_weekly_percent ?? null;
   if (used !== null && (used > 0 || budget !== null)) {
     const value = budget !== null ? `${percent.format(used)} из ${percent.format(budget)} % недели` : `${percent.format(used)} % недели`;
-    result.push(meter("fuel", "Бюджет задачи", value, budget ? used / budget : null, "топливо"));
+    result.push(meter("fuel", "Бюджет задачи", value, budget ? used / budget : null));
   }
   if (!view.repairGauges || !limits) return result;
   if ((limits.fix_rounds ?? 0) > 0 || limits.review_rounds > 0) {
@@ -345,7 +337,7 @@ export function metersOf(task: TaskSummary, limits: TaskLimits | null | undefine
   }
   if (limits.ci_enabled) {
     const tries = cargo?.ci?.rounds ?? 0;
-    result.push(meter("gate", "Попытки починки CI", limits.ci_rounds !== null ? `${tries} из ${limits.ci_rounds}` : String(tries), ratio(tries, limits.ci_rounds), "врата"));
+    result.push(meter("gate", "Попытки починки CI", limits.ci_rounds !== null ? `${tries} из ${limits.ci_rounds}` : String(tries), ratio(tries, limits.ci_rounds)));
   }
   return result;
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The deck «Журнал рейса»: on the left the correspondence by time — your orders, the stations' reports, the first line
+// The deck «Журнал»: on the left the correspondence by time — your orders, the stations' reports, the first line
 // of the captain's last report and the orders waiting in the queue; on the right the flight recorder. An order the end
 // of a cycle dropped can go into the reply again.
 import { computed, ref, watch } from "vue";
@@ -38,8 +38,8 @@ function unfold(key: string) {
   <section class="deck journal" aria-labelledby="journal-deck">
     <div class="deck-head">
       <span class="sigil" aria-hidden="true">▤</span>
-      <h3 id="journal-deck">Журнал рейса</h3>
-      <span class="aside">переписка и где корабль провёл время</span>
+      <h3 id="journal-deck">Журнал</h3>
+      <span class="aside">переписка и время по этапам</span>
     </div>
     <div class="log">
       <div class="part">
@@ -55,10 +55,10 @@ function unfold(key: string) {
             <button v-if="item.queue === 'dropped' && view.send" type="button" class="more" :disabled="busy" @click="desk.fill(item.text)">Отправить снова</button>
           </li>
         </ol>
-        <p v-else class="empty">Переписки пока нет: рейс идёт по заданию.</p>
+        <p v-else class="empty">Переписки пока нет: агент работает по брифу.</p>
       </div>
       <div class="part">
-        <div class="label">Самописец <span class="meta">весь рейс по времени</span></div>
+        <div class="label">Время по этапам <span class="meta">от запуска до сейчас</span></div>
         <ShipRecorder :task="task" :source="source" :messages="messages" :limits="limits" :now="now" />
       </div>
     </div>

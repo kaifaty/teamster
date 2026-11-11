@@ -74,7 +74,7 @@ describe("stationClock", () => {
     expect(stationClock(schedule(), local(10, 9, 0, 30), null)).toMatchObject({ state: "due", progress: 1, big: "вот-вот" });
     expect(stationClock(schedule({ enabled: false }), local(9, 12), null)).toMatchObject({ state: "off", progress: 0, when: null });
     expect(stationClock(schedule({ cron: "@daily", next_at: null }), local(9, 12), null)).toMatchObject({ state: "unknown", rule: "cron @daily" });
-    expect(stationClock(null, local(9, 12), null)).toMatchObject({ state: "none", big: "по приказу", rule: null });
+    expect(stationClock(null, local(9, 12), null)).toMatchObject({ state: "none", big: "по запросу", rule: null });
     expect(stationClock(undefined, local(9, 12), null).state).toBe("none");
   });
 

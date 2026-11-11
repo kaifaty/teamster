@@ -13,12 +13,12 @@ export type TapeStop = "yard" | "range" | "inspection" | "gate" | "wait" | "cryo
  * shows where.
  */
 export const TAPE_STOPS: readonly { id: TapeStop; name: string; legend: string; color: string }[] = [
-  { id: "yard", name: "Верфь", legend: "работа · верфь", color: "#a8653a" },
-  { id: "range", name: "Полигон", legend: "проверка · полигон", color: "#4f9a62" },
-  { id: "inspection", name: "Инспекция", legend: "ревью · инспекция", color: "#7b5bb8" },
-  { id: "gate", name: "Врата", legend: "CI · врата", color: "#4a78c9" },
+  { id: "yard", name: "Работа", legend: "работа", color: "#a8653a" },
+  { id: "range", name: "Проверка", legend: "проверка", color: "#4f9a62" },
+  { id: "inspection", name: "Ревью", legend: "ревью", color: "#7b5bb8" },
+  { id: "gate", name: "CI", legend: "CI", color: "#4a78c9" },
   { id: "wait", name: "Ждал тебя", legend: "ждал тебя", color: "#c9a23f" },
-  { id: "cryo", name: "Криополе", legend: "сон · криополе", color: "#5aa7c4" },
+  { id: "cryo", name: "Сон", legend: "сон", color: "#5aa7c4" },
 ];
 
 const NAMES = Object.fromEntries(TAPE_STOPS.map((stop) => [stop.id, stop.name])) as Record<TapeStop, string>;
@@ -97,7 +97,7 @@ const OUTCOMES: Readonly<Record<string, string>> = {
   timeout: "не уложилось во время",
   defects: "есть замечания",
   clean: "чисто",
-  budget_exhausted: "кончилось топливо",
+  budget_exhausted: "бюджет исчерпан",
   stuck: "застрял",
   stopped: "остановлен",
   skipped: "пропущено",
@@ -115,12 +115,18 @@ function resultOf(event: LogEvent): string | null {
   return event.outcome;
 }
 
+/** «Работа, ход 1», but «Проверка» or «Ревью · deep» alone: a phase that names its stop needs no second name. */
+function segmentHead(stop: TapeStop, label: string): string {
+  const name = NAMES[stop];
+  return label.toLowerCase().startsWith(name.toLowerCase()) ? name + label.slice(name.length) : `${name}, ${label}`;
+}
+
 function phaseLabel(event: LogEvent): string {
   switch (event.phase) {
     case "work":
       return event.turn !== null ? `ход ${event.turn}` : "ход";
     case "fix":
-      return event.round !== null ? `круг ${event.round}` : "исправление";
+      return event.round !== null ? `исправление, круг ${event.round}` : "исправление";
     case "check":
       return "проверка";
     case "base_check":
@@ -160,7 +166,7 @@ export function tapeSegments(events: readonly LogEvent[], task: TaskSummary, now
       to: Math.max(event.started, event.at),
       live: false,
       failed: result !== null && FAILED.has(result),
-      title: `${NAMES[stop]}, ${phaseLabel(event)}: ${span(event.started, event.at)} · ${resultLabel(event, result)}`,
+      title: `${segmentHead(stop, phaseLabel(event))}: ${span(event.started, event.at)} · ${resultLabel(event, result)}`,
     });
   }
 
@@ -190,7 +196,7 @@ export function tapeSegments(events: readonly LogEvent[], task: TaskSummary, now
   return segments.sort((a, b) => a.from - b.from || Number(a.live) - Number(b.live));
 }
 
-const VERDICTS: Readonly<Record<string, string>> = { accepted: "принят", revised: "принят после правок", redone: "на переделку", dropped: "списан" };
+const VERDICTS: Readonly<Record<string, string>> = { accepted: "принят", revised: "принят после правок", redone: "на переделку", dropped: "отброшен" };
 
 const oneLine = (text: string, limit = 120) => {
   const line = text.replace(/\s+/g, " ").trim();
@@ -211,7 +217,7 @@ export function tapeMarks(
   for (const rotation of rotations) {
     if (!rotation.to) continue;
     const change = rotation.from ? `${rotation.from} → ${rotation.to}` : rotation.to;
-    marks.push({ kind: "fuel", at: rotation.at, label: "⛽ заправка", title: `Заправка: смена аккаунта ${change}${rotation.reason ? ` · ${rotation.reason}` : ""}` });
+    marks.push({ kind: "fuel", at: rotation.at, label: "⇄ аккаунт", title: `Смена аккаунта ${change}${rotation.reason ? ` · ${rotation.reason}` : ""}` });
   }
   for (const event of events) {
     if (event.kind !== "verdict") continue;
@@ -289,13 +295,13 @@ const SUM_PARTS: readonly { stops: readonly TapeStop[]; word: string }[] = [
   { stops: ["cryo"], word: "сон" },
 ];
 
-/** «36 мин в рейсе: работа 3 мин, ждал тебя 33 мин» under the tape; overlapping segments are counted once each. */
+/** «36 мин всего: работа 3 мин, ждал тебя 33 мин» under the tape; overlapping segments are counted once each. */
 export function tapeSummary(tape: Pick<Tape, "start" | "end" | "segments">): string {
   const parts = SUM_PARTS.map(({ stops, word }) => {
     const seconds = tape.segments.filter((segment) => stops.includes(segment.stop)).reduce((sum, segment) => sum + Math.max(0, segment.to - segment.from), 0);
     return seconds >= 60 ? `${word} ${coarseSpan(seconds)}` : null;
   }).filter(Boolean);
-  const total = `${coarseSpan(Math.max(0, tape.end - tape.start))} в рейсе`;
+  const total = `${coarseSpan(Math.max(0, tape.end - tape.start))} всего`;
   return parts.length ? `${total}: ${parts.join(", ")}` : total;
 }
 

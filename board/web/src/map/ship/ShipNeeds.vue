@@ -62,7 +62,7 @@ const quick = computed(() => {
 const calmWhy = computed(() => {
   const max = props.limits?.max_turn_minutes ?? null;
   const start = props.task.phase_started_at;
-  if (max === null || start === null || props.task.phase !== "turn") return "Корабль сам дойдёт до следующей станции маршрута.";
+  if (max === null || start === null || props.task.phase !== "turn") return "Агент сам перейдёт к следующему этапу.";
   const left = Math.max(0, max - Math.floor((props.now - start) / 60));
   return `Ход сам кончится или упрётся в лимит через ${left} мин.`;
 });
@@ -142,7 +142,7 @@ watch(
         v-model="desk.reply.value"
         rows="4"
         :placeholder="need.kind === 'return' ? 'Что исправить' : 'Твой ответ или указание агенту'"
-        :aria-label="need.kind === 'return' ? 'Что исправить' : 'Указание кораблю'"
+        :aria-label="need.kind === 'return' ? 'Что исправить' : 'Указание агенту'"
         :disabled="busy"
         @keydown="onKey"
       ></textarea>
@@ -191,7 +191,7 @@ watch(
       <p class="dim hint">{{ hint }}</p>
     </template>
 
-    <p v-else-if="need.kind === 'sleep'" class="why">Корабль проснётся сам, когда лимит аккаунта сбросится.</p>
+    <p v-else-if="need.kind === 'sleep'" class="why">Задача продолжится сама, когда лимит аккаунта сбросится.</p>
 
     <p v-if="reply.done" class="result ok" role="status" :title="reply.output">{{ reply.done }}</p>
     <p v-if="reply.error" class="result bad" role="alert">{{ reply.error }}</p>

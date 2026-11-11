@@ -40,41 +40,41 @@ const bad = (text: string) => ({ text, tone: "bad" as EventTone });
 
 /** One short line about the event in the map's words, and whether it is good news; every event gets one. */
 export function describeEvent(event: LogEvent): { text: string; tone: EventTone } {
-  const slug = event.slug ?? "безымянный корабль";
+  const slug = event.slug ?? "задача без имени";
   const phase = event.phase ?? event.kind;
   const outcome = event.outcome;
 
   if (event.kind === "verdict") {
     switch (event.verdict) {
       case "accepted":
-        return ok(`${slug} ушёл в солнце`);
+        return ok(`${slug}: принято`);
       case "revised":
-        return ok(`${slug} ушёл в солнце после правок`);
+        return ok(`${slug}: принято с правками`);
       case "redone":
-        return bad(`${slug} отправлен на переделку`);
+        return bad(`${slug}: на переделку`);
       case "dropped":
-        return bad(`${slug} списан`);
+        return bad(`${slug}: отброшено`);
     }
     return { text: `${slug}: вердикт ${event.verdict ?? "без отметки"}`, tone: "plain" };
   }
-  if (phase === "scout" && outcome === "completed") return ok(`Разведчик ${slug} вернулся`);
-  if (event.ci === "failed") return bad(`Ворота отклонили ${slug}`);
-  if (event.ci === "passed") return ok(`${slug} прошёл ворота`);
+  if (phase === "scout" && outcome === "completed") return ok(`${slug}: разведка закончена`);
+  if (event.ci === "failed") return bad(`${slug}: CI упал`);
+  if (event.ci === "passed") return ok(`${slug}: CI прошёл`);
 
   // The final `turn` row repeats its phase's outcome, so only the phase rows tell it.
   if (phase === "work" || phase === "fix" || phase === "scout") {
-    if (outcome === "budget_exhausted") return bad(`${slug} остался без топлива`);
-    if (outcome && LOST.has(outcome)) return bad(`${slug} потерял ход`);
-    if (outcome === "completed" && phase === "work") return ok(`${slug} вышел с верфи`);
-    if (outcome === "completed" && phase === "fix") return ok(event.round !== null ? `${slug} залатан, круг ${event.round}` : `${slug} залатан`);
+    if (outcome === "budget_exhausted") return bad(`${slug}: бюджет исчерпан`);
+    if (outcome && LOST.has(outcome)) return bad(`${slug}: ход прерван`);
+    if (outcome === "completed" && phase === "work") return ok(`${slug}: ход закончен`);
+    if (outcome === "completed" && phase === "fix") return ok(event.round !== null ? `${slug}: исправлено, круг ${event.round}` : `${slug}: исправлено`);
   }
   if (phase === "check" || phase === "base_check") {
-    if (outcome === "passed") return ok(`${slug} прошёл полигон`);
-    if (outcome === "failed" || outcome === "timeout") return bad(`${slug} не прошёл полигон`);
+    if (outcome === "passed") return ok(`${slug}: проверка прошла`);
+    if (outcome === "failed" || outcome === "timeout") return bad(`${slug}: проверка упала`);
   }
   if (phase === "review" && (outcome === "completed" || outcome === null)) {
-    if (event.findings !== null && event.findings > 0) return bad(`Инспекция нашла у ${slug} замечаний: ${event.findings}`);
-    if (event.findings === 0 || event.verdict === "clean") return ok(`${slug} чист на инспекции`);
+    if (event.findings !== null && event.findings > 0) return bad(`${slug}: ревью нашло замечаний: ${event.findings}`);
+    if (event.findings === 0 || event.verdict === "clean") return ok(`${slug}: ревью чистое`);
   }
   return { text: `${slug}: ${[phase, outcome].filter(Boolean).join(" ")}`, tone: "plain" };
 }

@@ -104,7 +104,7 @@ export function stationClock(
   const progress = next !== null && lastAt !== null && next > lastAt ? Math.min(1, Math.max(0, (now - lastAt) / (next - lastAt))) : 0;
   const when = next !== null ? dayWhen(next, now) : null;
   if (runningSince !== null) return { state: "running", progress, big: formatDuration(now - runningSince), when, rule, last };
-  if (!schedule) return { state: "none", progress: 0, big: "по приказу", when: null, rule: null, last: null };
+  if (!schedule) return { state: "none", progress: 0, big: "по запросу", when: null, rule: null, last: null };
   if (!schedule.enabled) return { state: "off", progress: 0, big: "выключено", when: null, rule, last };
   if (next === null) return { state: "unknown", progress: 0, big: "—:—", when: null, rule, last };
   if (next <= now) return { state: "due", progress: 1, big: "вот-вот", when, rule, last };

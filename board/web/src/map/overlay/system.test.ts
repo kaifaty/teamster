@@ -27,14 +27,14 @@ function ship(slug: string, place: Place, slot: number): ShipEntry {
 describe("a system's labels", () => {
   it("name every station with its note", () => {
     const plates = stationPlates([], WORLD, null, null);
-    expect(plates.map((plate) => `${plate.text.name} · ${plate.text.note}`)).toEqual([
-      "Штаб · твои сессии",
-      "Верфь · работа и фиксы",
-      "Полигон · проверка",
-      "Инспекция · ревью",
-      "Гиперврата · CI",
-      "Рейд · ждёт тебя",
-      "Криополе · сон",
+    expect(plates.map((plate) => [plate.text.name, plate.text.note].filter(Boolean).join(" · "))).toEqual([
+      "Твои сессии",
+      "Работа · ход и исправления",
+      "Проверка",
+      "Ревью",
+      "CI",
+      "Приёмка · ждёт тебя",
+      "Сон · до сброса лимита",
     ]);
     expect(plates.every((plate) => plate.count === null)).toBe(true);
     expect(plates.find((plate) => plate.place === "gate")?.side).toBe(STATIONS.gate.plate);
