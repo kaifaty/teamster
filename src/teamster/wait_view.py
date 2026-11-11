@@ -214,7 +214,7 @@ def wait_review_lines(st, slug):
 
 
 def wait_stop_lines(st):
-    if st.get("fix_rounds"):
+    if st.get("fix_rounds") or st.get("auto_fix_stop", "").startswith("result "):
         if (st.get("review_result") or {}).get("angles"):
             results = [entry.get("review") for entry in st.get("rounds", [])] + [st["review_result"]]
         else:

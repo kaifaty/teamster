@@ -7,9 +7,16 @@ remaining task weekly budget. Exhaustion skips that phase and stops fixes with `
 ## Automatic review
 
 `--review` on `start` or `say` runs a review in a fresh thread after a `done` result and a passing
-check, or after an unstructured result, for compatibility. Every review prompt names the command and
-result of the passing saved check and tells the reviewer not to rerun the full suite; only focused
-checks that confirm a specific finding run again.
+check, or after an unstructured result, for compatibility. A completed work turn with a `partial` or
+`blocked` result also runs the saved check and one review when the task branch has commits beyond
+its base and its HEAD is published to `origin` (or the task uses `--no-push`). It uses the same
+reviewer and angles as `done`, saves the findings normally, and starts no fix rounds:
+`auto_fix_stop: "result partial"` or `"result blocked"` records why, without `review_skipped`.
+Without eligible commits, these results still skip review. `needs_decision` always skips automatic
+review and keeps its existing saved-check behavior so the lead can answer first.
+
+Every review prompt names the command and result of the passing saved check and tells the reviewer
+not to rerun the full suite; only focused checks that confirm a specific finding run again.
 
 The review prompt lists deleted tests and asks the reviewer to account for each contract, treating a still-valid contract removed without replacement as P2.
 
@@ -26,6 +33,8 @@ for an ordinary merge commit, without rebase or force-push, preserving the inten
 running the saved check in full. The merge is recorded in `rounds` and counts toward the same fix
 limit. The saved check and review then follow as after any other fix round, including another base
 merge check before review.
+For a review-only `partial` or `blocked` result, a base conflict is recorded but does not prevent
+review or start a merge round.
 
 Automatic base merge rounds are unavailable in `sandbox: workspace`, where the worker cannot write
 Git metadata. With a fix round remaining, a base conflict fails explicitly before spending a round;
@@ -117,6 +126,13 @@ when" conditions; new edge cases outside the brief are P3 only. After a review w
 review runs only the angles that found defects, plus `correctness`; an ordinary single review stays a
 single review.
 
+A completed fix turn with a `partial` or `blocked` result gets the saved check and one repeat review
+when it adds published commits (or commits with `--no-push`). The repeat review keeps the usual
+angle selection and records its findings, then stops with `auto_fix_stop: "result partial"` or
+`"result blocked"`, even if rounds remain. No new commits, unpublished commits, or `needs_decision`
+keep the existing stop before another saved check or review, with `review_skipped` recording the
+result. A failed saved check still prevents review; the status prevents another fix round.
+
 A check failure after a fix spends the next available round on the last 40 lines of `check.log`
 instead of review findings. If no round remains, the cycle stops without another review.
 
@@ -137,8 +153,9 @@ diff includes imported base changes; see
 The automatic cycle stops on a `clean` review, only P3 findings (`auto_fix_stop: "only P3"`), the round
 limit, escalation or the budget gate described above,
 a review where every angle refused (`auto_fix_stop: "review refused"`), an incomplete implementation
-result, or a non-completed [turn outcome](results.md#turn-outcomes).
+result (after reviewing eligible commits as described above), or a non-completed
+[turn outcome](results.md#turn-outcomes).
 
-A base conflict without an available fix round stops before review with
+For turns that allow fixes, a base conflict without an available fix round stops before review with
 `auto_fix_stop: "base conflict"`, including when `--fix-rounds` is omitted or zero. `wait` names the
 base and conflicting files so the lead can decide how to continue.

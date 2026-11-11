@@ -308,6 +308,13 @@ def check_base_merge(st, stopped):
     return entry
 
 
+def has_reviewable_commits(st, base):
+    """Incomplete work can be reviewed once its new commits are published or push is disabled."""
+    if not st.get("no_push") and not st.get("publish", {}).get("pushed"):
+        return False
+    return bool(procs.sh(config.GIT + ["rev-list", "--max-count=1", f"{base}..HEAD"], cwd=st["worktree"]))
+
+
 def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
     """Bounded work/check/review loop under the original supervisor and wait."""
     failed_check = None
@@ -369,16 +376,21 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
             return
         if stopped() or st.get("outcome") != "completed":
             return
-        if result is None or result["status"] != "done":
+        review_only = result is None or result["status"] != "done"
+        if review_only:
             st["auto_fix_stop"] = "result " + (result["status"] if result else "unknown")
-            st["review_skipped"] = st["auto_fix_stop"]
-            return
+            if (result is None or result["status"] not in ("partial", "blocked")
+                    or not has_reviewable_commits(st, before)):
+                st["review_skipped"] = st["auto_fix_stop"]
+                return
         check = checking.saved_check(st, cfg, stopped)
         entry["check"] = check
         task_state.save(st)
         if stopped():
             return
         if check is not None and check["outcome"] not in checking.CHECK_NOT_FAILED:
+            if review_only:
+                return
             failed_check = check
             continue
         failed_check = None
@@ -388,7 +400,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
         base_merge = check_base_merge(st, stopped)
         if stopped():
             return
-        if base_merge["outcome"] == "conflict":
+        if base_merge["outcome"] == "conflict" and not review_only:
             continue
         if budgets.stop_at_weekly_budget(st):
             return
@@ -398,6 +410,8 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
             next_angles += [entry["angle"] for entry in review["angles"]
                             if entry["angle"] != "correctness" and (entry.get("result") or {}).get("findings")]
         review = review_turn(st, cfg, prompts.review_prompt(st, cfg), effort, stopped, sleep, angles=next_angles)
+        if review_only:
+            return
         if st.get("outcome") == "refused":
             st["auto_fix_stop"] = "review refused"
             return

@@ -74,7 +74,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertEqual(event["result"], result)
         self.assertIn("done", event["message"])
 
-    def test_incomplete_results_skip_automatic_review_but_run_checks_and_request_input(self):
+    def test_incomplete_results_without_commits_skip_review_but_run_checks_and_request_input(self):
         self.configure()
         self.configure_notify()
         for status, label in (("needs_decision", "NEEDS DECISION"), ("blocked", "BLOCKED"),
@@ -85,7 +85,7 @@ class ResultScoutConfigTests(RotationTestCase):
                 result = self.work_result(status, questions=questions, remaining=["Connect the selected API."],
                                           checks=[{"command": "fixture check", "outcome": "not_run",
                                                    "details": "0 runs while awaiting a decision"}])
-                self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": result}])
+                self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "push": True, "reply": result}])
                 slug = "typed-" + status.replace("_", "-")
                 before = len(self.invocations())
                 self.start(slug, "--review", "--check", "printf 'check complete\\n' > check-ran")
@@ -95,6 +95,8 @@ class ResultScoutConfigTests(RotationTestCase):
                 self.assert_output_schema(self.invocations()[-1], slug)
                 self.assertEqual(state["result"], result)
                 self.assertEqual(state["review_skipped"], "result " + status)
+                self.assertTrue(state["publish"]["pushed"])
+                self.assertEqual(self.git("rev-list", state["base"] + ".." + state["branch"]), "")
                 self.assertEqual(len(state["checks"]), 1)
                 self.assertEqual((Path(state["worktree"]) / "check-ran").read_text(), "check complete\n")
                 self.assertIn("== result: " + label, output)
@@ -109,6 +111,64 @@ class ResultScoutConfigTests(RotationTestCase):
                     self.assertEqual(event["question"], questions[0])
                 else:
                     self.assertFalse(any(event["event"] == "needs_input" for event in self.notifications(slug)))
+
+    def test_published_incomplete_results_get_checks_and_review_without_fix_rounds(self):
+        self.configure(language="en")
+        self.configure_notify()
+        review = self.review_result()
+        command = "printf 'checked\\n' >> check-runs"
+        for status in ("partial", "blocked", "needs_decision"):
+            for publication in ("pushed", "no-push", "unpushed"):
+                with self.subTest(status=status, publication=publication):
+                    (self.home / "exec-count").unlink(missing_ok=True)
+                    result = self.work_result(status, questions=["When can the external check run?"])
+                    self.account(self.home, "A", self.reset, runs=[
+                        {"mode": "complete", "write_files": {"tracked.txt": "implemented\n"},
+                         "commit_files": ["tracked.txt"], "push": publication == "pushed", "reply": result},
+                        {"mode": "complete", "reply": review},
+                        {"mode": "complete", "reply": review}])
+                    slug = "review-" + status.replace("_", "-") + "-" + publication
+                    before = len(self.invocations())
+                    options = ["--no-push"] if publication == "no-push" else []
+                    self.start(slug, "--review-angles", "correctness,tests", "--reviewer", "codex",
+                               "--fix-rounds", "0" if publication == "no-push" else "2",
+                               "--check", command, *options)
+                    output = self.wait(slug)
+                    state = self.state(slug)
+                    reviewed = status != "needs_decision" and publication != "unpushed"
+                    self.assertEqual(state["outcome"], "completed")
+                    self.assertEqual(state["result"], result)
+                    if status in ("blocked", "needs_decision"):
+                        self.assertEqual(self.notification(slug, "needs_input")["result"], result)
+                    self.assertEqual(state["rounds"], [])
+                    self.assertEqual([check["outcome"] for check in state["checks"]], ["passed"])
+                    self.assertEqual((Path(state["worktree"]) / "check-runs").read_text(), "checked\n")
+                    self.assertTrue(self.git("rev-list", state["base"] + ".." + state["branch"]))
+                    self.assertEqual(state["publish"]["pushed"], publication == "pushed")
+                    executions = self.invocations()[before:]
+                    self.assertEqual([entry["review"] for entry in executions],
+                                     [False, True, True] if reviewed else [False])
+                    self.assertIn("== result: " + status.replace("_", " ").upper(), output)
+                    self.assertIn(result["questions"][0], output)
+                    if reviewed:
+                        self.assertNotIn("review_skipped", state)
+                        self.assertEqual(state["auto_fix_stop"], "result " + status)
+                        self.assertEqual([entry["angle"] for entry in state["reviews"]], ["correctness", "tests"])
+                        self.assertEqual([entry["reviewer"] for entry in state["review_result"]["angles"]],
+                                         ["codex", "codex"])
+                        for entry in state["reviews"]:
+                            self.assertEqual(entry["result"], review)
+                        for execution in executions[1:]:
+                            self.assertIn(command, execution["prompt"])
+                        self.assertLess(output.index("== result:"), output.index("== review angle"))
+                        self.assertLess(output.index("== check `"), output.index("== review angle"))
+                        self.assertIn(review["findings"][0]["title"], output)
+                        self.assertIn("== auto-fix: 0 rounds, findings 2; stop: result " + status, output)
+                        self.assertNotIn("== review skipped:", output)
+                    else:
+                        self.assertEqual(state["reviews"], [])
+                        self.assertEqual(state["review_skipped"], "result " + status)
+                        self.assertIn("== review skipped: result " + status, output)
 
     def test_unstructured_and_invalid_work_results_keep_legacy_automatic_review(self):
         self.configure()

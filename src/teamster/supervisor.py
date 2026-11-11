@@ -307,9 +307,12 @@ def cmd__run(a):
                     reflection.record_batch(st, stopped)
                 task_state.save(st)
         work_result = st.get("result") if working else None
+        review_only = False
         if (work_result is not None and work_result["status"] != "done"
                 and pending.get("review_after") and st.get("outcome") == "completed"):
-            st["review_skipped"] = "result " + work_result["status"]
+            review_only = (work_result["status"] in ("partial", "blocked")
+                           and review_cycle.has_reviewable_commits(st, st["base"]))
+            st["auto_fix_stop" if review_only else "review_skipped"] = "result " + work_result["status"]
             task_state.save(st)
         if (working
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
@@ -322,9 +325,9 @@ def cmd__run(a):
             base_merge = review_cycle.check_base_merge(st, stopped)
             if not stopped() and not budgets.stop_at_weekly_budget(st):
                 conflict = base_merge["outcome"] == "conflict"
-                review = (None if conflict else
+                review = (None if conflict and not review_only else
                           review_cycle.review_turn(st, cfg, prompts.review_prompt(st, cfg), effort, stopped, sleep))
-                if st.get("fix_rounds") or conflict:
+                if not review_only and (st.get("fix_rounds") or conflict):
                     review_cycle.auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=base_merge)
         if working:
             ci_runs.ci_cycle(st, cfg, effort, stopped, sleep)
@@ -361,7 +364,7 @@ def cmd__run(a):
                     notifications.notify(st, cfg, "interrupted", task_state.interruption_message(st), outcome=st["outcome"],
                            signal=st.get("signal"))
                 if (result is not None and result["status"] in ("blocked", "needs_decision")
-                        and st.get("kind") not in ("review", "scout")):
+                        and (st.get("kind") not in ("review", "scout") or st.get("work_completed"))):
                     question = next(iter(result["questions"]), "")
                     notifications.notify(st, cfg, "needs_input", f"result {result['status']}: {question}",
                            result=result, question=question)
