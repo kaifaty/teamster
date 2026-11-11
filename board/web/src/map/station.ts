@@ -256,8 +256,8 @@ export function implementBody(entry: string, repo: string, note: string): Implem
 }
 
 /**
- * The repository «Где внедрять» starts with, as its path: a domain lesson's first named repository the board knows, any
- * other lesson's `teamster`; empty when there is none, and the human picks one.
+ * The repository the lesson form's «Репозиторий» starts with, as its path: a domain lesson's first named repository
+ * the board knows, any other lesson's `teamster`; empty when there is none, and the human picks one.
  */
 export function defaultRepo(lesson: Pick<Lesson, "scope" | "repos">, repos: readonly ResearchRepo[]): string {
   const named = (name: string) => repos.find((repo) => repo.name === name)?.path;

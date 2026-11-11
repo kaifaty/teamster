@@ -245,7 +245,7 @@ describe("a lesson's implementation", () => {
     expect(implementBody("batch.md U1", "/dev/teamster", " only the docs ")).toEqual({ entry: "batch.md U1", repo: "/dev/teamster", note: "only the docs" });
   });
 
-  it("starts «Где внедрять» at a domain lesson's own repository, at teamster for a shared one, or empty", () => {
+  it("starts «Репозиторий» at a domain lesson's own repository, at teamster for a shared one, or empty", () => {
     expect(defaultRepo({ scope: "domain", repos: ["gone", "demo-game"] }, repos)).toBe("/dev/demo-game");
     expect(defaultRepo({ scope: "invariant", repos: [] }, repos)).toBe("/dev/teamster");
     expect(defaultRepo({ scope: "domain", repos: ["gone"] }, repos)).toBe("");
