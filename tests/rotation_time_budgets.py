@@ -390,6 +390,7 @@ class TimeBudgetTests(RotationTestCase):
             "cmake --build build >> /tmp/build.log 2>&1",
             "cmake --build build 1>/tmp/build.log",
             "cmake --build build &>/tmp/build.log",
+            "cmake --build build &>>/tmp/build.log",
             "cmake --build build 1>>'/tmp/build log'",
             "/bin/zsh -lc 'cmake --build build > /tmp/build.log 2>&1'",
         )

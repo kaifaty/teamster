@@ -233,6 +233,7 @@ def accounts_config():
     cfg.setdefault("claude", {})
     cfg.setdefault("ci", False)
     cfg.setdefault("ci_timeout_minutes", 30)
+    cfg.setdefault("ci_queued_minutes", 20)
     cfg.setdefault("review_angles_min_lines", 400)
     cfg.setdefault("repeat_limit", 3)
     cfg.setdefault("capacity_retry_minutes", [1, 5, 15, 30])
@@ -305,7 +306,7 @@ def accounts_config():
             isinstance(path, str) and path for path in cfg["writable_dirs"]):
         procs.die("writable_dirs must be a list of nonempty directory paths")
     cfg["writable_dirs"] = [str(Path(path).expanduser().resolve()) for path in cfg["writable_dirs"]]
-    for key in ("max_turn_minutes", "max_review_minutes", "ci_timeout_minutes"):
+    for key in ("max_turn_minutes", "max_review_minutes", "ci_timeout_minutes", "ci_queued_minutes"):
         value = cfg[key]
         if key == "max_turn_minutes" and value is None:
             continue

@@ -58,11 +58,11 @@ def _stdout_redirected(command):
     # Keep quoted and escaped characters inside words, separate from shell operators.
     tokens = list(re.finditer(r'''(?:[^\s'"\\<>|;&]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+|[<>|;&]+''', command))
     for index, token in enumerate(tokens[:-1]):
-        if token.group() not in (">", ">>", "&>"):
+        if token.group() not in (">", ">>", "&>", "&>>"):
             continue
         if tokens[index + 1].group()[0] in "<>|;&":
             continue
-        if token.group() != "&>" and index and tokens[index - 1].end() == token.start():
+        if token.group() not in ("&>", "&>>") and index and tokens[index - 1].end() == token.start():
             descriptor = tokens[index - 1].group()
             if descriptor.isdigit() and descriptor != "1":
                 continue

@@ -15,6 +15,7 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `review_angles_min_lines` | `400` | changed lines from which `--review-angles auto` runs angles |
 | `ci` | `false` | initial task CI setting; see [Task CI options](#task-ci-options) |
 | `ci_timeout_minutes` | `30` | maximum wait for CI checks or a CI command per attempt |
+| `ci_queued_minutes` | `20` | how long GitHub CI waits when only never-started checks remain before it records `skipped`; see [ci.md](ci.md) |
 | `sandbox`, `writable_dirs` | `"off"`, `[]` | [sandbox.md](sandbox.md) |
 | `accounts`, `switch_at`, `credits`, `wait_for_reset`, `use_reset_credits`, `reset_credit_min_hours` | | [accounts.md](accounts.md) |
 | `credits_floor` | `0` | finite number ≥ 0; with `credits: true`, an account runs on credits only while its balance is above it; see [accounts.md](accounts.md#credits) |
