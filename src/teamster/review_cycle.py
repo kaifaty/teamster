@@ -147,6 +147,8 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
     task_state.save(st)
     angles = selected_review_angles(st, cfg) if angles is None else angles
     try:
+        if angles:
+            prompt = prompts.review_prompt(st, cfg, with_angles=True)
         for angle in angles or [None]:
             st["review_account"] = None
             if stopped():

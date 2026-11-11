@@ -8,7 +8,9 @@ REVIEW_ANGLES = {
     "correctness": "Focus on behavior and acceptance criteria (Done when), including regressions and unmet requirements.",
     "concurrency": "Focus on races, processes, signals, files and state shared by parallel commands. Check repeated runs and recovery after interruption.",
     "security": "Focus on secrets, shell and path injection, untrusted input, permissions and sandbox boundaries.",
-    "tests": "Focus on ineffective or weakened tests, uncovered brief requirements, and mocks replacing the code under test.",
+    "tests": ("Focus on ineffective or weakened tests, uncovered brief requirements, and mocks replacing the code under test. "
+              'For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
+              "that leaves the test green; report it as a finding naming the break and explaining why the test misses it."),
 }
 AUTO_REVIEW_ANGLES = ["correctness", "concurrency", "tests"]
 # The board parses what this rule keeps as is: the markers, lesson headings and scope words.
@@ -132,7 +134,7 @@ def study_prompt(order, records, cfg=None):
     return (order.strip() + "\n\n" if order and order.strip() else "") + prompt
 
 
-def review_prompt(st, cfg=None):
+def review_prompt(st, cfg=None, *, with_angles=False):
     cfg = config.accounts_config() if cfg is None else cfg
     brief = config.TASKS / st["slug"] / "brief.md"
     ru = cfg.get("language", "en") == "ru"
@@ -146,6 +148,12 @@ def review_prompt(st, cfg=None):
                        "amendments to the brief; later `lead` or `claude` entries take precedence over the brief and earlier "
                        "amendments. Entries with source `review` or `ci` are supervisor fix requests, not task requirements.\n"))
     context = ""
+    if not with_angles:
+        context += (("Для каждого теста, которого требует «Готово, когда» (предел, защита или значение), назови маленькую "
+                     "поломку проверяемого кода, при которой тест остаётся зелёным; выдай это находкой, указав поломку "
+                     "и почему тест её не ловит.\n") if ru else
+                    ('For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
+                     "that leaves the test green; report it as a finding naming the break and explaining why the test misses it.\n"))
     if any(entry.get("review") is not None for entry in st.get("rounds", [])):
         context += (("Начиная со второго ревью ищи регрессии, внесённые исправлениями, и невыполненные "
                      "пункты «Готово, когда». Новые граничные случаи вне брифа отмечай только как P3.\n") if ru else
@@ -302,6 +310,11 @@ def fix_prompt(st, review, check, cfg, base_merge=None):
                 "Fix unrequested-scope findings by deleting the extra code. " + commit + " " +
                 "Return the work result schema; in findings give each finding's id, decision fixed or rejected, "
                 "and an explanatory note. When there are no findings, use an empty findings array.\n"))
+    if review and len(review.get("angles", [])) > 1:
+        prompt += (("Находки разных ракурсов могут описывать один дефект — сгруппируй их, исправь один раз "
+                    "и перечисли в findings каждый id с одним и тем же note.\n") if ru else
+                   ("Findings from different angles may describe one defect — group them, fix it once "
+                    "and list every id in findings with the same note.\n"))
     return prompt
 
 
