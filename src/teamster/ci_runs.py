@@ -299,11 +299,63 @@ def never_started(item):
             and item.get("startedAt") in (None, "", "0001-01-01T00:00:00Z"))
 
 
+def ci_rerun_failed(st, gh, stopped, deadline):
+    """Request one batch of failed-job reruns per SHA before any repair turn."""
+    ci = st["ci"]
+    reruns = ci.setdefault("reruns", [])
+    if any(item["sha"] == ci["sha"] for item in reruns):
+        return False
+    runs = {}
+    for check in ci["checks"]:
+        run = re.match(r"https://(github\.com/[^/]+/[^/]+)/actions/runs/(\d+)(?:[/?#]|$)",
+                       check["link"])
+        if check["bucket"] in ("fail", "cancel") and run:
+            runs[(run[1], run[2])] = None
+    for repo, run_id in runs:
+        item = {"sha": ci["sha"], "run_id": run_id, "repo": repo,
+                "attempt": 0, "outcome": "pending", "error": ""}
+        reruns.append(item)
+        # Save before requesting a rerun so a resumed supervisor cannot submit it twice.
+        task_state.save(st)
+        try:
+            args = [gh, "run", "view", run_id, "--repo", repo, "--json", "attempt"]
+            info = ci_json(st, args, stopped,
+                           timeout=min(60, max(0.001, deadline - clock.CLOCK.monotonic())))
+            item["attempt"] = info["attempt"]
+            task_state.save(st)
+            response = ci_command(st, [gh, "run", "rerun", run_id, "--failed", "--repo", repo], stopped,
+                                  timeout=min(60, max(0.001, deadline - clock.CLOCK.monotonic())))
+            if response.returncode:
+                raise ValueError(response.stderr.strip() or "gh run rerun failed")
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            item.update(outcome="error", error=str(exc))
+        task_state.save(st)
+    return bool(runs) and all(item["outcome"] != "error" for item in reruns if item["sha"] == ci["sha"])
+
+
+def ci_reruns_pending(st, gh, stopped, deadline):
+    """Wait for a newer completed attempt, rather than rereading stale failed checks."""
+    pending = False
+    for item in st["ci"].get("reruns", []):
+        if item["sha"] != st["ci"]["sha"] or item["outcome"] != "pending":
+            continue
+        info = ci_json(st, [gh, "run", "view", item["run_id"], "--repo", item["repo"],
+                            "--json", "attempt,status,conclusion"], stopped,
+                       timeout=min(60, max(0.001, deadline - clock.CLOCK.monotonic())))
+        if info["attempt"] <= item["attempt"] or info["status"] != "completed":
+            pending = True
+        else:
+            item["outcome"] = "passed" if info["conclusion"] == "success" else "failed"
+    return pending
+
+
 def wait_ci(st, stopped, sleep, queued_minutes=20):
     """Wait without a model phase: no quota samples or active exec clock advance."""
     previous = st.get("ci") or {}
     ci = {"sha": "", "outcome": "pending", "checks": [], "seconds": previous.get("seconds", 0),
           "rounds": previous.get("rounds", 0), "reason": ""}
+    if previous.get("reruns") and not st.get("ci_command"):
+        ci["reruns"] = previous["reruns"]
     st["ci"] = ci
     started = clock.CLOCK.monotonic()
     deadline = started + st.get("ci_timeout_minutes", 30) * config.MINUTE_SECONDS
@@ -348,6 +400,11 @@ def wait_ci(st, stopped, sleep, queued_minutes=20):
         if now >= deadline:
             return finish("timeout", "timeout")
         try:
+            if ci_reruns_pending(st, gh, stopped, deadline):
+                ci["seconds"] = round(prior_seconds + clock.CLOCK.monotonic() - started, 3)
+                task_state.save(st)
+                sleep(max(0, min(config.CI_POLL_SECONDS, deadline - clock.CLOCK.monotonic())))
+                continue
             values = ci_json(st, [gh, "pr", "checks", pr, "--json", "name,state,bucket,link,startedAt"],
                              stopped, timeout=min(60, deadline - now))
             if not isinstance(values, list) or any(
@@ -381,6 +438,8 @@ def wait_ci(st, stopped, sleep, queued_minutes=20):
                     reason = ""
                     if failed:
                         reason = ci_classify_failures(st, gh, pr, stopped, deadline)
+                        if not reason and ci_rerun_failed(st, gh, stopped, deadline):
+                            continue
                         ci_failure_logs(st, gh, stopped, deadline)
                     if stopped():
                         break
@@ -405,6 +464,9 @@ def wait_ci(st, stopped, sleep, queued_minutes=20):
 
 def ci_lines(ci):
     sha = ci.get("sha", "")[:7] or "unknown"
+    rerun_lines = [f"== CI {item['sha'][:7]}: rerun failed jobs in run {item['run_id']}: {item['outcome']}" +
+                   (": " + item["error"] if item.get("error") else "")
+                   for item in ci.get("reruns", [])]
     checks = ci.get("checks", [])
     failed = [check for check in checks if check["bucket"] in ("fail", "cancel")]
     passed = sum(check["bucket"] in ("pass", "skipping") for check in checks)
@@ -418,11 +480,11 @@ def ci_lines(ci):
             lines.append(check["name"] + (": " + check["link"] if check["link"] else ""))
             if check.get("tail"):
                 lines.append(check["tail"])
-        return lines
+        return rerun_lines + lines
     if ci["outcome"] == "skipped":
-        return [f"== CI {sha}: skipped: {ci['reason']}"] + [
+        return rerun_lines + [f"== CI {sha}: skipped: {ci['reason']}"] + [
             check["tail"] for check in checks if check["bucket"] == "skipping" and check.get("tail")]
-    return [f"== CI {sha}: {ci['outcome']} ({passed}/{len(checks)}, {ci.get('seconds', 0) / 60:.1f} min)"]
+    return rerun_lines + [f"== CI {sha}: {ci['outcome']} ({passed}/{len(checks)}, {ci.get('seconds', 0) / 60:.1f} min)"]
 
 
 def ci_fix_prompt(st, ci, cfg):

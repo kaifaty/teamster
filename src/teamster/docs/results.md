@@ -50,8 +50,16 @@ and states, cumulative wait duration, repair-round count, and stop reason. The r
 pass, exhausted repair rounds, an incomplete repair result, a budget stop, timeout, absent checks, or
 why waiting was skipped, such as checks that stayed queued without starting. See [ci.md](ci.md) for waiting and repair mechanics.
 
+For GitHub failures, `ci.reruns` lists each rerun's `sha`, `run_id`, `repo`, original `attempt`,
+`outcome` (`pending`, `passed`, `failed`, or `error`) and `error` text. Receipts survive repeated waits,
+automatic repairs and work follow-ups with GitHub CI still enabled, so the same SHA is rerun only once.
+Older state without `reruns` remains readable. Reruns do not increase the repair-round count;
+`--ci-command` keeps its existing fields.
+
 `wait` prints, for example, `== CI 3749d91: passed (8/8, 6.2 min)` or
 `== CI 3749d91: FAILED 1/8: test (macos-latest, 3.9)`, followed by failed-check log tails.
+It also prints `== CI 3749d91: rerun failed jobs in run 42: passed` for each rerun,
+or its pending, failed or error outcome, including the error message when the request failed.
 External checks show their names and links. The lead's merge decisions remain in
 [lead-guide.md](lead-guide.md#the-loop).
 

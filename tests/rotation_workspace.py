@@ -22,7 +22,8 @@ class WorkspaceTests(RotationTestCase):
 
     def configure_ci(self, snapshots, jobs=None, head_sha=None, **scenario):
         path = self.root / "fake-gh-ci.json"
-        value = {"checks": snapshots, "jobs": jobs or {}}
+        # Existing repair scenarios exercise the fallback when GitHub cannot rerun.
+        value = {"checks": snapshots, "jobs": jobs or {}, "rerun_error": "fixture rerun unavailable"}
         value.update(scenario)
         if head_sha is not None:
             value["head_sha"] = head_sha
@@ -359,7 +360,7 @@ class WorkspaceTests(RotationTestCase):
                     for event in calls[1:]:
                         self.assertEqual(event["argv"][event["argv"].index("--repo") + 1], expected)
                 ssh_calls = [json.loads(line) for line in ssh_trace.read_text().splitlines()] if ssh_trace.exists() else []
-                self.assertEqual(ssh_calls, [ssh_args] if ssh_args else [])
+                self.assertEqual(ssh_calls, [ssh_args] * 2 if ssh_args else [])
 
     def test_pr_supervisor_skips_local_paths_without_gh(self):
         worker = self.worker()
@@ -377,6 +378,50 @@ class WorkspaceTests(RotationTestCase):
                 self.assertEqual((st["publish"]["action"], st["publish"]["error"]),
                                  ("skipped", "not a GitHub remote: local path"))
                 which.assert_not_called()
+
+    def test_start_adapts_standard_and_sandbox_pr_rules_to_origin_in_both_languages(self):
+        _ = self.repo
+        real_git = shutil.which("git")
+        fake_git = self.root / "git"
+        fake_git.write_text(
+            "#!" + PYTHON + "\n"
+            "import os, sys\n"
+            "if sys.argv[-3:] == ['remote', 'get-url', 'origin']:\n"
+            "    print(os.environ['CODEX_FAKE_REMOTE_URL'])\n"
+            "else:\n"
+            "    os.execv(" + repr(real_git) + ", [" + repr(real_git) + "] + sys.argv[1:])\n")
+        fake_git.chmod(0o700)
+        for language, replacement, old in (
+                ("en", "This repository is not hosted on GitHub, so the supervisor does not publish PRs here: "
+                 "open or edit a PR only if the brief tells you to, otherwise push the branch and stop.",
+                 "do not open or edit PRs yourself"),
+                ("ru", "Репозиторий не на GitHub, и надзиратель PR здесь не публикует: "
+                 "открывай или правь PR, только если это велит бриф, иначе запушь ветку и закончи.",
+                 "не открывай и не редактируй PR сам")):
+            self.configure(language=language, sandbox="workspace")
+            for name, remote, github in (
+                    ("https", "https://github.com/owner/repo.git", True),
+                    ("ssh", "git@github.com:owner/repo.git", True),
+                    ("forgejo", "https://203.0.113.10/owner/repo.git", False),
+                    ("local", str(self.root / "origin.git"), False)):
+                with self.subTest(language=language, remote=remote):
+                    self.env["CODEX_FAKE_REMOTE_URL"] = remote
+                    (self.home / "exec-count").unlink(missing_ok=True)
+                    self.account(self.home, "A", self.reset, runs=[self.ci_work(name + "\n")])
+                    slug = "rules-" + language + "-" + name
+                    self.start(slug)
+                    self.wait(slug)
+                    brief = (self.home / "claude-tasks" / slug / "brief.md").read_text()
+                    prompt = self.invocations()[-1]["prompt"]
+                    if github:
+                        self.assertNotIn(replacement, prompt)
+                        rules = (PACKAGE / ("rules.ru.md" if language == "ru" else "rules.md")).read_text()
+                        self.assertIn(rules.replace("{branch}", "codex/" + slug).replace("{base}", "main"), brief)
+                    else:
+                        self.assertEqual(brief.count(replacement), 2)
+                        self.assertEqual(prompt.count(replacement), 2)
+                        self.assertNotIn(old, prompt)
+                        self.assertNotIn("pr_title/pr_body", prompt)
 
     def test_pr_supervisor_ignores_fork_prs_with_the_same_branch_name(self):
         self.configure(language="en")
@@ -1373,6 +1418,67 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(report["summary"]["ci"], {"passed": 1, "total": 1, "pass_fraction": 1.0})
         self.assertIn("CI passed: 1/1", self.cli("report", "--slug", "ci-pass"))
 
+    def test_ci_reruns_each_failed_run_once_and_passes_without_a_repair_turn(self):
+        self.configure(language="en", sandbox="workspace")
+        failed = [self.ci_check("fail"), self.ci_check("fail", name="second job", job="124"),
+                  dict(self.ci_check("fail", name="other run"),
+                       link="https://github.com/fixture/repo/actions/runs/43/jobs/125/")]
+        self.configure_ci([failed + [self.ci_check(name="already green")],
+                           [dict(check, bucket="pass", state="SUCCESS") for check in failed]],
+                          rerun_error="", run_snapshots=[
+                              {"attempt": 1, "status": "completed", "conclusion": "failure"},
+                              {"attempt": 2, "status": "in_progress", "conclusion": ""},
+                              {"attempt": 2, "status": "completed", "conclusion": "success"}])
+        self.account(self.home, "A", self.reset, runs=[self.ci_work()])
+        self.start("ci-rerun-pass", "--ci", "--ci-rounds", "0")
+        output = self.wait("ci-rerun-pass")
+        ci = self.state("ci-rerun-pass")["ci"]
+        self.assertEqual((ci["outcome"], ci["rounds"]), ("passed", 0))
+        self.assertEqual([(item["run_id"], item["outcome"]) for item in ci["reruns"]],
+                         [("42", "passed"), ("43", "passed")])
+        reruns = [event["argv"] for event in self.gh_invocations() if event["argv"][:2] == ["run", "rerun"]]
+        self.assertEqual(reruns, [["run", "rerun", run, "--failed", "--repo", "github.com/fixture/repo"]
+                                 for run in ("42", "43")])
+        self.assertEqual(len(self.ci_polls()), 2, "old run attempts must not be read as rerun results")
+        self.assertEqual(len(self.invocations()), 1)
+        for run in ("42", "43"):
+            self.assertIn("rerun failed jobs in run " + run + ": passed", output)
+
+    def test_ci_red_rerun_precedes_the_repair_round(self):
+        self.configure(language="en", sandbox="workspace")
+        self.configure_ci([[self.ci_check("fail")], [self.ci_check("fail")], [self.ci_check()]],
+                          rerun_error="", jobs={"123": "fixture persistent failure"})
+        self.account(self.home, "A", self.reset, runs=[self.ci_work(), self.ci_work("fixed\n")])
+        self.start("ci-rerun-red", "--ci")
+        output = self.wait("ci-rerun-red")
+        ci = self.state("ci-rerun-red")["ci"]
+        self.assertEqual((ci["outcome"], ci["rounds"]), ("passed", 1))
+        self.assertEqual([item["outcome"] for item in ci["reruns"]], ["failed"])
+        self.assertEqual(len(self.invocations()), 2)
+        self.assertEqual(len(self.ci_polls()), 3)
+        self.assertIn("rerun failed jobs in run 42: failed", output)
+        self.assertIn("rerun failed jobs in run 42: failed", self.invocations()[1]["prompt"])
+        self.assertIn("fixture persistent failure", self.invocations()[1]["prompt"])
+
+    def test_ci_rerun_receipts_survive_repeated_waits_and_allow_a_new_sha(self):
+        self.configure_ci([[self.ci_check("fail")]], rerun_error="")
+        worker = self.worker()
+        st = {"slug": "ci-rerun-sha", "worktree": str(self.repo), "outcome": "completed",
+              "publish": {"pr": "https://github.com/fixture/repo/pull/1"}}
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(worker.task_state, "save"):
+            first = worker.ci_runs.wait_ci(st, lambda: False, lambda _: None)
+            self.assertEqual((first["outcome"], first["rounds"]), ("failed", 0))
+            st = json.loads(json.dumps(st))
+            worker.ci_runs.wait_ci(st, lambda: False, lambda _: None)
+            reruns = [event for event in self.gh_invocations() if event["argv"][:2] == ["run", "rerun"]]
+            self.assertEqual(len(reruns), 1)
+            self.git("commit", "--allow-empty", "-m", "New CI head")
+            ci = worker.ci_runs.wait_ci(st, lambda: False, lambda _: None)
+        self.assertEqual([item["sha"] for item in ci["reruns"]], [first["sha"], ci["sha"]])
+        self.assertNotEqual(first["sha"], ci["sha"])
+        self.assertEqual(len([event for event in self.gh_invocations()
+                              if event["argv"][:2] == ["run", "rerun"]]), 2)
+
     def test_ci_failed_round_uses_same_thread_log_checks_and_no_second_review(self):
         self.configure(language="en", sandbox="workspace")
         self.env["GH_REPO"] = "unrelated/host-repository"
@@ -1398,7 +1504,7 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(executions[2]["thread"], executions[0]["thread"])
         for text in (failed_check["name"], failed_check["link"]) + tuple(log.splitlines()):
             self.assertIn(text, executions[2]["prompt"])
-        jobs = [event["argv"] for event in self.gh_invocations() if event["argv"][:2] == ["run", "view"]]
+        jobs = [event["argv"] for event in self.gh_invocations() if "--job" in event["argv"]]
         self.assertEqual(jobs, [["run", "view", "--job", "123", "--log-failed",
                                  "--repo", "github.com/fixture/repo"]])
         self.assertEqual(len(self.ci_polls()), 4)
@@ -1588,7 +1694,7 @@ class WorkspaceTests(RotationTestCase):
                                    remaining=["Runner logs show the same failure on main."])
         self.account(self.home, "A", self.reset, runs=[self.ci_work(), {"mode": "complete", "reply": blocked}])
         self.start("ci-blocked", "--ci", "--check", "true")
-        self.wait("ci-blocked")
+        output = self.wait("ci-blocked")
         state = self.state("ci-blocked")
         self.assertEqual((state["ci"]["outcome"], state["ci"]["rounds"], state["ci"]["reason"]),
                          ("failed", 1, "blocked"))
@@ -1597,6 +1703,9 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual([check["outcome"] for check in state["checks"]], ["passed", "passed"])
         self.assertEqual(len(self.ci_polls()), 1)
         self.assertEqual(len(self.invocations()), 2)
+        self.assertEqual([(item["outcome"], item["error"]) for item in state["ci"]["reruns"]],
+                         [("error", "fixture rerun unavailable")])
+        self.assertIn("rerun failed jobs in run 42: error: fixture rerun unavailable", output)
 
     def test_ci_flags_and_config_defaults_apply_to_start(self):
         self.configure(language="en", sandbox="workspace")
@@ -1628,6 +1737,7 @@ class WorkspaceTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[self.ci_work()])
         self.start("ci-inherited", "--ci", "--ci-rounds", "0")
         self.wait("ci-inherited")
+        original = self.state("ci-inherited")["ci"]
         self.cli("say", "ci-inherited", "Inspect the existing CI failure")
         self.wait("ci-inherited")
         state = self.state("ci-inherited")
@@ -1636,6 +1746,10 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual((state["ci"]["outcome"], state["ci"]["reason"]), ("failed", "rounds_exhausted"))
         self.assertEqual(len(self.invocations()), 2)
         self.assertEqual(len(self.ci_polls()), 2)
+        self.assertEqual((state["ci"]["sha"], state["ci"]["reruns"]),
+                         (original["sha"], original["reruns"]))
+        self.assertEqual(len([event for event in self.gh_invocations()
+                              if event["argv"][:2] == ["run", "rerun"]]), 1)
 
     def test_say_ci_enables_task_ci(self):
         self.configure(language="en", sandbox="workspace")
@@ -1831,6 +1945,10 @@ class WorkspaceTests(RotationTestCase):
                     self.assertIn("/commits/", endpoint)
                     value = [{"check_runs": []}]
                 return subprocess.CompletedProcess(args, 0, json.dumps(value), "")
+            if args[:2] == ["run", "rerun"]:
+                return subprocess.CompletedProcess(args, 1, "", "fixture rerun unavailable")
+            if args[:2] == ["run", "view"] and "--job" not in args:
+                return subprocess.CompletedProcess(args, 0, json.dumps({"attempt": 1}), "")
             self.assertEqual(args[:2], ["run", "view"])
             return subprocess.CompletedProcess(args, 0, (jobs or {})[args[args.index("--job") + 1]], "")
 
@@ -1916,7 +2034,7 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(len(tails[0]), 150)
         self.assertEqual(ci["checks"][-1]["link"], "https://ci.example.test/build/99")
         self.assertEqual(tails[-1], [])
-        job_calls = [call for call in calls if call[:2] == ["run", "view"]]
+        job_calls = [call for call in calls if "--job" in call]
         self.assertGreaterEqual(len(job_calls), 3)
         self.assertIn(["run", "view", "--job", "1", "--log-failed",
                        "--repo", "github.com/fixture/repo"], job_calls)
@@ -2337,7 +2455,7 @@ class WorkspaceTests(RotationTestCase):
         checks[1]["link"] += "?check_suite_focus=true#step:1:1"
         st, ci, calls, waits = self.run_ci_wait_fixture(
             [checks], jobs={"123": "first repository log", "456": "second repository log"})
-        job_calls = [call for call in calls if call[:2] == ["run", "view"]]
+        job_calls = [call for call in calls if "--job" in call]
         self.assertEqual(job_calls, [
             ["run", "view", "--job", "123", "--log-failed", "--repo", "github.com/fixture/repo"],
             ["run", "view", "--job", "456", "--log-failed", "--repo", "github.com/another-owner/another-repo"]])

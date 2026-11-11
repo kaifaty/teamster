@@ -1,7 +1,9 @@
 """Workspace sandbox rules and filter checks."""
 import json
+import re
 import subprocess
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 from . import config
@@ -58,6 +60,58 @@ def rules_path(cfg=None):
     cfg = config.accounts_config() if cfg is None else cfg
     filename = "rules.ru.md" if cfg.get("language", "en") == "ru" else "rules.md"
     return config.PACKAGE.resolve() / filename
+
+
+def origin_remote(cwd):
+    """Return the origin URL and a known non-GitHub host, resolving SSH aliases."""
+    def run(args):
+        return subprocess.run(args, cwd=cwd, check=True, capture_output=True,
+                              text=True, errors="replace").stdout.strip()
+
+    remote_url = run(config.GIT + ["remote", "get-url", "origin"])
+    if remote_url.startswith("file://") or not re.match(r"[^/]+:", remote_url):
+        return remote_url, "local path"
+    url = urllib.parse.urlsplit(remote_url) if remote_url.startswith(("ssh://", "https://")) else None
+    scp_url = re.fullmatch(r"[^/@:]+@([^/:]+):(.+)", remote_url) if url is None else None
+    host = url.hostname if url is not None else scp_url[1] if scp_url else None
+    path = url.path if url is not None else scp_url[2] if scp_url else ""
+    if host and host.casefold() != "github.com" and (scp_url or url.scheme == "ssh"):
+        try:
+            ssh_config = run(["ssh", "-G", host])
+        except (OSError, subprocess.CalledProcessError):
+            ssh_config = ""
+        for line in ssh_config.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == "hostname":
+                host = parts[1]
+                break
+        if host.casefold() == "github.com":
+            remote_url = "github.com/" + path.lstrip("/").removesuffix(".git")
+    return remote_url, host if host and host.casefold() != "github.com" else ""
+
+
+def repository_rules(text, cwd):
+    """Replace the standard PR publication rule for known non-GitHub origins."""
+    replacements = (
+        ("At the end, push the branch; do not open or edit PRs yourself. "
+         "The supervisor publishes the PR against `{base}` from `pr_title` and `pr_body` in your result.",
+         "This repository is not hosted on GitHub, so the supervisor does not publish PRs here: "
+         "open or edit a PR only if the brief tells you to, otherwise push the branch and stop."),
+        ("Коммить по ходу, в конце запушь ветку; не открывай и не редактируй PR сам. "
+         "Надзиратель публикует PR в `{base}` по `pr_title` и `pr_body` из твоего результата.",
+         "Коммить по ходу. Репозиторий не на GitHub, и надзиратель PR здесь не публикует: "
+         "открывай или правь PR, только если это велит бриф, иначе запушь ветку и закончи."),
+        ("Do not open or edit PRs yourself: the supervisor does it from pr_title/pr_body.",
+         "This repository is not hosted on GitHub, so the supervisor does not publish PRs here: "
+         "open or edit a PR only if the brief tells you to, otherwise push the branch and stop."),
+        ("Не открывай и не редактируй PR: надзиратель делает это из pr_title/pr_body.",
+         "Репозиторий не на GitHub, и надзиратель PR здесь не публикует: "
+         "открывай или правь PR, только если это велит бриф, иначе запушь ветку и закончи."),
+    )
+    if any(before in text for before, _ in replacements) and origin_remote(cwd)[1]:
+        for before, after in replacements:
+            text = text.replace(before, after)
+    return text
 
 
 def rules_text(cfg=None, no_push=False):
