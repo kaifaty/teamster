@@ -107,6 +107,16 @@ def repository_rules(text, cwd):
         ("Не открывай и не редактируй PR: надзиратель делает это из pr_title/pr_body.",
          "Репозиторий не на GitHub, и надзиратель PR здесь не публикует: "
          "открывай или правь PR, только если это велит бриф, иначе запушь ветку и закончи."),
+        ("Opening the PR, publishing it and waiting for CI are the supervisor's: "
+         'when they are the only unmet "Done when" items, report `done` and leave them out of `remaining`.',
+         "Waiting for CI is the supervisor's: "
+         'when it is the only unmet "Done when" item, report `done` and leave it out of `remaining`; '
+         "open a PR only if the brief tells you to."),
+        ("Открыть PR, опубликовать его и дождаться CI — дело надзирателя: "
+         "если из «Готово, когда» не выполнены только такие пункты, ставь `done` и не пиши их в `remaining`.",
+         "Дождаться CI — дело надзирателя: "
+         "если из «Готово, когда» не выполнен только этот пункт, ставь `done` и не пиши его в `remaining`; "
+         "PR открывай, только если это велит бриф."),
     )
     if any(before in text for before, _ in replacements) and origin_remote(cwd)[1]:
         for before, after in replacements:

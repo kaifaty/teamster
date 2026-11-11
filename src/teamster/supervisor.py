@@ -66,8 +66,6 @@ def launch(st, prompt, effort, current_message, kind, review_after, fix_rounds):
             last.unlink()
     turn = {"pending": {"prompt": prompt, "effort": effort, "current_message": current_message,
                         "review_after": review_after}, "kind": kind, "fix_rounds": fix_rounds}
-    if (st.get("ci") or {}).get("reruns"):
-        st.setdefault("ci_reruns", st["ci"]["reruns"])
     st.update({key: field.spawn_reset(st, turn) for key, field in task_state.STATE_FIELDS.items()
                if field.spawn_reset is not None and field.spawn_reset is not task_state.STATE_DELETE})
     for key, field in task_state.STATE_FIELDS.items():

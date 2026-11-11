@@ -391,14 +391,25 @@ class WorkspaceTests(RotationTestCase):
             "else:\n"
             "    os.execv(" + repr(real_git) + ", [" + repr(real_git) + "] + sys.argv[1:])\n")
         fake_git.chmod(0o700)
-        for language, replacement, old in (
+        for language, replacement, old, old_result, new_result in (
                 ("en", "This repository is not hosted on GitHub, so the supervisor does not publish PRs here: "
                  "open or edit a PR only if the brief tells you to, otherwise push the branch and stop.",
-                 "do not open or edit PRs yourself"),
+                 "do not open or edit PRs yourself",
+                 "Opening the PR, publishing it and waiting for CI are the supervisor's: "
+                 'when they are the only unmet "Done when" items, report `done` and leave them out of `remaining`.',
+                 "Waiting for CI is the supervisor's: "
+                 'when it is the only unmet "Done when" item, report `done` and leave it out of `remaining`; '
+                 "open a PR only if the brief tells you to."),
                 ("ru", "Репозиторий не на GitHub, и надзиратель PR здесь не публикует: "
                  "открывай или правь PR, только если это велит бриф, иначе запушь ветку и закончи.",
-                 "не открывай и не редактируй PR сам")):
+                 "не открывай и не редактируй PR сам",
+                 "Открыть PR, опубликовать его и дождаться CI — дело надзирателя: "
+                 "если из «Готово, когда» не выполнены только такие пункты, ставь `done` и не пиши их в `remaining`.",
+                 "Дождаться CI — дело надзирателя: "
+                 "если из «Готово, когда» не выполнен только этот пункт, ставь `done` и не пиши его в `remaining`; "
+                 "PR открывай, только если это велит бриф.")):
             self.configure(language=language, sandbox="workspace")
+            rules = (PACKAGE / ("rules.ru.md" if language == "ru" else "rules.md")).read_text()
             for name, remote, github in (
                     ("https", "https://github.com/owner/repo.git", True),
                     ("ssh", "git@github.com:owner/repo.git", True),
@@ -415,13 +426,18 @@ class WorkspaceTests(RotationTestCase):
                     prompt = self.invocations()[-1]["prompt"]
                     if github:
                         self.assertNotIn(replacement, prompt)
-                        rules = (PACKAGE / ("rules.ru.md" if language == "ru" else "rules.md")).read_text()
                         self.assertIn(rules.replace("{branch}", "codex/" + slug).replace("{base}", "main"), brief)
+                        self.assertNotIn(new_result, prompt)
                     else:
                         self.assertEqual(brief.count(replacement), 2)
                         self.assertEqual(prompt.count(replacement), 2)
                         self.assertNotIn(old, prompt)
                         self.assertNotIn("pr_title/pr_body", prompt)
+                        self.assertNotIn(old_result, brief)
+                        self.assertNotIn(old_result, prompt)
+                        self.assertIn(new_result, prompt)
+                        result_line = next(line for line in rules.splitlines() if old_result in line)
+                        self.assertIn(result_line.replace(old_result, new_result), brief)
 
     def test_origin_rule_errors_stop_start_after_fetch_but_keep_workspace_turns_running(self):
         self.configure(language="en", sandbox="workspace")
@@ -1497,7 +1513,8 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual([item["outcome"] for item in ci["reruns"]], ["failed"])
         self.assertEqual(len(self.invocations()), 2)
         self.assertEqual(len(self.ci_polls()), 3)
-        self.assertIn("rerun failed jobs in run 42: failed", output)
+        self.assertNotEqual(ci["sha"], ci["reruns"][0]["sha"])
+        self.assertNotIn("rerun failed jobs in run 42: failed", output)
         self.assertIn("rerun failed jobs in run 42: failed", self.invocations()[1]["prompt"])
         self.assertIn("fixture persistent failure", self.invocations()[1]["prompt"])
 
@@ -1514,11 +1531,23 @@ class WorkspaceTests(RotationTestCase):
             reruns = [event for event in self.gh_invocations() if event["argv"][:2] == ["run", "rerun"]]
             self.assertEqual(len(reruns), 1)
             self.git("commit", "--allow-empty", "-m", "New CI head")
+            self.configure_ci([[self.ci_check()], [self.ci_check("fail")]], rerun_error="")
+            green = worker.ci_runs.wait_ci(st, lambda: False, lambda _: None)
+            self.assertEqual(green["outcome"], "passed")
+            self.assertNotEqual(first["sha"], green["sha"])
+            for text in ("\n".join(worker.ci_runs.ci_lines(green)),
+                         worker.ci_runs.ci_fix_prompt(st, green, {"language": "en"})):
+                self.assertNotIn("rerun failed jobs", text)
+                self.assertNotIn(first["sha"][:7], text)
             ci = worker.ci_runs.wait_ci(st, lambda: False, lambda _: None)
         self.assertEqual([item["sha"] for item in ci["reruns"]], [first["sha"], ci["sha"]])
         self.assertNotEqual(first["sha"], ci["sha"])
         self.assertEqual(len([event for event in self.gh_invocations()
                               if event["argv"][:2] == ["run", "rerun"]]), 2)
+        for text in ("\n".join(worker.ci_runs.ci_lines(ci)),
+                     worker.ci_runs.ci_fix_prompt(st, ci, {"language": "en"})):
+            self.assertNotIn(first["sha"][:7], text)
+            self.assertIn(f"== CI {ci['sha'][:7]}: rerun failed jobs in run 42: failed", text)
 
     def test_ci_invalid_run_info_records_a_rerun_error_and_uses_the_repair_prompt(self):
         self.configure(language="en", sandbox="workspace")
