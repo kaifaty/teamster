@@ -8,7 +8,9 @@ REVIEW_ANGLES = {
     "correctness": "Focus on behavior and acceptance criteria (Done when), including regressions and unmet requirements.",
     "concurrency": "Focus on races, processes, signals, files and state shared by parallel commands. Check repeated runs and recovery after interruption.",
     "security": "Focus on secrets, shell and path injection, untrusted input, permissions and sandbox boundaries.",
-    "tests": "Focus on ineffective or weakened tests, uncovered brief requirements, and mocks replacing the code under test.",
+    "tests": ("Focus on ineffective or weakened tests, uncovered brief requirements, and mocks replacing the code under test. "
+              'For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
+              "that leaves the test green; report it as a finding naming the break and explaining why the test misses it."),
 }
 AUTO_REVIEW_ANGLES = ["correctness", "concurrency", "tests"]
 # The board parses what this rule keeps as is: the markers, lesson headings and scope words.
@@ -220,6 +222,9 @@ def review_prompt(st, cfg=None):
                 "и укажи, что убрать.\n"
                 "Для каждого дефекта укажи файл:строка, что не так и как это проверить. "
                 "Без замечаний по стилю.\n"
+                "Для каждого теста, которого требует «Готово, когда» (предел, защита или значение), назови маленькую "
+                "поломку проверяемого кода, при которой тест остаётся зелёным; выдай это находкой, указав поломку "
+                "и почему тест её не ловит.\n"
                 + context +
                 "Файлы не меняй, ничего не коммить. Ответь JSON по схеме ревью: verdict clean, если "
                 "дефектов нет, иначе defects. Находки нумеруй F1, F2 и далее; severity P1/P2/P3, "
@@ -238,6 +243,8 @@ def review_prompt(st, cfg=None):
             "behavior nobody asked for, otherwise P3, and say what to remove.\n"
             "For each defect, give file:line, explain what is wrong and how to verify it. "
             "Do not comment on style.\n"
+            'For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
+            "that leaves the test green; report it as a finding naming the break and explaining why the test misses it.\n"
             + context +
             "Do not change files or create commits. Return JSON matching the review schema: verdict clean "
             "when there are no defects, otherwise defects. Number findings F1, F2, etc.; include severity "
@@ -302,6 +309,11 @@ def fix_prompt(st, review, check, cfg, base_merge=None):
                 "Fix unrequested-scope findings by deleting the extra code. " + commit + " " +
                 "Return the work result schema; in findings give each finding's id, decision fixed or rejected, "
                 "and an explanatory note. When there are no findings, use an empty findings array.\n"))
+    if review and len(review.get("angles", [])) > 1:
+        prompt += (("Находки разных ракурсов могут описывать один дефект — сгруппируй их, исправь один раз "
+                    "и перечисли в findings каждый id с одним и тем же note.\n") if ru else
+                   ("Findings from different angles may describe one defect — group them, fix it once "
+                    "and list every id in findings with the same note.\n"))
     return prompt
 
 

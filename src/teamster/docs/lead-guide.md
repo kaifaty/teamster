@@ -196,7 +196,8 @@ reports. Verify key facts by reading only the cited `file:line` locations; use `
    numbers against "Done when". A passing check does not replace reading the diff.
 4. Problems found, or findings left after the round limit → one `say` with all of them, each with what's
    wrong, what to do and how it is checked, with `--max-minutes M --review --fix-rounds 2 --ci` for another
-   bounded cycle. A `say` that merges the base keeps the saved check and `--fix-rounds`: name extra tests in
+   bounded cycle. Before a `say` that dictates a mechanism or a behaviour rule, read the touched subtree's `AGENTS.md` and the behaviour on the base branch; if you have not, state the outcome and the constraints, leave the mechanism to the worker and ask it to check the repository's rules first. Group findings of different angles that describe one defect before you write the fix request.
+   A `say` that merges the base keeps the saved check and `--fix-rounds`: name extra tests in
    addition to the check, never instead of it. Decide yourself whether P3 findings and work rejected as
    `out of scope` belong in a separate task, and record deferred work in issues when appropriate.
 5. For a GitHub PR, merge only when `wait` reports `CI … passed`; `failed`, `timeout`, `none`, and
