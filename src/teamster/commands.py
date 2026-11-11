@@ -59,6 +59,11 @@ def cmd_start(a):
     if wt.exists():
         procs.die(f"{wt} exists")
     procs.sh(config.GIT + ["fetch", "--quiet", "origin"], cwd=repo)
+    try:
+        rules = sandboxing.repository_rules(rules, repo)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = (exc.stderr or str(exc)) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+        procs.die("cannot read origin for PR rules: " + detail.strip())
     a.base = a.base or procs.sh(config.GIT + ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd=repo,
                           check=False) or "origin/main"
     wt.parent.mkdir(parents=True, exist_ok=True)

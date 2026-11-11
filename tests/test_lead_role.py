@@ -53,6 +53,8 @@ class LeadRoleTests(unittest.TestCase):
                                 mock.patch.object(worker.commands, "main_repo", return_value=self.root), \
                                 mock.patch.object(worker.task_state, "running_tasks", return_value=[]), \
                                 mock.patch.object(worker.procs, "sh", return_value=""), \
+                                mock.patch.object(worker.sandboxing, "origin_remote",
+                                                  return_value=("https://github.com/fixture/repo.git", "")), \
                                 mock.patch.object(worker.supervisor, "spawn"), \
                                 contextlib.redirect_stdout(io.StringIO()):
                             worker.commands.cmd_start(args)

@@ -112,7 +112,7 @@ st[dynamic_key] = 1
         unused = registered - used
         self.assertFalse(missing, "Unregistered state keys: " + ", ".join(sorted(missing)))
         self.assertFalse(unused, "Unused state registry keys: " + ", ".join(sorted(unused)))
-        self.assertEqual(len(registered), 96)
+        self.assertEqual(len(registered), 97)
         for key, field in self.worker.task_state.STATE_FIELDS.items():
             with self.subTest(key=key):
                 self.assertIn(field.lifetime, {"task", "history", "cursor", "turn", "attempt", "runtime"})
@@ -131,6 +131,7 @@ st[dynamic_key] = 1
             "check": "python3 check.py", "check_paths": ["check.py"], "check_pid": 101,
             "check_start": 19, "check_timeout": 42, "checks": [{}, {}, {}],
             "ci": {"status": "failed"}, "ci_enabled": True, "ci_command": "true", "ci_rounds": 3,
+            "ci_reruns": [{"sha": "old-sha", "run_id": "42", "outcome": "failed"}],
             "ci_timeout_minutes": 17, "codex_pid": 102, "claude_pid": 104, "created": 1000,
             "effort": "high", "error": "old-error", "event_start": 18,
             "task_type": "fix", "model": "old-model", "reasoning_effort": "high",

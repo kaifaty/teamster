@@ -1,0 +1,68 @@
+{
+  "slug": "scout",
+  "kind": "scout",
+  "repo": "/teamster-fixture/repo",
+  "worktree": "/teamster-fixture/repo",
+  "branch": "",
+  "executor": "codex",
+  "effort": null,
+  "account": "main",
+  "thread": "4a3d5107-c74e-4f88-a05c-fecae9515cdd",
+  "threads": [
+    {
+      "account": "main",
+      "thread": "4a3d5107-c74e-4f88-a05c-fecae9515cdd",
+      "started": 1794389825.523204
+    }
+  ],
+  "rotations": [],
+  "reviews": [],
+  "checks": [],
+  "created": 1794389822.7414532,
+  "turns": 1,
+  "work_completed": false,
+  "review_start": 0,
+  "turn_started": 1794389822.872488,
+  "check_start": 0,
+  "rotation_start": 0,
+  "event_start": 0,
+  "exhausted": null,
+  "outcome": "completed",
+  "reset_wait_seconds": 0,
+  "capacity_start": 0,
+  "fix_rounds": 0,
+  "rounds": [],
+  "model": "fake-model",
+  "reasoning_effort": null,
+  "runtime": {
+    "version": "1.64.0",
+    "script": "/Volumes/DevSSD/Dev/worktrees/codex/claude-lesson-y256/teamster/src/teamster/__main__.py"
+  },
+  "result": null,
+  "pid": null,
+  "turn_stops": [],
+  "guards": [],
+  "base_check": false,
+  "sandbox": "off",
+  "writable_dirs": [],
+  "reviewer": "codex",
+  "auth_excluded": [],
+  "auth_excluded_ids": [],
+  "auth_transitions": 0,
+  "auth_failures": {
+    "main": 0
+  },
+  "account_ids": {
+    "main": "A",
+    "second": "B"
+  },
+  "weekly_marks": {
+    "main": {
+      "reset": 1794397003,
+      "used": 10
+    }
+  },
+  "exec_event_start": 0,
+  "weekly_used_percent": 0,
+  "turn_finished": 1794389825.6619651
+}

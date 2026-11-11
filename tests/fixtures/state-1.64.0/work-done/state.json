@@ -1,0 +1,109 @@
+{
+  "slug": "work-done",
+  "repo": "/teamster-fixture/repo",
+  "worktree": "/teamster-fixture/codex-home/worktrees/claude-work-done/repo",
+  "branch": "codex/work-done",
+  "base": "origin/main",
+  "executor": "codex",
+  "effort": null,
+  "task_type": null,
+  "task_model": null,
+  "review_model": null,
+  "account": "main",
+  "thread": "50cd4631-5981-47a2-8aa4-48473b0b79dc",
+  "threads": [
+    {
+      "account": "main",
+      "thread": "50cd4631-5981-47a2-8aa4-48473b0b79dc",
+      "started": 1794389813.0656772
+    }
+  ],
+  "rotations": [],
+  "reviews": [],
+  "checks": [],
+  "check": null,
+  "check_timeout": 1800,
+  "guards": [],
+  "base_check": false,
+  "sandbox": "off",
+  "writable_dirs": [],
+  "no_push": false,
+  "review_angles": null,
+  "reviewer": "codex",
+  "max_turn_minutes": null,
+  "ci_enabled": false,
+  "ci_command": null,
+  "ci_rounds": 1,
+  "ci_timeout_minutes": 30,
+  "max_task_weekly_percent": null,
+  "weekly_used_percent": 0,
+  "created": 1794389808.225125,
+  "turns": 1,
+  "plugin_version": "1.64.0",
+  "kind": "work",
+  "work_completed": false,
+  "review_start": 0,
+  "turn_started": 1794389808.2259681,
+  "check_start": 0,
+  "rotation_start": 0,
+  "event_start": 0,
+  "exhausted": null,
+  "outcome": "completed",
+  "reset_wait_seconds": 0,
+  "capacity_start": 0,
+  "fix_rounds": 0,
+  "rounds": [],
+  "model": "fake-model",
+  "reasoning_effort": null,
+  "runtime": {
+    "version": "1.64.0",
+    "script": "/Volumes/DevSSD/Dev/worktrees/codex/claude-lesson-y256/teamster/src/teamster/__main__.py"
+  },
+  "result": {
+    "status": "done",
+    "summary": "Implemented the typed final result.",
+    "checks": [
+      {
+        "command": "python3 -I tests/test_rotation.py",
+        "outcome": "passed",
+        "details": "3 tests passed, 0 failed"
+      }
+    ],
+    "pr": "",
+    "pr_title": "",
+    "pr_body": "",
+    "questions": [],
+    "remaining": [],
+    "findings": [],
+    "commit_message": ""
+  },
+  "pid": null,
+  "turn_stops": [],
+  "auth_excluded": [],
+  "auth_excluded_ids": [],
+  "auth_transitions": 0,
+  "auth_failures": {
+    "main": 0
+  },
+  "account_ids": {
+    "main": "A",
+    "second": "B"
+  },
+  "weekly_marks": {
+    "main": {
+      "reset": 1794397003,
+      "used": 10
+    }
+  },
+  "exec_event_start": 0,
+  "publish": {
+    "at": 1794389813.132477,
+    "sha": "",
+    "pushed": false,
+    "pr": "",
+    "action": "skipped",
+    "error": "not pushed"
+  },
+  "check_paths": [],
+  "turn_finished": 1794389814.146632
+}

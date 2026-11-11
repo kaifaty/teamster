@@ -94,6 +94,7 @@ STATE_FIELDS = {
     "stop_request": StateField("runtime", spawn_reset=STATE_DELETE),
     "signal": StateField("runtime", spawn_reset=STATE_DELETE),
     "ci": StateField("turn", spawn_reset=STATE_DELETE),
+    "ci_reruns": StateField("history"),
     "slug": StateField("task"),
     "repo": StateField("task"),
     "worktree": StateField("task"),

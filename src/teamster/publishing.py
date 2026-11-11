@@ -1,10 +1,8 @@
 """Completed work turns and supervisor publication."""
 import json
-import re
 import shutil
 import subprocess
 import tempfile
-import urllib.parse
 
 from . import clock, config, executors, result_schema, sandboxing, task_state
 
@@ -59,7 +57,7 @@ def publish_work(st, stopped):
 
 
 def publish_pr(st, stopped):
-    """The supervisor is the only PR writer, in every work mode."""
+    """Publish PRs for GitHub origins after completed work turns."""
     if not completed_work_turn(st) or stopped():
         return
     receipt = st.setdefault("publish", {"at": clock.CLOCK.time(), "sha": "", "pushed": False,
@@ -95,28 +93,9 @@ def publish_pr(st, stopped):
             skip("not pushed")
             return
         stage = "origin remote"
-        remote_url = run(config.GIT + ["remote", "get-url", "origin"])
-        if remote_url.startswith("file://") or not re.match(r"[^/]+:", remote_url):
-            skip("not a GitHub remote: local path")
-            return
-        url = urllib.parse.urlsplit(remote_url) if remote_url.startswith(("ssh://", "https://")) else None
-        scp_url = re.fullmatch(r"[^/@:]+@([^/:]+):(.+)", remote_url) if url is None else None
-        host = url.hostname if url is not None else scp_url[1] if scp_url else None
-        path = url.path if url is not None else scp_url[2] if scp_url else ""
-        if host and host.casefold() != "github.com" and (scp_url or url.scheme == "ssh"):
-            try:
-                ssh_config = run(["ssh", "-G", host])
-            except (OSError, subprocess.CalledProcessError):
-                ssh_config = ""
-            for line in ssh_config.splitlines():
-                parts = line.split()
-                if len(parts) == 2 and parts[0] == "hostname":
-                    host = parts[1]
-                    break
-            if host.casefold() == "github.com":
-                remote_url = "github.com/" + path.lstrip("/").removesuffix(".git")
-        if host and host.casefold() != "github.com":
-            skip("not a GitHub remote: " + host)
+        remote_url, other_host = sandboxing.origin_remote(st["worktree"])
+        if other_host:
+            skip("not a GitHub remote: " + other_host)
             return
         gh = shutil.which("gh")
         if not gh:

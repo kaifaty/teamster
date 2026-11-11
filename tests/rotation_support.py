@@ -572,7 +572,7 @@ elif args[:2] == ["pr", "edit"]:
     if os.environ.get("CODEX_FAKE_GH_EDIT_ERROR"):
         print("fixture PR edit failed", file=sys.stderr)
         sys.exit(1)
-elif args[:2] in (["pr", "view"], ["pr", "checks"], ["run", "view"]) or args[:1] == ["api"]:
+elif args[:2] in (["pr", "view"], ["pr", "checks"], ["run", "view"], ["run", "rerun"]) or args[:1] == ["api"]:
     scenario_path = Path(os.environ["CODEX_FAKE_GH_CI"])
     scenario = json.loads(scenario_path.read_text())
     if args[:2] == ["pr", "view"]:
@@ -613,6 +613,28 @@ elif args[:2] in (["pr", "view"], ["pr", "checks"], ["run", "view"]) or args[:1]
                 sys.exit(1)
         else:
             sys.exit("unsupported fake gh API invocation")
+    elif args[:2] == ["run", "rerun"]:
+        if scenario.get("rerun_error"):
+            print(scenario["rerun_error"], file=sys.stderr)
+            sys.exit(1)
+        assert args[3:5] == ["--failed", "--repo"]
+        attempts = scenario.setdefault("run_attempts", {})
+        attempts[args[2]] = attempts.get(args[2], 1) + 1
+        scenario_path.write_text(json.dumps(scenario))
+    elif args[:2] == ["run", "view"] and "--job" not in args:
+        run_id = args[2]
+        attempt = scenario.get("run_attempts", {}).get(run_id, 1)
+        snapshots = scenario.get("run_snapshots", []) if attempt > 1 else []
+        polls = scenario.setdefault("run_polls", {})
+        index = polls.get(run_id, 0)
+        value = snapshots[min(index, len(snapshots) - 1)] if snapshots else {
+            "attempt": attempt, "status": "completed", "conclusion": "failure"}
+        if attempt == 1 and "run_info" in scenario:
+            value = scenario["run_info"]
+        if attempt > 1 and "status" in args[-1]:
+            polls[run_id] = index + 1
+            scenario_path.write_text(json.dumps(scenario))
+        print(json.dumps(value))
     else:
         job = args[args.index("--job") + 1]
         repository = (args[args.index("--repo") + 1] if "--repo" in args
