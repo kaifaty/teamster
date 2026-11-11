@@ -47,6 +47,29 @@ def _search_command(command):
                                 or (Path(words[0]).name == "git" and words[1:2] == ["grep"]))
 
 
+def _stdout_redirected(command):
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if (len(words) == 3 and Path(words[0]).name in ("sh", "bash", "zsh", "dash", "ksh", "fish")
+            and words[1] in ("-c", "-lc")):
+        return _stdout_redirected(words[2])
+    # Keep quoted and escaped characters inside words, separate from shell operators.
+    tokens = list(re.finditer(r'''(?:[^\s'"\\<>|;&]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+|[<>|;&]+''', command))
+    for index, token in enumerate(tokens[:-1]):
+        if token.group() not in (">", ">>", "&>"):
+            continue
+        if tokens[index + 1].group()[0] in "<>|;&":
+            continue
+        if token.group() != "&>" and index and tokens[index - 1].end() == token.start():
+            descriptor = tokens[index - 1].group()
+            if descriptor.isdigit() and descriptor != "1":
+                continue
+        return True
+    return False
+
+
 class TurnControl:
     """Limits belong to a phase, surviving exec retries but excluding account waits."""
 
@@ -87,7 +110,7 @@ class TurnControl:
         output = item.get("aggregated_output", "")
         if not isinstance(output, str):
             return False
-        if code == 1 and not output.strip() and _search_command(command):
+        if not output.strip() and ((code == 1 and _search_command(command)) or _stdout_redirected(command)):
             self.failures.pop(command, None)
             return False
         digest = hashlib.sha256(output.encode("utf-8")[-2048:]).hexdigest()

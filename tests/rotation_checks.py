@@ -53,6 +53,50 @@ class CheckGuardTests(RotationTestCase):
         self.assertEqual(prompt, self.worker().prompts.review_prompt(state, {"language": "en"}))
         self.assertLess(output.index("== check `"), output.index("== review by "))
 
+    def test_saved_checks_record_load_and_wait_prints_it(self):
+        worker = self.worker()
+        st = {"slug": "check-load", "repo": str(self.repo), "worktree": str(self.repo),
+              "check": "fixture-check", "check_timeout": 0}
+        (worker.config.TASKS / st["slug"]).mkdir(parents=True)
+        for outcome, code, polled in (("passed", 0, 0), ("failed", 7, 7),
+                                      ("timeout", -9, None), ("unavailable", 75, 75)):
+            with self.subTest(outcome=outcome):
+                proc = mock.Mock(pid=IMPOSSIBLE_PID, returncode=code)
+                proc.poll.return_value = polled
+                proc.wait.return_value = code
+                with mock.patch.object(worker.checking.subprocess, "Popen", return_value=proc) as launch, \
+                        mock.patch.object(worker.procs, "signal_group"), \
+                        mock.patch.object(worker.checking.os, "getloadavg",
+                                          side_effect=[(12.34, 99, 99), (45.56, 99, 99)]) as load:
+                    result = worker.checking.run_check(st, lambda: False)
+                self.assertEqual((result["outcome"], result["exit"]), (outcome, code))
+                self.assertEqual(result["load"], [12.3, 45.6])
+                self.assertEqual(load.call_count, 2)
+                launch.assert_called_once()
+                saved = self.state(st["slug"])
+                self.assertEqual(saved["checks"][-1], result)
+                saved["check_start"] = len(saved["checks"]) - 1
+                line = next(worker.wait_view.wait_check_lines(saved))
+                self.assertIn("load 12.3 → 45.6", line)
+        self.assertEqual(len(self.state(st["slug"])["checks"]), 4)
+
+    def test_saved_check_omits_unavailable_load(self):
+        worker = self.worker()
+        st = {"slug": "check-no-load", "repo": str(self.repo), "worktree": str(self.repo), "check": "exit 0"}
+        (worker.config.TASKS / st["slug"]).mkdir(parents=True)
+        for samples in (None, [OSError("load unavailable"), OSError("load unavailable")],
+                        [(12.34, 0, 0), OSError("load unavailable")]):
+            with self.subTest(samples=samples):
+                with mock.patch.object(worker.checking.os, "getloadavg", side_effect=samples):
+                    if samples is None:
+                        del worker.checking.os.getloadavg
+                    result = worker.checking.run_check(st, lambda: False)
+                self.assertEqual((result["outcome"], result["exit"]), ("passed", 0))
+                self.assertNotIn("load", result)
+                saved = self.state(st["slug"])
+                self.assertEqual(saved["checks"][-1], result)
+                self.assertNotIn("load", list(worker.wait_view.wait_check_lines(saved))[-1])
+
     def test_guarded_changes_keep_dirty_layers_when_base_ref_is_deleted(self):
         self.commit_fixture({"tests/test_committed.py": "assert True\n",
                              "tests/test_staged.py": "assert True\n",

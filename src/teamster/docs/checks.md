@@ -13,6 +13,12 @@ or timeout skips the review, and `wait` shows the last 40 lines of `check.log`.
   review and fix rounds.
 - Inside an automatic fix cycle, other incomplete results stop the cycle at once, before checks.
 
+Each saved check record in `state.json` includes `load: [start, end]`: the machine's one-minute
+load average from `os.getloadavg()` at the start and end of the check, rounded to one decimal
+place. If either sample is unavailable, the field is omitted. `wait` appends it to the check's
+result line, for example `load 12.3 → 45.6`. These samples do not change the check's outcome or
+timeout and do not trigger a retry.
+
 ## Check deadline and an unavailable environment
 
 Every run of the saved check and of the base check gets `TEAMSTER_CHECK_DEADLINE` (also `CODEX_TASK_CHECK_DEADLINE` for compatibility) in its
