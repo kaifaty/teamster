@@ -152,6 +152,12 @@ class PromptTests(unittest.TestCase):
                 self.assertEqual(self.worker.sandboxing.rules_text(no_push=True), expected)
 
     def test_fix_prompt_text_in_both_languages(self):
+        grouping = {
+            "en": ("Findings from different angles may describe one defect — group them, fix it once "
+                   "and list every id in findings with the same note.\n"),
+            "ru": ("Находки разных ракурсов могут описывать один дефект — сгруппируй их, исправь один раз "
+                   "и перечисли в findings каждый id с одним и тем же note.\n"),
+        }
         parts = {
             "en": ("Check these review findings against the code:",
                    "Fix the saved check failure after the previous fix.",
@@ -186,6 +192,7 @@ class PromptTests(unittest.TestCase):
                           {"cmd": "python3 check.py", "outcome": "failed", "exit": 7, "tail": "explicit check output"}):
                 with self.subTest(language=language, check=check):
                     prompt = self.worker.prompts.fix_prompt(self.st, review, check, cfg)
+                    self.assertNotIn(grouping[language], prompt)
                     self.assertIn(parts[language][0 if check is None else 1], prompt)
                     for part in parts[language][2:]:
                         self.assertIn(part, prompt)
@@ -202,6 +209,13 @@ class PromptTests(unittest.TestCase):
                             self.assertNotIn("discarded early output", prompt)
                     if language == "en":
                         self.assertNotRegex(prompt, "[А-Яа-яЁё]")
+            for angles in ([{"angle": "tests"}], [{"angle": "correctness"}, {"angle": "tests"}]):
+                with self.subTest(language=language, angles=angles):
+                    prompt = self.worker.prompts.fix_prompt(self.st, dict(review, angles=angles), None, cfg)
+                    if len(angles) > 1:
+                        self.assertIn(grouping[language], prompt)
+                    else:
+                        self.assertNotIn(grouping[language], prompt)
 
     def test_base_merge_fix_prompt_text_in_both_languages(self):
         parts = {
@@ -322,6 +336,15 @@ class PromptTests(unittest.TestCase):
                             self.assertNotRegex(prompt, "[А-Яа-яЁё]")
 
     def test_review_prompt_text_in_both_languages(self):
+        weak_tests = {
+            "en": ('For each test required by "Done when" (a limit, guard or value), identify a small break in the code '
+                   "under test that leaves the test green; report it as a finding naming the break and explaining "
+                   "why the test misses it."),
+            "ru": ("Для каждого теста, которого требует «Готово, когда» (предел, защита или значение), назови маленькую "
+                   "поломку проверяемого кода, при которой тест остаётся зелёным; выдай это находкой, указав поломку "
+                   "и почему тест её не ловит."),
+        }
+        self.assertIn(weak_tests["en"], self.worker.prompts.REVIEW_ANGLES["tests"])
         parts = {
             "en": ("Review the task changes: git diff $(git merge-base origin/main HEAD).", "check its acceptance criteria.",
                    "Look only for real defects:", "incorrect behavior", "unmet brief requirements",
@@ -369,6 +392,7 @@ class PromptTests(unittest.TestCase):
             with self.subTest(language=language, context="none"):
                 with mock.patch.object(self.worker.checking, "guarded_changes", return_value=[]):
                     prompt = self.worker.prompts.review_prompt(self.st, cfg)
+                self.assertEqual(prompt.count(weak_tests[language]), 1)
                 for part in parts[language][:17] + parts[language][-2:] + (str(self.task / "brief.md"),):
                     self.assertIn(part, prompt)
                 for part in ("severity", "file, line, title, detail", "verify", "findings", "summary"):
@@ -383,6 +407,7 @@ class PromptTests(unittest.TestCase):
             with self.subTest(language=language, context="angles"):
                 angles = list(self.worker.prompts.REVIEW_ANGLES)
                 with mock.patch.object(self.worker.task_state, "save"), \
+                        mock.patch.object(self.worker.checking, "guarded_changes", return_value=[]), \
                         mock.patch.object(self.worker.budgets, "stop_at_weekly_budget", return_value=False), \
                         mock.patch.object(self.worker.notifications, "notify"), \
                         mock.patch.object(self.worker.turns, "run_turn", side_effect=lambda st, *a, **kw:
@@ -390,8 +415,10 @@ class PromptTests(unittest.TestCase):
                     self.worker.review_cycle.review_turn(dict(self.st), cfg, prompt, None,
                                                          lambda: False, mock.Mock(), angles=angles)
                 self.assertEqual(run_turn.call_count, len(angles))
-                for call in run_turn.call_args_list:
+                for angle, call in zip(angles, run_turn.call_args_list):
                     self.assertIn(parts[language][-1], call.args[2])
+                    self.assertEqual(sum(call.args[2].count(text) for text in weak_tests.values()),
+                                     1 if angle == "tests" else 0, angle)
             for base in (None, {"outcome": "skipped", "reason": "fixture base skipped"},
                          {"outcome": "failed", "exit": 9, "seconds": 2.2, "tail": "fixture base output"}):
                 with self.subTest(language=language, context="saved", base=base):
