@@ -296,7 +296,7 @@ class ClaudeReviewTests(RotationTestCase):
             self.assertNotIn("truncated", text)
 
     def test_bash_guard_rejects_background_launches_and_pattern_kills(self):
-        denial = runpy.run_path(str(SCRIPT.with_name("bash_guard.py")))["denial"]
+        hook = runpy.run_path(str(SCRIPT.with_name("bash_guard.py")))["main"]
         background, kill = "starts a process in the background", "kills processes by name or pattern"
         table = (
             ("nohup python3 -I tests/test_rotation.py > run.log 2>&1 &", background),
@@ -313,6 +313,8 @@ class ClaudeReviewTests(RotationTestCase):
             ("(python3 server.py &)", background),
             ("echo $(sleep 5 &)", background),
             ("bash -lc 'nohup ./run.sh &'", background),
+            ('env -S "nohup make test"', background),
+            ("true && python3 server.py &", background),
             ("pkill -f test_rotation", kill),
             ("killall python3", kill),
             ("sudo -u fixture pkill server", kill),
@@ -320,6 +322,9 @@ class ClaudeReviewTests(RotationTestCase):
             ("kill -9 `pgrep python3`", kill),
             ('kill "$(pgrep -f server)"', kill),
             ("pgrep -f server | xargs kill", kill),
+            ('env -S "pkill -f test_rotation"', kill),
+            ("trap 'pkill -f test_rotation' EXIT; make test", kill),
+            ("cat <<'EOF' > notes.md\nbuild & test\nEOF\npkill -f server", kill),
             ("git add -A && git commit -m wip", None),
             ("make test &> test.log", None),
             ("make test &>> test.log", None),
@@ -335,14 +340,22 @@ class ClaudeReviewTests(RotationTestCase):
             ("kill 12345", None),
             ('kill "$pid"', None),
             ('kill -TERM "$(cat server.pid)"', None),
+            ('pgrep -f unrelated || true; kill "$pid"', None),
+            ('kill "$pid"; pgrep -fl test_rotation || true', None),
+            ("command -v nohup && command -V pkill", None),
+            ("trap 'rm -f run.pid' EXIT; make test", None),
         )
         for command, expected in table:
             with self.subTest(command=command):
-                reason = denial(command)
+                event = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                    "tool_input": {"command": command}}).encode()
+                with mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(event))), \
+                        contextlib.redirect_stderr(io.StringIO()) as reason:
+                    self.assertEqual(hook(), 0 if expected is None else 2)
                 if expected is None:
-                    self.assertIsNone(reason)
+                    self.assertEqual(reason.getvalue(), "")
                 else:
-                    self.assertIn(expected, reason)
+                    self.assertIn(expected, reason.getvalue())
 
     def test_claude_work_turn_bash_hook_timeouts_and_language(self):
         self.enable_fake_clock(auto_advance=False)
@@ -355,7 +368,8 @@ class ClaudeReviewTests(RotationTestCase):
         settings_path.write_text(json.dumps(dict(json.loads(settings_path.read_text()), language="ru")))
         # Remaining seconds and --max-minutes: the limit is the budget, at least ten minutes, at most the task's.
         cases = ((1800, None, ["600000", "1800000"]), (1800, 20, ["600000", "1200000"]),
-                 (60, None, ["600000", "600000"]), (60, 5, ["300000", "300000"]))
+                 (900, 60, ["600000", "900000"]), (60, None, ["600000", "600000"]),
+                 (60, 5, ["300000", "300000"]))
         with mock.patch.dict(os.environ, self.env, clear=True):
             for seconds, max_minutes, expected in cases:
                 response = worker.claude_review.claude_runner.run_work_turn(

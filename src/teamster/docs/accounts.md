@@ -123,9 +123,9 @@ sleeps when the whole pool is unavailable.
 Claude work turns, follow-ups, review fixes, CI repairs and wrap-up run with a `PreToolUse` hook on
 the Bash tool, passed with `--settings`: the package's `bash_guard.py`, run by teamster's own
 interpreter. It rejects commands that start a process in the background (`nohup`, `setsid`,
-`disown`, `coproc`, a lone `&`) or kill processes by name or pattern (`pkill`, `killall`, `kill`
-together with `pgrep` or `pidof`); `&&`, `&>`, `2>&1`, `|&`, quoted text, heredocs and `kill <PID>`
-pass. The reason tells the model to run a long command in the foreground with the Bash `timeout`
+`disown`, `coproc`, a lone `&`, also inside `trap`, `eval`, `sh -c` and `env -S`) or kill processes
+by name or pattern (`pkill`, `killall`, `kill $(pgrep …)`, `pgrep … | xargs kill`); `&&`, `&>`,
+`2>&1`, `|&`, quoted text, heredocs, `command -v` and `kill <PID>` pass. The reason tells the model to run a long command in the foreground with the Bash `timeout`
 parameter, stop only PIDs it recorded itself and commit before a command longer than 10 minutes.
 These turns also get `BASH_MAX_TIMEOUT_MS`: the turn's remaining time budget, at least 10 minutes
 and at most `--max-minutes`, or 2 hours without a time budget. `BASH_DEFAULT_TIMEOUT_MS` is 10

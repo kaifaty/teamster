@@ -24,7 +24,7 @@ NO_COMMAND = frozenset({"for", "select", "case", "in"})
 # Commands that run their arguments as a command: options that take a value, then operands before it.
 WRAPPERS = {
     "sudo": ({"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"}, 0),
-    "env": ({"-u", "-C", "-S", "-P"}, 0),
+    "env": ({"-u", "-C", "-P"}, 0),
     "command": (set(), 0), "builtin": (set(), 0), "exec": ({"-a"}, 0), "time": (set(), 0),
     "nice": ({"-n"}, 0), "stdbuf": ({"-i", "-o", "-e"}, 0), "caffeinate": ({"-t", "-w"}, 0),
     "timeout": ({"-s", "-k", "--signal", "--kill-after"}, 1),
@@ -42,7 +42,7 @@ BACKGROUND_REASON = (
     "nothing reports its result back to you.")
 KILL_REASON = (
     "Blocked by teamster: this command kills processes by name or pattern (`pkill`, `killall`, or "
-    "`kill` together with `pgrep` or `pidof`). A pattern also matches this turn's own shell and "
+    "`kill` of PIDs that `pgrep` or `pidof` found). A pattern also matches this turn's own shell and "
     "other agents' processes on this shared machine.")
 
 
@@ -80,6 +80,13 @@ def command_names(words):
             index += 1
             if option == "--":
                 break
+            if name == "command" and option in ("-v", "-V"):
+                return names, last  # It only describes the next name.
+            if name == "env" and option == "-S":
+                # env -S splits its value into the command it runs and that command's arguments.
+                inner = Shell(" ".join(words[index:]))
+                inner.parse()
+                return names + inner.names, len(words)
             if option in valued:
                 index += 1
         index += operands
@@ -95,6 +102,7 @@ class Shell:
         self.heredocs = []
         self.names = []
         self.background = False
+        self.pattern_kill = False
 
     def peek(self, offset=0):
         index = self.pos + offset
@@ -108,10 +116,18 @@ class Shell:
         inner.parse()
         self.names += inner.names
         self.background = self.background or inner.background
+        self.pattern_kill = self.pattern_kill or inner.pattern_kill
 
-    def end(self, words):
-        """Record a finished simple command and the script a shell or eval runs."""
+    def end(self, words, mark):
+        """Record a finished simple command and the script a shell, eval or trap runs.
+
+        Names from ``mark`` on belong to this command's substitutions and to the
+        earlier commands of its pipeline. Returns the next command's words and mark.
+        """
+        found = set(self.names[mark:])
         names, last = command_names(words)
+        if "kill" in names and found & PROCESS_LOOKUPS:
+            self.pattern_kill = True
         self.names += names
         if names and names[-1] in SHELLS:
             arguments = words[last + 1:]
@@ -121,11 +137,16 @@ class Shell:
                     break
         elif names and names[-1] == "eval":
             self.nested(" ".join(words[last + 1:]))
-        return []
+        elif names and names[-1] == "trap":
+            arguments = words[last + 1:]
+            arguments = arguments[1:] if arguments[:1] == ["--"] else arguments
+            if arguments and not arguments[0].startswith("-"):
+                self.nested(arguments[0])
+        return [], len(self.names)
 
     def parse(self, closer=None):
         """Read a command list up to EOF or, inside `$(`, its closing parenthesis."""
-        words, depth, target = [], 0, False
+        words, depth, target, mark = [], 0, False, len(self.names)
         while self.pos < len(self.text):
             char = self.text[self.pos]
             if char in " \t":
@@ -134,7 +155,7 @@ class Shell:
                 self.pos += 2
             elif char == "\n":
                 self.pos += 1
-                words = self.end(words)
+                words, mark = self.end(words, mark)
                 self.read_heredocs()
             elif char == "#":
                 while self.pos < len(self.text) and self.text[self.pos] != "\n":
@@ -142,21 +163,24 @@ class Shell:
             elif char == ";":
                 # `;;`, `;&` and `;;&` end case items.
                 self.pos += 3 if self.starts(";;&") else 2 if self.starts(";;", ";&") else 1
-                words = self.end(words)
+                words, mark = self.end(words, mark)
             elif char == "&":
                 if self.starts("&&"):
                     self.pos += 2
-                    words = self.end(words)
+                    words, mark = self.end(words, mark)
                 elif self.starts("&>"):
                     self.pos += 3 if self.starts("&>>") else 2
                     target = True
                 else:
                     self.pos += 1
                     self.background = True
-                    words = self.end(words)
+                    words, mark = self.end(words, mark)
             elif char == "|":
+                pipe = not self.starts("||")
                 self.pos += 2 if self.starts("||", "|&") else 1
-                words = self.end(words)
+                words, next_mark = self.end(words, mark)
+                # Later commands of a pipeline may kill the PIDs that earlier ones found.
+                mark = mark if pipe else next_mark
             elif char == "(":
                 self.pos += 1
                 if not words and self.peek() == "(":
@@ -164,10 +188,10 @@ class Shell:
                     self.skip_arithmetic()
                 else:
                     depth += 1
-                    words = self.end(words)
+                    words, mark = self.end(words, mark)
             elif char == ")":
                 self.pos += 1
-                words = self.end(words)
+                words, mark = self.end(words, mark)
                 if depth:
                     depth -= 1
                 elif closer == ")":
@@ -185,7 +209,7 @@ class Shell:
                     target = False
                 else:
                     words.append(word)
-        self.end(words)
+        self.end(words, mark)
 
     def redirect(self):
         """Skip a redirection operator; return whether a target word follows it."""
@@ -341,7 +365,7 @@ def denial(command):
     names = set(shell.names)
     if shell.background or names & BACKGROUND:
         return BACKGROUND_REASON + advice()
-    if names & PATTERN_KILLS or "kill" in names and names & PROCESS_LOOKUPS:
+    if names & PATTERN_KILLS or shell.pattern_kill:
         return KILL_REASON + advice()
     return None
 
