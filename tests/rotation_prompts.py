@@ -450,6 +450,58 @@ class PromptTests(unittest.TestCase):
                     if language == "en":
                         self.assertNotRegex(prompt, "[А-Яа-яЁё]")
 
+    def test_green_test_rule_narrows_in_repeat_reviews(self):
+        first = {
+            "en": ('For each test required by "Done when" (a limit, guard or value), identify a small break in the code '
+                   "under test that leaves the test green; report it as a finding naming the break and explaining "
+                   "why the test misses it."),
+            "ru": ("Для каждого теста, которого требует «Готово, когда» (предел, защита или значение), назови маленькую "
+                   "поломку проверяемого кода, при которой тест остаётся зелёным; выдай это находкой, указав поломку "
+                   "и почему тест её не ловит."),
+        }
+        repeat = {
+            "en": ("Check whether the earlier review findings about tests are resolved; look for a small break in the "
+                   "code under test that leaves a test green only in tests added or changed since the previous review."),
+            "ru": ("Проверь, закрыты ли прежние находки ревью о тестах; поломку проверяемого кода, при которой тест "
+                   "остаётся зелёным, ищи только в тестах, добавленных или изменённых после прошлого ревью."),
+        }
+        severity = {
+            "en": 'A test that stays green under a break is P2 only when "Done when" requires that test; '
+                  "for any other test it is P3.",
+            "ru": "Тест, зелёный при поломке, — P2, только если его требует «Готово, когда»; для прочих тестов — P3.",
+        }
+        reviewed = [{"review": {"findings": []}, "decisions": []}]
+        for language in ("en", "ru"):
+            for name, rounds in (("first", []), ("first-after-merge", [{"review": None, "decisions": []}]),
+                                 ("repeat", reviewed)):
+                st = dict(self.st, rounds=rounds)
+                cfg = {"language": language}
+                expected, absent = ((repeat, first) if name == "repeat" else (first, repeat))
+                with self.subTest(language=language, review=name, angles=False):
+                    with mock.patch.object(self.worker.checking, "guarded_changes", return_value=[]):
+                        prompt = self.worker.prompts.review_prompt(st, cfg)
+                    self.assertEqual(prompt.count(expected[language]), 1)
+                    self.assertEqual(prompt.count(severity[language]), 1)
+                    self.assertNotIn(absent[language], prompt)
+                with self.subTest(language=language, review=name, angles=True):
+                    angles = list(self.worker.prompts.REVIEW_ANGLES)
+                    with mock.patch.object(self.worker.task_state, "save"), \
+                            mock.patch.object(self.worker.checking, "guarded_changes", return_value=[]), \
+                            mock.patch.object(self.worker.budgets, "stop_at_weekly_budget", return_value=False), \
+                            mock.patch.object(self.worker.notifications, "notify"), \
+                            mock.patch.object(self.worker.turns, "run_turn", side_effect=lambda st, *a, **kw:
+                                              st.update(outcome="completed")) as run_turn:
+                        self.worker.review_cycle.review_turn(st, cfg, "", None, lambda: False, mock.Mock(),
+                                                             angles=angles)
+                    for angle, call in zip(angles, run_turn.call_args_list):
+                        text = call.args[2]
+                        count = 1 if angle == "tests" else 0
+                        # Angle texts are English in every language.
+                        self.assertEqual(text.count(expected["en"]), count, angle)
+                        self.assertEqual(text.count(severity["en"]), count, angle)
+                        for other in (absent["en"], absent["ru"], expected["ru"], severity["ru"]):
+                            self.assertNotIn(other, text)
+
     def test_first_review_prompt_after_merge_round_in_both_languages(self):
         st = dict(self.st, rounds=[{
             "review": None, "decisions": [], "check": None,

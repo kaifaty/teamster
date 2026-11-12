@@ -200,7 +200,7 @@ reports. Verify key facts by reading only the cited `file:line` locations; use `
    A `say` that merges the base keeps the saved check and `--fix-rounds`: name extra tests in
    addition to the check, never instead of it. Decide yourself whether P3 findings and work rejected as
    `out of scope` belong in a separate task, and record deferred work in issues when appropriate.
-   After a stop on `only P3`, send every P3 worth fixing in one `say`; P3 findings that the next review raises in new code go to a follow-up task, not into another `say`.
+   After a stop on `only P3`, send every P3 worth fixing in one `say`; P3 findings that the next review raises in new code go to a follow-up task, not into another `say`. Test P3 findings left after a stop on `only P3` (a test that stays green under a break, a check that misses a removal) go to the task's follow-ups or a separate task, not into a new `say`.
 5. For a GitHub PR, merge only when `wait` reports `CI … passed`; `failed`, `timeout`, `none`, and
    `skipped` need resolution first. Immediately before merging, run `gh pr checks <url>` again and
    verify all checks pass or skip. Merge per the repo's rules, then `clean`. If the task failed expensively,

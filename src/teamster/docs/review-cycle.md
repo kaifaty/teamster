@@ -20,9 +20,14 @@ not to rerun the full suite; only focused checks that confirm a specific finding
 
 The review prompt lists deleted tests and asks the reviewer to account for each contract, treating a still-valid contract removed without replacement as P2.
 
-Both the ordinary review prompt and the `tests` angle ask the reviewer to identify, for each test
-required by "Done when" (a limit, guard or value), a small break in the tested code that leaves the
-test green, and report a finding naming the break and explaining why the test misses it.
+In the task's first review (no review recorded in `rounds` yet), both the ordinary review prompt and
+the `tests` angle ask the reviewer to identify, for each test required by "Done when" (a limit, guard
+or value), a small break in the tested code that leaves the test green, and report a finding naming
+the break and explaining why the test misses it. Repeat reviews (fix rounds, and reviews after the
+lead's `say` or `review` once `rounds` holds a review) replace that rule: the reviewer checks whether
+the earlier findings about tests are resolved and looks for such breaks only in tests added or changed
+since the previous review. In every review, a test that stays green under a break is P2 only when
+"Done when" requires that test; for any other test it is P3.
 
 Before the first automatic review and every repeat review after a fix, the supervisor fetches the
 task's base when its first slash-separated segment names a configured remote (`git remote`),

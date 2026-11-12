@@ -159,7 +159,7 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
             start = len(st.get("reviews", []))
             started = clock.CLOCK.time()
             st.update(review_angle=angle, outcome="running")
-            focused = prompt + f"\n\nReview angle: {angle}. {prompts.REVIEW_ANGLES[angle]}" if angle else prompt
+            focused = prompt + f"\n\nReview angle: {angle}. {prompts.review_angle(st, angle)}" if angle else prompt
             reviewer = reviewers.from_entry(st)
             while True:
                 try:
