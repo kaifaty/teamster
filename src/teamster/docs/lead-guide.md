@@ -208,18 +208,6 @@ reports. Verify key facts by reading only the cited `file:line` locations; use `
    Report to the user: what Codex did, what you checked, what is still open, the PR link, and any account
    switch `wait` reported.
 
-## Releasing teamster
-
-When contributing to teamster itself, task PRs leave the package and plugin versions unchanged.
-After merging into teamster's `main`, run
-`scripts/bump_version.py minor --commit` for new behavior or
-`scripts/bump_version.py patch --commit` for fixes and documentation, then push `main`.
-The script also accepts `major` or an explicit higher `X.Y.Z`. It preserves formatting and
-updates only `src/teamster/__init__.py` and the `version` field in
-`plugins/teamster/.claude-plugin/plugin.json`. Without `--commit`, it only edits the files
-and prints the new version. With `--commit`, it commits only those two files as `Release X.Y.Z`.
-Both files must have matching versions and no staged or unstaged changes.
-
 ## Stop rules
 
 - Read the [automatic stop reason](review-cycle.md#cycle-stops) and decide what happens
