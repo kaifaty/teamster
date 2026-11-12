@@ -12,11 +12,19 @@ from . import config
 def claude_system_prompt(worktree, task_dir):
     """Save this turn's workspace instructions outside the worktree."""
     text = ("You are the task executor in a git worktree. "
-            "Make changes only inside this worktree.\n"
-            "This turn runs headless: background commands and waiting for a notification end the turn "
-            "and kill whatever runs in the background. Run long jobs in the foreground; if one outlasts "
-            "a single command's timeout, start it with `nohup … > LOG 2>&1 &` and poll it in a blocking "
-            "loop of at most 10 minutes per call until it ends.\n")
+            "Make changes only inside this worktree.\n")
+    # The Bash hook of writable Claude turns enforces this line (bash_guard.py).
+    text += ("Ход идёт без интерфейса, и ожидание уведомления его завершает; хук отклоняет фоновые команды "
+             "(`nohup`, `setsid`, `disown`, одиночный `&`) и убийство процессов по имени или шаблону "
+             "(`pkill`, `killall`, `kill $(pgrep …)`). Длинную команду запускай на переднем плане "
+             "с параметром `timeout` инструмента Bash, останавливай только PID, которые записал сам, "
+             "а перед командой дольше 10 минут закоммить работу.\n"
+             if config.accounts_config().get("language", "en") == "ru" else
+             "This turn runs headless, so waiting for a notification ends it, and a hook rejects background "
+             "commands (`nohup`, `setsid`, `disown`, a lone `&`) and killing processes by name or pattern "
+             "(`pkill`, `killall`, `kill $(pgrep …)`). Run a long command in the foreground with the Bash "
+             "tool's `timeout` parameter, stop only PIDs you recorded yourself, and commit your work before "
+             "any command that may run longer than 10 minutes.\n")
     agents = Path(worktree) / "AGENTS.md"
     if agents.is_file():
         with agents.open("rb") as stream:

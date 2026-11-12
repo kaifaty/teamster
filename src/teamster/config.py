@@ -147,6 +147,8 @@ COMMAND = "teamster"
 STATS = PACKAGE.resolve() / "codex_stats.py"
 ROLLOUT = runpy.run_path(str(PACKAGE / "rollout.py"))
 REPORT = PACKAGE / "task_report.py"
+# PreToolUse hook for the Bash tool of writable Claude turns.
+BASH_GUARD = PACKAGE.resolve() / "bash_guard.py"
 # Tests can shorten polling without changing the default CLI intervals.
 RATE_POLL_SECONDS = float(env("CODEX_TASK_RATE_POLL_SECONDS", "30"))
 ROLLOUT_SEARCH_SECONDS = float(env("CODEX_TASK_ROLLOUT_SEARCH_SECONDS", "5"))

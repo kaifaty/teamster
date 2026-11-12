@@ -17,7 +17,7 @@ SCRIPTS = (Path(__file__).resolve().parents[1]
 PACKAGE_FILE_ALLOWLIST = {"teamster/config.py", "teamster/__main__.py"}
 ENTRYPOINTS = {"codex_task", "teamster.__main__"}
 # Standalone helpers run by path and never import the package.
-STANDALONE = {"codex_stats.py", "rollout.py", "task_report.py", "turn_log.py", "wait_turn.py"}
+STANDALONE = {"bash_guard.py", "codex_stats.py", "rollout.py", "task_report.py", "turn_log.py", "wait_turn.py"}
 
 
 class _Bindings(ast.NodeVisitor):

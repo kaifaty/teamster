@@ -145,7 +145,8 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
             session_id=st.get("session_id") or None,
             model=st.get("task_model") or settings.get("model"),
             effort=effort or settings.get("effort"),
-            deadline=deadline, started=started, progress=progress)
+            deadline=deadline, started=started, progress=progress,
+            max_minutes=st.get("max_turn_minutes", cfg.get("max_turn_minutes")))
     finally:
         st.pop("claude_pid", None)
         task_state.save(st)

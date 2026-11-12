@@ -6,6 +6,7 @@ import io
 import json
 import os
 import plistlib
+import runpy
 import shlex
 import subprocess
 import sys
@@ -79,6 +80,7 @@ trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(),
        "config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
        "disable_background_tasks": os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"),
        "copyfile_disable": os.environ.get("COPYFILE_DISABLE"),
+       "bash_timeouts": [os.environ.get("BASH_DEFAULT_TIMEOUT_MS"), os.environ.get("BASH_MAX_TIMEOUT_MS")],
        "inherited_provider_keys": sorted(key for key in os.environ
            if (key.startswith("CLAUDE") or key.startswith("ANTHROPIC"))
            and key not in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
@@ -221,6 +223,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(entry["config_dir"], str(self.claude_config_dir))
                 self.assertEqual(entry["disable_background_tasks"], "1")
                 self.assertEqual(entry["copyfile_disable"], "1")
+                self.assertEqual(entry["bash_timeouts"], ["600000", "7200000"])
                 self.assertEqual(entry["inherited_provider_keys"], [])
                 self.assertEqual(entry["cwd"], str(self.repo))
                 self.assertEqual(entry["pid"], entry["pgid"])
@@ -236,6 +239,9 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertNotIn("--mcp-config", argv)
                 self.assertNotIn("--allowedTools", argv)
                 self.assertNotIn("--disallowedTools", argv)
+                self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), {"hooks": {"PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": shlex.join(
+                        [sys.executable, "-I", str(worker.config.BASH_GUARD)])}]}]}})
                 for key in ("session_id", "max_turns", "model", "effort"):
                     flag = "--" + {"session_id": "resume", "max_turns": "max-turns"}.get(key, key)
                     if key in options:
@@ -247,10 +253,11 @@ class ClaudeReviewTests(RotationTestCase):
                 prompts.append(path)
                 text = entry["system_prompt"]
                 self.assertIn(
-                    "This turn runs headless: background commands and waiting for a notification end the turn "
-                    "and kill whatever runs in the background. Run long jobs in the foreground; if one outlasts "
-                    "a single command's timeout, start it with `nohup … > LOG 2>&1 &` and poll it in a blocking "
-                    "loop of at most 10 minutes per call until it ends.", text)
+                    "a hook rejects background commands (`nohup`, `setsid`, `disown`, a lone `&`) and killing "
+                    "processes by name or pattern (`pkill`, `killall`, `kill $(pgrep …)`). Run a long command in "
+                    "the foreground with the Bash tool's `timeout` parameter, stop only PIDs you recorded yourself, "
+                    "and commit your work before any command that may run longer than 10 minutes.\n", text)
+                self.assertNotIn("nohup …", text)
                 self.assertIn("git worktree", text)
                 self.assertIn("Root task instructions.\n", text)
                 self.assertIn("nested AGENTS.md", text)
@@ -287,6 +294,97 @@ class ClaudeReviewTests(RotationTestCase):
             self.assertIn("nested AGENTS.md", text)
             self.assertEqual(len(text.strip().split("\n\n")), 2)
             self.assertNotIn("truncated", text)
+
+    def test_bash_guard_rejects_background_launches_and_pattern_kills(self):
+        denial = runpy.run_path(str(SCRIPT.with_name("bash_guard.py")))["denial"]
+        background, kill = "starts a process in the background", "kills processes by name or pattern"
+        table = (
+            ("nohup python3 -I tests/test_rotation.py > run.log 2>&1 &", background),
+            ("nohup make test", background),
+            ("/usr/bin/nohup ./run.sh", background),
+            ("timeout -s KILL 60 nohup ./run.sh", background),
+            ("setsid make test", background),
+            ("make test & disown", background),
+            ("disown -a", background),
+            ("python3 server.py &", background),
+            ("python3 server.py & echo started", background),
+            ("sleep 600 &; tail -f run.log", background),
+            ("make test &\nsleep 30\ntail run.log", background),
+            ("(python3 server.py &)", background),
+            ("echo $(sleep 5 &)", background),
+            ("bash -lc 'nohup ./run.sh &'", background),
+            ("pkill -f test_rotation", kill),
+            ("killall python3", kill),
+            ("sudo -u fixture pkill server", kill),
+            ("kill $(pgrep -f test_rotation)", kill),
+            ("kill -9 `pgrep python3`", kill),
+            ('kill "$(pgrep -f server)"', kill),
+            ("pgrep -f server | xargs kill", kill),
+            ("git add -A && git commit -m wip", None),
+            ("make test &> test.log", None),
+            ("make test &>> test.log", None),
+            ("python3 -I tests/test_rotation.py 2>&1 | tail -n 50", None),
+            ("echo failed >&2", None),
+            ("make test |& tee test.log", None),
+            ('git commit -m "Run checks & tests"', None),
+            ("echo 'a & b' # c & d", None),
+            ("cat <<'EOF' > notes.md\nbuild & test\nEOF\necho done", None),
+            ("git commit -m \"$(cat <<'EOF'\nStop & restart (draft\nEOF\n)\"", None),
+            ("echo $((5 & 3)) a\\&b", None),
+            ('grep -rn "nohup\\|pkill" src', None),
+            ("kill 12345", None),
+            ('kill "$pid"', None),
+            ('kill -TERM "$(cat server.pid)"', None),
+        )
+        for command, expected in table:
+            with self.subTest(command=command):
+                reason = denial(command)
+                if expected is None:
+                    self.assertIsNone(reason)
+                else:
+                    self.assertIn(expected, reason)
+
+    def test_claude_work_turn_bash_hook_timeouts_and_language(self):
+        self.enable_fake_clock(auto_advance=False)
+        self.claude_fixture(runs=[{"reply": self.work_result()}])
+        worker = self.worker()
+        account = worker.claude_accounts.accounts(worker.config.accounts_config())[0]
+        task_dir = self.root / "work-turn-task"
+        task_dir.mkdir()
+        settings_path = self.home / "claude-accounts.json"
+        settings_path.write_text(json.dumps(dict(json.loads(settings_path.read_text()), language="ru")))
+        # Remaining seconds and --max-minutes: the limit is the budget, at least ten minutes, at most the task's.
+        cases = ((1800, None, ["600000", "1800000"]), (1800, 20, ["600000", "1200000"]),
+                 (60, None, ["600000", "600000"]), (60, 5, ["300000", "300000"]))
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            for seconds, max_minutes, expected in cases:
+                response = worker.claude_review.claude_runner.run_work_turn(
+                    account, self.repo, task_dir, "Work.", lambda: False,
+                    deadline=worker.clock.CLOCK.monotonic() + seconds, max_minutes=max_minutes)
+                self.assertEqual(response["outcome"], "completed")
+                self.assertEqual(self.claude_invocations()[-1]["bash_timeouts"], expected)
+        entry = self.claude_invocations()[-1]
+        self.assertIn("Длинную команду запускай на переднем плане с параметром `timeout` инструмента Bash, "
+                      "останавливай только PID, которые записал сам, а перед командой дольше 10 минут "
+                      "закоммить работу.\n", entry["system_prompt"])
+        self.assertEqual(worker.config.BASH_GUARD, SCRIPT.with_name("bash_guard.py").resolve())
+        argv = entry["argv"]
+        hook, = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"]
+        for command, status in (("nohup make test > test.log 2>&1 &", 2), ("pkill -f make", 2),
+                                ("make test 2>&1 | tail", 0)):
+            event = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
+            result = subprocess.run(hook["hooks"][0]["command"], shell=True, input=json.dumps(event),
+                                    env=dict(self.env, BASH_MAX_TIMEOUT_MS="1800000"),
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, status, result.stderr)
+            if not status:
+                self.assertEqual(result.stderr, "")
+                continue
+            for advice in ("Run a long command in the foreground",
+                           "`timeout` parameter (up to 30 minutes in this turn)",
+                           "Stop only processes whose PIDs you recorded yourself",
+                           "Commit your work before any command that may run longer than 10 minutes."):
+                self.assertIn(advice, result.stderr)
 
     def test_claude_work_turn_ignores_non_json_but_review_rejects_it(self):
         diagnostic = "Unexpected stream output " + TEST_TOKEN
@@ -442,6 +540,9 @@ class ClaudeReviewTests(RotationTestCase):
                         ANTHROPIC_API_KEY="host-account-secret", CLAUDECODE="1",
                         CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="0",
                         CLAUDE_CODE_ENTRYPOINT="desktop", CLAUDE_OTHER="host-setting")
+        # A run inside a Claude work turn inherits that turn's Bash timeouts.
+        for key in ("BASH_DEFAULT_TIMEOUT_MS", "BASH_MAX_TIMEOUT_MS"):
+            self.env.pop(key, None)
         self.claude_limits = {"status": "allowed_warning", "rateLimitType": "seven_day",
                               "utilization": 0.5, "resetsAt": self.reset,
                               "unifiedWindows": {
@@ -509,6 +610,8 @@ class ClaudeReviewTests(RotationTestCase):
             self.assertEqual(argv[argv.index("--disallowedTools") + 1], "Edit,Write,NotebookEdit")
             self.assertNotIn("--json-schema", argv)
             self.assertNotIn("bypassPermissions", argv)
+            self.assertNotIn("--settings", argv)
+            self.assertEqual(entry["bash_timeouts"], [None, None])
             self.assertEqual(entry["cwd"], str(self.repo))
             self.assertEqual(entry["config_dir"], accounts[0]["config_dir"])
         self.assertNotIn("--resume", invocations[0]["argv"])
@@ -749,6 +852,8 @@ class ClaudeReviewTests(RotationTestCase):
             self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
             self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read,Grep,Glob,Bash")
             self.assertEqual(argv[argv.index("--disallowedTools") + 1], "Edit,Write,NotebookEdit")
+            self.assertNotIn("--settings", argv)
+            self.assertEqual(entry["bash_timeouts"], [None, None])
             self.assertEqual(argv[argv.index("--max-turns") + 1], "17")
             self.assertEqual(argv[argv.index("--model") + 1], "claude-test")
             self.assertEqual(argv[argv.index("--effort") + 1], "high")
