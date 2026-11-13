@@ -10,7 +10,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu-latest moved to Ubuntu 26.04, where setup-python has no Python 3.9.
+        os: [ubuntu-24.04, macos-latest]
         python: ["3.9", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
