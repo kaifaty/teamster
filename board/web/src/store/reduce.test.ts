@@ -85,4 +85,13 @@ describe("reduce", () => {
     expect(next.lastPing).toBe(400);
     expect(next.tasks).toBe(state.tasks);
   });
+
+  it("launch keeps the newest stage of each start, also over a new snapshot", () => {
+    const launch = { slug: "lesson-u1", kind: "implement" as const, entry: "b.md U1", repo: "teamster", stage: "fetching" as const, steps: [{ stage: "fetching" as const, at: 1 }], error: null, started_at: 1 };
+    const next = reduce(loaded(), { type: "launch", launch }, 1);
+    expect(next.launches).toEqual({ "lesson-u1": launch });
+    const later = { ...launch, stage: "done" as const, steps: [...launch.steps, { stage: "done" as const, at: 2 }] };
+    expect(reduce(next, { type: "launch", launch: later }, 2).launches["lesson-u1"]).toBe(later);
+    expect(reduce(next, { type: "snapshot", snapshot: snapshot([]) }, 3).launches).toBe(next.launches);
+  });
 });

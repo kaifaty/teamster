@@ -451,11 +451,16 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
 }
 
 /**
- * What a docket in the comms room shows under its lesson: the buttons while the lesson waits for a decision or was
- * decided a moment ago, and the implementation's line, as on the lab's card, while the lesson is proposed or accepted.
+ * Which quick buttons a docket in the comms room offers under its lesson: «Принять» and «Отклонить» while it waits
+ * for a decision and no start goes, «Внедрить» while it can be implemented. The implementation itself is followed in
+ * the lesson's thread only; a decision just taken shows its «Отменить» instead.
  */
-export function docketParts(lesson: Lesson | undefined, card: { done: unknown; started: Started | null }): { actions: boolean; implementation: boolean } {
-  if (!lesson) return { actions: false, implementation: false };
+export function docketParts(
+  lesson: Lesson | undefined,
+  card: { done: unknown },
+  start: { offers: boolean; goes: boolean },
+): { decide: boolean; implement: boolean } {
+  if (!lesson || card.done) return { decide: false, implement: false };
   const open = lesson.status === "proposed" || lesson.status === "accepted";
-  return { actions: lesson.status === "proposed" || !!card.done, implementation: open && !!implementationLine(lesson.implementation, card.started) };
+  return { decide: lesson.status === "proposed" && !start.goes, implement: open && start.offers };
 }

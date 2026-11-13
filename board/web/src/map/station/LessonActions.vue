@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// A lesson's buttons, the same on its lab card and its docket: a proposed lesson is implemented, accepted, declined
-// or discussed, an accepted one is implemented or marked applied. «Внедрить» asks where and starts a task at once;
-// the other buttons act at once too, and for a few seconds after them the card offers to take the decision back.
-// A lesson whose proposal changes files outside the repositories names them above the buttons: «Внедрить» lets its
-// agent change them, and «Скопировать задание» copies the change for a session that makes it by hand.
+// A lesson's buttons, under its thread in «Переписка»: a proposed lesson is implemented, accepted, declined or
+// discussed, an accepted one is implemented or marked applied. «Внедрить» asks where, and «Запустить» closes the form
+// and shows the start in the thread at once; the other buttons show their decision at once too, and for a few seconds
+// after them the lesson offers to take the decision back.
+// For a lesson whose proposal changes files outside the repositories, «Внедрить» lets its agent change them, and
+// «Скопировать задание» copies the change for a session that makes it by hand.
 import { computed, ref } from "vue";
 import type { Lesson } from "../../types";
 import { manualAssignment, outsideOf } from "../station";
@@ -58,17 +59,6 @@ function submit() {
 
 <template>
   <div class="lesson-actions" :aria-busy="!!card.busy">
-    <div v-if="outside.length && !card.done" class="outside" role="note">
-      <p class="outside-head">Предложение меняет файлы вне репозитория</p>
-      <ul class="paths mono">
-        <li v-for="path in outside" :key="path">{{ path }}</li>
-      </ul>
-      <p v-if="desk.offersImplement(lesson) && !card.started && !card.form" class="hint">
-        «Внедрить» разрешит агенту их менять: сначала копия .bak рядом, проверка на копии, без PR. Или скопируй задание
-        и сделай правку в своей сессии.
-      </p>
-    </div>
-
     <p v-if="card.done" class="done-line" role="status">
       {{ DONE[card.done.status] }} ·
       <button type="button" class="link" :class="{ busy: busy('undo') }" :disabled="!!card.busy" @click="desk.undo(lesson)">Отменить</button>
@@ -98,7 +88,7 @@ function submit() {
       <p v-else class="hint">Файлы вне репозиториев (~/.codex, ~/.claude) агент не трогает — перечислит их в отчёте.</p>
       <textarea v-model="note" rows="2" placeholder="Уточнение — необязательно" aria-label="Уточнение" :disabled="!!card.busy"></textarea>
       <span class="buttons">
-        <button type="submit" class="key gold" :class="{ busy: busy('implement') }" :disabled="!!card.busy || !repo">Запустить</button>
+        <button type="submit" class="key gold" :disabled="!!card.busy || !repo">Запустить</button>
         <button type="button" class="chip" :disabled="!!card.busy" @click="desk.closeForm(lesson)">Отмена</button>
       </span>
     </form>
@@ -129,8 +119,8 @@ function submit() {
       </span>
     </form>
 
-    <!-- A proposed card that started its implementation waits to leave the tab. -->
-    <div v-else-if="stage === 'proposed' && !card.started" class="buttons">
+    <!-- A proposed lesson whose start goes waits to become accepted. -->
+    <div v-else-if="stage === 'proposed' && !desk.startGoes(lesson)" class="buttons">
       <button
         v-if="desk.offersImplement(lesson)"
         type="button"
@@ -232,29 +222,6 @@ function submit() {
 .form .note {
   flex: none;
   width: 100%;
-}
-
-.outside {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-bottom: 8px;
-  padding: 5px 8px;
-  border-left: 2px solid var(--st-amber);
-  background: rgba(217, 162, 76, 0.08);
-  font-size: 12.5px;
-}
-
-.outside-head {
-  margin: 0;
-  color: var(--st-amber);
-}
-
-.paths {
-  margin: 0;
-  padding-left: 16px;
-  font-size: 11.5px;
-  overflow-wrap: anywhere;
 }
 
 .copied {

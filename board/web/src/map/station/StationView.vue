@@ -1,11 +1,13 @@
 <script setup lang="ts">
 // The science station's own screen. Clicking the station on the map opens it over the galaxy: a resource bar on
 // top with the line «what next», then the decks — the core with the chronometer and the crew, the comms room with
-// the order under it, the lab with the lessons and the archive hold. The station's buttons act at once through the board server;
-// a board that only reads copies the equivalent command instead.
-import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, toRef } from "vue";
+// the order under it, the lab with the lessons and the archive hold. A lesson's row opens the lesson in the comms
+// room, where it is read, decided and followed. The station's buttons act at once through the board server; a board
+// that only reads copies the equivalent command instead.
+import { computed, onBeforeUnmount, onMounted, provide, ref, toRef, watch } from "vue";
 import { postAction } from "../../lib/actions";
 import type { BoardSource } from "../../lib/source";
+import type { Launch, TaskSummary } from "../../types";
 import nebula from "../art/nebula.jpg";
 import stationArt from "../art/station-research.png";
 import { plural, type Research } from "../research";
@@ -30,6 +32,10 @@ const props = defineProps<{
   source: BoardSource;
   /** Asks the server for the research again. */
   refresh: () => Promise<void>;
+  /** The board's tasks by slug, live: an implementing agent's phase and last action. */
+  tasks: Readonly<Record<string, TaskSummary>>;
+  /** The starts the board's `launch` messages reported, by slug. */
+  launches: Readonly<Record<string, Launch>>;
 }>();
 /** `open`: a task's card over the screen; `ship`: the screen gives way to a task's system, with its card. */
 const emit = defineEmits<{ close: []; open: [slug: string]; ship: [slug: string, repo: string] }>();
@@ -37,29 +43,31 @@ const emit = defineEmits<{ close: []; open: [slug: string]; ship: [slug: string,
 const desk = createConsole(toRef(props, "research"), toRef(props, "now"), {
   act: (route, body) => postAction(route, body, { send: props.source.act, refresh: props.refresh }),
   jump: (deck) => jump(deck),
+  reveal,
   openShip: (slug, repo) => emit("ship", slug, repo),
+  launches: computed(() => Object.values(props.launches)),
+  tasks: toRef(props, "tasks"),
 });
 provide(CONSOLE, desk);
 
-const counts = computed(() => stationCounts(props.research));
+// The decisions in flight count at once.
+const counts = computed(() => stationCounts(desk.view.value));
 const clock = computed(() => stationClock(props.research.schedule, props.now, workingSince(props.research)));
 
-const next = computed(() => nextStep(props.research, props.now, clock.value));
+const next = computed(() => nextStep(desk.view.value, props.now, clock.value));
 
+/** The line «what next»: «Ответить», «Показать» and «Разобрать» open their lesson in «Переписка». */
 async function act() {
   const action = next.value.action;
   if (!action) return;
   if (action.kind === "reply") return desk.answer(action.study);
   if (action.kind === "watch") return desk.watchAgent(action.lesson);
-  desk.showStage(action.kind === "review" ? "proposed" : "accepted");
-  if (action.kind === "accepted") return;
-  await nextTick();
-  const cards = [...(root.value?.querySelectorAll<HTMLElement>('[data-deck="lab"] .card') ?? [])];
-  const entry = action.kind === "review" ? null : action.lesson.entry.trim();
-  const card = entry === null ? cards[0] : cards.find((item) => item.dataset.entry === entry);
-  card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  // «Ответить» the agent: its card's reply field takes the focus.
-  if (action.kind === "agent") card?.querySelector<HTMLTextAreaElement>("textarea.agent-answer")?.focus({ preventScroll: true });
+  if (action.kind === "agent") return desk.showLesson(action.lesson, "answer");
+  if (action.kind === "pr" || action.kind === "outside") return desk.showLesson(action.lesson);
+  const stage = action.kind === "review" ? "proposed" : "accepted";
+  desk.labStage.value = stage;
+  const first = desk.listOf(stage)[0];
+  if (first) await desk.showLesson(first);
 }
 
 interface Gauge {
@@ -104,6 +112,12 @@ const gauges = computed<Gauge[]>(() => {
 });
 
 const root = ref<HTMLElement | null>(null);
+/** On a phone the comms room stands below the lessons: an opened lesson scrolls it into view. */
+function reveal() {
+  if (!window.matchMedia?.("(max-width: 859px)").matches) return;
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  root.value?.querySelector<HTMLElement>('[data-deck="comms"]')?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+}
 let flashTimer: ReturnType<typeof setTimeout> | undefined;
 /** Brings a deck into view and lights its frame for a moment. */
 function jump(deck: Deck) {
@@ -131,9 +145,18 @@ onMounted(() => {
   back.value?.focus();
   window.addEventListener("keydown", onKey);
 });
-// While the analyst or an implementing agent works, or a study just ordered has not shown up yet, the screen asks for
-// news more often.
-const implementing = computed(() => props.research.accepted.some((lesson) => lesson.implementation?.alive));
+// While the analyst or an implementing agent works, a start goes, or a study just ordered has not shown up yet, the
+// screen asks for news more often.
+const implementing = computed(
+  () => props.research.accepted.some((lesson) => lesson.implementation?.alive) || desk.launches.value.some((launch) => launch.stage !== "done" && launch.stage !== "failed"),
+);
+// Each step of a start may change the research: after «starting» the lesson has its implementation, the study its channel.
+watch(
+  () => desk.launches.value.map((launch) => `${launch.slug}:${launch.stage}`).join(" "),
+  (stages, before) => {
+    if (stages !== before) void props.refresh();
+  },
+);
 const WATCH_MS = 10_000;
 let watchTimer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {

@@ -1,24 +1,26 @@
 <script setup lang="ts">
-// The comms room: every study is a channel, and the open channel shows its conversation — the order, the
-// analyst's reports with dockets and questions, the human's replies, and under them the reply to send.
-import { nextTick, ref, watch } from "vue";
+// The comms room: every study is a channel, and the open channel shows its conversation — the order, the analyst's
+// reports with dockets and questions, the human's replies, and under them the reply to send. A study just ordered is a
+// channel at once, with its request and the start's steps, until the research shows it. A lesson opened from the
+// lab, a docket or the line «what next» takes the screen instead of the channel.
+import { computed, nextTick, ref, watch } from "vue";
 import { formatClock } from "../../lib/format";
 import type { Study, StudyMessage } from "../../types";
 import analystPortrait from "../art/portrait-analyst.jpg";
 import archivistPortrait from "../art/portrait-archivist.jpg";
 import { plural, type Research } from "../research";
-import { LESSON_STATE, STATE_TEXT, docketParts, docketPlacement, openQuestionsAt, studyKey, studyState, studyTitle } from "../station";
+import { STATE_TEXT, docketPlacement, openQuestionsAt, studyState, studyTitle } from "../station";
 import { useConsole } from "./console";
-import LessonActions from "./LessonActions.vue";
-import LessonImplementation from "./LessonImplementation.vue";
+import LaunchSteps from "./LaunchSteps.vue";
+import LessonThread from "./LessonThread.vue";
 import StationReply from "./StationReply.vue";
+import StudyDocket from "./StudyDocket.vue";
 
 defineProps<{ research: Research; now: number }>();
 const desk = useConsole();
 
 const EXECUTOR: Record<string, string> = { claude: "Claude", codex: "Codex" };
 const MODE: Record<Study["mode"], string> = { batch: "плановый", study: "по запросу" };
-const SCOPE: Record<"invariant" | "domain", string> = { invariant: "общий", domain: "по проекту" };
 
 function speaker(study: Study, message: StudyMessage, at: number): string {
   if (message.from === "analyst") return `Аналитик · ${EXECUTOR[study.executor] ?? study.executor}`;
@@ -26,16 +28,17 @@ function speaker(study: Study, message: StudyMessage, at: number): string {
 }
 
 const docketsOf = (study: Study) => docketPlacement(study.messages);
-/** The index row of a docket, with what its card shows: the buttons and the implementation's line. */
-function docket(entry: string) {
-  const lesson = desk.index.value.get(entry.trim());
-  return lesson ? { lesson, ...docketParts(lesson, desk.cardOf(lesson)) } : null;
-}
+
+/** What the screen shows: the open lesson, a channel just ordered, or a study's channel. */
+const lesson = computed(() => desk.openLesson.value);
+const waitingStudy = computed(() => (lesson.value ? null : desk.openPending.value));
+const study = computed(() => (lesson.value || waitingStudy.value ? null : desk.openStudy.value));
+const isOn = (key: string) => !lesson.value && desk.openKey.value === key;
 
 // A newly opened channel shows its latest turn, where the questions wait.
 const talk = ref<HTMLElement | null>(null);
 watch(
-  () => desk.openKey.value,
+  () => [desk.openKey.value, !!lesson.value],
   async () => {
     await nextTick();
     if (talk.value) talk.value.scrollTop = talk.value.scrollHeight;
@@ -43,7 +46,7 @@ watch(
   { immediate: true },
 );
 
-const waitingCount = (studies: readonly Study[]) => studies.filter((study) => study.waiting).length;
+const waitingCount = (studies: readonly Study[]) => studies.filter((item) => item.waiting).length;
 </script>
 
 <template>
@@ -57,124 +60,146 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
     </header>
 
     <div class="room">
-      <p v-if="!research.studies.length" class="keeper empty">
+      <p v-if="!desk.channels.value.length && !lesson" class="keeper empty">
         <img :src="archivistPortrait" alt="" class="mini" />
         <span>Разговоров пока нет. Нажми «Обсудить» на уроке или запусти разбор — аналитик ответит здесь.</span>
       </p>
 
-      <ul v-else class="channels" aria-label="Каналы">
-        <li v-for="study in research.studies" :key="studyKey(study)">
+      <ul v-if="desk.channels.value.length" class="channels" aria-label="Каналы">
+        <li v-for="channel in desk.channels.value" :key="channel.key">
           <button
+            v-if="channel.pending"
             type="button"
-            class="channel"
-            :class="[studyState(study), { on: desk.openKey.value === studyKey(study) }]"
-            :aria-pressed="desk.openKey.value === studyKey(study)"
-            @click="desk.select(study)"
+            class="channel working"
+            :class="{ on: isOn(channel.key) }"
+            :aria-pressed="isOn(channel.key)"
+            @click="desk.showPending(channel.pending)"
           >
             <span class="lamp" aria-hidden="true"></span>
-            <span class="c-title">{{ studyTitle(study) }}</span>
-            <span class="c-meta">{{ MODE[study.mode] }} · {{ formatClock(study.updated_at, now) }}</span>
-            <span class="c-state">{{ STATE_TEXT[studyState(study)] }}</span>
+            <span class="c-title">{{ channel.pending.order?.split("\n")[0] || (channel.pending.mode === "batch" ? "Плановый разбор" : "Разбор по запросу") }}</span>
+            <span class="c-meta">{{ MODE[channel.pending.mode] }} · {{ formatClock(channel.pending.at, now) }}</span>
+            <span class="c-state">{{ desk.pendingLaunch(channel.pending)?.stage === "failed" ? "не запустился" : "запускается" }}</span>
+          </button>
+          <button
+            v-else-if="channel.study"
+            type="button"
+            class="channel"
+            :class="[studyState(channel.study), { on: isOn(channel.key) }]"
+            :aria-pressed="isOn(channel.key)"
+            @click="desk.select(channel.study)"
+          >
+            <span class="lamp" aria-hidden="true"></span>
+            <span class="c-title">{{ studyTitle(channel.study) }}</span>
+            <span class="c-meta">{{ MODE[channel.study.mode] }} · {{ formatClock(channel.study.updated_at, now) }}</span>
+            <span class="c-state">{{ STATE_TEXT[studyState(channel.study)] }}</span>
           </button>
         </li>
       </ul>
 
-      <article v-if="desk.openStudy.value" class="screen" :class="studyState(desk.openStudy.value)" aria-live="polite">
+      <LessonThread v-if="lesson" :key="lesson.entry" :lesson="lesson" :now="now" />
+
+      <article v-else-if="waitingStudy" class="screen working">
         <header class="s-head">
-          <b class="s-title">{{ studyTitle(desk.openStudy.value) }}</b>
+          <b class="s-title">{{ waitingStudy.order?.split("\n")[0] || (waitingStudy.mode === "batch" ? "Плановый разбор" : "Разбор по запросу") }}</b>
+          <span class="s-meta">{{ MODE[waitingStudy.mode] }}<template v-if="waitingStudy.slug"> · <span class="mono">{{ waitingStudy.slug }}</span></template></span>
+        </header>
+        <ol ref="talk" class="talk" aria-live="polite">
+          <li class="msg lead">
+            <div class="bubble-wrap">
+              <span class="who">Ты · запрос · {{ formatClock(waitingStudy.at, now) }}</span>
+              <p class="bubble">{{ waitingStudy.order ?? "Плановый разбор, без особого запроса." }}</p>
+            </div>
+          </li>
+          <li v-if="desk.pendingLaunch(waitingStudy)" class="msg">
+            <LaunchSteps :launch="desk.pendingLaunch(waitingStudy)!" :now="now">
+              <template #failed>
+                <span><button type="button" class="chip" @click="desk.dropPending(waitingStudy)">Убрать канал</button></span>
+              </template>
+            </LaunchSteps>
+          </li>
+          <li v-if="desk.pendingLaunch(waitingStudy)?.stage !== 'failed'" class="keeper inline">
+            <img :src="analystPortrait" alt="" class="mini" />
+            <span>Аналитик скоро начнёт читать записи<span class="dots" aria-hidden="true"></span></span>
+          </li>
+        </ol>
+      </article>
+
+      <article v-else-if="study" class="screen" :class="studyState(study)" aria-live="polite">
+        <header class="s-head">
+          <b class="s-title">{{ studyTitle(study) }}</b>
           <span class="s-meta">
-            {{ MODE[desk.openStudy.value.mode] }} · записей {{ desk.openStudy.value.records }} ·
-            {{ EXECUTOR[desk.openStudy.value.executor] ?? desk.openStudy.value.executor }}<template v-if="desk.openStudy.value.account"> · {{ desk.openStudy.value.account }}</template>
-            · <span class="mono">{{ desk.openStudy.value.slug }}</span>
+            {{ MODE[study.mode] }} · записей {{ study.records }} ·
+            {{ EXECUTOR[study.executor] ?? study.executor }}<template v-if="study.account"> · {{ study.account }}</template>
+            · <span class="mono">{{ study.slug }}</span>
           </span>
         </header>
 
         <ol ref="talk" class="talk">
-          <li
-            v-for="(message, at) in desk.openStudy.value.messages"
-            :key="`${message.from}-${message.at}-${at}`"
-            class="msg"
-            :class="message.from"
-          >
+          <li v-for="(message, at) in study.messages" :key="`${message.from}-${message.at}-${at}`" class="msg" :class="message.from">
             <img v-if="message.from === 'analyst'" :src="analystPortrait" alt="" class="avatar" />
             <div class="bubble-wrap">
-              <span class="who">{{ speaker(desk.openStudy.value, message, at) }} · <time :datetime="new Date(message.at * 1000).toISOString()">{{ formatClock(message.at, now) }}</time></span>
+              <span class="who">{{ speaker(study, message, at) }} · <time :datetime="new Date(message.at * 1000).toISOString()">{{ formatClock(message.at, now) }}</time></span>
               <p v-if="message.from === 'lead'" class="bubble">{{ message.text ?? "Плановый разбор, без особого запроса." }}</p>
               <p v-else-if="message.text" class="bubble">{{ message.text }}</p>
 
               <!-- Dockets: a lesson's card stands at the last report that carries it. -->
-              <template v-for="lesson in message.lessons" :key="lesson.id">
-                <article
-                  v-if="docketsOf(desk.openStudy.value).get(lesson.id) === at"
-                  class="docket"
-                  :class="desk.index.value.get(lesson.entry.trim())?.status ?? 'unindexed'"
-                >
-                  <header class="d-head">
-                    <span>Урок · {{ lesson.id }}<template v-if="lesson.scope"> · {{ SCOPE[lesson.scope] }}</template></span>
-                    <span v-if="desk.index.value.get(lesson.entry.trim()) && desk.index.value.get(lesson.entry.trim())!.status !== 'proposed'" class="d-state">
-                      {{ LESSON_STATE[desk.index.value.get(lesson.entry.trim())!.status] || desk.index.value.get(lesson.entry.trim())!.status_text }}
-                    </span>
-                  </header>
-                  <dl class="d-body">
-                    <dt>Когда</dt>
-                    <dd>{{ lesson.cue }}</dd>
-                    <template v-if="lesson.lesson"><dt>Что делать</dt><dd>{{ lesson.lesson }}</dd></template>
-                    <template v-if="lesson.proposal"><dt>Предложение</dt><dd>{{ lesson.proposal }}</dd></template>
-                  </dl>
-                  <LessonImplementation v-if="docket(lesson.entry)?.implementation" :lesson="docket(lesson.entry)!.lesson" />
-                  <LessonActions v-if="docket(lesson.entry)?.actions" :lesson="docket(lesson.entry)!.lesson" stage="proposed" />
-                </article>
-                <span v-else class="d-moved">урок {{ lesson.id }} — пересмотрен ниже</span>
+              <template v-for="item in message.lessons" :key="item.id">
+                <StudyDocket v-if="docketsOf(study).get(item.id) === at" :item="item" />
+                <span v-else class="d-moved">урок {{ item.id }} — пересмотрен ниже</span>
               </template>
 
               <!-- Questions: live only in the last report of a waiting study. -->
-              <div v-if="message.questions.length" class="questions" :class="{ live: openQuestionsAt(desk.openStudy.value) === at }">
+              <div v-if="message.questions.length" class="questions" :class="{ live: openQuestionsAt(study) === at }">
                 <div v-for="(question, number) in message.questions" :key="number" class="question">
                   <p class="q-text"><span class="q-num">{{ number + 1 }}.</span> {{ question.text }}</p>
-                  <div v-if="openQuestionsAt(desk.openStudy.value) === at && desk.replyReach(desk.openStudy.value) === 'ok'" class="q-answers">
+                  <div v-if="openQuestionsAt(study) === at && desk.replyReach(study) === 'ok'" class="q-answers">
                     <button
                       v-for="option in question.options"
                       :key="option"
                       type="button"
                       class="chip"
-                      :class="{ picked: desk.answersOf(desk.openStudy.value)[number] === option }"
-                      :aria-pressed="desk.answersOf(desk.openStudy.value)[number] === option"
-                      @click="desk.choose(desk.openStudy.value, number, option)"
+                      :class="{ picked: desk.answersOf(study)[number] === option }"
+                      :aria-pressed="desk.answersOf(study)[number] === option"
+                      @click="desk.choose(study, number, option)"
                     >
                       {{ option }}
                     </button>
                     <input
-                      v-if="!question.options.length || desk.customOf(desk.openStudy.value)[number]"
-                      v-model="desk.answersOf(desk.openStudy.value)[number]"
+                      v-if="!question.options.length || desk.customOf(study)[number]"
+                      v-model="desk.answersOf(study)[number]"
                       class="note"
                       type="text"
                       placeholder="Твой ответ"
                       :aria-label="`Ответ на вопрос ${number + 1}`"
                     />
-                    <button v-else type="button" class="chip ghost" @click="desk.ownAnswer(desk.openStudy.value, number)">Свой ответ</button>
+                    <button v-else type="button" class="chip ghost" @click="desk.ownAnswer(study, number)">Свой ответ</button>
                   </div>
                 </div>
               </div>
             </div>
           </li>
-          <li v-if="desk.echoOf(desk.openStudy.value)" class="msg lead">
+          <li v-if="desk.echoOf(study)" class="msg lead">
             <div class="bubble-wrap">
-              <span class="who">Ты · ответ · только что</span>
-              <p class="bubble">{{ desk.echoOf(desk.openStudy.value)!.text }}</p>
+              <span class="who">
+                Ты · ответ · только что<template v-if="desk.echoOf(study)!.state === 'sending'"> · <span class="sending">отправляется<span class="dots" aria-hidden="true"></span></span></template>
+                <template v-else-if="desk.echoOf(study)!.state === 'failed'"> · <span class="unsent">не отправлено</span></template>
+              </span>
+              <p class="bubble">{{ desk.echoOf(study)!.text }}</p>
+              <p v-if="desk.echoOf(study)!.state === 'failed'" class="fail" role="alert">{{ desk.echoOf(study)!.error }}</p>
             </div>
           </li>
-          <li v-if="desk.openStudy.value.alive || desk.echoOf(desk.openStudy.value)" class="keeper inline">
+          <li v-if="study.alive || (desk.echoOf(study) && desk.echoOf(study)!.state !== 'failed')" class="keeper inline">
             <img :src="analystPortrait" alt="" class="mini" />
             <span>Аналитик читает записи<span class="dots" aria-hidden="true"></span></span>
           </li>
-          <li v-else-if="studyState(desk.openStudy.value) === 'failed'" class="keeper inline bad">
+          <li v-else-if="studyState(study) === 'failed'" class="keeper inline bad">
             <img :src="archivistPortrait" alt="" class="mini" />
-            <span>Ход прервался{{ desk.openStudy.value.error ? `: ${desk.openStudy.value.error}` : "" }}. Запусти разбор снова или ответь аналитику «продолжай».</span>
+            <span>Ход прервался{{ study.error ? `: ${study.error}` : "" }}. Запусти разбор снова или ответь аналитику «продолжай».</span>
           </li>
         </ol>
-        <StationReply :study="desk.openStudy.value" />
+        <StationReply :study="study" />
       </article>
-      <p v-else-if="research.studies.length" class="pick dim">Выбери канал слева.</p>
+      <p v-else-if="desk.channels.value.length" class="pick dim">Выбери канал слева или урок справа.</p>
     </div>
   </section>
 </template>
@@ -212,6 +237,11 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
 }
 
 .empty {
+  grid-column: 1 / -1;
+}
+
+/* Without channels the lesson takes the whole room. */
+.room > :deep(.thread):first-child {
   grid-column: 1 / -1;
 }
 
@@ -440,62 +470,21 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((study) => st
   margin: 8px 0 2px;
 }
 
-/* A docket: a lesson with the decision it waits for. */
-.docket {
-  padding: 7px 10px 8px;
-  border: 1px solid rgba(214, 170, 96, 0.3);
-  border-left: 3px solid var(--st-title);
-  border-radius: 0 3px 3px 0;
-  background: rgba(20, 18, 14, 0.85);
+.sending {
+  color: var(--st-teal);
 }
 
-.docket.accepted {
-  border-left-color: var(--st-teal);
+.unsent,
+.fail {
+  color: #ff9d8a;
 }
 
-.docket.applied {
-  border-left-color: var(--st-green);
-}
-
-.docket.unindexed,
-.docket.declined {
-  border-left-color: #6b6457;
-}
-
-.docket.declined {
-  opacity: 0.8;
-}
-
-.d-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--st-title);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.d-state {
-  color: #9cc2bc;
-  font-weight: 400;
-}
-
-.d-body {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 2px 10px;
-  margin: 6px 0 0;
-}
-
-.d-body dt {
-  color: var(--st-dim);
-}
-
-.d-body dd {
+.fail {
   margin: 0;
+  font-size: 12px;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
-
 
 .d-moved {
   color: var(--st-faint);

@@ -42,7 +42,7 @@ const EVENT_MS = 9000;
 const TIME_KEYS = new Set([
   "generated_at", "phase_started_at", "sleeping_until", "created", "updated_at", "at", "fetched_at",
   "resets_at", "limited_until", "expires_at", "since", "checked_at", "sampled_at",
-  "last_run_at", "last_scheduled_for", "next_at", "queued_at", "dropped_at",
+  "last_run_at", "last_scheduled_for", "next_at", "queued_at", "dropped_at", "started_at",
 ]);
 
 function shiftValue(value: unknown, delta: number): unknown {
@@ -71,11 +71,14 @@ export function fixtureSource(): BoardSource {
   let delta = 0;
   // The history is anchored once, so that a reload returns the same events rather than shifted copies.
   const origin = Date.now() / 1000;
-  // The station's actions change this copy; its times stay in the snapshot's, like the rest of the fixtures.
+  // The station's actions change this copy; its times stay in the snapshot's, moved to now once: the replay's loop
+  // moves the board's times again on every round, and a start or a study would jump with it.
   const research = fixtureResearch(BASE);
-  const station = fixtureActions(research, () => Date.now() / 1000 - delta);
+  const anchor = origin - BASE;
   // A ship's orders change the board itself, in the board's time.
   let push: ((message: ServerMessage) => void) | null = null;
+  // The station's starts and agents tell the board in the snapshot's time, which the board sees shifted to now.
+  const station = fixtureActions(research, () => Date.now() / 1000 - anchor, (message) => push?.(shiftTimes(message, anchor)));
   // A ship the replay has just taken off the board still takes orders, as in the snapshot.
   const fixtureTasks = Object.fromEntries(snapshot.tasks.map((task) => [task.slug, task]));
   // A fixture ship's teamster queues orders unless its detail says otherwise.
@@ -90,7 +93,7 @@ export function fixtureSource(): BoardSource {
   /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
   const act: ActionSender = async (route, body) => {
     const study = route === "say" && studied((body as { slug?: string }).slug);
-    if (route === "lesson" || route === "implement" || route === "reflect" || study) return station(route as StationRoute, body as never);
+    if (route === "lesson" || route === "implement" || route === "reflect" || study) return station.act(route as StationRoute, body as never);
     await new Promise((resolve) => setTimeout(resolve, 400));
     return ships.act(route as ShipRoute, body as never);
   };
@@ -100,7 +103,12 @@ export function fixtureSource(): BoardSource {
     connect(onMessage, onState) {
       let index = -1; // -1 = the snapshot, then the stream; the cycle repeats like a reconnect.
       const emit = (original: ServerMessage) => {
-        const message = ships.patch(original);
+        const patched = ships.patch(original);
+        // The implementing agents stay on the board when the replay starts over.
+        const message: ServerMessage | null =
+          patched?.type === "snapshot"
+            ? { ...patched, snapshot: { ...patched.snapshot, tasks: [...patched.snapshot.tasks, ...station.tasks().map((task) => shiftTimes(task, anchor))] } }
+            : patched;
         if (!message) return;
         state = reduce(state, message, Date.now());
         onMessage(message);
@@ -116,6 +124,7 @@ export function fixtureSource(): BoardSource {
           if (message) emit(shiftTimes(message, now - (BASE + index + 1)));
         }
         index = index + 1 >= stream.length ? -1 : index + 1;
+        station.tick();
       };
       onState("connecting", null);
       onState("open", null);
@@ -173,7 +182,7 @@ export function fixtureSource(): BoardSource {
       return { constellations: [{ name: "Demo Wallet", repos: ["demo-wallet*", "demo-vault", "demo-shop"] }], error: null };
     },
     async fetchResearch() {
-      return shiftTimes(research, delta);
+      return shiftTimes(research, anchor);
     },
     async fetchEvents(since, until) {
       return demoEvents(FIXTURE_EVENTS, origin, since, until);

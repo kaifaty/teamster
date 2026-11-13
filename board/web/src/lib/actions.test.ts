@@ -9,6 +9,12 @@ describe("requestAction", () => {
     const fetcher = vi.fn(async () => reply(200, { ok: true, output: "started", slug: "reflect-1109-041200" }));
     const result = await requestAction("reflect", { order: "Why?", since: "30d" }, fetcher);
     expect(result).toEqual({ ok: true, output: "started", slug: "reflect-1109-041200" });
+    // A newer server answers at once with the start it runs in the background; an older one names no launch.
+    const launch = { slug: "lesson-u1", kind: "implement", entry: "b.md U1", repo: "teamster", stage: "fetching", steps: [{ stage: "fetching", at: 1 }], error: null, started_at: 1 };
+    const quick = await requestAction("implement", { entry: "b.md U1", repo: "/r/teamster" }, async () => reply(200, { ok: true, output: "", slug: "lesson-u1", launch }));
+    expect(quick).toEqual({ ok: true, output: "", slug: "lesson-u1", launch });
+    const legacy = await requestAction("implement", { entry: "b.md U1", repo: "/r/teamster" }, async () => reply(200, { ok: true, output: "started", slug: "lesson-u1", launch: null }));
+    expect(legacy).toEqual({ ok: true, output: "started", slug: "lesson-u1" });
     expect(fetcher).toHaveBeenCalledWith("/api/actions/reflect", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Teamster-Board": "1" },

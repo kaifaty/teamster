@@ -1,8 +1,9 @@
 // The science station's fixtures: what the reflection learned, and the board server's actions played on that data,
-// so that `dev:fixture` clicks through the whole station without a server.
+// so that `dev:fixture` clicks through the whole station without a server. A start answers at once and then goes
+// stage by stage in `launch` messages; an implementing agent is a task on the board with a changing last action.
 import type { ActionBodies, ActionResult } from "../lib/actions";
 import { reflectSlug } from "../lib/commands";
-import type { Implementation, Lesson, ResearchView, Study, StudyMessage } from "../types";
+import type { Activity, Implementation, Launch, LaunchStage, Lesson, ResearchView, ServerMessage, Study, StudyMessage, TaskSummary } from "../types";
 
 const task = (patch: Partial<Implementation> & Pick<Implementation, "slug" | "repo" | "created">): Implementation => ({
   archived: false, alive: false, result_status: null, pr: null, questions: [], summary: null, updated_at: patch.created, ...patch,
@@ -158,24 +159,99 @@ export const fixtureResearch = (BASE: number): ResearchView => ({
 });
 
 /** How long the fixture analyst takes for a turn. */
-const TURN_MS = 8000;
+export const TURN_MS = 8000;
 /** How long the fixture agent takes for a turn of an implementation. */
-const IMPLEMENT_MS = 5000;
+export const IMPLEMENT_MS = 9000;
+/** How long each stage of a fixture start takes. */
+export const STAGE_MS = 1100;
+/** The lesson whose first start fails, to show that path. */
+export const FAILING_ENTRY = "batch-2026-11-06.md U2";
 
 const message = (at: number, from: StudyMessage["from"], text: string | null, patch: Partial<StudyMessage> = {}): StudyMessage => ({
   at, from, text, status: null, questions: [], lessons: [], file: null, ...patch,
 });
 
+/** What a fixture agent does, one line after another while it works. */
+const ACTIVITIES: [Activity["kind"], string][] = [
+  ["command", "rg -n \"save_format\" src tests"],
+  ["thinking", "Читаю, где формат сохранения проверяется при загрузке"],
+  ["edit", "tests/test_save_migration.py"],
+  ["command", "python -m pytest tests/test_save_migration.py -q"],
+  ["edit", "AGENTS.md"],
+  ["message", "Добавил тест загрузки сохранения прошлой версии"],
+  ["command", "git commit -m \"Test the save migration\""],
+];
+
 export type StationRoute = "lesson" | "say" | "reflect" | "implement";
 export type StationSender = <R extends StationRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
 
+export interface FixtureStation {
+  act: StationSender;
+  /** The implementing agents' tasks, for the board's snapshot. */
+  tasks(): TaskSummary[];
+  /** Once a second: the working agents' next action and phase. */
+  tick(): void;
+}
+
+/** A board task for a lesson's implementation. */
+function agentTask(task: Implementation, at: number): TaskSummary {
+  return {
+    slug: task.slug, kind: "work", title: null, link: null, repo: task.repo, branch: `lesson/${task.slug}`, task_type: "lesson",
+    executor: "codex", account: "demo-codex", reviewer: "claude", model: null, effort: null, column: "running", phase: "turn",
+    phase_started_at: at, alive: true, turn: 1, fix_round: 0, outcome: null, result_status: null, summary: null, pr: null, ci: null,
+    sleeping_until: null, created: task.created, updated_at: at, activity: null, scheduled: null, check: null, review: null,
+    findings_left: 0, stop: null, left: 0,
+  };
+}
+
 /**
  * The board server's station actions on the fixture data. `clock` is now in the fixture's own time; a say or an order sets
- * the analyst to work, and a turn later the analyst answers.
+ * the analyst to work, and a turn later the analyst answers. `emit` tells the board about starts and agents, in the
+ * fixture's time.
  */
-export function fixtureActions(view: ResearchView, clock: () => number): StationSender {
+export function fixtureActions(view: ResearchView, clock: () => number, emit: (message: ServerMessage) => void = () => {}): FixtureStation {
   const fail = (error: string): ActionResult => ({ ok: false, error });
   const implementing = (slug: string): Lesson | undefined => view.lessons.find((item) => item.implementation?.slug === slug);
+  const launches = (view.launches ??= []);
+  const failed = new Set<string>();
+
+  // ---- the agents' tasks on the board
+
+  const agents = new Map<string, { task: TaskSummary; since: number; step: number }>();
+  const show = (task: TaskSummary) => emit({ type: "task", task: { ...task } });
+  function work(task: Implementation) {
+    const at = clock();
+    const own = agents.get(task.slug)?.task ?? agentTask(task, at);
+    Object.assign(own, { alive: true, column: "running", phase: "turn", phase_started_at: at, updated_at: at, result_status: null });
+    agents.set(task.slug, { task: own, since: at, step: 0 });
+    show(own);
+  }
+  function rest(task: Implementation) {
+    const agent = agents.get(task.slug);
+    if (!agent) return;
+    Object.assign(agent.task, {
+      alive: false, activity: null, phase: "idle", updated_at: clock(), result_status: task.result_status, pr: task.pr, summary: task.summary,
+      column: task.result_status === "done" ? "review_me" : "attention",
+    });
+    show(agent.task);
+  }
+  // The agents already at work in the fixtures work on.
+  for (const lesson of view.lessons) if (lesson.implementation?.alive) work(lesson.implementation);
+  function tick() {
+    const now = clock();
+    for (const agent of agents.values()) {
+      const task = agent.task;
+      if (!task.alive) continue;
+      const share = ((now - agent.since) * 1000 % IMPLEMENT_MS) / IMPLEMENT_MS;
+      const phase = share < 0.55 ? "turn" : share < 0.78 ? "check" : "review";
+      if (phase !== task.phase) Object.assign(task, { phase, phase_started_at: now });
+      const [kind, text] = ACTIVITIES[agent.step++ % ACTIVITIES.length]!;
+      task.activity = { at: now, kind, text };
+      task.updated_at = now;
+      show(task);
+    }
+  }
+
   /** The agent's turn ends: the first one asks a question, the next one opens a PR. */
   const agentTurn = (lesson: Lesson, first: boolean) =>
     setTimeout(() => {
@@ -186,12 +262,38 @@ export function fixtureActions(view: ResearchView, clock: () => number): Station
             questions: ["Записать правило в AGENTS.md репозитория или в docs/checks.md?"] }
         : { alive: false, result_status: "done", updated_at: clock(), questions: [], summary: "Правило записано, проверка добавлена.",
             pr: `https://github.com/demo/${task.repo}/pull/${50 + view.lessons.indexOf(lesson)}` });
+      rest(task);
     }, IMPLEMENT_MS);
   const finish = (study: Study, answer: StudyMessage) =>
     setTimeout(() => {
       study.messages.push({ ...answer, at: clock() });
       Object.assign(study, { alive: false, waiting: answer.status === "needs_decision", outcome: "completed", updated_at: clock() });
     }, TURN_MS);
+
+  // ---- starts, stage by stage
+
+  const copy = (launch: Launch): Launch => ({ ...launch, steps: launch.steps.map((step) => ({ ...step })) });
+  function startLaunch(patch: Pick<Launch, "slug" | "kind" | "entry" | "repo">, stage: LaunchStage): Launch {
+    const at = clock();
+    const launch: Launch = { ...patch, stage, steps: [{ stage, at }], error: null, started_at: at };
+    launches.push(launch);
+    emit({ type: "launch", launch: copy(launch) });
+    return launch;
+  }
+  /** Goes through `stages` one per STAGE_MS, running each stage's change as it ends. */
+  function advance(launch: Launch, stages: { stage: LaunchStage; error?: string; then?: () => void }[]) {
+    let at = 0;
+    for (const next of stages) {
+      at += STAGE_MS;
+      setTimeout(() => {
+        if (launch.stage === "failed") return;
+        next.then?.();
+        Object.assign(launch, { stage: next.stage, error: next.error ?? null });
+        launch.steps.push({ stage: next.stage, at: clock() });
+        emit({ type: "launch", launch: copy(launch) });
+      }, at);
+    }
+  }
 
   const routes: { [R in StationRoute]: (body: ActionBodies[R]) => ActionResult } = {
     lesson({ entry, status, note }) {
@@ -208,6 +310,7 @@ export function fixtureActions(view: ResearchView, clock: () => number): Station
         if (task.alive) return fail("Агент работает: ответить можно после его хода");
         if (task.archived) return fail("Задача закрыта");
         Object.assign(task, { alive: true, result_status: null, updated_at: clock() });
+        work(task);
         agentTurn(lesson, false);
         return { ok: true, output: `said to ${slug}: ${text.length} chars` };
       }
@@ -225,37 +328,69 @@ export function fixtureActions(view: ResearchView, clock: () => number): Station
       if (!lesson) return fail(`Урок ${entry} не найден в индексе`);
       if (lesson.status === "applied" || lesson.status === "declined") return fail(`Урок ${entry} уже ${lesson.status === "applied" ? "внедрён" : "отклонён"}`);
       if (lesson.implementation && !lesson.implementation.archived) return fail(`Урок ${entry} уже внедряется: ${lesson.implementation.slug}`);
+      const going = launches.find((item) => item.entry === entry && item.stage !== "done" && item.stage !== "failed");
+      if (going) return fail(`Урок уже запускается: ${going.slug}`);
       const target = view.repos?.find((item) => item.path === repo);
       if (!target) return fail(`Репозиторий ${repo} не найден`);
       const id = entry.trim().split(/\s+/).at(-1)!.toLowerCase();
       let slug = `lesson-${id}`;
-      while (view.lessons.some((item) => item.implementation?.slug === slug)) slug += "x";
-      if (lesson.status === "proposed") Object.assign(lesson, { status: "accepted", status_text: "accepted" });
-      const at = clock();
-      lesson.implementation = task({ slug, repo: target.name, alive: true, created: at, summary: note ?? null });
-      agentTurn(lesson, true);
-      return { ok: true, output: `started ${slug}`, slug };
+      while (view.lessons.some((item) => item.implementation?.slug === slug) || launches.some((item) => item.slug === slug)) slug += "x";
+      const proposed = lesson.status === "proposed";
+      const launch = startLaunch({ slug, kind: "implement", entry, repo: target.name }, proposed ? "accepting" : "fetching");
+      const accept = () => {
+        if (lesson.status === "proposed") Object.assign(lesson, { status: "accepted", status_text: "accepted" });
+      };
+      const stages: { stage: LaunchStage; error?: string; then?: () => void }[] = proposed ? [{ stage: "fetching", then: accept }] : [];
+      // The first start of one lesson breaks, so that the screen shows a failed start; the next one goes.
+      if (entry === FAILING_ENTRY && !failed.has(entry)) {
+        failed.add(entry);
+        advance(launch, [...stages, { stage: "worktree" }, { stage: "failed", error: `git worktree add: ветка lesson/${slug} уже есть в ${target.name} — удали её или выбери другой репозиторий` }]);
+        return { ok: true, output: "", slug, launch: copy(launch) };
+      }
+      advance(launch, [
+        ...stages,
+        { stage: "worktree" },
+        { stage: "starting" },
+        {
+          stage: "done",
+          // The task shows up once its agent has started.
+          then: () => {
+            lesson.implementation = task({ slug, repo: target.name, alive: true, created: clock(), summary: note ?? null });
+            work(lesson.implementation);
+            agentTurn(lesson, true);
+          },
+        },
+      ]);
+      return { ok: true, output: "", slug, launch: copy(launch) };
     },
     reflect({ order, tasks = [], since, repos = [] }) {
       if (tasks.length && (since !== undefined || repos.length)) return fail("--task не сочетается с --since и --repo");
       let slug = reflectSlug(new Date());
-      while (view.studies.some((item) => item.slug === slug)) slug += "x";
-      const at = clock();
-      const study: Study = {
-        slug, archived: false, mode: tasks.length || since !== undefined || repos.length ? "study" : "batch", alive: true,
-        outcome: null, error: null, executor: "claude", account: "claude-pool-2", created: at, updated_at: at,
-        records: tasks.length || 5, file: null, waiting: false, messages: [message(at, "lead", order ?? null)],
+      while (view.studies.some((item) => item.slug === slug) || launches.some((item) => item.slug === slug)) slug += "x";
+      const launch = startLaunch({ slug, kind: "reflect", entry: null, repo: null }, "preparing");
+      const begin = () => {
+        const at = clock();
+        const study: Study = {
+          slug, archived: false, mode: tasks.length || since !== undefined || repos.length ? "study" : "batch", alive: true,
+          outcome: null, error: null, executor: "claude", account: "claude-pool-2", created: at, updated_at: at,
+          records: tasks.length || 5, file: null, waiting: false, messages: [message(at, "lead", order ?? null)],
+        };
+        view.studies.unshift(study);
+        finish(study, message(0, "analyst", "Прочитал записи. Нашёл два похожих случая, но причина в них разная.", {
+          status: "needs_decision",
+          questions: [{ text: "Что важнее разобрать первым?", options: ["Повторные проверки", "Потерянное время на CI"] }],
+        }));
       };
-      view.studies.unshift(study);
-      finish(study, message(0, "analyst", "Прочитал записи. Нашёл два похожих случая, но причина в них разная.", {
-        status: "needs_decision",
-        questions: [{ text: "Что важнее разобрать первым?", options: ["Повторные проверки", "Потерянное время на CI"] }],
-      }));
-      return { ok: true, output: `started ${slug}`, slug };
+      advance(launch, [{ stage: "starting" }, { stage: "done", then: begin }]);
+      return { ok: true, output: "", slug, launch: copy(launch) };
     },
   };
-  return async (route, body) => {
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    return routes[route](body);
+  return {
+    async act(route, body) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return routes[route](body);
+    },
+    tasks: () => [...agents.values()].map((agent) => ({ ...agent.task })),
+    tick,
   };
 }
