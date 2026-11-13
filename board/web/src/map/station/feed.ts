@@ -169,8 +169,9 @@ export function createFeeds(context: FeedContext) {
       const task = lesson.implementation;
       return task && !task.archived ? { slug: task.slug, alive: aliveOf(task.slug, task.alive) } : null;
     }
+    // The channel shows the analyst at work by the research: either one saying so keeps the feed going.
     const study = openStudy.value;
-    return study && !study.archived ? { slug: study.slug, alive: aliveOf(study.slug, study.alive) } : null;
+    return study && !study.archived ? { slug: study.slug, alive: study.alive || !!tasks.value[study.slug]?.alive } : null;
   });
 
   const current = ref<TaskFeedHandle | null>(null);

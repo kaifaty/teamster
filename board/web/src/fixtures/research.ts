@@ -409,7 +409,7 @@ export function fixtureActions(view: ResearchView, clock: () => number, emit: (m
     },
     report(slug) {
       const task = implementing(slug)?.implementation;
-      return task ? fixtureReport(task.summary, task.questions) : null;
+      return task ? fixtureReport(task.summary) : null;
     },
   };
 }

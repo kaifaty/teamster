@@ -106,8 +106,7 @@ export function fixtureFeeds() {
 }
 
 /** A fixture agent's report, the whole summary of its last result. */
-export function fixtureReport(summary: string | null, questions: readonly string[]): string | null {
-  if (!summary && !questions.length) return null;
-  const asked = questions.length ? `\n\nВопросы:\n${questions.map((question) => `- ${question}`).join("\n")}` : "";
-  return `${summary ?? ""}\n\nЧто сделано:\n- прочитал урок и нашёл места, которых он касается;\n- добавил проверку и запустил набор тестов.${asked}`.trim();
+export function fixtureReport(summary: string | null): string | null {
+  if (!summary) return null;
+  return `${summary}\n\nЧто сделано:\n- прочитал урок и нашёл места, которых он касается;\n- добавил проверку и запустил набор тестов.`;
 }

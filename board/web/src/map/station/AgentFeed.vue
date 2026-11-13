@@ -18,7 +18,7 @@ const time = (at: number) => new Date(at * 1000).toISOString();
   <section v-if="feed" class="agent-feed" :aria-label="`Работа: ${who}`">
     <p v-if="feed.truncated" class="cut">Показана последняя часть работы</p>
     <ol class="items" role="log" aria-live="polite" :aria-label="`Что делает ${who.toLowerCase()}`">
-      <li v-for="row in desk.feedRows.value" :key="row.key" class="row" :class="row.type">
+      <li v-for="row in desk.feedRows.value" :key="row.key" class="row" :class="`r-${row.type}`">
         <template v-if="row.type === 'message'">
           <span class="who">{{ who }} · <time :datetime="time(row.item.at)">{{ formatClock(row.item.at, now) }}</time></span>
           <p class="text">{{ row.item.text }}</p>
@@ -79,7 +79,7 @@ const time = (at: number) => new Date(at * 1000).toISOString();
   animation: feed-in 180ms ease-out;
 }
 
-.row.message {
+.row.r-message {
   flex-direction: column;
   gap: 2px;
   margin: 6px 0 4px;
