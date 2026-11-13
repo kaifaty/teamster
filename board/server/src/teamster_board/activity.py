@@ -32,12 +32,31 @@ def _timestamp(value):
     return None
 
 
+def worktree_roots(worktree):
+    """The worktree as the task's state names it and as the disk resolves it.
+
+    The worktrees directory may be a symbolic link, and executors report the resolved path.
+    """
+    if not isinstance(worktree, str) or not os.path.isabs(worktree):
+        return ()
+    try:
+        real = os.path.realpath(worktree)
+    except OSError:
+        real = worktree
+    return (worktree,) if real == os.path.normpath(worktree) else (worktree, real)
+
+
 def _relative_path(value, worktree):
-    if (not isinstance(value, str) or not isinstance(worktree, str)
-            or not os.path.isabs(value) or not os.path.isabs(worktree)):
+    """Relative to the first root that holds the path; `worktree` is one root or several."""
+    if not isinstance(value, str) or not os.path.isabs(value):
         return value
-    path, root = os.path.normpath(value), os.path.normpath(worktree)
-    return os.path.relpath(path, root) if os.path.commonpath((path, root)) == root else value
+    path = os.path.normpath(value)
+    for root in (worktree,) if isinstance(worktree, str) else worktree or ():
+        if isinstance(root, str) and os.path.isabs(root):
+            root = os.path.normpath(root)
+            if os.path.commonpath((path, root)) == root:
+                return os.path.relpath(path, root)
+    return value
 
 
 def _contents(event, details=False, worktree=None):

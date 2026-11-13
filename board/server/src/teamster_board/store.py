@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .activity import EventTail, FEED_FILES, TAIL_BYTES, task_feed
+from .activity import EventTail, FEED_FILES, TAIL_BYTES, task_feed, worktree_roots
 
 
 FILES = {"brief": "brief.md", "last": "last.md", "review": "review.md", "check": "check.log"}
@@ -973,7 +973,8 @@ class Store:
             self._read_state(record)
             worktree = record.state.get("worktree")
             paths = {name: self._file(record.path, name) for name in FEED_FILES}
-        return task_feed(paths, slug, after, worktree)
+        # Resolved outside the lock: the worktree may stand on a slow or unmounted disk.
+        return task_feed(paths, slug, after, worktree_roots(worktree))
 
     def file_path(self, slug, name):
         with self.lock:

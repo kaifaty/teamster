@@ -958,8 +958,10 @@ There is no merge endpoint for ordinary tasks.
   line, ≤ 200 characters. Claude details are `file_path` for `Read`, `pattern` for `Grep` and `Glob`,
   and `description` for `Agent`/`Task`.
   Paths in `edit` and the `file_path` detail of `Read` are relative to the task's `state.json` →
-  `worktree` when lexically inside it; other paths, and paths for a task without `worktree`, stay as
-  written. This comparison and conversion do not access the filesystem.
+  `worktree` when lexically inside it, as the state names it or as the filesystem resolves it: the
+  worktrees directory may be a symbolic link, and executors report the resolved path. Other paths,
+  and paths for a task without `worktree`, stay as written. Resolving the worktree once per request
+  is the only filesystem access of this conversion; the reported paths are never resolved.
   `at` uses the event timestamp, otherwise the previous item's time in the same file, otherwise that
   file's mtime. The two files merge by `at`, preserving each file's order.
   Without `after`, read at most the last 256 KiB of each file, discard an incomplete first line and

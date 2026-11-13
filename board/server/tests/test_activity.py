@@ -400,6 +400,10 @@ def test_feed_paths_are_relative_only_inside_the_worktree():
     event = {"type": "item.started", "item": {"type": "file_change", "changes": [
         {"path": path} for path in paths]}}
     assert feed_items(event, "/tmp/task")[0]["text"] == "a.py, b.py, /tmp/task-other/c.py, relative/d.py"
+    # Several roots: the first that holds the path wins; invalid roots are skipped.
+    assert feed_items(event, ("relative", None, "/tmp/task-other", "/tmp/task"))[0]["text"] == (
+        "a.py, b.py, c.py, relative/d.py")
+    assert feed_items(event, ())[0]["text"] == ", ".join(paths)
     assert feed_items(event)[0]["text"] == ", ".join(paths)
     content = [{"type": "tool_use", "name": name, "input": {"file_path": path}}
                for name, path in (("Edit", paths[0]), ("Write", paths[1]), ("Read", paths[1]),
