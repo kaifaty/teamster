@@ -55,8 +55,8 @@ def advice():
             "with `kill <PID>`. Commit your work before any command that may run longer than 10 minutes.")
 
 
-def command_names(words):
-    """Return the names a simple command runs, wrappers first, and the index of the last name."""
+def command_names(words, shell):
+    """Return the names a simple command of ``shell`` runs, wrappers first, and the index of the last name."""
     names, index, last = [], 0, -1
     while index < len(words) and (words[index] in KEYWORDS or words[index] == "function"):
         # `function NAME` precedes a body whose commands may follow on the same line.
@@ -82,11 +82,9 @@ def command_names(words):
                 break
             if name == "command" and option in ("-v", "-V"):
                 return names, last  # It only describes the next name.
-            if name == "env" and option == "-S":
-                # env -S splits its value into the command it runs and that command's arguments.
-                inner = Shell(" ".join(words[index:]))
-                inner.parse()
-                return names + inner.names, len(words)
+            if name == "env" and option == "-S" and index < len(words):
+                # env -S splits its value into a command; the words after the value are its arguments.
+                return names + shell.nested(words[index], words[index + 1:]), len(words)
             if option in valued:
                 index += 1
         index += operands
@@ -96,8 +94,10 @@ def command_names(words):
 class Shell:
     """Collect the command names and lone `&` operators of shell text, substitutions included."""
 
-    def __init__(self, text):
+    def __init__(self, text, arguments=()):
         self.text = text
+        # Words that extend the last simple command of the text, never parsed as code.
+        self.arguments = list(arguments)
         self.pos = 0
         self.heredocs = []
         self.names = []
@@ -111,12 +111,14 @@ class Shell:
     def starts(self, *prefixes):
         return self.text.startswith(prefixes, self.pos)
 
-    def nested(self, text):
-        inner = Shell(text)
+    def nested(self, text, arguments=()):
+        """Parse a script this shell runs and return its command names."""
+        inner = Shell(text, arguments)
         inner.parse()
         self.names += inner.names
         self.background = self.background or inner.background
         self.pattern_kill = self.pattern_kill or inner.pattern_kill
+        return inner.names
 
     def end(self, words, mark):
         """Record a finished simple command and the script a shell, eval or trap runs.
@@ -125,7 +127,7 @@ class Shell:
         earlier commands of its pipeline. Returns the next command's words and mark.
         """
         found = set(self.names[mark:])
-        names, last = command_names(words)
+        names, last = command_names(words, self)
         if "kill" in names and found & PROCESS_LOOKUPS:
             self.pattern_kill = True
         self.names += names
@@ -209,7 +211,7 @@ class Shell:
                     target = False
                 else:
                     words.append(word)
-        self.end(words, mark)
+        self.end(words + self.arguments if closer is None else words, mark)
 
     def redirect(self):
         """Skip a redirection operator; return whether a target word follows it."""

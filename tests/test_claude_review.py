@@ -314,6 +314,7 @@ class ClaudeReviewTests(RotationTestCase):
             ("echo $(sleep 5 &)", background),
             ("bash -lc 'nohup ./run.sh &'", background),
             ('env -S "nohup make test"', background),
+            ("""env -S 'sh -c "sleep 30 &"'""", background),
             ("true && python3 server.py &", background),
             ("pkill -f test_rotation", kill),
             ("killall python3", kill),
@@ -323,6 +324,10 @@ class ClaudeReviewTests(RotationTestCase):
             ('kill "$(pgrep -f server)"', kill),
             ("pgrep -f server | xargs kill", kill),
             ('env -S "pkill -f test_rotation"', kill),
+            ("env -S 'bash -c' 'kill $(pgrep -f server)'", kill),
+            ("""env -S 'sh -c "pgrep -f x | xargs kill"'""", kill),
+            ("true && pkill -f test_rotation", kill),
+            ("bash -lc 'kill $(pgrep -f test_rotation)'", kill),
             ("trap 'pkill -f test_rotation' EXIT; make test", kill),
             ("cat <<'EOF' > notes.md\nbuild & test\nEOF\npkill -f server", kill),
             ("git add -A && git commit -m wip", None),
@@ -343,6 +348,7 @@ class ClaudeReviewTests(RotationTestCase):
             ('pgrep -f unrelated || true; kill "$pid"', None),
             ('kill "$pid"; pgrep -fl test_rotation || true', None),
             ("command -v nohup && command -V pkill", None),
+            ("env -S printf '%s' 'text; pkill'", None),
             ("trap 'rm -f run.pid' EXIT; make test", None),
         )
         for command, expected in table:
