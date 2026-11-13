@@ -6,6 +6,7 @@
 import { computed, inject, nextTick, reactive, ref, watch, type InjectionKey, type Ref } from "vue";
 import { readOnlyReason, type ActionBodies, type ActionResult, type ActionRoute, type ActionSender, type ReflectBody } from "../../lib/actions";
 import { sayCommand } from "../../lib/commands";
+import { coarseSpan } from "../../lib/format";
 import type { Launch, Lesson, Study, TaskDetail, TaskSummary } from "../../types";
 import type { Research } from "../research";
 import {
@@ -303,6 +304,19 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     stopped: (lesson) => STOPPED.has(implementationLine(lesson.implementation, cards.cardOf(lesson).started, outsideOf(lesson))?.kind ?? ""),
   });
 
+  /**
+   * The line of the working agent under its lesson's thread: under the feed its phase and how long it goes
+   * («Работа · 3 мин»); without a feed (an older server's 404) its phase and last action, as before.
+   */
+  function workLineOf(lesson: Lesson): { phase: string | null; going: string | null; activity: string | null } | null {
+    const work = implementation.workOf(lesson);
+    if (!work) return null;
+    if (lesson.implementation && feeds.feedShownFor(lesson.implementation.slug)) {
+      return { phase: work.phase, going: work.since ? coarseSpan(Math.max(0, now.value - work.since)) : null, activity: null };
+    }
+    return { phase: work.phase, going: null, activity: work.activity };
+  }
+
   /** «Обсудить»: in the study that filed the lesson when it can take a reply, otherwise a new study. */
   async function discuss(lesson: Lesson) {
     const at = filed.value.get(lesson.entry.trim());
@@ -422,6 +436,7 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     ...cards,
     ...implementation,
     ...feeds,
+    workLineOf,
     dispose() {
       cards.dispose();
       feeds.disposeFeed();

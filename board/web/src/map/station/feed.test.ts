@@ -5,7 +5,7 @@ import { fixtureSource } from "../../fixtures/source";
 import type { FeedItem, TaskDetail, TaskFeed, TaskSummary } from "../../types";
 import { research } from "../research";
 import { createConsole } from "./console";
-import { FEED_MS, atBottom, createFeed, feedRows, type FeedFetch } from "./feed";
+import { FEED_MS, atBottom, createFeed, feedRows, useFollow, type FeedFetch } from "./feed";
 
 const NOW = Date.UTC(2026, 10, 9, 4, 12) / 1000;
 const U3 = "batch-2026-11-06.md U3"; // accepted, its agent works: lesson-u3-save-migration
@@ -112,6 +112,41 @@ describe("the feed's rows", () => {
     expect(atBottom({ scrollHeight: 1000, scrollTop: 560, clientHeight: 400 })).toBe(true);
     expect(atBottom({ scrollHeight: 1000, scrollTop: 400, clientHeight: 400 })).toBe(false);
   });
+
+  it("follows the news at the bottom edge, stays put scrolled up with «Новые действия ↓», and goes down after your own message", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    const area = { scrollHeight: 1000, scrollTop: 600, clientHeight: 400, scrollTo: vi.fn() };
+    const count = ref(1);
+    const own = ref(0);
+    const follow = useFollow(ref(area as unknown as HTMLElement), () => count.value, () => count.value, () => own.value);
+    const tick = async () => {
+      await nextTick();
+      await nextTick();
+    };
+
+    // At the bottom edge: the new items keep the reader there.
+    count.value++;
+    await tick();
+    expect(area.scrollTo).toHaveBeenCalledTimes(1);
+    expect(follow.fresh.value).toBe(false);
+
+    // Scrolled up: the feed stays put and offers «Новые действия ↓», which goes down.
+    area.scrollTop = 100;
+    count.value++;
+    await tick();
+    expect(area.scrollTo).toHaveBeenCalledTimes(1);
+    expect(follow.fresh.value).toBe(true);
+    follow.down();
+    expect(area.scrollTo).toHaveBeenCalledTimes(2);
+    expect(follow.fresh.value).toBe(false);
+
+    // The human's own message: always down, even scrolled up.
+    own.value++;
+    await tick();
+    expect(area.scrollTo).toHaveBeenCalledTimes(3);
+    expect(follow.fresh.value).toBe(false);
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("the feed in «Переписка»", () => {
@@ -165,6 +200,33 @@ describe("the feed in «Переписка»", () => {
     expect(fetch).toHaveBeenCalledTimes(disposed);
   });
 
+  it("asks once more after the open lesson's agent stopped, then no more", async () => {
+    vi.useFakeTimers();
+    const { fetch, calls } = server(answer([item("command", "ls")], "c"));
+    const { desk, tasks, lesson } = setup(fetch);
+    await desk.showLesson(lesson(U3));
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(3 * FEED_MS);
+    expect(calls.length).toBe(4);
+    tasks.value = { [AGENT]: { ...tasks.value[AGENT]!, alive: false } };
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(10 * FEED_MS);
+    expect(calls.length).toBe(5);
+    desk.dispose();
+  });
+
+  it("puts the phase and how long it goes under the feed", async () => {
+    vi.useFakeTimers();
+    const { fetch } = server(answer([item("command", "ls")], "c"));
+    const { desk, tasks, lesson } = setup(fetch);
+    tasks.value = { [AGENT]: { ...tasks.value[AGENT]!, activity: { at: NOW, kind: "command", text: "npm test" } } };
+    await desk.showLesson(lesson(U3));
+    await nextTick();
+    await settle();
+    expect(desk.workLineOf(lesson(U3))).toEqual({ phase: "Работа", going: "3 мин", activity: null });
+    desk.dispose();
+  });
+
   it("goes on without a feed from an older server, with the last action as before", async () => {
     vi.useFakeTimers();
     const { fetch } = server(null);
@@ -176,7 +238,7 @@ describe("the feed in «Переписка»", () => {
     expect(fetch.mock.calls.filter(([slug]) => slug === AGENT)).toHaveLength(1);
     expect(desk.feed.value?.off).toBe(true);
     expect(desk.feedShown.value).toBe(false);
-    expect(desk.workOf(lesson(U3))).toEqual({ phase: "Работа", since: NOW - 180, activity: "npm test" });
+    expect(desk.workLineOf(lesson(U3))).toEqual({ phase: "Работа", going: null, activity: "npm test" });
     desk.dispose();
   });
 

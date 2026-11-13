@@ -124,7 +124,7 @@ const follow = useFollow(scroller, () => news.value, feedCount, () => asked.valu
           <AgentFeed who="Агент" :now="now" />
         </li>
         <li v-if="line" class="msg">
-          <LessonImplementation :lesson="lesson" :now="now" />
+          <LessonImplementation :lesson="lesson" />
         </li>
         <li v-for="(item, number) in said" :key="number" class="msg mine">
           <span class="who">

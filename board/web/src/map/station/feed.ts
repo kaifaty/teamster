@@ -245,6 +245,8 @@ export function createFeeds(context: FeedContext) {
   return {
     feed: view,
     feedShown: shown,
+    /** Whether «Переписка» shows the feed of the task `slug`. */
+    feedShownFor: (slug: string) => shown.value && current.value?.slug === slug,
     feedRows: rows,
     /** «ещё N действий»: the folded run shows whole. */
     unfold: (run: number) => unfolded.add(run),

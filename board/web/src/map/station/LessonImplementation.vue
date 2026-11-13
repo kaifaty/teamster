@@ -4,26 +4,21 @@
 // the repository without one, stopped, or the task is closed. A stopped agent's whole report replaces its summary's
 // first line once it is known. The reply to the agent stands under the thread, with the lesson's buttons.
 import { computed } from "vue";
-import { coarseSpan } from "../../lib/format";
 import type { Lesson } from "../../types";
 import { implementationLine, outsideOf } from "../station";
 import { useConsole } from "./console";
 
-const props = defineProps<{ lesson: Lesson; now: number }>();
+const props = defineProps<{ lesson: Lesson }>();
 const desk = useConsole();
 
 const line = computed(() => implementationLine(props.lesson.implementation, desk.cardOf(props.lesson).started, outsideOf(props.lesson)));
 const sent = computed(() => desk.agentSent(props.lesson));
-const work = computed(() => desk.workOf(props.lesson));
+const work = computed(() => desk.workLineOf(props.lesson));
 /** The stopped agent's report in full, or the first line of its summary until it is known. */
 const report = computed(() => {
   const kind = line.value?.kind;
   if (kind !== "decision" && kind !== "stopped" && kind !== "outside") return null;
   return desk.agentReport.value ?? (kind === "decision" ? null : line.value!.summary);
-});
-const going = computed(() => {
-  const since = work.value?.since;
-  return since ? coarseSpan(Math.max(0, props.now - since)) : null;
 });
 </script>
 
@@ -41,11 +36,8 @@ const going = computed(() => {
       <li v-for="(question, number) in line.questions" :key="number">{{ question }}</li>
     </ul>
     <p v-if="report" class="summary" :class="{ whole: !!desk.agentReport.value }">{{ report }}</p>
-    <p v-if="work && desk.feedShown.value" class="work">
-      <span class="phase">{{ work.phase }}</span><template v-if="going"> · {{ going }}</template>
-    </p>
-    <p v-else-if="work" class="work">
-      <span class="phase">{{ work.phase }}</span><template v-if="work.activity"> · <span class="activity">{{ work.activity }}</span></template>
+    <p v-if="work" class="work">
+      <span class="phase">{{ work.phase }}</span><template v-if="work.going"> · {{ work.going }}</template><template v-if="work.activity"> · <span class="activity">{{ work.activity }}</span></template>
     </p>
   </div>
 </template>
