@@ -59,7 +59,8 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
                 st.get("task_model") or settings.get("model"), effort or settings.get("effort"),
                 settings["max_turns"], role="reflect" if reflecting else "scout",
                 session_id=st.get("session_id") or None,
-                started=started, progress=progress)
+                started=started, progress=progress,
+                task_dir=config.TASKS / st["slug"])
         finally:
             st.pop("claude_pid", None)
             task_state.save(st)

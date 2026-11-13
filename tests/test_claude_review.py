@@ -621,6 +621,11 @@ class ClaudeReviewTests(RotationTestCase):
         before = worker.claude_review.worktree_snapshot({"worktree": str(self.repo)})
         self.cli("scout", "claude-scout", "Where is tracked.txt read?", "--executor", "claude")
         self.assertIn(answers[0], self.wait("claude-scout"))
+        # The scout's stream is kept beside its state, never in the directory it inspects.
+        events = self.home / "claude-tasks" / "claude-scout" / "claude-events.jsonl"
+        first_events = events.read_bytes()
+        self.assertIn(answers[0], first_events.decode())
+        self.assertNotIn(answers[1], first_events.decode())
         initial = self.state("claude-scout")
         self.assertEqual(initial["executor"], "claude")
         self.assertEqual(initial["claude_account"], "first")
@@ -632,6 +637,12 @@ class ClaudeReviewTests(RotationTestCase):
             "seven_day": {"utilization": 0, "resetsAt": self.reset}}})
         self.cli("say", "claude-scout", "Who calls it?")
         self.assertIn(answers[1], self.wait("claude-scout"))
+        appended = events.read_bytes()
+        self.assertTrue(appended.startswith(first_events))
+        self.assertIn(answers[1], appended[len(first_events):].decode())
+        for line in appended.splitlines():
+            json.loads(line)
+        self.assertFalse((self.repo / "claude-events.jsonl").exists())
         state = self.state("claude-scout")
         self.assertEqual((state["claude_account"], state["session_id"]),
                          (initial["claude_account"], initial["session_id"]))
@@ -672,6 +683,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.cli("clean", "claude-scout")
         archive, = (self.home / "claude-tasks" / ".archive").glob("claude-scout-*")
         self.assertEqual(json.loads((archive / "state.json").read_text())["executor"], "claude")
+        self.assertFalse((archive / "claude-events.jsonl").exists())
         self.assertEqual(self.trace(), trace)
         self.assertEqual(self.invocations(), [])
         self.assertEqual(worker.claude_review.worktree_snapshot(state), before)
@@ -715,6 +727,9 @@ class ClaudeReviewTests(RotationTestCase):
         state = self.state("claude-reflect")
         room = self.home / "claude-tasks" / "claude-reflect" / "room"
         self.assertEqual((state["executor"], state["result"]), ("claude", valid))
+        # The analyst's stream stands beside the reading room, so keeping it does not count as a change to the room.
+        self.assertIn("claude cue", (room.parent / "claude-events.jsonl").read_text())
+        self.assertFalse((room / "claude-events.jsonl").exists())
         name = state["reflect_file"]
         self.assertIn("| %s V1 | invariant | claude cue | proposed |" % name, (archive / "INDEX.md").read_text())
         before = self.archive_contents()
