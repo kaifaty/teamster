@@ -316,3 +316,25 @@
     animation: none;
   }
 }
+
+/* «Новые действия ↓»: at the bottom edge of a thread or a channel while news came above the part being read. */
+.station-screen .news-key {
+  padding: 3px 12px;
+  border: 1px solid rgba(95, 214, 200, 0.55);
+  border-radius: 12px;
+  background: rgba(10, 22, 21, 0.94);
+  color: var(--st-teal);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.station-screen .news-key:hover,
+.station-screen .news-key:focus-visible {
+  background: rgba(20, 44, 41, 0.96);
+}
+
+.station-screen .news-key:focus-visible {
+  outline: 1px solid var(--st-teal);
+  outline-offset: 2px;
+}

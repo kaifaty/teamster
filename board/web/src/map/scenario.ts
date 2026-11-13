@@ -375,6 +375,7 @@ export function scenarioSource(): BoardSource {
     fetchArt: async () => ({}),
     fetchConstellations: async () => ({ constellations: [{ name: "Демо", repos: [R, O] }], error: null }),
     fetchResearch: async () => null,
+    fetchFeed: async () => null,
     fetchEvents: async (since, until) => demoEvents(SCENARIO_HISTORY, origin, since, until),
     fetchReport: async () =>
       demoReport(Date.now() / 1000, [

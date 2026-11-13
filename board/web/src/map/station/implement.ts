@@ -167,12 +167,16 @@ export function createImplementation(context: ImplementContext) {
     if (ship) openShip?.(ship.slug, ship.repo);
   }
 
-  /** While the agent works: the task's phase in plain words and its last action, live from the board. */
-  function workOf(lesson: Lesson): { phase: string | null; activity: string | null } | null {
+  /** While the agent works: the task's phase in plain words, since when, and its last action, live from the board. */
+  function workOf(lesson: Lesson): { phase: string | null; since: number | null; activity: string | null } | null {
     const task = lesson.implementation;
     if (!task?.alive) return null;
     const summary = tasks.value[task.slug];
-    return { phase: phaseText(summary?.phase) ?? "Работа", activity: summary?.alive ? (summary.activity?.text ?? null) : null };
+    return {
+      phase: phaseText(summary?.phase) ?? "Работа",
+      since: summary?.alive ? (summary.phase_started_at ?? null) : null,
+      activity: summary?.alive ? (summary.activity?.text ?? null) : null,
+    };
   }
 
   // ---- replies to an implementation's agent

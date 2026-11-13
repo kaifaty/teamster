@@ -157,6 +157,11 @@ export function fixtureSource(): BoardSource {
       for (const key of ["limits", "messages", "activity_log", "actions", "queue", "report", "changes"] as const) {
         if (extra?.[key] !== undefined) Object.assign(detail, { [key]: shiftTimes(extra[key], delta) });
       }
+      // A lesson's agent reports its whole turn.
+      if (detail.report === undefined) {
+        const report = station.report(slug);
+        if (report) detail.report = report;
+      }
       // The fixtures act on every task, whatever its detail says.
       detail.actions ??= { enabled: true, reason: null, queue: true };
       const sent = ships.sent(slug);
@@ -169,6 +174,11 @@ export function fixtureSource(): BoardSource {
         detail.queue = { waiting: task.alive ? [...own.waiting, ...queue.waiting] : queue.waiting, dropped: [...own.dropped, ...lost, ...queue.dropped] };
       }
       return detail;
+    },
+    async fetchFeed(slug, after) {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const feed = station.feed(slug, after);
+      return feed && shiftTimes(feed, anchor);
     },
     async fetchFile(slug, name) {
       await new Promise((resolve) => setTimeout(resolve, 150));

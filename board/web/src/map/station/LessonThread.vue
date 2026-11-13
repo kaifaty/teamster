@@ -1,14 +1,16 @@
 <script setup lang="ts">
 // A lesson open in «Переписка»: its head, its whole text to read, and its implementation as a thread by time — your
-// request, the start's steps, the task's state with its phase and the agent's last action, and your replies. Under the
+// request, the start's steps, the agent's work as it goes, the task's state with its phase, and your replies. Under the
 // thread stand the lesson's buttons and, while the agent waits, the reply to it.
 import { computed, nextTick, ref, watch } from "vue";
 import { formatClock } from "../../lib/format";
 import type { Lesson } from "../../types";
 import { shortDate } from "../research";
 import { LESSON_STATE, implementationLine, lessonId, outsideOf, studyTitle } from "../station";
+import AgentFeed from "./AgentFeed.vue";
 import AgentReply from "./AgentReply.vue";
 import { useConsole } from "./console";
+import { useFollow } from "./feed";
 import LaunchSteps from "./LaunchSteps.vue";
 import LessonActions from "./LessonActions.vue";
 import LessonImplementation from "./LessonImplementation.vue";
@@ -56,19 +58,15 @@ watch(entry, async () => {
   await nextTick();
   if (scroller.value) scroller.value.scrollTop = 0;
 });
-// The thread follows its news while the human reads its end, and always right after their own request or reply.
+// The thread follows its news while the human reads its end, and always right after their own request or reply; scrolled
+// up, it stays put and offers «Новые действия ↓».
+const feedCount = () => (desk.feedShown.value ? (desk.feed.value?.items.length ?? 0) : 0);
 const news = computed(() => {
   const work = desk.workOf(props.lesson);
-  return [launch.value?.stage, launch.value?.steps.length, line.value?.kind, work?.phase, work?.activity, said.value.length].join("|");
+  return [launch.value?.stage, launch.value?.steps.length, line.value?.kind, work?.phase, work?.activity, said.value.length, desk.agentReport.value].join("|");
 });
 const asked = computed(() => `${request.value?.at ?? ""}|${said.value.length}`);
-watch([news, asked], async ([, own], [, before]) => {
-  const area = scroller.value;
-  if (!area) return;
-  const near = area.scrollHeight - area.scrollTop - area.clientHeight < 120;
-  await nextTick();
-  if (near || own !== before) area.scrollTo({ top: area.scrollHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-});
+const follow = useFollow(scroller, () => news.value, feedCount, () => asked.value);
 </script>
 
 <template>
@@ -88,7 +86,7 @@ watch([news, asked], async ([, own], [, before]) => {
       </span>
     </header>
 
-    <div ref="scroller" class="t-scroll">
+    <div ref="scroller" class="t-scroll" @scroll.passive="follow.onScroll">
       <dl class="fields">
         <dt>Когда</dt>
         <dd>{{ lesson.cue }}</dd>
@@ -122,10 +120,12 @@ watch([news, asked], async ([, own], [, before]) => {
             </template>
           </LaunchSteps>
         </li>
-        <li v-if="line" class="msg">
-          <LessonImplementation :lesson="lesson" />
+        <li v-if="desk.feedShown.value" class="msg wide">
+          <AgentFeed who="Агент" :now="now" />
         </li>
-        <!-- The task's whole feed of messages and commands (GET /api/tasks/{slug}/feed) comes here, after the state. -->
+        <li v-if="line" class="msg">
+          <LessonImplementation :lesson="lesson" :now="now" />
+        </li>
         <li v-for="(item, number) in said" :key="number" class="msg mine">
           <span class="who">
             Ты · ответ · <time :datetime="time(item.at)">{{ formatClock(item.at, now) }}</time>
@@ -136,6 +136,7 @@ watch([news, asked], async ([, own], [, before]) => {
           <p v-if="item.state === 'failed'" class="fail" role="alert">{{ item.error }}</p>
         </li>
       </ol>
+      <button v-if="follow.fresh.value" type="button" class="news-key" @click="follow.down">Новые действия ↓</button>
     </div>
 
     <footer v-if="acts || line?.answer" class="t-dock">
@@ -291,6 +292,10 @@ watch([news, asked], async ([, own], [, before]) => {
   max-width: 640px;
 }
 
+.msg.wide {
+  max-width: none;
+}
+
 .msg.mine {
   align-items: flex-end;
   align-self: flex-end;
@@ -325,6 +330,14 @@ watch([news, asked], async ([, own], [, before]) => {
   font-size: 12px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* Stands at the bottom edge of the thread while news came above the part being read. */
+.news-key {
+  position: sticky;
+  bottom: 4px;
+  display: block;
+  margin: 8px auto 0;
 }
 
 .t-dock {

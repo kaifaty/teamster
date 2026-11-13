@@ -261,9 +261,9 @@ describe("«Внедрить»", () => {
     launches.value = [{ ...launches.value[0]!, stage: "done", steps: [...launches.value[0]!.steps, { stage: "starting", at: NOW + 4 }, { stage: "done", at: NOW + 6 }] }];
     expect(desk.badgeOf(lesson(T1))).toBe("агент работает");
     // While the agent works: the task's phase in plain words and its last action, live from the board.
-    expect(desk.workOf(lesson(T1))).toEqual({ phase: "Работа", activity: null });
+    expect(desk.workOf(lesson(T1))).toEqual({ phase: "Работа", since: null, activity: null });
     tasks.value = { "lesson-t1": { slug: "lesson-t1", alive: true, phase: "check", activity: { at: NOW, kind: "command", text: "npm test" } } as TaskSummary };
-    expect(desk.workOf(lesson(T1))).toEqual({ phase: "Проверка", activity: "npm test" });
+    expect(desk.workOf(lesson(T1))).toEqual({ phase: "Проверка", since: null, activity: "npm test" });
     desk.dispose();
   });
 

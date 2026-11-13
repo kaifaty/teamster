@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // The comms room: every study is a channel, and the open channel shows its conversation — the order, the analyst's
-// reports with dockets and questions, the human's replies, and under them the reply to send. A study just ordered is a
+// reports with dockets and questions, the human's replies, the analyst's work as it goes while it works, and under them
+// the reply to send. A study just ordered is a
 // channel at once, with its request and the start's steps, until the research shows it. A lesson opened from the
 // lab, a docket or the line «what next» takes the screen instead of the channel.
 import { computed, nextTick, ref, watch } from "vue";
@@ -10,7 +11,9 @@ import analystPortrait from "../art/portrait-analyst.jpg";
 import archivistPortrait from "../art/portrait-archivist.jpg";
 import { plural, type Research } from "../research";
 import { STATE_TEXT, docketPlacement, openQuestionsAt, studyState, studyTitle } from "../station";
+import AgentFeed from "./AgentFeed.vue";
 import { useConsole } from "./console";
+import { useFollow } from "./feed";
 import LaunchSteps from "./LaunchSteps.vue";
 import LessonThread from "./LessonThread.vue";
 import StationReply from "./StationReply.vue";
@@ -44,6 +47,15 @@ watch(
     if (talk.value) talk.value.scrollTop = talk.value.scrollHeight;
   },
   { immediate: true },
+);
+
+// The open channel follows the analyst's work while the human reads its end; scrolled up, it offers «Новые действия ↓».
+const feedCount = () => (desk.feedShown.value ? (desk.feed.value?.items.length ?? 0) : 0);
+const follow = useFollow(
+  talk,
+  () => `${study.value?.messages.length ?? ""}|${study.value?.alive ?? ""}`,
+  feedCount,
+  () => (study.value ? desk.echoOf(study.value)?.text : null),
 );
 
 const waitingCount = (studies: readonly Study[]) => studies.filter((item) => item.waiting).length;
@@ -134,7 +146,7 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((item) => ite
           </span>
         </header>
 
-        <ol ref="talk" class="talk">
+        <ol ref="talk" class="talk" @scroll.passive="follow.onScroll">
           <li v-for="(message, at) in study.messages" :key="`${message.from}-${message.at}-${at}`" class="msg" :class="message.from">
             <img v-if="message.from === 'analyst'" :src="analystPortrait" alt="" class="avatar" />
             <div class="bubble-wrap">
@@ -188,13 +200,21 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((item) => ite
               <p v-if="desk.echoOf(study)!.state === 'failed'" class="fail" role="alert">{{ desk.echoOf(study)!.error }}</p>
             </div>
           </li>
-          <li v-if="study.alive || (desk.echoOf(study) && desk.echoOf(study)!.state !== 'failed')" class="keeper inline">
-            <img :src="analystPortrait" alt="" class="mini" />
-            <span>Аналитик читает записи<span class="dots" aria-hidden="true"></span></span>
-          </li>
+          <template v-if="study.alive || (desk.echoOf(study) && desk.echoOf(study)!.state !== 'failed')">
+            <li v-if="desk.feedShown.value" class="msg work">
+              <AgentFeed who="Аналитик" :now="now" />
+            </li>
+            <li v-else class="keeper inline">
+              <img :src="analystPortrait" alt="" class="mini" />
+              <span>Аналитик читает записи<span class="dots" aria-hidden="true"></span></span>
+            </li>
+          </template>
           <li v-else-if="studyState(study) === 'failed'" class="keeper inline bad">
             <img :src="archivistPortrait" alt="" class="mini" />
             <span>Ход прервался{{ study.error ? `: ${study.error}` : "" }}. Запусти разбор снова или ответь аналитику «продолжай».</span>
+          </li>
+          <li v-if="follow.fresh.value" class="news">
+            <button type="button" class="news-key" @click="follow.down">Новые действия ↓</button>
           </li>
         </ol>
         <StationReply :study="study" />
@@ -420,6 +440,19 @@ const waitingCount = (studies: readonly Study[]) => studies.filter((item) => ite
 
 .msg.lead {
   justify-content: flex-end;
+}
+
+.msg.work > * {
+  flex: 1;
+}
+
+/* Stands at the bottom edge of the channel while news came above the part being read. */
+.news {
+  position: sticky;
+  bottom: 4px;
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
 }
 
 .avatar {

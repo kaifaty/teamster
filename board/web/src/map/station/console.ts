@@ -6,14 +6,16 @@
 import { computed, inject, nextTick, reactive, ref, watch, type InjectionKey, type Ref } from "vue";
 import { readOnlyReason, type ActionBodies, type ActionResult, type ActionRoute, type ActionSender, type ReflectBody } from "../../lib/actions";
 import { sayCommand } from "../../lib/commands";
-import type { Launch, Lesson, Study, TaskSummary } from "../../types";
+import type { Launch, Lesson, Study, TaskDetail, TaskSummary } from "../../types";
 import type { Research } from "../research";
 import {
   discussOrder,
   filedLessons,
   firstStudy,
+  implementationLine,
   openQuestionsAt,
   orderAction,
+  outsideOf,
   reach,
   reflectBodyCommand,
   replyText,
@@ -24,6 +26,7 @@ import {
   type Reach,
 } from "../station";
 import { createCards } from "./cards";
+import { createFeeds, type FeedFetch } from "./feed";
 import { createImplementation, type ShipOptions } from "./implement";
 import { localLaunch, mergeLaunches, pendingKey, settlePending, type PendingStudy } from "./launch";
 
@@ -62,6 +65,10 @@ export interface ConsoleOptions extends ShipOptions {
   launches?: Readonly<Ref<readonly Launch[]>>;
   /** The board's tasks by slug, live. */
   tasks?: Readonly<Ref<Readonly<Record<string, TaskSummary>>>>;
+  /** The agent's work by time (GET /api/tasks/{slug}/feed); without it «Переписка» shows no feed. */
+  fetchFeed?: FeedFetch;
+  /** A task's detail, for a stopped agent's whole report. */
+  fetchDetail?: (slug: string) => Promise<TaskDetail | null>;
 }
 
 export type Outcome = { kind: "ok"; result: Extract<ActionResult, { ok: true }> } | { kind: "error"; error: string } | { kind: "copied"; copied: Copied };
@@ -281,9 +288,19 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     clear();
   }
 
+  const tasks = options.tasks ?? ref({});
   const implementation = createImplementation({
-    research, now, live, act: options.act, openShip: options.openShip, run, launches, tasks: options.tasks ?? ref({}),
+    research, now, live, act: options.act, openShip: options.openShip, run, launches, tasks,
     cardOf: cards.cardOf, edit, openForm, listOf: cards.listOf, hold: cards.hold,
+  });
+  const STOPPED = new Set(["decision", "stopped", "outside"]);
+  const feeds = createFeeds({
+    fetchFeed: options.fetchFeed ?? null,
+    fetchDetail: options.fetchDetail ?? null,
+    openLesson,
+    openStudy: computed(() => (openPending.value ? null : openStudy.value)),
+    tasks,
+    stopped: (lesson) => STOPPED.has(implementationLine(lesson.implementation, cards.cardOf(lesson).started, outsideOf(lesson))?.kind ?? ""),
   });
 
   /** «Обсудить»: in the study that filed the lesson when it can take a reply, otherwise a new study. */
@@ -404,6 +421,11 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     sendReply,
     ...cards,
     ...implementation,
+    ...feeds,
+    dispose() {
+      cards.dispose();
+      feeds.disposeFeed();
+    },
     discuss,
     startDiscussion,
     showStage,
