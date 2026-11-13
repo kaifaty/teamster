@@ -178,7 +178,10 @@ export function createCards({ research, live, run }: CardsContext) {
     return list;
   });
   /** Whether the row stays on its tab only for «Отменить»: its lesson has moved on. */
-  const isHeld = (lesson: Lesson) => !!held[lesson.entry.trim()] && held[lesson.entry.trim()]!.stage === labStage.value;
+  const isHeld = (lesson: Lesson) => {
+    const key = lesson.entry.trim();
+    return held[key]?.stage === labStage.value && !listOf(labStage.value).some((item) => item.entry.trim() === key);
+  };
   // New proposals bring the lab back to the decisions, unless the human looks at another stage that has lessons. A
   // decision just taken empties its tab before the lesson is held there: the tab stays for its «Отменить».
   watch(

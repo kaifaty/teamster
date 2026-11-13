@@ -8,7 +8,7 @@ import { research } from "../research";
 import { discussOrder, docketParts, implementationLine, isSendKey } from "../station";
 import { createConsole, HOLD_MS, type Deck } from "./console";
 import { IMPLEMENT_OFF } from "./implement";
-import { lessonBadge, launchSteps, mergeLaunches, settlePending, stepTime, withDecisions, type PendingStudy } from "./launch";
+import { launching, lessonBadge, launchSteps, mergeLaunches, settlePending, stepTime, withDecisions, type PendingStudy } from "./launch";
 
 const NOW = Date.UTC(2026, 10, 9, 4, 12) / 1000;
 const T1 = "batch-2026-11-05.md T1"; // proposed, filed by no study
@@ -158,6 +158,19 @@ describe("a lesson's card", () => {
     expect(desk.cardOf(t1)).toMatchObject({ busy: null, done: null, form: "decline", note: "one incident", error: "unknown lesson batch-2026-11-05.md T1" });
     expect(desk.index.value.get(T1)?.status).toBe("proposed");
     expect(desk.isHeld(t1)).toBe(false);
+
+    // «Отменить» goes back at once too, and the server's error puts the decision and its «Отменить» back.
+    await desk.accept(t1);
+    act.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    const undone = desk.undo(t1);
+    expect(desk.index.value.get(T1)?.status).toBe("proposed");
+    expect(desk.cardOf(t1).done).toBeNull();
+    finish({ ok: false, error: "teamster не ответил вовремя" });
+    await undone;
+    expect(desk.cardOf(t1)).toMatchObject({ busy: null, error: "teamster не ответил вовремя", done: { status: "accepted", undo: "proposed" } });
+    expect(desk.index.value.get(T1)?.status).toBe("accepted");
+    expect(desk.isHeld(desk.index.value.get(T1)!)).toBe(true);
+    expect(desk.shown.value.map((item) => item.entry)).toContain(T1);
     desk.dispose();
   });
 });
@@ -206,6 +219,8 @@ describe("«Внедрить»", () => {
     expect(desk.launchOf(t1)).toMatchObject({ kind: "implement", stage: "accepting" });
     expect(desk.badgeOf(t1)).toBe("запускается");
     expect(desk.offersImplement(t1)).toBe(false);
+    // Still proposed: the row has not moved anywhere.
+    expect(desk.isHeld(t1)).toBe(false);
 
     const launch: Launch = {
       slug: "lesson-t1", kind: "implement", entry: T1, repo: "teamster", stage: "accepting", steps: [{ stage: "accepting", at: NOW }], error: null, started_at: NOW,
@@ -262,6 +277,7 @@ describe("«Внедрить»", () => {
     desk.setRepo(u2, "/Users/demo/dev/demo-game");
     answer({ ok: false, error: "lesson is already being implemented" });
     await desk.implement(u2, "proposed");
+    expect(desk.isHeld(u2)).toBe(false);
     expect(act).toHaveBeenCalledWith("implement", { entry: U2, repo: "/Users/demo/dev/demo-game" });
     expect(desk.cardOf(u2)).toMatchObject({ busy: null, form: "implement", error: "lesson is already being implemented", started: null });
   });
@@ -417,6 +433,19 @@ describe("«Обсудить»", () => {
     expect(desk.openStudy.value?.slug).toBe("reflect-1109-041200");
     expect(desk.awaiting.value).toBe(false);
     expect(desk.channels.value.filter((channel) => channel.study?.slug === "reflect-1109-041200")).toHaveLength(1);
+  });
+
+  it("keeps a lesson opened while the ordered study starts open once the study shows up", async () => {
+    const { desk, lesson, update, answer } = setup();
+    await desk.discuss(lesson(T1));
+    answer({ ok: true, output: "", slug: "reflect-x" });
+    await desk.startDiscussion(lesson(T1));
+    await desk.showLesson(lesson(U1));
+    update((view) => (view.studies = [{ ...view.studies[0]!, slug: "reflect-x", created: NOW }, ...view.studies]));
+    await nextTick();
+    expect(desk.openLesson.value?.entry).toBe(U1);
+    expect(desk.pending).toHaveLength(0);
+    expect(desk.openKey.value).toBe(`reflect-x:${NOW}`);
   });
 
   it("opens the new study's channel before the server answers, and takes it away with the server's error", async () => {
@@ -709,6 +738,11 @@ describe("a lesson's row", () => {
     expect(lessonBadge(base({ outside: ["~/.codex/x"], implementation: task({ result_status: "done" }) }), start())).toBe("правка готова");
     expect(lessonBadge(base({ implementation: task({ result_status: "blocked" }) }), start())).toBe("остановился");
     expect(lessonBadge(base({ implementation: task({ archived: true, result_status: "partial" }) }), start())).toBeNull();
+    // A new start over the lesson's earlier, stopped task follows the start, not the old task.
+    const stopped = base({ implementation: task({ slug: "lesson-u9-old", result_status: "blocked" }) });
+    expect(lessonBadge(stopped, start({ launch: going }))).toBe("запускается");
+    expect(launching(stopped, start({ launch: going }))).toBe(true);
+    expect(lessonBadge(stopped, start({ launch: { ...going, stage: "failed", error: "boom" } }))).toBe("не запустился");
     // An applied lesson's open task is no longer the row's concern.
     expect(lessonBadge(base({ status: "applied", implementation: task({ result_status: "done", pr: "https://github.com/o/r/pull/3" }) }), start())).toBeNull();
   });

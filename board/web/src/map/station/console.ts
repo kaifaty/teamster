@@ -144,7 +144,8 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
   }
   function settle() {
     const { left, found } = settlePending(pending, studies.value);
-    for (const { pending: item, study } of found) if (openKey.value === pendingKey(item)) select(study);
+    // The study takes its channel's place; a lesson opened meanwhile stays open.
+    for (const { pending: item, study } of found) if (openKey.value === pendingKey(item)) openKey.value = studyKey(study);
     if (found.length) pending.splice(0, pending.length, ...left);
   }
   watch(studies, settle);
