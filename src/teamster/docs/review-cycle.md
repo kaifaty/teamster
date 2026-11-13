@@ -159,8 +159,18 @@ sandbox mode. Base merge rounds record only first-parent commits, excluding impo
 from fix attribution. After a fix review, a P1/P2 finding with a file and line stops the cycle with
 `auto_fix_stop: "escalate"` if `git blame` at `HEAD` attributes any line within two lines of its
 location to a commit from an earlier fix round. Missing files and out-of-range lines do not match;
-P3 findings keep their existing behavior. The lead chooses the next action as described in
-[lead-guide.md](lead-guide.md#stop-rules).
+P3 findings keep their existing behavior.
+
+Each completed review records its P1/P2 findings that have a file and a line within it, with the function
+around each: the nearest line at or above it in the file at `HEAD` that starts with a letter, `_` or `$`,
+as in Git's default hunk header. This history (`review_families`) spans the task's turns, so a
+`say` or standalone `review` continues it. When the fix cycle starts from a review, or after a fix review,
+a new P1/P2 finding in the same file and function as a P1/P2 finding of the review just before it stops the
+cycle with `auto_fix_stop: "state model"`, without spending a fix round. A finding is not new when the
+previous review raised one with the same title in that file. Missing files and out-of-range lines do not
+count. The `escalate` check runs first.
+
+The lead chooses the next action as described in [lead-guide.md](lead-guide.md#stop-rules).
 
 Round size is informational and does not stop the cycle. Base merge rounds omit size because their
 diff includes imported base changes; see
@@ -169,7 +179,7 @@ diff includes imported base changes; see
 ## Cycle stops
 
 The automatic cycle stops on a `clean` review, only P3 findings (`auto_fix_stop: "only P3"`), the round
-limit, escalation or the budget gate described above,
+limit, escalation, a repeated family of findings (`state model`) or the budget gate described above,
 a review where every angle refused (`auto_fix_stop: "review refused"`), an incomplete implementation
 result (after reviewing eligible commits as described above), or a non-completed
 [turn outcome](results.md#turn-outcomes).

@@ -1889,6 +1889,43 @@ class ReviewFixTests(RotationTestCase):
                              for event in self.notifications("fix-escalate")), 1)
         self.assertNotIn("auto_fix_stop", self.notification("fix-escalate", "turn_finished"))
 
+    def test_new_finding_in_the_function_of_the_previous_review_stops_for_a_state_model(self):
+        self.configure(language="en")
+        filename = "src/queue.py"
+        source = ("def hold(question):\n    held.append(question)\n    return question\n\n\n"
+                  "def release(question):\n    held.remove(question)\n")
+        first = self.provenance_review([("P2", filename, 2)])
+        first["findings"][0]["title"] = "A quota stop deletes the held question"
+        second = self.provenance_review([("P2", filename, 2), ("P2", filename, 3),
+                                         ("P2", filename, 7), ("P3", filename, 3)])
+        titles = ["A quota stop deletes the held question", "A remount overwrites the held question",
+                  "Release forgets the retry slot", "A remount loses the order"]
+        for finding, title in zip(second["findings"], titles):
+            finding["title"] = title
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "write_files": {filename: source}, "commit_files": [filename],
+             "reply": self.work_result()},
+            {"mode": "complete", "reply": first},
+            {"mode": "complete", "reply": self.work_result()},
+            {"mode": "complete", "reply": second}])
+        self.start("state-model", "--review")
+        self.wait("state-model")
+        self.cli("say", "state-model", "Keep the held question on a quota stop.", "--review", "--fix-rounds", "2")
+        output = self.wait("state-model")
+        state = self.state("state-model")
+        self.assertEqual(state["auto_fix_stop"], "state model")
+        self.assertEqual(state["rounds"], [])
+        held = {"id": "F1", "file": filename, "line": 2, "title": titles[0], "function": "def hold(question):"}
+        self.assertEqual(state["review_families"][0], [held])
+        self.assertEqual([finding["id"] for finding in state["review_families"][1]], ["F1", "F2", "F3"])
+        self.assertEqual(state["review_families"][1][2]["function"], "def release(question):")
+        self.assertEqual(state["auto_fix_escalations"],
+                         [dict(id="F2", file=filename, line=3, title=titles[1], function="def hold(question):",
+                               previous=held)])
+        self.assertIn("== auto-fix: stop: state model — F2 src/queue.py:3 and F1 src/queue.py:2 "
+                      "of the previous review in `def hold(question):`", output)
+        self.assertIn("== describe the state model: add a state × event table", output)
+
     def test_fix_round_continues_when_repeated_review_targets_original_work(self):
         self.configure(language="en")
         review = self.provenance_review([("P2", "src/provenance.py", 5)])
