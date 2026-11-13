@@ -9,7 +9,7 @@ checks — only where the record shows why.
 
 Reflect on one record right after `clean` only when the task failed expensively:
 
-- a fix cycle that did not converge: `escalate`, the round cap, or two rounds on one point;
+- a fix cycle that did not converge: `escalate`, `state model`, the round cap, or two rounds on one point;
 - `blocked` or `refused`;
 - two `budget_exhausted` turns in a row.
 

@@ -165,6 +165,14 @@ def wait_review_lines(st, slug):
         for finding in st.get("auto_fix_escalations", []):
             yield (f"== auto-fix: stop: escalate — {finding['id']} {finding['file']}:{finding['line']} "
                    f"targets code from fix round {finding['round']} ({finding['commit']})")
+    if st.get("auto_fix_stop") == "state model":
+        for finding in st.get("auto_fix_escalations", []):
+            previous = finding["previous"]
+            yield (f"== auto-fix: stop: state model — {finding['id']} {finding['file']}:{finding['line']} "
+                   f"and {previous['id']} {previous['file']}:{previous['line']} of the previous review "
+                   f"in `{finding['function']}`")
+        yield ("== describe the state model: add a state × event table to \"Done when\" "
+               "and ask for one rule that satisfies every cell, then say")
     reviews = st.get("reviews", [])[st.get("review_start", 0):]
     for entry in reviews:
         reviewer = reviewers.from_entry(entry)

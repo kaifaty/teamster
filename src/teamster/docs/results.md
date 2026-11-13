@@ -113,6 +113,9 @@ result with numbers and attempts. The wrap-up has a 10-minute cap and is stopped
   code additions/deletions for ordinary fix rounds excluding guarded files, check results, the latest
   review in full, a finding-count history, and the stop reason. For `escalate`, the stop line names each
   P1/P2 finding targeting code from a fix round, that round's number, and its short commit SHA.
+  For `state model`, it names each new finding, the previous review's finding in the same function and
+  that function's header line, then asks for the state model:
+  `== describe the state model: add a state × event table to "Done when" …`.
 - A reviewed `partial` or `blocked` result appears before its review and findings. The cycle stop
   line names the status, for example `== auto-fix: 0 rounds, findings 2; stop: result partial`,
   including when `--fix-rounds` is zero.

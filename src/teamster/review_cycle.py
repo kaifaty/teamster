@@ -198,6 +198,8 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
         if (not stopped() and st["outcome"] != "budget_exhausted" and records
                 and all(entry["outcome"] in ("completed", "refused") for entry in records)):
             st["outcome"] = "refused" if all(entry["outcome"] == "refused" for entry in records) else "completed"
+        if not stopped() and st["outcome"] == "completed" and result is not None:
+            st.setdefault("review_families", []).append(finding_families(st, result["findings"]))
     except (Exception, SystemExit):
         st["outcome"] = task_state.stop_outcome(st, stopped) or "failed"
         raise
@@ -256,6 +258,46 @@ def fix_code_findings(st, review):
             short = procs.sh(config.GIT + ["rev-parse", "--short", sha], cwd=st["worktree"])
             escalations.append(dict(finding, round=origins[sha], commit=short))
     return escalations
+
+
+# Git's default hunk header: the nearest line at or above that starts with a letter, "_" or "$".
+FUNCTION_HEADER = re.compile(r"[A-Za-z_$]")
+
+
+def finding_families(st, findings):
+    """P1/P2 findings with the function header above their line at HEAD."""
+    families, sources = [], {}
+    for finding in findings:
+        path, line = finding.get("file"), finding.get("line")
+        if finding.get("severity") not in ("P1", "P2") or not path or type(line) is not int or line < 1:
+            continue
+        if path not in sources:
+            sources[path] = procs.sh(config.GIT + ["show", "--no-textconv", f"HEAD:{path}"], cwd=st["worktree"],
+                                     check=False, errors="replace").splitlines()
+        lines = sources[path]
+        if line > len(lines):
+            continue
+        function = next((text for text in reversed(lines[:line]) if FUNCTION_HEADER.match(text)), "")
+        families.append({"id": finding["id"], "file": path, "line": line, "title": finding["title"],
+                         "function": function.rstrip()[:200]})
+    return families
+
+
+def family_repeats(st):
+    """New P1/P2 findings of the last review in a function where the review before it found one too."""
+    history = st.get("review_families", [])
+    if len(history) < 2:
+        return []
+    repeats = []
+    for finding in history[-1]:
+        same_file = [old for old in history[-2] if old["file"] == finding["file"]]
+        # A finding raised again under the same title is not a new one.
+        if any(old["title"].casefold() == finding["title"].casefold() for old in same_file):
+            continue
+        previous = next((old for old in same_file if old["function"] == finding["function"]), None)
+        if previous is not None:
+            repeats.append(dict(finding, previous=previous))
+    return repeats
 
 
 def check_base_merge(st, stopped):
@@ -352,6 +394,11 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
             if escalations:
                 st["auto_fix_stop"] = "escalate"
                 st["auto_fix_escalations"] = escalations
+                return
+            repeats = family_repeats(st)
+            if repeats:
+                st["auto_fix_stop"] = "state model"
+                st["auto_fix_escalations"] = repeats
                 return
         if conflict and len(st["rounds"]) >= st["fix_rounds"]:
             st["auto_fix_stop"] = st["review_skipped"] = "base conflict"

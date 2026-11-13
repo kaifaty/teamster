@@ -84,6 +84,8 @@ STATE_FIELDS = {
     "auto_fix_stop": StateField("turn", spawn_reset=STATE_DELETE),
     "base_merges": StateField("turn", spawn_reset=STATE_DELETE),
     "auto_fix_escalations": StateField("turn", spawn_reset=STATE_DELETE),
+    # P1/P2 findings with their function, one list per completed review; the state model stop compares the last two.
+    "review_families": StateField("history"),
     "turn_stop": StateField("turn", spawn_reset=STATE_DELETE),
     "wrapup": StateField("turn", spawn_reset=STATE_DELETE),
     "review_result": StateField("turn", spawn_reset=STATE_DELETE),

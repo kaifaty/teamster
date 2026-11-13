@@ -78,6 +78,10 @@ Put these in "Done when" when they apply:
 - Changes to shared code: the neighbouring paths that must behave as on the base branch, with a test that
   pins them.
 - Ordering, sync or concurrency mechanisms: every interleaving that must hold, one per line, each pinned by a test.
+  For a deferred, held or retried run (a first message, a queued question, a retry slot), write a
+  state × event table in the first brief: one row per state, one column per event that can arrive
+  (remount, leave, account switch, quota, capacity, creation failure, and the repository's own), each
+  cell the required outcome. Ask for one rule that satisfies every cell, not a fix per cell.
 - Wording that matters (docs, messages, UI text): the exact text, marked as verbatim.
 - Probes whose non-zero exit is a normal answer, such as a process search that finds nothing: make absence an explicit success value (for example `pgrep -f NAME || echo absent`), or the repeat guard reads it as the same failure again.
 
@@ -215,6 +219,10 @@ reports. Verify key facts by reading only the cited `file:line` locations; use `
 - On `escalate`, read the finding and the named fix round's diff. Choose one: simplify with a narrow
   `say` instruction to remove the extra mechanism; accept the finding as P3 or record an issue; or
   allow one focused round with `say <slug> "…" --max-minutes M --review --fix-rounds 1`.
+- On `state model`, two reviews in a row found a new P1/P2 in the same function: the fixes are patching
+  one state machine case by case. Before the next `say`, describe the model: add the state × event table
+  from [the brief](#the-brief) to it and ask for one rule that satisfies every cell, with a test per
+  cell; the earlier findings become rows of the table.
 - After two rounds on the same point, take it to the user.
 - After two `budget_exhausted` turns in a row, don't send another continuation. Split what remains into
   new briefs that each fit one turn.
