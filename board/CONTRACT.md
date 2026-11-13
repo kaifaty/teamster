@@ -421,7 +421,7 @@ interface Launch {
   repo: string | null;       // implement: repository directory name; reflect: null
   stage: "accepting" | "fetching" | "worktree" | "preparing" | "starting" | "done" | "failed";
   steps: {stage: string; at: number}[]; // every entered stage in order; last stage equals stage
-  error: string | null;      // failed only: trimmed stderr tail (stdout if empty), ≤ 2000, or "timeout"
+  error: string | null;      // failed only: stderr/stdout tail, thread exception text (≤ 2000), or "timeout"
   started_at: number;        // request acceptance, Unix seconds; step at values are Unix seconds too
 }
 
@@ -851,6 +851,9 @@ Successful admission returns immediately, without waiting for any command:
 in a background thread. Each launch command has a 300-second timeout; on expiry the process is killed
 and awaited and the launch becomes `failed` with `error: "timeout"`. Other command failures set
 `error` to the last 2000 characters of trimmed stderr, falling back to stdout when stderr is empty.
+An unexpected exception in a launch thread is logged and sets `failed` with the last 2000 characters
+of its message, including exceptions during preparation or temporary-file cleanup. A failed launch
+releases its place in the four-launch limit; `done` requires a zero command exit and successful cleanup.
 
 Implementation stages are `accepting` (only a `proposed` lesson, running the lesson acceptance),
 then `fetching` (running `teamster start` before disk markers appear), `worktree` (the data home's
@@ -941,21 +944,33 @@ There is no merge endpoint for ordinary tasks.
   Claude desktop sessions get 404. The source files are `events.jsonl` and `claude-events.jsonl`,
   located with the same safe task-file lookup; symbolic links are never read. Missing files give an
   empty feed. Invalid JSON lines are skipped.
-  Each Codex `item.started`/`item.completed` item and each content block in a Claude `assistant`
-  event contributes an item using the activity parser's event types. `message` and `thinking` preserve
+  Codex `command_execution`, `file_change` and `collab_tool_call` contribute only their `item.started`
+  event; their `item.completed` event is skipped to avoid showing the same item twice. Codex
+  `agent_message` and `reasoning` contribute only their `item.completed` event. Each content block
+  in a Claude `assistant` event contributes an item using the activity parser's event types. These
+  feed rules do not change the latest activity parser or `EventTail`. `message` and `thinking` preserve
   line breaks, trim surrounding whitespace, skip empty text and keep at most 4000 characters,
   including a final `…` when shortened. A message that is entirely a JSON object with a string
   `summary` uses that summary. `command` is a single line ≤ 500 characters; `edit` is one path or
   comma-separated paths, ≤ 500 characters; `tool` is its name and optional short input detail on one
   line, ≤ 200 characters. Claude details are `file_path` for `Read`, `pattern` for `Grep` and `Glob`,
   and `description` for `Agent`/`Task`.
+  Paths in `edit` and the `file_path` detail of `Read` are relative to the task's `state.json` →
+  `worktree` when lexically inside it; other paths, and paths for a task without `worktree`, stay as
+  written. This comparison and conversion do not access the filesystem.
   `at` uses the event timestamp, otherwise the previous item's time in the same file, otherwise that
   file's mtime. The two files merge by `at`, preserving each file's order.
   Without `after`, read at most the last 256 KiB of each file, discard an incomplete first line and
   return at most the newest 400 items. `truncated: true` means older data did not fit.
   A cursor records each file's identity and byte position, with enough timestamp context to continue
   without server state. Continuations read only new complete lines, at most 256 KiB per file per
-  request. An unterminated last line is neither emitted nor skipped: the next request can finish it.
+  request. An unterminated last line shorter than the read limit is neither emitted nor skipped:
+  the next request can finish it. If a full 256 KiB chunk read from the cursor contains no newline,
+  advance past the chunk and record in the cursor that reading is inside an oversized line. Following
+  requests discard bytes through the next newline, inclusive, then resume normal parsing. The whole
+  oversized line is omitted, including when it is still being appended; each request retains the
+  256 KiB per-file read limit and all continuation state stays in the cursor. Discarding oversized-line
+  bytes sets `truncated: true`. Initial tail reads keep the same incomplete-first-line handling above.
   A replaced or truncated file, or an invalid cursor, sets `reset: true` and returns an initial feed;
   otherwise `reset: false` (also on an initial request).
 - `GET /api/research` → `ResearchView`; other methods get 405.

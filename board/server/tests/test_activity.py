@@ -133,7 +133,7 @@ def test_message_summary_and_file_timestamp_fallback(tmp_path, executor):
 
 
 def test_feed_preserves_each_block_details_and_limits():
-    from teamster_board.activity import feed_items
+    from teamster_board.activity import _activity, feed_items
 
     content = [
         {"type": "text", "text": "  First\n\nparagraph  "},
@@ -166,8 +166,14 @@ def test_feed_preserves_each_block_details_and_limits():
         ({"type": "reasoning", "text": "Thinking\n through"}, "thinking", "Thinking\n through"),
         ({"type": "collab_tool_call", "tool": "spawn_agent", "prompt": "Check\n tests"}, "tool", "spawn_agent Check tests"),
     ]:
-        assert feed_items({"type": "item.completed", "item": item, "at": 12}) == [
+        event_type = "item.completed" if kind in ("message", "thinking") else "item.started"
+        assert feed_items({"type": event_type, "item": item, "at": 12}) == [
             {"at": 12, "kind": kind, "text": text}]
+        other_type = "item.started" if event_type == "item.completed" else "item.completed"
+        assert feed_items({"type": other_type, "item": item, "at": 12}) == []
+        for phase in (event_type, other_type):
+            assert _activity({"type": phase, "item": item, "at": 12}) == {
+                "at": 12, "kind": kind, "text": " ".join(text.split())}
 
 
 def test_feed_cursor_merge_partial_lines_and_timestamp_carry(tmp_path):
@@ -243,6 +249,7 @@ def test_feed_initial_tail_item_limit_and_bounded_increment(tmp_path, monkeypatc
                            "item": {"type": "agent_message", "text": str(index) + "x" * 600}}).encode() + b"\n"
     path.write_bytes(b"".join(content(index) for index in range(1000)))
     reads = []
+    append_during_read = []
     original_fdopen = os.fdopen
 
     class TrackedStream:
@@ -255,6 +262,9 @@ def test_feed_initial_tail_item_limit_and_bounded_increment(tmp_path, monkeypatc
         def __getattr__(self, name):
             return getattr(self.stream, name)
         def read(self, count):
+            if append_during_read:
+                with path.open("ab") as stream:
+                    stream.write(append_during_read.pop())
             data = self.stream.read(count)
             reads.append(len(data))
             return data
@@ -282,6 +292,13 @@ def test_feed_initial_tail_item_limit_and_bounded_increment(tmp_path, monkeypatc
     capped = task_feed({"events.jsonl": path}, "task")
     assert capped["truncated"] is True
     assert [item["at"] for item in capped["items"]] == list(range(50, 450))
+    append_during_read.append(content(450))
+    raced = task_feed({"events.jsonl": path}, "task", capped["cursor"])
+    assert raced["items"] == [] and raced["reset"] is False
+    appended = task_feed({"events.jsonl": path}, "task", raced["cursor"])
+    assert [item["at"] for item in appended["items"]] == [450]
+    assert appended["reset"] is False
+    assert task_feed({"events.jsonl": path}, "task", appended["cursor"])["items"] == []
 
 
 
@@ -323,3 +340,73 @@ def test_feed_reset_validates_both_sources_before_reading_tails(tmp_path, monkey
     assert reset["reset"] is True and reset["truncated"] is True
     for path in (codex, claude):
         assert sum(count for inode, count in reads if inode == path.stat().st_ino) <= TAIL_BYTES
+
+
+def test_feed_skips_oversized_lines_and_waits_for_short_partial_lines(tmp_path):
+    from teamster_board.activity import task_feed
+
+    def row(text):
+        return json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": text}}).encode() + b"\n"
+
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(row("first"))
+    paths = {"events.jsonl": path}
+    first = task_feed(paths, "task")
+    oversized = row("x" * (262397 - len(row(""))))
+    assert len(oversized) == 262397
+    with path.open("ab") as stream:
+        stream.write(oversized + row("after oversized"))
+    skipped = task_feed(paths, "task", first["cursor"])
+    assert skipped["items"] == [] and skipped["truncated"] is True and skipped["reset"] is False
+    following = task_feed(paths, "task", skipped["cursor"])
+    assert [item["text"] for item in following["items"]] == ["after oversized"]
+    assert following["truncated"] is True and following["reset"] is False
+    assert len({first["cursor"], skipped["cursor"], following["cursor"]}) == 3
+    assert task_feed(paths, "task", following["cursor"])["items"] == []
+
+    with path.open("ab") as stream:
+        stream.write(oversized[:80])
+    short = task_feed(paths, "task", following["cursor"])
+    assert short["items"] == [] and short["truncated"] is False
+    with path.open("ab") as stream:
+        stream.write(oversized[80:TAIL_BYTES])
+    growing = task_feed(paths, "task", short["cursor"])
+    assert growing["items"] == [] and growing["truncated"] is True
+    with path.open("ab") as stream:
+        stream.write(oversized[TAIL_BYTES:TAIL_BYTES + 10])
+    inside = task_feed(paths, "task", growing["cursor"])
+    assert inside["items"] == [] and inside["truncated"] is True
+    with path.open("ab") as stream:
+        stream.write(oversized[TAIL_BYTES + 10:] + row("after growing"))
+    completed = task_feed(paths, "task", inside["cursor"])
+    assert [item["text"] for item in completed["items"]] == ["after growing"]
+    assert completed["reset"] is False
+    assert len({short["cursor"], growing["cursor"], inside["cursor"], completed["cursor"]}) == 4
+
+    near_limit = row("y" * (TAIL_BYTES - 1 - len(row(""))))
+    assert len(near_limit) == TAIL_BYTES - 1
+    with path.open("ab") as stream:
+        stream.write(near_limit)
+    retained = task_feed(paths, "task", completed["cursor"])
+    assert [item["text"] for item in retained["items"]] == ["y" * 3999 + "…"]
+    assert retained["truncated"] is False and retained["reset"] is False
+    assert task_feed(paths, "task", retained["cursor"])["items"] == []
+
+
+def test_feed_paths_are_relative_only_inside_the_worktree():
+    from teamster_board.activity import feed_items
+
+    paths = ["/tmp/task/src/../a.py", "/tmp/task/b.py", "/tmp/task-other/c.py", "relative/d.py"]
+    event = {"type": "item.started", "item": {"type": "file_change", "changes": [
+        {"path": path} for path in paths]}}
+    assert feed_items(event, "/tmp/task")[0]["text"] == "a.py, b.py, /tmp/task-other/c.py, relative/d.py"
+    assert feed_items(event)[0]["text"] == ", ".join(paths)
+    content = [{"type": "tool_use", "name": name, "input": {"file_path": path}}
+               for name, path in (("Edit", paths[0]), ("Write", paths[1]), ("Read", paths[1]),
+                                  ("Read", paths[2]), ("Read", paths[3]))]
+    content.append({"type": "tool_use", "name": "Glob", "input": {"pattern": "/tmp/task/*.py"}})
+    event = {"type": "assistant", "message": {"content": content}}
+    assert [item["text"] for item in feed_items(event, "/tmp/task")] == [
+        "a.py", "b.py", "Read b.py", "Read /tmp/task-other/c.py", "Read relative/d.py", "Glob /tmp/task/*.py"]
+    assert [item["text"] for item in feed_items(event)] == [
+        paths[0], paths[1], "Read " + paths[1], "Read " + paths[2], "Read " + paths[3], "Glob /tmp/task/*.py"]

@@ -239,8 +239,16 @@ class Actions:
         self._launches[slug] = launch
         initial = copy.deepcopy(launch)
         self.publish(initial)
-        threading.Thread(target=target, args=(launch, *args), daemon=True).start()
+        threading.Thread(target=self._launch_worker, args=(launch, target, args), daemon=True).start()
         return {"ok": True, "output": "", "slug": slug, "launch": initial}
+
+    def _launch_worker(self, launch, target, args):
+        try:
+            failure = target(launch, *args)
+        except Exception as exc:
+            LOGGER.exception("/api/actions/%s launch=%s failed", launch["kind"], launch["slug"])
+            failure = str(exc)[-2000:]
+        self._stage(launch, "failed" if failure is not None else "done", failure)
 
     def _stage(self, launch, stage, failure=None):
         with self.launch_lock:
@@ -318,13 +326,10 @@ class Actions:
                     path = Path(stream.name)
                     stream.write(file_text)
                 argv.extend(["--file", str(path)])
-            failure = self._execute_launch(launch, argv)
-        except OSError as exc:
-            failure = str(exc)[-2000:]
+            return self._execute_launch(launch, argv)
         finally:
             if path is not None:
                 path.unlink()
-        self._stage(launch, "failed" if failure is not None else "done", failure)
 
     def _task(self, route, data):
         slug = data.get("slug")
@@ -436,7 +441,6 @@ class Actions:
 
     def _implement_worker(self, launch, lesson, note, started, lesson_id, repo):
         path = None
-        failure = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as stream:
                 path = Path(stream.name)
@@ -446,7 +450,7 @@ class Actions:
                     failure = self._execute_launch(launch, [self.command, "lesson", lesson["entry"], "accepted",
                                                            f"--note=внедряется: {launch['slug']}"], observe=False)
                 if failure is not None:
-                    return
+                    return failure
                 self.research.invalidate()
                 self._stage(launch, "fetching")
             argv = [self.command, "start", launch["slug"], "--brief", str(path), "--repo", repo,
@@ -460,13 +464,10 @@ class Actions:
                     argv.append("--ci")
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            failure = self._execute_launch(launch, argv)
-        except OSError as exc:
-            failure = str(exc)[-2000:]
+            return self._execute_launch(launch, argv)
         finally:
             if path is not None:
                 path.unlink()
-            self._stage(launch, "failed" if failure is not None else "done", failure)
 
     def _observe_launch(self, launch):
         if launch["kind"] == "implement" and launch["stage"] == "fetching":
@@ -484,21 +485,26 @@ class Actions:
                                   cwd=Path.home()) as process:
                 deadline = time.monotonic() + LAUNCH_TIMEOUT
                 timed_out = False
-                while True:
+                try:
+                    while True:
+                        if observe:
+                            self._observe_launch(launch)
+                        remaining = deadline - time.monotonic()
+                        try:
+                            stdout, stderr = process.communicate(timeout=max(0, min(LAUNCH_POLL_SECONDS, remaining)))
+                            break
+                        except subprocess.TimeoutExpired:
+                            if remaining <= 0:
+                                process.kill()
+                                stdout, stderr = process.communicate()
+                                timed_out = True
+                                break
                     if observe:
                         self._observe_launch(launch)
-                    remaining = deadline - time.monotonic()
-                    try:
-                        stdout, stderr = process.communicate(timeout=max(0, min(LAUNCH_POLL_SECONDS, remaining)))
-                        break
-                    except subprocess.TimeoutExpired:
-                        if remaining <= 0:
-                            process.kill()
-                            stdout, stderr = process.communicate()
-                            timed_out = True
-                            break
-                if observe:
-                    self._observe_launch(launch)
+                except Exception:
+                    process.kill()
+                    process.communicate()
+                    raise
         except OSError as exc:
             LOGGER.info("/api/actions/%s argv=%s exit=unavailable", route, json.dumps(argv))
             return str(exc)[-2000:]

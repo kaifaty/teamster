@@ -970,8 +970,10 @@ class Store:
             record = self._record(slug)
             if record is None or record.archived or self._file(record.path, "state.json") is None:
                 return None
+            self._read_state(record)
+            worktree = record.state.get("worktree")
             paths = {name: self._file(record.path, name) for name in FEED_FILES}
-        return task_feed(paths, slug, after)
+        return task_feed(paths, slug, after, worktree)
 
     def file_path(self, slug, name):
         with self.lock:

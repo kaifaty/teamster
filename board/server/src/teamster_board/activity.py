@@ -1,7 +1,6 @@
 """Read the latest activity from bounded, incremental executor JSONL tails."""
 
 import base64
-import hashlib
 import json
 import math
 import os
@@ -33,7 +32,15 @@ def _timestamp(value):
     return None
 
 
-def _contents(event, details=False):
+def _relative_path(value, worktree):
+    if (not isinstance(value, str) or not isinstance(worktree, str)
+            or not os.path.isabs(value) or not os.path.isabs(worktree)):
+        return value
+    path, root = os.path.normpath(value), os.path.normpath(worktree)
+    return os.path.relpath(path, root) if os.path.commonpath((path, root)) == root else value
+
+
+def _contents(event, details=False, worktree=None):
     """Yield every recognized content block in executor order."""
     if not isinstance(event, dict):
         return
@@ -47,7 +54,7 @@ def _contents(event, details=False):
         elif item_type == "file_change":
             changes = item.get("changes")
             changes = changes if isinstance(changes, list) else []
-            yield "edit", ", ".join(change["path"] for change in changes
+            yield "edit", ", ".join(_relative_path(change["path"], worktree) for change in changes
                                    if isinstance(change, dict) and isinstance(change.get("path"), str))
         elif item_type in ("agent_message", "reasoning"):
             yield "message" if item_type == "agent_message" else "thinking", item.get("text", "")
@@ -70,11 +77,13 @@ def _contents(event, details=False):
                 if name == "Bash":
                     yield "command", inputs.get("command", "")
                 elif name in ("Edit", "Write"):
-                    yield "edit", inputs.get("file_path", "")
+                    yield "edit", _relative_path(inputs.get("file_path", ""), worktree)
                 else:
                     field = {"Read": "file_path", "Grep": "pattern", "Glob": "pattern",
                              "Agent": "description", "Task": "description"}.get(name) if isinstance(name, str) else None
                     detail = inputs.get(field) if details and field else None
+                    if name == "Read":
+                        detail = _relative_path(detail, worktree)
                     yield "tool", " ".join(value for value in (name, detail) if isinstance(value, str))
             elif block_type == "text":
                 yield "message", block.get("text", "")
@@ -103,10 +112,16 @@ def _activity(event):
     return latest
 
 
-def feed_items(event):
+def feed_items(event, worktree=None):
     """Preserve message paragraphs while bounding the content shown by the board."""
+    if isinstance(event, dict) and event.get("type") in ("item.started", "item.completed"):
+        item = event.get("item")
+        if isinstance(item, dict):
+            expected = "item.completed" if item.get("type") in ("agent_message", "reasoning") else "item.started"
+            if event["type"] != expected:
+                return []
     items = []
-    for kind, text in _contents(event, details=True):
+    for kind, text in _contents(event, details=True, worktree=worktree):
         text = _message(text) if kind == "message" else text
         if not isinstance(text, str):
             continue
@@ -144,16 +159,14 @@ def _cursor(after, slug):
         for position in files.values():
             if position is None:
                 continue
-            if (not isinstance(position, dict) or set(position) != {"id", "size", "offset", "at", "anchor", "anchor_size"}
+            if (not isinstance(position, dict) or set(position) != {"id", "size", "offset", "at", "mtime", "skipping"}
                     or not isinstance(position["id"], list) or len(position["id"]) != 2
                     or any(type(value) is not int or value < 0 for value in position["id"])
                     or type(position["size"]) is not int or type(position["offset"]) is not int
                     or not 0 <= position["offset"] <= position["size"]
-                    or type(position["anchor_size"]) is not int
-                    or not 0 <= position["anchor_size"] <= min(64, position["offset"])
+                    or type(position["mtime"]) is not int or type(position["skipping"]) is not bool
                     or (position["at"] is not None
-                        and (type(position["at"]) not in (int, float) or _timestamp(position["at"]) is None))
-                    or not isinstance(position["anchor"], str) or len(position["anchor"]) != 32):
+                        and (type(position["at"]) not in (int, float) or _timestamp(position["at"]) is None))):
                 return None
         return files
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
@@ -175,65 +188,64 @@ def _feed_source(path, stack):
 def _feed_position(source, position):
     """Validate both sources before either is consumed, so a reset never reads twice."""
     if position is None:
-        return True, b""
+        return True
     if source is None:
-        return False, b""
-    stream, metadata = source
-    if [metadata.st_dev, metadata.st_ino] != position["id"] or metadata.st_size < position["size"]:
-        return False, b""
-    stream.seek(position["offset"] - position["anchor_size"])
-    anchor = stream.read(position["anchor_size"])
-    return hashlib.md5(anchor).hexdigest() == position["anchor"], anchor
+        return False
+    _, metadata = source
+    return ([metadata.st_dev, metadata.st_ino] == position["id"]
+            and metadata.st_size >= position["size"]
+            and (metadata.st_size != position["size"] or metadata.st_mtime_ns == position["mtime"]))
 
 
-def _feed_file(source, position, initial, old_anchor):
-    """Read complete lines only; offsets always stop before an unfinished line."""
+def _feed_file(source, position, initial, worktree):
+    """Wait for short partial lines; skip oversized ones across bounded reads."""
     if source is None:
         return [], None, False
     stream, metadata = source
     offset = 0 if position is None or initial else position["offset"]
     previous_at = None if position is None or initial else position["at"]
-    budget = TAIL_BYTES - len(old_anchor)
-    truncated = initial and metadata.st_size > budget
+    skipping = False if position is None or initial else position["skipping"]
+    truncated = initial and metadata.st_size > TAIL_BYTES
     if truncated:
-        offset = metadata.st_size - budget
+        offset = metadata.st_size - TAIL_BYTES
     stream.seek(offset)
-    read_offset = offset
-    chunk = stream.read(budget)
-    raw_chunk = chunk
-    # The first byte is the boundary probe inside the bounded tail window.
+    chunk = stream.read(max(0, min(TAIL_BYTES, metadata.st_size - offset)))
+    # The first byte is the boundary probe inside the bounded initial tail window.
     if truncated:
         offset += 1
         boundary, chunk = chunk[:1], chunk[1:]
-        if boundary != b"\n":
-            end = chunk.find(b"\n")
-            skipped = len(chunk) if end < 0 else end + 1
-            offset += skipped
-            chunk = chunk[skipped:]
+        skipping = boundary != b"\n"
+    if skipping:
+        truncated = True
+        end = chunk.find(b"\n")
+        skipped = len(chunk) if end < 0 else end + 1
+        offset += skipped
+        chunk = chunk[skipped:]
+        skipping = end < 0
+    if len(chunk) == TAIL_BYTES and b"\n" not in chunk:
+        offset += len(chunk)
+        chunk = b""
+        skipping = truncated = True
     complete = chunk.rfind(b"\n") + 1
     data = chunk[:complete]
     next_offset = offset + complete
-    # Fingerprint only bytes already read, keeping the total within TAIL_BYTES.
-    consumed = next_offset - read_offset
-    prefix = old_anchor if not initial else b""
-    anchor = (prefix + raw_chunk[:consumed])[-64:]
     items = []
     for line in data.splitlines():
         try:
             event = json.loads(line)
         except (ValueError, UnicodeError, RecursionError):
             continue
-        for item in feed_items(event):
+        for item in feed_items(event, worktree):
             if item["at"] is None:
                 item["at"] = metadata.st_mtime if previous_at is None else previous_at
             previous_at = item["at"]
             items.append(item)
     state = {"id": [metadata.st_dev, metadata.st_ino], "size": metadata.st_size, "offset": next_offset,
-             "at": previous_at, "anchor": hashlib.md5(anchor).hexdigest(), "anchor_size": len(anchor)}
+             "at": previous_at, "mtime": metadata.st_mtime_ns, "skipping": skipping}
     return items, state, truncated
 
 
-def task_feed(paths, slug, after=None):
+def task_feed(paths, slug, after=None, worktree=None):
     """Merge two bounded file tails with a self-contained cursor, without server state."""
     positions = _cursor(after, slug)
     reset = after is not None and positions is None
@@ -242,10 +254,10 @@ def task_feed(paths, slug, after=None):
         sources = [_feed_source(paths.get(name), stack) for name in FEED_FILES]
         checks = [_feed_position(source, None if positions is None else positions[name])
                   for name, source in zip(FEED_FILES, sources)]
-        if not initial and not all(valid for valid, _ in checks):
+        if not initial and not all(checks):
             reset = initial = True
-        results = [_feed_file(source, None if positions is None else positions[name], initial, anchor)
-                   for name, source, (_, anchor) in zip(FEED_FILES, sources, checks)]
+        results = [_feed_file(source, None if positions is None else positions[name], initial, worktree)
+                   for name, source in zip(FEED_FILES, sources)]
     left, right = (result[0] for result in results)
     items = []
     i = j = 0

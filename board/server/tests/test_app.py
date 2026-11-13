@@ -1505,6 +1505,78 @@ def test_station_launch_timeout_kills_and_waits(station, lesson_repo, monkeypatc
         assert not Path(records[0]["argv"][records[0]["argv"].index(file_flag) + 1]).exists()
 
 
+@pytest.mark.parametrize("kind", ["implement", "reflect"])
+@pytest.mark.parametrize("fault", ["preparing", "cleanup", "running"])
+def test_station_launch_unexpected_exception_fails_and_frees_capacity(station, lesson_repo, monkeypatch,
+                                                                     caplog, kind, fault):
+    client, application, _, entry, calls, control = station
+    monkeypatch.setattr(actions_module, "LAUNCH_LIMIT", 1)
+    message = "Unexpected launch error: " + "x" * 2100
+    created = []
+    original_temporary = actions_module.tempfile.NamedTemporaryFile
+    original_unlink = Path.unlink
+
+    def temporary(*args, **kwargs):
+        if fault == "preparing":
+            raise RuntimeError(message)
+        stream = original_temporary(*args, **kwargs)
+        created.append(Path(stream.name))
+        return stream
+
+    def unlink(path, *args, **kwargs):
+        if path in created:
+            raise RuntimeError(message)
+        return original_unlink(path, *args, **kwargs)
+
+    def observe(launch):
+        records = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+        if any(row["argv"][:2] == ["start" if kind == "implement" else "reflect", launch["slug"]]
+               for row in records):
+            raise RuntimeError(message)
+
+    body = {"entry": entry, "repo": str(lesson_repo)} if kind == "implement" else {"order": "Inspect"}
+    if fault == "running":
+        control.write_text(json.dumps({"stages": True}))
+    try:
+        with monkeypatch.context() as faults:
+            faults.setattr(actions_module.tempfile, "NamedTemporaryFile", temporary)
+            if fault == "cleanup":
+                faults.setattr(Path, "unlink", unlink)
+            if fault == "running":
+                faults.setattr(application.state.board.actions, "_observe_launch", observe)
+            with client.websocket_connect("/ws", headers={"Host": "localhost:8787"}) as socket:
+                assert socket.receive_json()["type"] == "snapshot"
+                response = client.post(f"/api/actions/{kind}", json=body)
+                slug = response.json()["slug"]
+                assert_launch_response(response, slug, kind)
+                failed = wait_launch(station, slug, "failed")
+                assert failed["error"] == message[-2000:]
+                assert "done" not in [step["stage"] for step in failed["steps"]]
+                stages = []
+                while not stages or stages[-1] != "failed":
+                    event = socket.receive_json()
+                    if event["type"] == "launch" and event["launch"]["slug"] == slug:
+                        stages.append(event["launch"]["stage"])
+                assert event["launch"] == failed
+                assert stages == [step["stage"] for step in failed["steps"]]
+    finally:
+        for path in created:
+            original_unlink(path, missing_ok=True)
+    if fault == "running":
+        record = json.loads(calls.read_text().splitlines()[-1])
+        with pytest.raises(ProcessLookupError):
+            os.kill(record["pid"], 0)
+    errors = [row for row in caplog.records if row.exc_info]
+    assert len(errors) == 1
+    assert errors[0].exc_info[0] is RuntimeError
+    assert slug in errors[0].message and str(errors[0].exc_info[1]) == message
+    # A failed worker releases the only launch slot, including after a cleanup error.
+    control.write_text("{}")
+    replacement = client.post("/api/actions/reflect", json={})
+    assert replacement.status_code == 200
+    wait_launch(station, replacement.json()["slug"])
+
+
 def test_station_research_launch_retention_and_order(station, monkeypatch):
     client, application, _, _, calls, control = station
     first = client.post("/api/actions/reflect", json={}).json()["slug"]
