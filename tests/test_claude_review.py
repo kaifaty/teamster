@@ -364,6 +364,18 @@ class ClaudeReviewTests(RotationTestCase):
                 else:
                     self.assertIn(expected, reason.getvalue())
 
+    def test_bash_timeouts_round_the_remaining_budget_to_the_millisecond(self):
+        worker = self.worker()
+        runner = worker.claude_review.claude_runner
+        # At this clock value (now + 900) - now is 899.9999999999995 in floating point.
+        now = 3748.0320844460025
+        self.assertLess((now + 900) - now, 900)
+        with mock.patch.object(worker.clock.CLOCK, "monotonic", return_value=now):
+            self.assertEqual(runner.bash_timeouts(now + 900, 60),
+                             {"BASH_DEFAULT_TIMEOUT_MS": "600000", "BASH_MAX_TIMEOUT_MS": "900000"})
+            self.assertEqual(runner.bash_timeouts(now + 60, 5),
+                             {"BASH_DEFAULT_TIMEOUT_MS": "300000", "BASH_MAX_TIMEOUT_MS": "300000"})
+
     def test_claude_work_turn_bash_hook_timeouts_and_language(self):
         self.enable_fake_clock(auto_advance=False)
         self.claude_fixture(runs=[{"reply": self.work_result()}])

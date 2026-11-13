@@ -50,7 +50,8 @@ def bash_timeouts(deadline, max_minutes):
              else max(deadline - clock.CLOCK.monotonic(), BASH_FLOOR_SECONDS))
     if max_minutes is not None:
         limit = min(limit, max_minutes * config.MINUTE_SECONDS)
-    maximum = max(int(limit * 1000), 1000)
+    # Rounded, not truncated: (now + 900) - now can come out as 899.9999999999995.
+    maximum = max(round(limit * 1000), 1000)
     return {"BASH_DEFAULT_TIMEOUT_MS": str(min(maximum, BASH_FLOOR_SECONDS * 1000)),
             "BASH_MAX_TIMEOUT_MS": str(maximum)}
 
