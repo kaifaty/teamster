@@ -86,6 +86,80 @@ class VersionInstallTests(unittest.TestCase):
         (task / "state.json").write_text(json.dumps({"slug": slug, "pid": proc.pid, "kind": "work"}))
         return proc
 
+    def test_bump_version_for_releases(self):
+        paths = ("src/teamster/__init__.py", "plugins/teamster/.claude-plugin/plugin.json")
+        current = re.search(rb'__version__ = "([^"]+)"', (ROOT / paths[0]).read_bytes())[1]
+        cases = (("major", "2.0.0", ""), ("minor", "1.3.0", ""),
+                 ("patch", "1.2.4", ""), ("1.10.0", "1.10.0", ""),
+                 ("1.2.2", None, "greater"), ("1.2.3", None, "greater"),
+                 ("mismatch", None, "differ"),
+                 ("dirty-package", None, "clean"), ("staged-package", None, "clean"),
+                 ("dirty-plugin", None, "clean"), ("staged-plugin", None, "clean"),
+                 ("commit", "1.2.4", ""))
+        for case, expected, error in cases:
+            with self.subTest(case=case):
+                repo = self.root / case
+                for name in (*paths, "scripts/bump_version.py"):
+                    target = repo / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    data = (ROOT / name).read_bytes()
+                    if name in paths:
+                        data = data.replace(current, b"1.2.3").replace(b"\n", b"\r\n")
+                    target.write_bytes(data)
+
+                def git(*args):
+                    return source_git(repo, self.env, *args).strip()
+
+                plugin = repo / paths[1]
+                if case == "mismatch":
+                    plugin.write_bytes(plugin.read_bytes().replace(b"1.2.3", b"1.2.2"))
+                unrelated = repo / "unrelated.txt"
+                unrelated.write_text("initial\n")
+                git("init", "-q", "-b", "main")
+                git("config", "user.name", "Release Test")
+                git("config", "user.email", "release@example.test")
+                git("add", ".")
+                git("commit", "-q", "-m", "Initial files")
+                if case.startswith(("dirty-", "staged-")):
+                    name = paths[0] if case.endswith("package") else paths[1]
+                    target = repo / name
+                    target.write_bytes(target.read_bytes() + b"\r\n")
+                    if case.startswith("staged-"):
+                        git("add", "--", name)
+                if case == "commit":
+                    unrelated.write_text("staged\n")
+                    git("add", "unrelated.txt")
+                    unrelated.write_text("unstaged\n")
+                before = [(repo / name).read_bytes() for name in paths]
+                status = git("status", "--porcelain")
+                staged = git("diff", "--cached")
+                unstaged = git("diff")
+                requested = case if case in ("major", "minor", "patch", "1.10.0", "1.2.2", "1.2.3") else "patch"
+                args = [PYTHON, "-I", str(repo / "scripts/bump_version.py"), requested]
+                if case == "commit":
+                    args.append("--commit")
+                result = subprocess.run(args, cwd=self.root, env=self.env, text=True,
+                                        capture_output=True, timeout=30)
+                after = [(repo / name).read_bytes() for name in paths]
+                if error:
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn(error, result.stderr)
+                    self.assertEqual(after, before)
+                    self.assertEqual(git("status", "--porcelain"), status)
+                    self.assertEqual(git("diff", "--cached"), staged)
+                    self.assertEqual(git("rev-list", "--count", "HEAD"), "1")
+                    continue
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((result.stdout, result.stderr), (expected + "\n", ""))
+                self.assertEqual(after, [data.replace(b"1.2.3", expected.encode("ascii")) for data in before])
+                self.assertEqual(git("diff", "--cached"), staged)
+                self.assertEqual(git("rev-list", "--count", "HEAD"), "2" if case == "commit" else "1")
+                if case == "commit":
+                    self.assertEqual(git("show", "-s", "--format=%s"), "Release " + expected)
+                    self.assertEqual(set(git("show", "--format=", "--name-only").splitlines()), set(paths))
+                    self.assertEqual(git("diff"), unstaged)
+                    self.assertEqual(git("status", "--porcelain"), status)
+
     def test_upgrade_installs_versions_side_by_side(self):
         self.release("9.0.0")
         preview = self.upgrade()
