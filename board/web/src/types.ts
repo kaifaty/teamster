@@ -368,6 +368,21 @@ export interface TaskDetail extends TaskSummary {
   changes?: TaskChanges | null;
 }
 
+/** GET /api/tasks/{slug}/feed: the agent's work by time. `cursor` continues it with `?after=`. */
+export interface TaskFeed {
+  items: FeedItem[];
+  cursor: string; // opaque, stateless continuation token
+  reset: boolean; // the feed is given anew: it replaces the items shown before
+  truncated: boolean; // older work did not fit
+}
+
+/** One step of the agent's work: `message` and `thinking` keep their line breaks (≤ 4000 chars), the rest is one line. */
+export interface FeedItem {
+  at: number;
+  kind: "message" | "thinking" | "command" | "edit" | "tool";
+  text: string;
+}
+
 /** The branch against its base: commits, the files and lines of `git diff --shortstat`, and uncommitted paths. */
 export interface TaskChanges {
   commits: number;

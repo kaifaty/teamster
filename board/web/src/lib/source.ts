@@ -1,5 +1,5 @@
 import type { ActionSender } from "./actions";
-import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFile } from "../types";
+import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import { connectSocket, type ConnectionState } from "./socket";
 
 /** Where the board gets its data: the real server, or the fixtures in `dev:fixture` mode. */
@@ -11,6 +11,11 @@ export interface BoardSource {
   fetchDetail(slug: string): Promise<TaskDetail | null>;
   /** null when the file does not exist (404). */
   fetchFile(slug: string, name: TaskFile): Promise<string | null>;
+  /**
+   * The agent's work by time, only what is new after `after` when given; null for an unknown, archived task, a session,
+   * and an older server without the route (404).
+   */
+  fetchFeed(slug: string, after: string | null): Promise<TaskFeed | null>;
   /** Which repositories have their own map art. */
   fetchArt(): Promise<ArtIndex>;
   /** Which repositories the galaxy draws together; none when the server has no such route yet (404). */
@@ -44,6 +49,11 @@ export function serverSource(): BoardSource {
     async fetchFile(slug, name) {
       const response = await get(`/api/tasks/${encodeURIComponent(slug)}/files/${name}`);
       return response ? response.text() : null;
+    },
+    async fetchFeed(slug, after) {
+      const query = after === null ? "" : `?after=${encodeURIComponent(after)}`;
+      const response = await get(`/api/tasks/${encodeURIComponent(slug)}/feed${query}`);
+      return response ? ((await response.json()) as TaskFeed) : null;
     },
     async fetchArt() {
       const response = await get("/api/art");

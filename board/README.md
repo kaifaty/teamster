@@ -134,8 +134,26 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
     from this tab), the start's steps, the task's state (the agent works, needs a decision with its questions, opened a
     PR to check, merge and then mark «Внедрено», changed the files outside the repository without a PR, stopped with its
     summary, or the task is closed) with, while the agent works, its phase in plain words (Работа, Проверка, Ревью, CI)
-    and its last action, live from the board's `activity` messages, then your replies to the agent. The task's own
-    feed of messages and commands has its place in this thread later. Changes are announced politely to screen readers.
+    and its last action, live from the board's `activity` messages, then your replies to the agent. Changes are
+    announced politely to screen readers.
+  - Between the start's steps and the task's state stands the agent's work by time, as in a chat, from
+    `GET /api/tasks/{slug}/feed`: its messages whole with their line breaks; its commands, edits and tools as one line
+    each, marked «команда», «правка» or «инструмент», cut with an ellipsis and whole on hover; its thinking as a dimmed
+    first line («думает») that opens on a click. A run of more than six short lines in a row shows its last three and
+    «ещё N действий», which shows the rest. While the lesson is open and its task exists, the feed is asked with its
+    cursor — once a second while the agent works and at once on the task's `activity` message, once more after the
+    agent stopped, then no more; closing the lesson, choosing a channel or closing the screen stops it. A `reset`
+    answer replaces the feed; a cut one says «Показана последняя часть работы» above it. A network error keeps what is
+    shown, and the next request goes with the same cursor. Standing at the bottom edge keeps you there as news comes;
+    scrolled up, the thread stays put and «Новые действия ↓» at its bottom edge scrolls down. The feed is a polite
+    `role="log"`, its buttons are reachable from the keyboard, and its rows do not animate with
+    `prefers-reduced-motion`. While the feed shows, the task's state keeps its phase and how long it goes («Работа ·
+    3 мин») instead of the last action. Once the agent stopped (with questions, stopped, or a change outside the
+    repository done), its whole report (`report` of `GET /api/tasks/{slug}`) with its line breaks takes the place of the
+    summary's first line, under the feed. An older server without the route (404) shows no feed, and the last action
+    stays.
+  - The open channel of a working study shows the analyst's feed the same way under the conversation instead of
+    «Аналитик читает записи…» once the feed has something in it.
   - Under the thread stand the lesson's buttons and, while the agent waits, the reply to it (`say` to the task). A
     proposed lesson is implemented, accepted without a task, declined with an optional reason, or discussed — in the
     study that filed it when that study can take a reply, otherwise in a new study over the last 30 days, whose channel

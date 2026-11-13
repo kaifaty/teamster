@@ -1,9 +1,11 @@
 // The science station's fixtures: what the reflection learned, and the board server's actions played on that data,
 // so that `dev:fixture` clicks through the whole station without a server. A start answers at once and then goes
-// stage by stage in `launch` messages; an implementing agent is a task on the board with a changing last action.
+// stage by stage in `launch` messages; an implementing agent is a task on the board with a changing last action and a
+// feed of its work, and so is a working analyst's feed.
 import type { ActionBodies, ActionResult } from "../lib/actions";
 import { reflectSlug } from "../lib/commands";
-import type { Activity, Implementation, Launch, LaunchStage, Lesson, ResearchView, ServerMessage, Study, StudyMessage, TaskSummary } from "../types";
+import type { Implementation, Launch, LaunchStage, Lesson, ResearchView, ServerMessage, Study, StudyMessage, TaskFeed, TaskSummary } from "../types";
+import { AGENT_WORK, STUDY_WORK, fixtureFeeds, fixtureReport } from "./feed";
 
 const task = (patch: Partial<Implementation> & Pick<Implementation, "slug" | "repo" | "created">): Implementation => ({
   archived: false, alive: false, result_status: null, pr: null, questions: [], summary: null, updated_at: patch.created, ...patch,
@@ -171,17 +173,6 @@ const message = (at: number, from: StudyMessage["from"], text: string | null, pa
   at, from, text, status: null, questions: [], lessons: [], file: null, ...patch,
 });
 
-/** What a fixture agent does, one line after another while it works. */
-const ACTIVITIES: [Activity["kind"], string][] = [
-  ["command", "rg -n \"save_format\" src tests"],
-  ["thinking", "Читаю, где формат сохранения проверяется при загрузке"],
-  ["edit", "tests/test_save_migration.py"],
-  ["command", "python -m pytest tests/test_save_migration.py -q"],
-  ["edit", "AGENTS.md"],
-  ["message", "Добавил тест загрузки сохранения прошлой версии"],
-  ["command", "git commit -m \"Test the save migration\""],
-];
-
 export type StationRoute = "lesson" | "say" | "reflect" | "implement";
 export type StationSender = <R extends StationRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
 
@@ -189,8 +180,12 @@ export interface FixtureStation {
   act: StationSender;
   /** The implementing agents' tasks, for the board's snapshot. */
   tasks(): TaskSummary[];
-  /** Once a second: the working agents' next action and phase. */
+  /** Once a second: the working agents' next action and phase, and the next item of their feeds. */
   tick(): void;
+  /** A station task's feed, in the fixture's time; null for a task the station does not know. */
+  feed(slug: string, after: string | null): TaskFeed | null;
+  /** An implementing agent's whole report once it stopped. */
+  report(slug: string): string | null;
 }
 
 /** A board task for a lesson's implementation. */
@@ -235,8 +230,21 @@ export function fixtureActions(view: ResearchView, clock: () => number, emit: (m
     });
     show(agent.task);
   }
-  // The agents already at work in the fixtures work on.
-  for (const lesson of view.lessons) if (lesson.implementation?.alive) work(lesson.implementation);
+  // The agents already at work in the fixtures work on, with what they did so far; those that stopped stay on the board
+  // with their whole turn in the feed, one of them with older work cut off.
+  const feeds = fixtureFeeds();
+  for (const lesson of view.lessons) {
+    const task = lesson.implementation;
+    if (!task || task.archived) continue;
+    if (task.alive) {
+      feeds.seed(task.slug, AGENT_WORK, 14, clock() - 1, 20);
+      work(task);
+    } else {
+      feeds.seed(task.slug, AGENT_WORK, AGENT_WORK.length, task.updated_at - 30, 25, task.result_status === "blocked");
+      agents.set(task.slug, { task: agentTask(task, task.updated_at), since: task.updated_at, step: 0 });
+      rest(task);
+    }
+  }
   function tick() {
     const now = clock();
     for (const agent of agents.values()) {
@@ -245,11 +253,12 @@ export function fixtureActions(view: ResearchView, clock: () => number, emit: (m
       const share = ((now - agent.since) * 1000 % IMPLEMENT_MS) / IMPLEMENT_MS;
       const phase = share < 0.55 ? "turn" : share < 0.78 ? "check" : "review";
       if (phase !== task.phase) Object.assign(task, { phase, phase_started_at: now });
-      const [kind, text] = ACTIVITIES[agent.step++ % ACTIVITIES.length]!;
-      task.activity = { at: now, kind, text };
+      const item = feeds.push(task.slug, AGENT_WORK, now);
+      task.activity = { at: now, kind: item.kind, text: item.text.split("\n")[0]!.slice(0, 200) };
       task.updated_at = now;
       show(task);
     }
+    for (const study of view.studies) if (study.alive) feeds.push(study.slug, STUDY_WORK, now);
   }
 
   /** The agent's turn ends: the first one asks a question, the next one opens a PR. */
@@ -392,5 +401,15 @@ export function fixtureActions(view: ResearchView, clock: () => number, emit: (m
     },
     tasks: () => [...agents.values()].map((agent) => ({ ...agent.task })),
     tick,
+    feed(slug, after) {
+      const known = !!implementing(slug)?.implementation && !implementing(slug)!.implementation!.archived;
+      const study = view.studies.find((item) => item.slug === slug && !item.archived);
+      if (!feeds.has(slug) && (known || study)) feeds.seed(slug, study ? STUDY_WORK : AGENT_WORK, 0, clock(), 1);
+      return feeds.read(slug, after);
+    },
+    report(slug) {
+      const task = implementing(slug)?.implementation;
+      return task ? fixtureReport(task.summary) : null;
+    },
   };
 }

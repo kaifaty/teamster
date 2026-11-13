@@ -47,6 +47,8 @@ const desk = createConsole(toRef(props, "research"), toRef(props, "now"), {
   openShip: (slug, repo) => emit("ship", slug, repo),
   launches: computed(() => Object.values(props.launches)),
   tasks: toRef(props, "tasks"),
+  fetchFeed: (slug, after) => props.source.fetchFeed(slug, after),
+  fetchDetail: (slug) => props.source.fetchDetail(slug),
 });
 provide(CONSOLE, desk);
 

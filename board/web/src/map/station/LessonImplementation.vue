@@ -1,7 +1,8 @@
 <script setup lang="ts">
-// How a lesson's implementation goes, in its thread: the agent works — with the task's phase and its last action, live
-// — needs a decision, opened a PR, changed the files outside the repository without one, stopped, or the task is
-// closed. The reply to the agent stands under the thread, with the lesson's buttons.
+// How a lesson's implementation goes, in its thread: the agent works — with the task's phase and its last action, live,
+// or, under the agent's feed, its phase and how long it goes — needs a decision, opened a PR, changed the files outside
+// the repository without one, stopped, or the task is closed. A stopped agent's whole report replaces its summary's
+// first line once it is known. The reply to the agent stands under the thread, with the lesson's buttons.
 import { computed } from "vue";
 import type { Lesson } from "../../types";
 import { implementationLine, outsideOf } from "../station";
@@ -12,7 +13,13 @@ const desk = useConsole();
 
 const line = computed(() => implementationLine(props.lesson.implementation, desk.cardOf(props.lesson).started, outsideOf(props.lesson)));
 const sent = computed(() => desk.agentSent(props.lesson));
-const work = computed(() => desk.workOf(props.lesson));
+const work = computed(() => desk.workLineOf(props.lesson));
+/** The stopped agent's report in full, or the first line of its summary until it is known. */
+const report = computed(() => {
+  const kind = line.value?.kind;
+  if (kind !== "decision" && kind !== "stopped" && kind !== "outside") return null;
+  return desk.agentReport.value ?? (kind === "decision" ? null : line.value!.summary);
+});
 </script>
 
 <template>
@@ -28,9 +35,9 @@ const work = computed(() => desk.workOf(props.lesson));
     <ul v-if="line.kind === 'decision' && line.questions.length" class="questions">
       <li v-for="(question, number) in line.questions" :key="number">{{ question }}</li>
     </ul>
-    <p v-if="(line.kind === 'stopped' || line.kind === 'outside') && line.summary" class="summary">{{ line.summary }}</p>
+    <p v-if="report" class="summary" :class="{ whole: !!desk.agentReport.value }">{{ report }}</p>
     <p v-if="work" class="work">
-      <span class="phase">{{ work.phase }}</span><template v-if="work.activity"> · <span class="activity">{{ work.activity }}</span></template>
+      <span class="phase">{{ work.phase }}</span><template v-if="work.going"> · {{ work.going }}</template><template v-if="work.activity"> · <span class="activity">{{ work.activity }}</span></template>
     </p>
   </div>
 </template>
@@ -94,6 +101,10 @@ a {
   color: var(--st-dim);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.summary.whole {
+  color: inherit;
 }
 
 .work {
