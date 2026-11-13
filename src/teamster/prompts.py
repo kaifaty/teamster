@@ -4,13 +4,30 @@ import shlex
 from . import checking, config, threads
 
 
+# A repeat review checks its earlier test findings and the new diff instead of mutating every required test again.
+GREEN_TEST_RULE = {
+    "en": ('For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
+           "that leaves the test green; report it as a finding naming the break and explaining why the test misses it."),
+    "ru": ("Для каждого теста, которого требует «Готово, когда» (предел, защита или значение), назови маленькую "
+           "поломку проверяемого кода, при которой тест остаётся зелёным; выдай это находкой, указав поломку "
+           "и почему тест её не ловит."),
+}
+GREEN_TEST_REPEAT = {
+    "en": ("Check whether the earlier review findings about tests are resolved; look for a small break in the code under "
+           "test that leaves a test green only in tests added or changed since the previous review."),
+    "ru": ("Проверь, закрыты ли прежние находки ревью о тестах; поломку проверяемого кода, при которой тест остаётся "
+           "зелёным, ищи только в тестах, добавленных или изменённых после прошлого ревью."),
+}
+GREEN_TEST_SEVERITY = {
+    "en": 'A test that stays green under a break is P2 only when "Done when" requires that test; for any other test it is P3.',
+    "ru": "Тест, зелёный при поломке, — P2, только если его требует «Готово, когда»; для прочих тестов — P3.",
+}
 REVIEW_ANGLES = {
     "correctness": "Focus on behavior and acceptance criteria (Done when), including regressions and unmet requirements.",
     "concurrency": "Focus on races, processes, signals, files and state shared by parallel commands. Check repeated runs and recovery after interruption.",
     "security": "Focus on secrets, shell and path injection, untrusted input, permissions and sandbox boundaries.",
     "tests": ("Focus on ineffective or weakened tests, uncovered brief requirements, and mocks replacing the code under test. "
-              'For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
-              "that leaves the test green; report it as a finding naming the break and explaining why the test misses it."),
+              + GREEN_TEST_RULE["en"] + " " + GREEN_TEST_SEVERITY["en"]),
 }
 AUTO_REVIEW_ANGLES = ["correctness", "concurrency", "tests"]
 # The board parses what this rule keeps as is: the markers, lesson headings and scope words.
@@ -134,6 +151,17 @@ def study_prompt(order, records, cfg=None):
     return (order.strip() + "\n\n" if order and order.strip() else "") + prompt
 
 
+def repeat_review(st):
+    return any(entry.get("review") is not None for entry in st.get("rounds", []))
+
+
+def review_angle(st, angle):
+    text = REVIEW_ANGLES[angle]
+    if angle == "tests" and repeat_review(st):
+        text = text.replace(GREEN_TEST_RULE["en"], GREEN_TEST_REPEAT["en"])
+    return text
+
+
 def review_prompt(st, cfg=None, *, with_angles=False):
     cfg = config.accounts_config() if cfg is None else cfg
     brief = config.TASKS / st["slug"] / "brief.md"
@@ -148,13 +176,11 @@ def review_prompt(st, cfg=None, *, with_angles=False):
                        "amendments to the brief; later `lead` or `claude` entries take precedence over the brief and earlier "
                        "amendments. Entries with source `review` or `ci` are supervisor fix requests, not task requirements.\n"))
     context = ""
+    language = "ru" if ru else "en"
     if not with_angles:
-        context += (("Для каждого теста, которого требует «Готово, когда» (предел, защита или значение), назови маленькую "
-                     "поломку проверяемого кода, при которой тест остаётся зелёным; выдай это находкой, указав поломку "
-                     "и почему тест её не ловит.\n") if ru else
-                    ('For each test required by "Done when" (a limit, guard or value), identify a small break in the code under test '
-                     "that leaves the test green; report it as a finding naming the break and explaining why the test misses it.\n"))
-    if any(entry.get("review") is not None for entry in st.get("rounds", [])):
+        rule = GREEN_TEST_REPEAT if repeat_review(st) else GREEN_TEST_RULE
+        context += rule[language] + "\n" + GREEN_TEST_SEVERITY[language] + "\n"
+    if repeat_review(st):
         context += (("Начиная со второго ревью ищи регрессии, внесённые исправлениями, и невыполненные "
                      "пункты «Готово, когда». Новые граничные случаи вне брифа отмечай только как P3.\n") if ru else
                     ("From the second review onward, look for regressions introduced by the fixes and unmet "
