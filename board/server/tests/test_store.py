@@ -1155,3 +1155,32 @@ def test_task_feed_refreshes_cached_worktree_for_relative_paths(tmp_path):
     write_state(tasks, pid=None, worktree="/tmp/task")
     assert [item["text"] for item in store.feed("task")["items"]] == [
         "a.py, /tmp/other/b.py", "Read c.py"]
+
+
+def test_task_feed_paths_are_relative_to_a_symlinked_worktree(tmp_path):
+    # The worktrees directory is a symbolic link; the state names the link, executors report the resolved path.
+    real = (tmp_path / "disk" / "worktrees").resolve()
+    worktree = real / "claude-task" / "project"
+    worktree.mkdir(parents=True)
+    link = tmp_path / "home" / "worktrees"
+    link.parent.mkdir()
+    link.symlink_to(real, target_is_directory=True)
+    named = link / "claude-task" / "project"
+    tasks = tmp_path / "tasks"
+    directory = write_state(tasks, pid=None, worktree=str(named))
+    outside = real / "claude-other" / "project" / "c.py"
+    event = {"type": "item.started", "item": {"type": "file_change", "changes": [
+        {"path": str(worktree / "src" / "a.py")}, {"path": str(named / "b.py")}, {"path": str(outside)}]}}
+    (directory / "events.jsonl").write_text(json.dumps(event) + "\n")
+    (directory / "claude-events.jsonl").write_text(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Read", "input": {"file_path": str(worktree / "docs" / "d.md")}}]}}) + "\n")
+    store = Store(tasks)
+    store.poll()
+    assert [item["text"] for item in store.feed("task")["items"]] == [
+        f"src/a.py, b.py, {outside}", "Read docs/d.md"]
+    # A worktree that is gone resolves to itself: paths under the named root stay relative.
+    write_state(tasks, pid=None, worktree=str(tmp_path / "gone"))
+    (directory / "claude-events.jsonl").unlink()
+    (directory / "events.jsonl").write_text(json.dumps({"type": "item.started", "item": {
+        "type": "file_change", "changes": [{"path": str(tmp_path / "gone" / "e.py")}]}}) + "\n")
+    assert [item["text"] for item in store.feed("task")["items"]] == ["e.py"]
