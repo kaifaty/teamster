@@ -56,6 +56,19 @@ watch(entry, async () => {
   await nextTick();
   if (scroller.value) scroller.value.scrollTop = 0;
 });
+// The thread follows its news while the human reads its end, and always right after their own request or reply.
+const news = computed(() => {
+  const work = desk.workOf(props.lesson);
+  return [launch.value?.stage, launch.value?.steps.length, line.value?.kind, work?.phase, work?.activity, said.value.length].join("|");
+});
+const asked = computed(() => `${request.value?.at ?? ""}|${said.value.length}`);
+watch([news, asked], async ([, own], [, before]) => {
+  const area = scroller.value;
+  if (!area) return;
+  const near = area.scrollHeight - area.scrollTop - area.clientHeight < 120;
+  await nextTick();
+  if (near || own !== before) area.scrollTo({ top: area.scrollHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+});
 </script>
 
 <template>

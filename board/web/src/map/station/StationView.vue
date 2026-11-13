@@ -437,7 +437,7 @@ h2 {
 .decks {
   display: grid;
   flex: 1;
-  grid-template-columns: minmax(270px, 300px) minmax(0, 1fr) minmax(320px, 460px);
+  grid-template-columns: minmax(250px, 280px) minmax(0, 1fr) minmax(300px, 380px);
   grid-template-rows: minmax(0, 1fr);
   gap: 10px;
   min-height: 0;

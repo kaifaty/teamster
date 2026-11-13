@@ -394,8 +394,8 @@ export function implementationLine(
 export interface NextStep {
   text: string;
   /**
-   * «Ответить» opens the waiting channel, or the card whose agent needs a decision; «Разобрать» the lessons to decide;
-   * «Показать» the card of a ready PR, or the accepted lessons; «Посмотреть» the ship of the one agent at work.
+   * «Ответить» opens the waiting channel, or the lesson whose agent needs a decision; «Разобрать» the first lesson to
+   * decide; «Показать» the lesson of a ready PR, or the first accepted lesson; «Посмотреть» the ship of the one agent at work.
    */
   action:
     | { kind: "reply"; label: "Ответить"; study: Study }

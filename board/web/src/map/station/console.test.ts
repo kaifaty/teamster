@@ -165,7 +165,7 @@ describe("a lesson's card", () => {
 describe("«Внедрить»", () => {
   it("starts the task in the picked repository, and the proposed lesson leaves its tab a moment later", async () => {
     vi.useFakeTimers();
-    const { desk, act, lesson, update } = setup();
+    const { desk, act, lesson, update, station } = setup();
     const t1 = lesson(T1);
     expect(desk.offersImplement(t1)).toBe(true);
     desk.openForm(t1, "implement");
@@ -181,6 +181,11 @@ describe("«Внедрить»", () => {
     expect(act).toHaveBeenCalledWith("implement", { entry: T1, repo: "/Users/demo/dev/demo-vault", note: "only the supervisor" });
     expect(desk.cardOf(t1)).toMatchObject({ busy: null, form: null, error: "", started: { slug: "lesson-t1", repo: "demo-vault" } });
     expect(desk.offersImplement(lesson(T1))).toBe(false);
+    // An older server: no start in its answer and no `launches` in its research — the thread shows no steps, the row
+    // says the lesson is starting until the research shows its task.
+    expect(station.value.launches).toEqual([]);
+    expect(desk.launchOf(lesson(T1))).toBeNull();
+    expect(desk.badgeOf(lesson(T1))).toBe("запускается");
     expect(desk.labStage.value).toBe("proposed");
     expect(desk.shown.value.map((item) => item.entry)).toContain(T1);
     vi.advanceTimersByTime(HOLD_MS);
