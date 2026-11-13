@@ -134,8 +134,12 @@ export function createImplementation(context: ImplementContext) {
     }
     request.sending = false;
     request.launch = result.launch ?? null;
-    // An older server answers once the task has started, without its steps.
-    if (!result.launch) state.started = { slug: result.slug ?? "", repo };
+    // An older server answers once the task has started, without its steps: the lesson moves only now, and its row
+    // stays on the tab a moment from this answer.
+    if (!result.launch) {
+      state.started = { slug: result.slug ?? "", repo };
+      if (stage === "proposed") hold(lesson, stage, index);
+    }
   }
 
   /** «Запустить снова»: the form with the repository of the start that failed. */

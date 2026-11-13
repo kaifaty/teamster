@@ -206,6 +206,29 @@ describe("«Внедрить»", () => {
     desk.dispose();
   });
 
+  it("holds a proposed lesson on its tab from an older server's late answer", async () => {
+    vi.useFakeTimers();
+    const { desk, act, lesson, update } = setup();
+    const t1 = lesson(T1);
+    desk.openForm(t1, "implement");
+    // An older server answers once the task has started, long after the click, and the refresh moves the lesson.
+    act.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2 * HOLD_MS));
+      update((view) => (view.lessons.find((item) => item.entry === T1)!.status = "accepted"));
+      return { ok: true, output: "started", slug: "lesson-t1" };
+    });
+    const started = desk.implement(t1, "proposed");
+    await vi.advanceTimersByTimeAsync(2 * HOLD_MS);
+    await started;
+    expect(desk.labStage.value).toBe("proposed");
+    expect(desk.shown.value.map((item) => item.entry)).toContain(T1);
+    vi.advanceTimersByTime(HOLD_MS - 1);
+    expect(desk.shown.value.map((item) => item.entry)).toContain(T1);
+    vi.advanceTimersByTime(1);
+    expect(desk.shown.value.map((item) => item.entry)).not.toContain(T1);
+    desk.dispose();
+  });
+
   it("closes the form and shows the request with its first step at once, then follows the server's start", async () => {
     const { desk, act, lesson, update, launches, tasks } = setup();
     const t1 = lesson(T1);
@@ -708,6 +731,11 @@ describe("a start's steps", () => {
     const newer = launch({ stage: "worktree", steps: [...older.steps, { stage: "worktree", at: 103 }] });
     expect(mergeLaunches([newer], [older])).toEqual([newer]);
     expect(mergeLaunches([older], [newer])).toEqual([newer]);
+    // A later start of the same slug wins even with fewer steps so far.
+    const failed = launch({ stage: "failed", steps: [{ stage: "fetching", at: 100 }, { stage: "worktree", at: 101 }, { stage: "failed", at: 102 }] });
+    const again = launch({ started_at: 200, steps: [{ stage: "fetching", at: 90 }] });
+    expect(mergeLaunches([failed], [again])).toEqual([again]);
+    expect(mergeLaunches([again], [failed])).toEqual([again]);
     // An older server sends none.
     expect(mergeLaunches([], [])).toEqual([]);
   });
