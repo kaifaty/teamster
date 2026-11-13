@@ -317,7 +317,7 @@ def create_app(settings=None):
     @app.get("/api/research")
     async def research():
         return {**await asyncio.to_thread(board.research.view), "actions": board.actions.value,
-                "launches": board.actions.launches()}
+                "launches": await asyncio.to_thread(board.actions.launches)}
 
     @app.post("/api/actions/lesson")
     @app.post("/api/actions/implement")

@@ -881,6 +881,8 @@ scheme, host and port, `Content-Type: application/json` and `X-Teamster-Board: 1
 403 with `error: "forbidden"`; bodies over 64 KiB return 413. The server never sends CORS headers.
 Other actions and the launch's `teamster lesson … accepted` step run one at a time under the shared
 `Actions.lock`; `teamster start` and `teamster reflect` run outside it, so they do not delay other actions.
+Before accepting or starting an implementation, the worker rechecks its lesson under that lock; a
+missing lesson or a status changed since admission fails the launch without accepting or starting it.
 Commands run outside the event loop, as argv lists without a shell,
 with stdin closed, inherited environment and the user's home as working directory. Temporary files are
 deleted after execution. Each execution logs one line with its route, argv (without say/order text) and

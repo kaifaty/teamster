@@ -445,13 +445,20 @@ class Actions:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as stream:
                 path = Path(stream.name)
                 stream.write(implementation_brief(lesson, note, started, lesson_id))
-            if lesson["status"] == "proposed":
-                with self.lock:
+            with self.lock:
+                current = next((row for row in self.research.view()["lessons"]
+                                if row["entry"] == lesson["entry"]), None)
+                if current is None:
+                    return "Unknown lesson"
+                if current["status"] != lesson["status"]:
+                    return f"Lesson status changed: {current['status']}"
+                if current["status"] == "proposed":
                     failure = self._execute_launch(launch, [self.command, "lesson", lesson["entry"], "accepted",
                                                            f"--note=внедряется: {launch['slug']}"], observe=False)
-                if failure is not None:
-                    return failure
-                self.research.invalidate()
+                    if failure is not None:
+                        return failure
+                    self.research.invalidate()
+            if lesson["status"] == "proposed":
                 self._stage(launch, "fetching")
             argv = [self.command, "start", launch["slug"], "--brief", str(path), "--repo", repo,
                     "--executor", "claude", "--sandbox", "off", "--effort", "high", "--task-type", "feature",

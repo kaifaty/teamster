@@ -948,7 +948,13 @@ exit_code = control.get(args[0] + "_exit", control.get("exit", 0))
 if not exit_code:
     if args[0] == "lesson":
         index = tasks / ".archive" / "INDEX.md"
-        index.write_text(index.read_text().replace("proposed", args[2]))
+        rows = index.read_text().splitlines(keepends=True)
+        for position, row in enumerate(rows):
+            columns = row.split("|")
+            if len(columns) > 5 and columns[2].strip() == args[1]:
+                columns[5] = f" {args[2]} "
+                rows[position] = "|".join(columns)
+        index.write_text("".join(rows))
     def wait(step):
         if control.get("stages"):
             marker = Path(os.environ["STATION_CALLS"]).parent / (args[1] + "." + step)
@@ -1430,6 +1436,78 @@ def test_station_launch_response_stages_websocket_and_starting_refresh(station, 
                 assert lesson["implementation"]["slug"] == slug
                 assert not (calls.parent / (slug + ".done")).exists()
         assert wait_launch(station, slug)["steps"] == launch["steps"]
+
+
+def test_station_validation_does_not_block_the_event_loop(station, lesson_repo, monkeypatch):
+    client, application, _, entry, _, _ = station
+    actions = application.state.board.actions
+    checking, reading, release = threading.Event(), threading.Event(), threading.Event()
+    original_launches = actions.launches
+
+    def readable(path):
+        assert path == lesson_repo / ".git"
+        checking.set()
+        assert release.wait(5)
+        return True
+
+    def launches():
+        reading.set()
+        return original_launches()
+
+    monkeypatch.setattr(actions_module.access, "readable", readable)
+    monkeypatch.setattr(actions, "launches", launches)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        try:
+            implementation = pool.submit(client.post, "/api/actions/implement",
+                                         json={"entry": entry, "repo": str(lesson_repo)})
+            assert checking.wait(5)
+            research = pool.submit(client.get, "/api/research")
+            assert reading.wait(5)
+            assert pool.submit(client.get, "/api/art").result(timeout=1).status_code == 200
+        finally:
+            release.set()
+        response = implementation.result(timeout=5)
+        assert response.status_code == 200
+        assert research.result(timeout=5).status_code == 200
+    wait_launch(station, response.json()["slug"])
+
+
+@pytest.mark.parametrize("status", ["proposed", "accepted"])
+def test_station_implementation_preserves_a_later_lesson_decision(station, lesson_repo, monkeypatch, status):
+    client, application, settings, entry, calls, _ = station
+    index = settings.path("tasks") / ".archive" / "INDEX.md"
+    index.write_text(index.read_text().replace("proposed", status))
+    application.state.board.research.invalidate()
+    preparing, release = threading.Event(), threading.Event()
+    original_brief = actions_module.implementation_brief
+
+    def brief(*args):
+        preparing.set()
+        assert release.wait(5)
+        return original_brief(*args)
+
+    monkeypatch.setattr(actions_module, "implementation_brief", brief)
+    try:
+        with client.websocket_connect("/ws", headers={"Host": "localhost:8787"}) as socket:
+            assert socket.receive_json()["type"] == "snapshot"
+            response = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
+            assert response.status_code == 200
+            assert preparing.wait(5)
+            decision = client.post("/api/actions/lesson", json={"entry": entry, "status": "declined"})
+            assert decision.status_code == 200
+            release.set()
+            failed = wait_launch(station, response.json()["slug"], "failed")
+            assert failed["error"] == "Lesson status changed: declined"
+            while True:
+                message = socket.receive_json()
+                if message["type"] == "launch" and message["launch"]["stage"] == "failed":
+                    assert message["launch"] == failed
+                    break
+    finally:
+        release.set()
+    assert client.get("/api/research").json()["lessons"][0]["status"] == "declined"
+    assert [json.loads(line)["argv"] for line in calls.read_text().splitlines()] == [
+        ["lesson", entry, "declined"]]
 
 
 def test_station_launch_duplicate_reservations_limit_and_other_actions(station, lesson_repo):
