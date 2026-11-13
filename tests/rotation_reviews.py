@@ -490,6 +490,8 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(state["wrapup"], {"outcome": "completed", "result": checkpoint})
         self.assertEqual(state["result"], checkpoint)
         work, wrapup = self.claude_invocations()
+        # Three one-second minutes cap the Bash timeouts below their usual ten-minute floor.
+        self.assertEqual([work["bash_timeouts"], wrapup["bash_timeouts"]], [["3000", "3000"]] * 2)
         self.assertEqual(wrapup["argv"][wrapup["argv"].index("--resume") + 1], work["session_id"])
         self.assertEqual(wrapup["config_dir"], work["config_dir"])
         self.assertNotIn("--max-turns", wrapup["argv"])

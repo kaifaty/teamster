@@ -51,9 +51,9 @@ Entrypoints:
     __main__ (implemented) starts the installed teamster command and runs
     directly by path with isolated Python.
 Standalone files:
-    rollout.py, task_report.py, codex_stats.py, turn_log.py and wait_turn.py
-    run by path and never import the package; rules.md and rules.ru.md are the
-    standing rules.
+    rollout.py, task_report.py, codex_stats.py, turn_log.py, wait_turn.py and
+    bash_guard.py (the Bash hook of writable Claude turns) run by path and never
+    import the package; rules.md and rules.ru.md are the standing rules.
 
 Import own modules as whole modules at module top, using ``from . import name``
 in the package and ``from teamster import name`` in the entrypoints. Access

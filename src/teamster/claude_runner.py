@@ -2,11 +2,18 @@
 import json
 import os
 import selectors
+import shlex
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
 from . import claude_accounts, clock, config, procs, result_schema, sandboxing
+
+# Claude Code's own maximum Bash timeout; work turns never allow less, and use it as the default.
+BASH_FLOOR_SECONDS = 600
+# The Bash timeout limit of a turn without a time budget.
+BASH_UNBOUNDED_SECONDS = 2 * 60 * 60
 
 
 def account_environment(account, timeout):
@@ -28,6 +35,24 @@ def account_environment(account, timeout):
     if token:
         environment["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return environment, token
+
+
+def bash_hook_settings():
+    """Settings that run the Bash guard, with teamster's interpreter, before every Bash command."""
+    command = shlex.join([sys.executable, "-I", str(config.BASH_GUARD)])
+    return json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}})
+
+
+def bash_timeouts(deadline, max_minutes):
+    """Let a foreground command run to the end of the turn's remaining budget."""
+    limit = (BASH_UNBOUNDED_SECONDS if deadline is None
+             else max(deadline - clock.CLOCK.monotonic(), BASH_FLOOR_SECONDS))
+    if max_minutes is not None:
+        limit = min(limit, max_minutes * config.MINUTE_SECONDS)
+    maximum = max(int(limit * 1000), 1000)
+    return {"BASH_DEFAULT_TIMEOUT_MS": str(min(maximum, BASH_FLOOR_SECONDS * 1000)),
+            "BASH_MAX_TIMEOUT_MS": str(maximum)}
 
 
 def stream_unavailable(event, account):
@@ -109,10 +134,12 @@ def validate_work_effort(effort):
 
 
 def run_work_turn(account, worktree, task_dir, prompt, stopped, session_id=None,
-                  model=None, effort=None, max_turns=None, deadline=None, started=None, progress=None):
+                  model=None, effort=None, max_turns=None, deadline=None, started=None, progress=None,
+                  max_minutes=None):
     """Run a writable turn without supervisor task state.
 
-    The caller supplies an existing task directory and a monotonic deadline.
+    The caller supplies an existing task directory, a monotonic deadline and
+    the task's ``--max-minutes``, which also bound the Bash tool's timeouts.
     An unparsed result returns outcome ``unknown``, result ``None``, and the
     last answer in ``raw_message``. Session and usage fields are in telemetry.
     """
@@ -121,14 +148,14 @@ def run_work_turn(account, worktree, task_dir, prompt, stopped, session_id=None,
     try:
         return run_claude(account, worktree, prompt, stopped, deadline, model, effort, max_turns,
                           session_id=session_id, system_prompt=system_prompt, started=started, progress=progress,
-                          task_dir=task_dir)
+                          task_dir=task_dir, max_minutes=max_minutes)
     finally:
         system_prompt.unlink(missing_ok=True)
 
 
 def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, effort=None,
                max_turns=None, *, session_id=None, system_prompt=None, reviewing=False, started=None, progress=None,
-               task_dir=None, role="work"):
+               task_dir=None, role="work", max_minutes=None):
     """Execute and drain one stream; callers own role-specific lifecycle state."""
     scouting = role == "scout"
     reflecting = role == "reflect"
@@ -157,8 +184,9 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         args += ["--permission-mode", "dontAsk", "--allowedTools", "Read,Grep,Glob,Bash",
                  "--disallowedTools", "Edit,Write,NotebookEdit"]
     else:
+        # The hook rejects background launches and pattern kills, which end the turn early.
         args += ["--permission-mode", "bypassPermissions", "--strict-mcp-config",
-                 "--append-system-prompt-file", str(system_prompt)]
+                 "--append-system-prompt-file", str(system_prompt), "--settings", bash_hook_settings()]
     if max_turns is not None:
         args += ["--max-turns", str(max_turns)]
     for key, value in (("model", model), ("effort", effort)):
@@ -185,6 +213,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     if stopped():
         response["outcome"] = "stopped"
         return response
+    if not read_only:
+        environment.update(bash_timeouts(deadline, max_minutes))
     try:
         proc = subprocess.Popen(args, cwd=worktree, env=environment,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
