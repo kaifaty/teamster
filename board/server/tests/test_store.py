@@ -1112,3 +1112,46 @@ def test_log_missing_symlinks_and_retention(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "open", guarded_open)
     assert store.poll() == []
     assert store.events(0, now[0])["events"] == []
+
+
+def test_task_feed_uses_live_tasks_only_and_refuses_symlinks(tmp_path):
+    tasks = tmp_path / "tasks"
+    directory = write_state(tasks, pid=None)
+    write_state(tasks / ".archive", "archived")
+    write_session(tmp_path / "desktop")
+    store = Store(tasks, claude_desktop_dir=tmp_path / "desktop")
+    store.poll()
+    assert store.feed("task")["items"] == []
+    for slug in ("unknown", "archived", "local_example", "../task"):
+        assert store.feed(slug) is None
+    event = json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Visible"}}) + "\n"
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(event)
+    (directory / "events.jsonl").symlink_to(outside)
+    assert store.feed("task")["items"] == []
+    (directory / "events.jsonl").unlink()
+    (directory / "events.jsonl").write_text(event)
+    assert [item["text"] for item in store.feed("task")["items"]] == ["Visible"]
+    (tasks / "alias").symlink_to(directory, target_is_directory=True)
+    assert store.feed("alias") is None
+    alias_root = tmp_path / "linked-tasks"
+    alias_root.symlink_to(tasks, target_is_directory=True)
+    assert Store(alias_root).feed("task") is None
+
+
+
+def test_task_feed_refreshes_cached_worktree_for_relative_paths(tmp_path):
+    tasks = tmp_path / "tasks"
+    directory = write_state(tasks, pid=None)
+    event = {"type": "item.started", "item": {"type": "file_change", "changes": [
+        {"path": "/tmp/task/a.py"}, {"path": "/tmp/other/b.py"}]}}
+    (directory / "events.jsonl").write_text(json.dumps(event) + "\n")
+    (directory / "claude-events.jsonl").write_text(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/task/c.py"}}]}}) + "\n")
+    store = Store(tasks)
+    store.poll()
+    assert [item["text"] for item in store.feed("task")["items"]] == [
+        "/tmp/task/a.py, /tmp/other/b.py", "Read /tmp/task/c.py"]
+    write_state(tasks, pid=None, worktree="/tmp/task")
+    assert [item["text"] for item in store.feed("task")["items"]] == [
+        "a.py, /tmp/other/b.py", "Read c.py"]

@@ -15,6 +15,9 @@ and cleaning tasks, lesson decisions, implementations and new reflection orders.
   `last.md`, `review.md`, `check.log`, `messages.jsonl`.
 - Live activity: `events.jsonl` (Codex executor, `codex exec --json` lines) and `claude-events.jsonl` (Claude
   executor, `claude --output-format stream-json` lines; written by teamster 1.47+). Either may be missing.
+  The task feed reads both files even when the task is no longer alive.
+- Launch progress: `worktrees/claude-<slug>/` in the data home (both layouts) and the live task's
+  `state.json`; launch records themselves exist only in server memory.
 - Completed events: `log.jsonl` in the task home (legacy: `codex-worker-log.jsonl`), one JSON line per
   completed phase (`work`, `fix`, `check`, `base_check`, `review`, `wrapup`, `scout`, `turn`) or lead
   verdict (`kind: "verdict"`). The server keeps a byte cursor and reads only appended complete lines;
@@ -395,6 +398,7 @@ interface ReflectionSchedule {
 
 interface ResearchView {
   actions: { enabled: boolean; reason: "read_only" | "no_teamster" | null };
+  launches: Launch[];         // active and recently finished launches, ascending started_at
   lessons: Lesson[];
   repos: { name: string; path: string }[]; // known local git repositories, at most 100
   repos_access: "ok" | "scanning" | "denied";
@@ -408,6 +412,30 @@ interface ResearchView {
   };
   reflection_task: string;     // scheduled task id of reflection sessions, from BOARD_REFLECTION_TASK
   schedule: ReflectionSchedule | null; // desktop schedule; optional in the web type for older servers
+}
+
+interface Launch {
+  slug: string;              // unique among launches retained by the server
+  kind: "implement" | "reflect";
+  entry: string | null;      // implement: lesson entry; reflect: null
+  repo: string | null;       // implement: repository directory name; reflect: null
+  stage: "accepting" | "fetching" | "worktree" | "preparing" | "starting" | "done" | "failed";
+  steps: {stage: string; at: number}[]; // every entered stage in order; last stage equals stage
+  error: string | null;      // failed only: stderr/stdout tail, thread exception text (≤ 2000), or "timeout"
+  started_at: number;        // request acceptance, Unix seconds; step at values are Unix seconds too
+}
+
+interface TaskFeed {
+  items: FeedItem[];
+  cursor: string;            // opaque, stateless continuation token
+  reset: boolean;
+  truncated: boolean;
+}
+
+interface FeedItem {
+  at: number;
+  kind: "message" | "thinking" | "command" | "edit" | "tool";
+  text: string;
 }
 ```
 
@@ -733,7 +761,8 @@ Only these POST endpoints execute commands:
   `{ok: false, error: "Нет доступа к диску с репозиторием. Разреши Python доски доступ к файлам на съёмных томах: Системные настройки → Конфиденциальность и безопасность → Файлы и папки или Полный доступ к диску."}`
   and runs no commands.
   The slug is `lesson-<id>-MMDD` in UTC: `<id>` is the entry's last word, lowercased, with every character
-  outside `[a-z0-9]` replaced by `-`. Add `-2`, `-3`, … while the task directory exists. The final slug
+  outside `[a-z0-9]` replaced by `-`. Add `-2`, `-3`, … while the task directory exists or a retained
+  launch has that slug. The final slug
   must match `[a-z0-9][a-z0-9-]{1,40}` (400 otherwise).
   The temporary brief begins `Внедрить урок «<entry>»: <title, falling back to cue>.`, identifies the
   lesson's archive file and includes cue, lesson, proposal, evidence, caveats and the user's note in
@@ -765,12 +794,12 @@ Only these POST endpoints execute commands:
   The existing criterion requiring `needs_decision` with questions when a choice is needed remains.
   Only for a `proposed` lesson, first run
   `teamster lesson <entry> accepted --note=внедряется: <slug>` (the note is one argv word).
-  A nonzero exit returns 422 and prevents the start step. Then run
+  A nonzero exit marks the launch `failed`, prevents the start step and leaves the lesson `proposed`. Then run
   `teamster start <slug> --brief <temporary file> --repo <path> --executor claude --sandbox off --effort high --task-type feature --max-minutes 60 --review --fix-rounds 2 --parallel`.
   Append `--ci` when `git -C <path> remote get-url origin`, with stdin closed and a 10-second timeout,
   succeeds and its stdout contains `github.com`. A missing origin, failed probe or timeout omits `--ci`.
-  Success returns the start step's output and `slug`; a nonzero start exit returns 422, leaving the
-  lesson `accepted`. A successful acceptance invalidates research even if the start step fails.
+  A zero start exit marks the launch `done`; a nonzero start exit marks it `failed`, leaving the
+  lesson `accepted`. A new implementation of that lesson may replace its finished launch record.
 - `/api/actions/say`: `{slug: string, text: string, options?: object}` runs
   `teamster say <slug> [options] --file <temporary file>` for any non-archived, idle task of kind
   `work`, `review` or `reflect`, including studies and lesson implementations. An alive task of these
@@ -810,9 +839,38 @@ Only these POST endpoints execute commands:
   (400). Task and repository names match `[A-Za-z0-9._-]{1,100}`, with at most 20 of each; `since` is
   `[0-9]{1,3}d` or a valid `YYYY-MM-DD` date, and order ≤ 8000 characters. The server chooses
   `reflect-MMDD-HHMMSS` in UTC, adding `-2`, `-3`, … while a name exists in the configured tasks
-  directory (normally `~/.teamster/tasks`). Successful responses include this `slug`.
+  directory (normally `~/.teamster/tasks`) or in retained launches.
 
-All responses are JSON: `{ok: true, output: string, slug?: string}` or `{ok: false, error: string}`.
+`implement` and `reflect` validate all input and access synchronously before launching commands,
+preserving the existing 400, 403, 404, 409 and 503 errors and their text. An active launch for the same
+lesson entry returns 409 with `error: "Урок уже запускается: <slug>"`. Four active launches across both
+kinds is the limit; the next gets 409 with
+`error: "Слишком много запусков: подожди, пока начнутся предыдущие"`.
+Successful admission returns immediately, without waiting for any command:
+`{ok: true, output: "", slug: string, launch: Launch}` (200). Commands and temporary files are handled
+in a background thread. Each launch command has a 300-second timeout; on expiry the process is killed
+and awaited and the launch becomes `failed` with `error: "timeout"`. Other command failures set
+`error` to the last 2000 characters of trimmed stderr, falling back to stdout when stderr is empty.
+An unexpected exception in a launch thread is logged and sets `failed` with the last 2000 characters
+of its message, including exceptions during preparation or temporary-file cleanup. A failed launch
+releases its place in the four-launch limit; `done` requires a zero command exit and successful cleanup.
+
+Implementation stages are `accepting` (only a `proposed` lesson, running the lesson acceptance),
+then `fetching` (running `teamster start` before disk markers appear), `worktree` (the data home's
+`worktrees/claude-<slug>/` directory appears), `starting` (the task's `state.json` appears), then `done`
+or `failed` according to the command result. Reflection stages are `preparing` (running `teamster
+reflect`), `starting` (task `state.json` appears), then `done` or `failed`. A marker stage whose marker
+never appears is skipped. Every transition appends a timestamped step and sends a WebSocket `launch`
+message, including the first and terminal stages; background threads schedule publication through
+the event loop, never call `Board.publish` directly.
+
+`GET /api/research` includes active launches and those finished within the last 600 seconds, sorted
+by ascending `started_at`. A new launch for the same `entry` replaces that entry's finished launch.
+All launch memory is lost when the server restarts. Research is invalidated after successful
+`accepting`, on entering `starting`, and on `done` or `failed`, so implementation links appear without
+waiting for `BOARD_RESEARCH_SECONDS`.
+
+Other action responses are JSON: `{ok: true, output: string}` or `{ok: false, error: string}`.
 Success is 200. `output` is trimmed stdout's last 2000 characters. Invalid input is 400; a nonzero
 command exit is 422, with trimmed stderr's last 2000 characters (stdout if stderr is empty).
 Disabled actions return 403 with `error: "read_only"` or `"no_teamster"`. Commands exceeding 120 seconds
@@ -821,7 +879,11 @@ are killed and awaited, returning 504 with `error: "timeout"`.
 Every action requires the existing localhost Host check, exactly one `Origin` matching the request's
 scheme, host and port, `Content-Type: application/json` and `X-Teamster-Board: 1`. A failed check returns
 403 with `error: "forbidden"`; bodies over 64 KiB return 413. The server never sends CORS headers.
-Commands run one at a time under a shared lock, outside the event loop, as argv lists without a shell,
+Other actions and the launch's `teamster lesson … accepted` step run one at a time under the shared
+`Actions.lock`; `teamster start` and `teamster reflect` run outside it, so they do not delay other actions.
+Before accepting or starting an implementation, the worker rechecks its lesson under that lock; a
+missing lesson or a status changed since admission fails the launch without accepting or starting it.
+Commands run outside the event loop, as argv lists without a shell,
 with stdin closed, inherited environment and the user's home as working directory. Temporary files are
 deleted after execution. Each execution logs one line with its route, argv (without say/order text) and
 exit code. Success invalidates the research view, so the next GET sees changes immediately regardless
@@ -879,6 +941,40 @@ There is no merge endpoint for ordinary tasks.
   Session paths come only from scanned records, never from a requested slug; path-like slugs return 404.
 - `GET /api/tasks/{slug}/files/{name}` with `name` in `brief`, `last`, `review`, `check` → `text/plain;
   charset=utf-8`, at most the last 256 KiB; 404 when missing or for a session. No other names, no paths.
+- `GET /api/tasks/{slug}/feed?after=<cursor>` → `TaskFeed`. Only live (non-archived) task records are
+  allowed, including tasks whose supervisor is no longer alive. Unknown slugs, archived tasks and
+  Claude desktop sessions get 404. The source files are `events.jsonl` and `claude-events.jsonl`,
+  located with the same safe task-file lookup; symbolic links are never read. Missing files give an
+  empty feed. Invalid JSON lines are skipped.
+  Codex `command_execution`, `file_change` and `collab_tool_call` contribute only their `item.started`
+  event; their `item.completed` event is skipped to avoid showing the same item twice. Codex
+  `agent_message` and `reasoning` contribute only their `item.completed` event. Each content block
+  in a Claude `assistant` event contributes an item using the activity parser's event types. These
+  feed rules do not change the latest activity parser or `EventTail`. `message` and `thinking` preserve
+  line breaks, trim surrounding whitespace, skip empty text and keep at most 4000 characters,
+  including a final `…` when shortened. A message that is entirely a JSON object with a string
+  `summary` uses that summary. `command` is a single line ≤ 500 characters; `edit` is one path or
+  comma-separated paths, ≤ 500 characters; `tool` is its name and optional short input detail on one
+  line, ≤ 200 characters. Claude details are `file_path` for `Read`, `pattern` for `Grep` and `Glob`,
+  and `description` for `Agent`/`Task`.
+  Paths in `edit` and the `file_path` detail of `Read` are relative to the task's `state.json` →
+  `worktree` when lexically inside it; other paths, and paths for a task without `worktree`, stay as
+  written. This comparison and conversion do not access the filesystem.
+  `at` uses the event timestamp, otherwise the previous item's time in the same file, otherwise that
+  file's mtime. The two files merge by `at`, preserving each file's order.
+  Without `after`, read at most the last 256 KiB of each file, discard an incomplete first line and
+  return at most the newest 400 items. `truncated: true` means older data did not fit.
+  A cursor records each file's identity and byte position, with enough timestamp context to continue
+  without server state. Continuations read only new complete lines, at most 256 KiB per file per
+  request. An unterminated last line shorter than the read limit is neither emitted nor skipped:
+  the next request can finish it. If a full 256 KiB chunk read from the cursor contains no newline,
+  advance past the chunk and record in the cursor that reading is inside an oversized line. Following
+  requests discard bytes through the next newline, inclusive, then resume normal parsing. The whole
+  oversized line is omitted, including when it is still being appended; each request retains the
+  256 KiB per-file read limit and all continuation state stays in the cursor. Discarding oversized-line
+  bytes sets `truncated: true`. Initial tail reads keep the same incomplete-first-line handling above.
+  A replaced or truncated file, or an invalid cursor, sets `reset: true` and returns an initial feed;
+  otherwise `reset: false` (also on an initial request).
 - `GET /api/research` → `ResearchView`; other methods get 405.
 - `POST /api/actions/lesson`, `/api/actions/implement`, `/api/actions/say`, `/api/actions/reflect`,
   `/api/actions/verdict`, `/api/actions/review`, `/api/actions/stop`, `/api/actions/clean`
@@ -905,6 +1001,7 @@ Server → client only; the server ignores client messages. Every message is one
 - `{"type": "task_removed", "slug": string}` — a live task folder disappeared (it is then sent again as
   `closed` if it was archived), or a session's metadata disappeared or became archived.
 - `{"type": "activity", "slug": string, "activity": Activity}` — new latest activity of a live task.
+- `{"type": "launch", "launch": Launch}` — every launch stage transition, first and last included.
 - `{"type": "event", "event": LogEvent}` — a newly read completed event, from the same polling cycle
   as tasks. Cursor resets rebuild history without resending previously published event content.
   History is fetched through `/api/events`; it is not added to `Snapshot`.

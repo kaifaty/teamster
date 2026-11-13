@@ -32,9 +32,10 @@ LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", re.I)
 LAYOUT_FILES = {
     "legacy": {"tasks": "claude-tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
                "board_art": "board-art", "board_constellations": "board-constellations.json",
-               "telemetry": "codex-worker-log.jsonl"},
+               "telemetry": "codex-worker-log.jsonl", "worktrees": "worktrees"},
     "new": {"tasks": "tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
-            "board_art": "board-art", "board_constellations": "board-constellations.json", "telemetry": "log.jsonl"},
+            "board_art": "board-art", "board_constellations": "board-constellations.json", "telemetry": "log.jsonl",
+            "worktrees": "worktrees"},
 }
 
 
@@ -151,7 +152,9 @@ class Board:
         )
         self.research = Research(settings.path("tasks"), settings.reflection_task,
                                  settings.research_seconds, claude_desktop_dir=settings.claude_desktop_dir)
-        self.actions = Actions(self.research, self.store, settings.action_teamster, settings.read_only)
+        self.loop = None
+        self.actions = Actions(self.research, self.store, settings.action_teamster, settings.read_only,
+                               publish=self.publish_launch, worktrees_path=settings.path("worktrees"))
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
         self.reports = Reports(settings.teamster)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),
@@ -167,6 +170,11 @@ class Board:
     def publish(self, message):
         for queue in self.clients:
             queue.put_nowait(message)
+
+    def publish_launch(self, launch):
+        loop = self.loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self.publish, {"type": "launch", "launch": launch})
 
     async def poll(self):
         async with self.lock:
@@ -241,6 +249,7 @@ def create_app(settings=None):
 
     @asynccontextmanager
     async def lifespan(app):
+        board.loop = asyncio.get_running_loop()
         await board.poll()
         jobs = [asyncio.create_task(board.poll_tasks()), asyncio.create_task(board.poll_accounts()),
                 asyncio.create_task(board.poll_machines()),
@@ -248,6 +257,7 @@ def create_app(settings=None):
         try:
             yield
         finally:
+            board.loop = None
             for job in jobs:
                 job.cancel()
             await asyncio.gather(*jobs, return_exceptions=True)
@@ -297,9 +307,17 @@ def create_app(settings=None):
                 raise HTTPException(404)
         return PlainTextResponse(content)
 
+    @app.get("/api/tasks/{slug}/feed")
+    async def task_feed(slug: str, after: str | None = None):
+        feed = await asyncio.to_thread(board.store.feed, slug, after)
+        if feed is None:
+            raise HTTPException(404)
+        return feed
+
     @app.get("/api/research")
     async def research():
-        return {**await asyncio.to_thread(board.research.view), "actions": board.actions.value}
+        return {**await asyncio.to_thread(board.research.view), "actions": board.actions.value,
+                "launches": await asyncio.to_thread(board.actions.launches)}
 
     @app.post("/api/actions/lesson")
     @app.post("/api/actions/implement")
