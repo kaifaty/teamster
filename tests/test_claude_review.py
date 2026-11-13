@@ -327,6 +327,7 @@ class ClaudeReviewTests(RotationTestCase):
             ("env -S 'bash -c' 'kill $(pgrep -f server)'", kill),
             ("""env -S 'sh -c "pgrep -f x | xargs kill"'""", kill),
             ("true && pkill -f test_rotation", kill),
+            ("make test; pkill -f test_rotation", kill),
             ("bash -lc 'kill $(pgrep -f test_rotation)'", kill),
             ("trap 'pkill -f test_rotation' EXIT; make test", kill),
             ("cat <<'EOF' > notes.md\nbuild & test\nEOF\npkill -f server", kill),
@@ -374,7 +375,8 @@ class ClaudeReviewTests(RotationTestCase):
         settings_path.write_text(json.dumps(dict(json.loads(settings_path.read_text()), language="ru")))
         # Remaining seconds and --max-minutes: the limit is the budget, at least ten minutes, at most the task's.
         cases = ((1800, None, ["600000", "1800000"]), (1800, 20, ["600000", "1200000"]),
-                 (900, 60, ["600000", "900000"]), (60, None, ["600000", "600000"]),
+                 (900, 60, ["600000", "900000"]), (10800, 180, ["600000", "10800000"]),
+                 (60, None, ["600000", "600000"]),
                  (60, 5, ["300000", "300000"]))
         with mock.patch.dict(os.environ, self.env, clear=True):
             for seconds, max_minutes, expected in cases:
