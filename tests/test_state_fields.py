@@ -112,7 +112,7 @@ st[dynamic_key] = 1
         unused = registered - used
         self.assertFalse(missing, "Unregistered state keys: " + ", ".join(sorted(missing)))
         self.assertFalse(unused, "Unused state registry keys: " + ", ".join(sorted(unused)))
-        self.assertEqual(len(registered), 97)
+        self.assertEqual(len(registered), 98)
         for key, field in self.worker.task_state.STATE_FIELDS.items():
             with self.subTest(key=key):
                 self.assertIn(field.lifetime, {"task", "history", "cursor", "turn", "attempt", "runtime"})
@@ -149,6 +149,7 @@ st[dynamic_key] = 1
             "review_angles": ["tests"], "review_result": {"verdict": "clean"},
             "reviewer": "claude",
             "review_skipped": "old-skip", "review_start": 17, "reviews": [{}, {}],
+            "review_families": [[{"id": "F1", "file": "a.py", "line": 1, "title": "old", "function": "def a():"}]],
             "rotation_start": 16, "rotations": [{}, {}, {}, {}], "rounds": [{"round": 1}],
             "sandbox": "workspace", "signal": {"name": "SIGTERM", "at": 1001},
             "sleeping": {"until": 2000}, "slug": "registry-test",
