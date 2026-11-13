@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .activity import EventTail, TAIL_BYTES
+from .activity import EventTail, FEED_FILES, TAIL_BYTES, task_feed
 
 
 FILES = {"brief": "brief.md", "last": "last.md", "review": "review.md", "check": "check.log"}
@@ -961,6 +961,17 @@ class Store:
                         if record.summary["alive"] else [])
         detail["changes"] = branch_changes(state.get("worktree"), state.get("base"))
         return detail
+
+    def feed(self, slug, after=None):
+        with self.lock:
+            if (not self._safe_slug(slug) or self.tasks_path.is_symlink()
+                    or slug in self.session_records):
+                return None
+            record = self._record(slug)
+            if record is None or record.archived or self._file(record.path, "state.json") is None:
+                return None
+            paths = {name: self._file(record.path, name) for name in FEED_FILES}
+        return task_feed(paths, slug, after)
 
     def file_path(self, slug, name):
         with self.lock:

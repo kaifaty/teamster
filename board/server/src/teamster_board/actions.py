@@ -1,5 +1,6 @@
 """Board orders for tasks and the science station, through the installed teamster CLI."""
 
+import copy
 import json
 import logging
 import re
@@ -7,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -20,6 +22,10 @@ from .store import Store, alive, number
 
 BODY_LIMIT = 64 * 1024
 COMMAND_TIMEOUT = 120
+LAUNCH_TIMEOUT = 300
+LAUNCH_RETENTION = 600
+LAUNCH_LIMIT = 4
+LAUNCH_POLL_SECONDS = 0.05
 VERSION_TIMEOUT = 10
 # teamster 1.60.0 added `say --queue`: an order to a busy task waits for the end of its cycle.
 QUEUE_VERSION = (1, 60, 0)
@@ -162,7 +168,7 @@ def implementation_brief(lesson, note, started, lesson_id):
 
 
 class Actions:
-    def __init__(self, research, store, command, read_only=False):
+    def __init__(self, research, store, command, read_only=False, publish=None, worktrees_path=None):
         self.research = research
         self.store = store
         command = shutil.which(str(command)) if command else None
@@ -171,6 +177,11 @@ class Actions:
         self.lock = threading.Lock()
         self.version_lock = threading.Lock()
         self._queue = None
+        self.publish = publish or (lambda launch: None)
+        self.worktrees_path = worktrees_path or research.tasks_path.parent / "worktrees"
+        self.launch_lock = threading.RLock()
+        self._launches = {}
+        self._finished = {}
 
     @property
     def value(self):
@@ -196,11 +207,63 @@ class Actions:
         LOGGER.info("teamster --version: %s", match.group(0) if match else f"exit={result.returncode}, no version")
         return match is not None and tuple(int(part) for part in match.groups()) >= QUEUE_VERSION
 
+    def launches(self):
+        with self.launch_lock:
+            self._prune_launches()
+            return copy.deepcopy(sorted(self._launches.values(), key=lambda launch: launch["started_at"]))
+
+    def _prune_launches(self):
+        for slug, finished in list(self._finished.items()):
+            if finished < time.time() - LAUNCH_RETENTION:
+                self._launches.pop(slug, None)
+                self._finished.pop(slug)
+
+    def _slug(self, base):
+        slug, suffix = base, 2
+        while (self.research.tasks_path / slug).exists() or slug in self._launches:
+            slug = f"{base}-{suffix}"
+            suffix += 1
+        return slug
+
+    def _launch(self, slug, kind, entry, repo, stage, target, *args):
+        if sum(row["stage"] not in ("done", "failed") for row in self._launches.values()) >= LAUNCH_LIMIT:
+            return error(409, "Слишком много запусков: подожди, пока начнутся предыдущие")
+        if entry is not None:
+            for previous, row in list(self._launches.items()):
+                if row["entry"] == entry and row["stage"] in ("done", "failed"):
+                    self._launches.pop(previous)
+                    self._finished.pop(previous, None)
+        now = time.time()
+        launch = {"slug": slug, "kind": kind, "entry": entry, "repo": repo, "stage": stage,
+                  "steps": [{"stage": stage, "at": now}], "error": None, "started_at": now}
+        self._launches[slug] = launch
+        initial = copy.deepcopy(launch)
+        self.publish(initial)
+        threading.Thread(target=target, args=(launch, *args), daemon=True).start()
+        return {"ok": True, "output": "", "slug": slug, "launch": initial}
+
+    def _stage(self, launch, stage, failure=None):
+        with self.launch_lock:
+            if launch["stage"] == stage:
+                return
+            launch["stage"] = stage
+            launch["steps"].append({"stage": stage, "at": time.time()})
+            launch["error"] = failure
+            if stage in ("done", "failed"):
+                self._finished[launch["slug"]] = time.time()
+            current = copy.deepcopy(launch)
+        if stage in ("starting", "done", "failed"):
+            self.research.invalidate()
+        self.publish(current)
+
     def run(self, route, data):
-        with self.lock:
+        lock = self.launch_lock if route in ("implement", "reflect") else self.lock
+        with lock:
             if self.reason is not None:
                 return error(403, self.reason)
             try:
+                if route in ("implement", "reflect"):
+                    self._prune_launches()
                 return self._run(route, data)
             except ValueError as exc:
                 return error(400, str(exc))
@@ -208,48 +271,46 @@ class Actions:
     def _run(self, route, data):
         if route == "implement":
             return self._implement(data)
+        if route == "reflect":
+            return self._reflect(data)
         if route in ("say", "verdict", "review", "stop", "clean"):
             return self._task(route, data)
-        argv = [self.command, route]
-        file_text = ""
-        slug = None
-        if route == "lesson":
-            entry = string(data, "entry", 200, required=True)
-            status = data.get("status")
-            note = string(data, "note", 1000)
-            if status not in STATUSES:
-                raise ValueError("Invalid status")
-            if not any(row["entry"] == entry for row in self.research.view()["lessons"]):
-                return error(404, "Unknown lesson")
-            argv.extend([entry, status])
-            if note:
-                argv.append(f"--note={note}")
-        else:  # reflect; only the registered endpoints call this method.
-            tasks, repos = names(data, "tasks"), names(data, "repos")
-            since = data.get("since")
-            file_text = string(data, "order", 8000)
-            if tasks and (since is not None or repos):
-                raise ValueError("tasks cannot be combined with since or repos")
-            if "since" in data:
-                if not isinstance(since, str):
+        entry = string(data, "entry", 200, required=True)
+        status = data.get("status")
+        note = string(data, "note", 1000)
+        if status not in STATUSES:
+            raise ValueError("Invalid status")
+        if not any(row["entry"] == entry for row in self.research.view()["lessons"]):
+            return error(404, "Unknown lesson")
+        argv = [self.command, "lesson", entry, status]
+        if note:
+            argv.append(f"--note={note}")
+        return self._execute(route, argv)
+
+    def _reflect(self, data):
+        tasks, repos = names(data, "tasks"), names(data, "repos")
+        since = data.get("since")
+        file_text = string(data, "order", 8000)
+        if tasks and (since is not None or repos):
+            raise ValueError("tasks cannot be combined with since or repos")
+        if "since" in data:
+            if not isinstance(since, str):
+                raise ValueError("Invalid since")
+            if re.fullmatch(r"[0-9]{1,3}d", since) is None:
+                if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", since) is None:
                     raise ValueError("Invalid since")
-                if re.fullmatch(r"[0-9]{1,3}d", since) is None:
-                    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", since) is None:
-                        raise ValueError("Invalid since")
-                    date.fromisoformat(since)
-            base = datetime.now(timezone.utc).strftime("reflect-%m%d-%H%M%S")
-            slug = base
-            suffix = 2
-            while (self.research.tasks_path / slug).exists():
-                slug = f"{base}-{suffix}"
-                suffix += 1
-            argv.append(slug)
-            for task in tasks:
-                argv.extend(["--task", task])
-            if since is not None:
-                argv.extend(["--since", since])
-            for repo in repos:
-                argv.extend(["--repo", repo])
+                date.fromisoformat(since)
+        slug = self._slug(datetime.now(timezone.utc).strftime("reflect-%m%d-%H%M%S"))
+        argv = [self.command, "reflect", slug]
+        for task in tasks:
+            argv.extend(["--task", task])
+        if since is not None:
+            argv.extend(["--since", since])
+        for repo in repos:
+            argv.extend(["--repo", repo])
+        return self._launch(slug, "reflect", None, None, "preparing", self._reflect_worker, argv, file_text)
+
+    def _reflect_worker(self, launch, argv, file_text):
         path = None
         try:
             if file_text:
@@ -257,13 +318,13 @@ class Actions:
                     path = Path(stream.name)
                     stream.write(file_text)
                 argv.extend(["--file", str(path)])
-            result = self._execute(route, argv)
-            if route == "reflect" and isinstance(result, dict):
-                result["slug"] = slug
-            return result
+            failure = self._execute_launch(launch, argv)
+        except OSError as exc:
+            failure = str(exc)[-2000:]
         finally:
             if path is not None:
                 path.unlink()
+        self._stage(launch, "failed" if failure is not None else "done", failure)
 
     def _task(self, route, data):
         slug = data.get("slug")
@@ -350,8 +411,14 @@ class Actions:
         repo = data.get("repo")
         if not any(row["path"] == repo for row in view["repos"]):
             raise ValueError("Unknown repository")
+        for launch in self._launches.values():
+            if launch["entry"] == entry and launch["stage"] not in ("done", "failed"):
+                return error(409, f"Урок уже запускается: {launch['slug']}")
         implementation = lesson["implementation"]
-        if implementation is not None and not implementation["archived"]:
+        failed = (implementation is not None and any(
+            row["entry"] == entry and row["slug"] == implementation["slug"] and row["stage"] == "failed"
+            for row in self._launches.values()))
+        if implementation is not None and not implementation["archived"] and not failed:
             return error(409, f"Урок уже внедряется: {implementation['slug']}")
         if access.readable(Path(repo) / ".git") is not True:
             return error(503, "Нет доступа к диску с репозиторием. Разреши Python доски доступ к файлам "
@@ -360,20 +427,31 @@ class Actions:
         lesson_id = re.sub(r"[^a-z0-9]", "-", entry.split()[-1].lower())
         started = datetime.now(timezone.utc)
         base = f"lesson-{lesson_id}-{started:%m%d}"
-        slug, suffix = base, 2
-        while (self.research.tasks_path / slug).exists():
-            slug = f"{base}-{suffix}"
-            suffix += 1
+        slug = self._slug(base)
         if re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", slug) is None:
             raise ValueError("Invalid slug")
-        argv = [self.command, "start", slug]
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as stream:
-            path = Path(stream.name)
-            stream.write(implementation_brief(lesson, note, started, lesson_id))
+        stage = "accepting" if lesson["status"] == "proposed" else "fetching"
+        return self._launch(slug, "implement", entry, Path(repo).name, stage, self._implement_worker,
+                            lesson, note, started, lesson_id, repo)
+
+    def _implement_worker(self, launch, lesson, note, started, lesson_id, repo):
+        path = None
+        failure = None
         try:
-            argv.extend(["--brief", str(path), "--repo", repo, "--executor", "claude", "--sandbox", "off",
-                         "--effort", "high", "--task-type", "feature", "--max-minutes", "60",
-                         "--review", "--fix-rounds", "2", "--parallel"])
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as stream:
+                path = Path(stream.name)
+                stream.write(implementation_brief(lesson, note, started, lesson_id))
+            if lesson["status"] == "proposed":
+                with self.lock:
+                    failure = self._execute_launch(launch, [self.command, "lesson", lesson["entry"], "accepted",
+                                                           f"--note=внедряется: {launch['slug']}"], observe=False)
+                if failure is not None:
+                    return
+                self.research.invalidate()
+                self._stage(launch, "fetching")
+            argv = [self.command, "start", launch["slug"], "--brief", str(path), "--repo", repo,
+                    "--executor", "claude", "--sandbox", "off", "--effort", "high", "--task-type", "feature",
+                    "--max-minutes", "60", "--review", "--fix-rounds", "2", "--parallel"]
             try:
                 origin = subprocess.run(["git", "-C", repo, "remote", "get-url", "origin"],
                                         stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
@@ -382,17 +460,54 @@ class Actions:
                     argv.append("--ci")
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            if lesson["status"] == "proposed":
-                result = self._execute("implement", [self.command, "lesson", entry, "accepted",
-                                                     f"--note=внедряется: {slug}"])
-                if not isinstance(result, dict):
-                    return result
-            result = self._execute("implement", argv)
-            if isinstance(result, dict):
-                result["slug"] = slug
-            return result
+            failure = self._execute_launch(launch, argv)
+        except OSError as exc:
+            failure = str(exc)[-2000:]
         finally:
-            path.unlink()
+            if path is not None:
+                path.unlink()
+            self._stage(launch, "failed" if failure is not None else "done", failure)
+
+    def _observe_launch(self, launch):
+        if launch["kind"] == "implement" and launch["stage"] == "fetching":
+            if (self.worktrees_path / f"claude-{launch['slug']}").is_dir():
+                self._stage(launch, "worktree")
+        if launch["stage"] in ("fetching", "worktree", "preparing"):
+            if (self.research.tasks_path / launch["slug"] / "state.json").is_file():
+                self._stage(launch, "starting")
+
+    def _execute_launch(self, launch, argv, observe=True):
+        route = launch["kind"]
+        try:
+            with subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+                                  cwd=Path.home()) as process:
+                deadline = time.monotonic() + LAUNCH_TIMEOUT
+                timed_out = False
+                while True:
+                    if observe:
+                        self._observe_launch(launch)
+                    remaining = deadline - time.monotonic()
+                    try:
+                        stdout, stderr = process.communicate(timeout=max(0, min(LAUNCH_POLL_SECONDS, remaining)))
+                        break
+                    except subprocess.TimeoutExpired:
+                        if remaining <= 0:
+                            process.kill()
+                            stdout, stderr = process.communicate()
+                            timed_out = True
+                            break
+                if observe:
+                    self._observe_launch(launch)
+        except OSError as exc:
+            LOGGER.info("/api/actions/%s argv=%s exit=unavailable", route, json.dumps(argv))
+            return str(exc)[-2000:]
+        LOGGER.info("/api/actions/%s argv=%s exit=%s", route, json.dumps(argv), process.returncode)
+        if timed_out:
+            return "timeout"
+        if process.returncode:
+            return (stderr.strip() or stdout.strip())[-2000:]
+        return None
 
     def _execute(self, route, argv):
         try:

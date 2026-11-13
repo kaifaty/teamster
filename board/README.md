@@ -5,6 +5,9 @@ with phases, accounts, live activity and configured machine metrics. The server 
 importing the plugin or changing source files. REST and WebSocket
 payloads are defined in [CONTRACT.md](CONTRACT.md).
 
+Implementation and reflection requests return immediately and expose background launch stages through
+REST and WebSocket; `GET /api/tasks/{slug}/feed` streams both executors' work through a resumable cursor.
+
 From the repository root, with Python 3.10+ and uv installed:
 
 ```sh

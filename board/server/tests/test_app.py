@@ -95,6 +95,29 @@ def test_stale_days_environment_reaches_store(tmp_path, monkeypatch):
     assert create_app(settings).state.board.store.stale_days == 2.5
 
 
+def test_task_feed_rest_cursor_and_unavailable_tasks(board):
+    client, _, directory, state, settings = board
+    state["pid"] = None
+    (directory / "state.json").write_text(json.dumps(state))
+    first = client.get("/api/tasks/demo/feed")
+    assert first.status_code == 200
+    assert first.json()["items"] == []
+    path = directory / "events.jsonl"
+    event = {"type": "item.completed", "timestamp": 123,
+             "item": {"type": "agent_message", "text": "First\nparagraph"}}
+    path.write_text(json.dumps(event) + "\n")
+    feed = client.get("/api/tasks/demo/feed", params={"after": first.json()["cursor"]}).json()
+    assert feed["items"] == [{"at": 123, "kind": "message", "text": "First\nparagraph"}]
+    assert feed["reset"] is False and feed["truncated"] is False
+    assert client.get("/api/tasks/demo/feed", params={"after": feed["cursor"]}).json()["items"] == []
+    assert client.get("/api/tasks/demo/feed", params={"after": "invalid"}).json()["reset"] is True
+    archived = settings.path("tasks") / ".archive" / "archived-20261113T000000Z"
+    archived.mkdir(parents=True)
+    (archived / "state.json").write_text(json.dumps(state))
+    for slug in ("unknown", archived.name, "archived"):
+        assert client.get(f"/api/tasks/{slug}/feed").status_code == 404
+
+
 def test_rest_contract_files_and_unknown_paths(board):
     client, application, directory, state, _ = board
     state["result"] = {"summary": "Change completed.\nThis preserves the reason for the change."}
@@ -741,7 +764,7 @@ def test_research_route_defaults_environment_and_safety(board, tmp_path, monkeyp
         "lessons": [], "repos": [], "repos_access": "ok", "batch": None,
         "pending": {"records": 0, "signals": 0, "repos": {}, "items": []},
         "studies": [], "reflection_task": "codex-batch-reflection", "schedule": None,
-        "actions": application.state.board.actions.value}
+        "actions": application.state.board.actions.value, "launches": []}
     assert client.post("/api/research").status_code == 405
     assert client.delete("/api/research").status_code == 405
     assert client.get("/api/research", headers={"Host": "evil.example"}).status_code == 403
@@ -926,14 +949,31 @@ if not exit_code:
     if args[0] == "lesson":
         index = tasks / ".archive" / "INDEX.md"
         index.write_text(index.read_text().replace("proposed", args[2]))
+    def wait(step):
+        if control.get("stages"):
+            marker = Path(os.environ["STATION_CALLS"]).parent / (args[1] + "." + step)
+            while not marker.exists():
+                time.sleep(0.01)
+    if args[0] == "start":
+        if control.get("stages"):
+            wait("worktree")
+            (tasks.parent / "worktrees" / ("claude-" + args[1])).mkdir(parents=True)
+            wait("starting")
     if args[0] == "reflect":
-        (tasks / args[1]).mkdir()
+        wait("starting")
+        directory = tasks / args[1]
+        directory.mkdir()
+        (directory / "state.json").write_text(json.dumps({"kind": "reflect"}))
+        wait("done")
     if args[0] == "start":
         directory = tasks / args[1]
         directory.mkdir()
         (directory / "brief.md").write_text(record["brief"])
         (directory / "state.json").write_text(json.dumps({"repo": args[args.index("--repo") + 1],
                                                        "created": time.time()}))
+        wait("done")
+if args[0] in ("start", "reflect"):
+    exit_code = control.get("late_exit", exit_code)
 print(control.get(args[0] + "_stdout", control.get("stdout", "  finished  ")))
 print(control.get("stderr", ""), file=sys.stderr)
 sys.exit(exit_code)
@@ -946,7 +986,40 @@ sys.exit(exit_code)
     application = create_app(settings)
     with TestClient(application, base_url="http://localhost:8787",
                     headers={"Origin": "http://localhost:8787", "X-Teamster-Board": "1"}) as client:
-        yield client, application, settings, entry, calls, control
+        try:
+            yield client, application, settings, entry, calls, control
+        finally:
+            for launch in application.state.board.actions.launches():
+                for stage in ("worktree", "starting", "done"):
+                    (calls.parent / (launch["slug"] + "." + stage)).touch()
+            deadline = time.monotonic() + 5
+            while any(row["stage"] not in ("done", "failed")
+                      for row in application.state.board.actions.launches()) and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+
+def wait_launch(station, slug, expected="done"):
+    client = station[0]
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        launch = next(row for row in client.get("/api/research").json()["launches"] if row["slug"] == slug)
+        if launch["stage"] in ("done", "failed"):
+            assert launch["stage"] == expected, launch
+            return launch
+        time.sleep(0.01)
+    pytest.fail(f"Launch {slug} did not finish")
+
+
+def assert_launch_response(response, slug, kind):
+    assert response.status_code == 200
+    result = response.json()
+    assert result == {"ok": True, "output": "", "slug": slug, "launch": result["launch"]}
+    launch = result["launch"]
+    assert launch["slug"] == slug
+    assert launch["kind"] == kind
+    assert launch["error"] is None
+    assert launch["steps"] == [{"stage": launch["stage"], "at": launch["started_at"]}]
+    return launch
 
 
 @pytest.mark.parametrize("note", ["  AGENTS.md  ", "--force applied"])
@@ -994,7 +1067,8 @@ def test_station_reflect_argv_utc_slug_and_collisions(station, monkeypatch, capl
     base = "reflect-1109-230405"
     response = client.post("/api/actions/reflect", json={})
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "output": "finished", "slug": base}
+    assert_launch_response(response, base, "reflect")
+    wait_launch(station, base)
     (settings.path("tasks") / (base + "-2")).mkdir()
     bodies = [
         {"tasks": ["task-a", "Task_2.0"], "order": "  --inspect\nCheck both.  "},
@@ -1007,7 +1081,8 @@ def test_station_reflect_argv_utc_slug_and_collisions(station, monkeypatch, capl
         response = client.post("/api/actions/reflect", json=body)
         assert response.status_code == 200
         slug = f"{base}-{index}"
-        assert response.json() == {"ok": True, "output": "finished", "slug": slug}
+        assert_launch_response(response, slug, "reflect")
+        wait_launch(station, slug)
         slugs.append(slug)
     records = [json.loads(line) for line in calls.read_text().splitlines()]
     assert records[0]["argv"] == ["reflect", base]
@@ -1077,7 +1152,10 @@ def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, mo
     })
     slug = "lesson-w2-1109"
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "output": "Started work", "slug": slug}
+    launch = assert_launch_response(response, slug, "implement")
+    assert launch["entry"] == entry and launch["repo"] == lesson_repo.name
+    assert launch["stage"] == ("accepting" if status == "proposed" else "fetching")
+    wait_launch(station, slug)
     records = [json.loads(line) for line in calls.read_text().splitlines()]
     assert len(records) == (2 if status == "proposed" else 1)
     if status == "proposed":
@@ -1169,7 +1247,8 @@ def test_station_implement_outside_brief_from_research(station, lesson_repo, mon
     })
     slug = "lesson-x4-1110"
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "output": "finished", "slug": slug}
+    assert_launch_response(response, slug, "implement")
+    wait_launch(station, slug)
     records = [json.loads(line) for line in calls.read_text().splitlines()]
     assert len(records) == 2
     assert records[0]["argv"] == ["lesson", entry, "accepted", f"--note=внедряется: {slug}"]
@@ -1225,6 +1304,7 @@ def test_station_implement_slug_characters_and_collisions(station, lesson_repo, 
     response = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
     assert response.status_code == 200
     assert response.json()["slug"] == base + "-3"
+    wait_launch(station, base + "-3")
 
 
 @pytest.mark.parametrize("case,status,message", [
@@ -1279,21 +1359,172 @@ def test_station_implement_rejections(station, lesson_repo, monkeypatch, case, s
     assert not calls.exists()
 
 
-@pytest.mark.parametrize("step,count,status", [("lesson", 1, "proposed"), ("start", 2, "accepted")])
+@pytest.mark.parametrize("step,count,status", [
+    ("lesson", 1, "proposed"), ("start", 2, "accepted"), ("late_start", 2, "accepted"),
+])
 def test_station_implement_failed_step_and_accepted_lesson_refresh(station, lesson_repo, step, count, status):
     client, _, _, entry, calls, control = station
     assert client.get("/api/research").json()["lessons"][0]["status"] == "proposed"
-    control.write_text(json.dumps({step + "_exit": 7, "stderr": "Failed step"}))
-    response = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
-    assert response.status_code == 422
-    assert response.json() == {"ok": False, "error": "Failed step"}
+    control.write_text(json.dumps({"late_exit" if step == "late_start" else step + "_exit": 7,
+                                   "stderr": "Failed step"}))
+    with client.websocket_connect("/ws", headers={"Host": "localhost:8787"}) as socket:
+        assert socket.receive_json()["type"] == "snapshot"
+        response = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
+        slug = response.json()["slug"]
+        assert_launch_response(response, slug, "implement")
+        failed = wait_launch(station, slug, "failed")
+        assert failed["error"] == "Failed step"
+        received = []
+        while not received or received[-1] != "failed":
+            message = socket.receive_json()
+            if message["type"] == "launch" and message["launch"]["slug"] == slug:
+                received.append(message["launch"]["stage"])
+                assert [row["stage"] for row in message["launch"]["steps"]] == received
+        assert message["launch"] == failed
     records = [json.loads(line) for line in calls.read_text().splitlines()]
     assert len(records) == count
     assert records[0]["argv"][0] == "lesson"
-    if step == "start":
+    if step in ("start", "late_start"):
         assert records[1]["argv"][0] == "start"
         assert not Path(records[1]["argv"][3]).exists()
     assert client.get("/api/research").json()["lessons"][0]["status"] == status
+    control.write_text("{}")
+    retry = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
+    assert retry.status_code == 200
+    replacement = retry.json()["slug"]
+    assert replacement != slug
+    wait_launch(station, replacement)
+    launches = client.get("/api/research").json()["launches"]
+    assert [row["slug"] for row in launches] == [replacement]
+
+
+@pytest.mark.parametrize("kind", ["implement", "reflect"])
+def test_station_launch_response_stages_websocket_and_starting_refresh(station, lesson_repo, kind):
+    client, _, _, entry, calls, control = station
+    control.write_text(json.dumps({"stages": True}))
+    body = {"entry": entry, "repo": str(lesson_repo)} if kind == "implement" else {}
+    expected = (["accepting", "fetching", "worktree", "starting", "done"]
+                if kind == "implement" else ["preparing", "starting", "done"])
+    with client.websocket_connect("/ws", headers={"Host": "localhost:8787"}) as socket:
+        assert socket.receive_json()["type"] == "snapshot"
+        response = client.post(f"/api/actions/{kind}", json=body)
+        slug = response.json()["slug"]
+        initial = assert_launch_response(response, slug, kind)
+        assert initial["stage"] == expected[0]
+        assert not (calls.parent / (slug + ".done")).exists()
+        received = []
+        for stage in expected:
+            if stage in ("worktree", "starting", "done"):
+                (calls.parent / (slug + "." + stage)).touch()
+            while True:
+                message = socket.receive_json()
+                if message["type"] == "launch" and message["launch"]["slug"] == slug:
+                    break
+            launch = message["launch"]
+            received.append(stage)
+            assert launch["stage"] == stage
+            assert [step["stage"] for step in launch["steps"]] == received
+            assert [step["at"] for step in launch["steps"]] == sorted(step["at"] for step in launch["steps"])
+            if stage == "starting" and kind == "implement":
+                lesson = client.get("/api/research").json()["lessons"][0]
+                assert lesson["implementation"]["slug"] == slug
+                assert not (calls.parent / (slug + ".done")).exists()
+        assert wait_launch(station, slug)["steps"] == launch["steps"]
+
+
+def test_station_launch_duplicate_reservations_limit_and_other_actions(station, lesson_repo):
+    client, application, settings, entry, calls, control = station
+    entries = [entry, "batch-2026-11-13.md W2", "batch-2026-11-13.md A3",
+               "batch-2026-11-13.md A4", "batch-2026-11-13.md A5"]
+    index = settings.path("tasks") / ".archive" / "INDEX.md"
+    index.write_text("".join(f"| 2026-11-13 | {value} | invariant | CI | accepted |\n" for value in entries))
+    application.state.board.research.invalidate()
+    control.write_text(json.dumps({"stages": True}))
+    first = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
+    slug = first.json()["slug"]
+    assert first.status_code == 200
+    duplicate = client.post("/api/actions/implement", json={"entry": entry, "repo": str(lesson_repo)})
+    assert duplicate.status_code == 409
+    assert duplicate.json() == {"ok": False, "error": f"Урок уже запускается: {slug}"}
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        records = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+        if any(row["argv"][:2] == ["start", slug] for row in records):
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("The first start command did not reach its worktree gate")
+    assert client.get("/api/research").json()["launches"][0]["stage"] == "fetching"
+    # start is held before worktree creation; a lesson command takes the common action lock.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        request = pool.submit(client.post, "/api/actions/lesson", json={"entry": entries[-1], "status": "accepted"})
+        try:
+            other = request.result(timeout=5)
+        finally:
+            if not request.done():
+                for stage in ("worktree", "starting", "done"):
+                    (calls.parent / (slug + "." + stage)).touch()
+    assert other.status_code == 200
+    assert not (settings.path("tasks") / slug).exists()
+    slugs = [slug]
+    for value in entries[1:4]:
+        response = client.post("/api/actions/implement", json={"entry": value, "repo": str(lesson_repo)})
+        assert response.status_code == 200
+        slugs.append(response.json()["slug"])
+    assert len(set(slugs)) == 4
+    assert slugs[1] == slugs[0] + "-2"
+    assert all(not (settings.path("tasks") / value).exists() for value in slugs)
+    fifth = client.post("/api/actions/implement", json={"entry": entries[-1], "repo": str(lesson_repo)})
+    assert fifth.status_code == 409
+    assert fifth.json() == {"ok": False, "error": "Слишком много запусков: подожди, пока начнутся предыдущие"}
+    for value in slugs:
+        for stage in ("worktree", "starting", "done"):
+            (calls.parent / (value + "." + stage)).touch()
+    for value in slugs:
+        wait_launch(station, value)
+    records = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len([row for row in records if row["argv"][0] == "start"]) == 4
+
+
+@pytest.mark.parametrize("kind", ["implement", "reflect"])
+def test_station_launch_timeout_kills_and_waits(station, lesson_repo, monkeypatch, kind):
+    client, _, _, entry, calls, control = station
+    control.write_text(json.dumps({"sleep": 30}))
+    monkeypatch.setattr(actions_module, "LAUNCH_TIMEOUT", 1)
+    body = {"entry": entry, "repo": str(lesson_repo)} if kind == "implement" else {"order": "Inspect"}
+    response = client.post(f"/api/actions/{kind}", json=body)
+    assert response.status_code == 200
+    launch = wait_launch(station, response.json()["slug"], "failed")
+    assert launch["error"] == "timeout"
+    records = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(records) == 1
+    with pytest.raises(ProcessLookupError):
+        os.kill(records[0]["pid"], 0)
+    file_flag = "--brief" if kind == "implement" else "--file"
+    if file_flag in records[0]["argv"]:
+        assert not Path(records[0]["argv"][records[0]["argv"].index(file_flag) + 1]).exists()
+
+
+def test_station_research_launch_retention_and_order(station, monkeypatch):
+    client, application, _, _, calls, control = station
+    first = client.post("/api/actions/reflect", json={}).json()["slug"]
+    wait_launch(station, first)
+    second = client.post("/api/actions/reflect", json={}).json()["slug"]
+    wait_launch(station, second)
+    control.write_text(json.dumps({"stages": True}))
+    active = client.post("/api/actions/reflect", json={}).json()["slug"]
+    launches = client.get("/api/research").json()["launches"]
+    assert [row["slug"] for row in launches] == [first, second, active]
+    assert [row["started_at"] for row in launches] == sorted(row["started_at"] for row in launches)
+    actions = application.state.board.actions
+    actions._finished[first] = time.time() - 601
+    actions._finished[second] = time.time() - 599
+    launches = client.get("/api/research").json()["launches"]
+    assert [row["slug"] for row in launches] == [second, active]
+    assert launches[-1]["stage"] == "preparing"
+    for stage in ("starting", "done"):
+        (calls.parent / (active + "." + stage)).touch()
+    wait_launch(station, active)
 
 
 @pytest.mark.parametrize("alive,archived,status", [(False, False, 200), (True, False, 409), (False, True, 409)])
@@ -1400,12 +1631,13 @@ def test_station_nonzero_output_limits_and_timeout_cleanup(station, monkeypatch)
     assert response.json() == {"ok": False, "error": "x" * 2000}
     control.write_text(json.dumps({"exit": 7, "stdout": "  fallback error  "}))
     response = client.post("/api/actions/reflect", json={})
-    assert response.status_code == 422
-    assert response.json() == {"ok": False, "error": "fallback error"}
+    assert response.status_code == 200
+    assert wait_launch(station, response.json()["slug"], "failed")["error"] == "fallback error"
     control.write_text(json.dumps({"stdout": "  " + "o" * 2100 + "  "}))
     response = client.post("/api/actions/reflect", json={})
     assert response.status_code == 200
-    assert response.json()["output"] == "o" * 2000
+    assert response.json()["output"] == ""
+    wait_launch(station, response.json()["slug"])
     control.write_text(json.dumps({"sleep": 30}))
     monkeypatch.setattr(actions_module, "COMMAND_TIMEOUT", 1)
     response = client.post("/api/actions/say", json={"slug": "waiting", "text": "--wait"})
