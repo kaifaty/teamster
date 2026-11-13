@@ -1,4 +1,4 @@
-import type { Accounts, Machines, ServerMessage, TaskSummary } from "../types";
+import type { Accounts, Launch, Machines, ServerMessage, TaskSummary } from "../types";
 
 export interface BoardState {
   /** False until the first snapshot arrives. */
@@ -13,6 +13,8 @@ export interface BoardState {
   lastPing: number | null;
   /** Client time (ms) of the last live change of each task; drives the change highlight. */
   changedAt: Readonly<Record<string, number>>;
+  /** The starts of lessons' implementations and studies the server reported, by task slug; a snapshot keeps them. */
+  launches: Readonly<Record<string, Launch>>;
 }
 
 export const emptyState: BoardState = {
@@ -23,6 +25,7 @@ export const emptyState: BoardState = {
   machines: null,
   lastPing: null,
   changedAt: {},
+  launches: {},
 };
 
 function without<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
@@ -48,6 +51,7 @@ export function reduce(state: BoardState, message: ServerMessage, now: number): 
         machines: message.snapshot.machines ?? null,
         lastPing: state.lastPing,
         changedAt: {},
+        launches: state.launches,
       };
     }
     case "task": {
@@ -81,6 +85,8 @@ export function reduce(state: BoardState, message: ServerMessage, now: number): 
       return { ...state, machines: message.machines };
     case "ping":
       return { ...state, lastPing: message.at };
+    case "launch":
+      return message.launch?.slug ? { ...state, launches: { ...state.launches, [message.launch.slug]: message.launch } } : state;
     default:
       // A newer server may send message types this client does not know yet.
       return state;

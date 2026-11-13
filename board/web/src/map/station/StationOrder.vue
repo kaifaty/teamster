@@ -58,7 +58,7 @@ function setOrder(element: unknown) {
       <p v-if="desk.orderState.error" class="error" role="alert">{{ desk.orderState.error }}</p>
       <div class="send-row">
         <button type="button" class="link small" :aria-expanded="showCommand" @click="showCommand = !showCommand">Команда</button>
-        <button type="submit" class="key gold" :class="{ busy: desk.orderState.busy }" :disabled="desk.orderState.busy">Запустить</button>
+        <button type="submit" class="key gold" :disabled="desk.orderState.busy">Запустить</button>
       </div>
       <pre v-if="showCommand" class="preview" :class="{ empty: !('command' in desk.ordered.value) }">{{ "command" in desk.ordered.value ? desk.ordered.value.command : desk.ordered.value.error }}</pre>
       <p v-if="desk.orderState.done !== null" class="done" role="status">

@@ -2,7 +2,7 @@
 // `clean`, and starts a lesson's implementation (POST /api/actions/*), for the science station's buttons and the orders
 // on a ship's bridge. The board tab's task card only copies commands.
 
-import type { ActionsOff } from "../types";
+import type { ActionsOff, Launch } from "../types";
 import type { Verdict } from "./commands";
 
 export type ActionRoute = "lesson" | "say" | "reflect" | "implement" | "verdict" | "review" | "stop" | "clean";
@@ -95,7 +95,11 @@ export interface ActionBodies {
   clean: CleanBody;
 }
 
-export type ActionResult = { ok: true; output: string; slug?: string } | { ok: false; error: string };
+/**
+ * `launch`: a newer server answers `implement` and `reflect` at once and runs the start in the background, whose steps
+ * then come as `launch` messages; an older one answers once the task has started, without it.
+ */
+export type ActionResult = { ok: true; output: string; slug?: string; launch?: Launch } | { ok: false; error: string };
 
 export type ActionSender = <R extends ActionRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
 
@@ -108,6 +112,10 @@ const CODES: Record<string, string> = {
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
+/** A start as the contract has it: a slug, a stage and its steps. */
+export const isLaunch = (value: unknown): value is Launch =>
+  isRecord(value) && typeof value.slug === "string" && !!value.slug && typeof value.stage === "string" && Array.isArray(value.steps);
 
 /** One request to the board server; a refusal, a bad answer or a lost connection all come back as `ok: false`. */
 export async function requestAction<R extends ActionRoute>(
@@ -135,6 +143,7 @@ export async function requestAction<R extends ActionRoute>(
   if (response.ok && isRecord(data) && data.ok === true) {
     const result: ActionResult = { ok: true, output: typeof data.output === "string" ? data.output : "" };
     if (typeof data.slug === "string" && data.slug) result.slug = data.slug;
+    if (isLaunch(data.launch)) result.launch = data.launch;
     return result;
   }
   if (isRecord(data) && typeof data.error === "string" && data.error.trim()) {

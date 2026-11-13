@@ -221,6 +221,24 @@ export interface Study {
   messages: StudyMessage[]; // the order first, then reports and replies by at
 }
 
+/** A step of starting a lesson's implementation or a study, as the server reports it. */
+export type LaunchStage = "accepting" | "fetching" | "worktree" | "preparing" | "starting" | "done" | "failed";
+
+/**
+ * A start the server runs in the background after `POST /api/actions/implement` or `/reflect` answered: in
+ * `GET /api/research` while it goes and for 10 minutes after, and as a `launch` message at each change of stage.
+ */
+export interface Launch {
+  slug: string; // the task's slug
+  kind: "implement" | "reflect";
+  entry: string | null; // implement: the lesson's entry
+  repo: string | null; // implement: the repository's directory name
+  stage: LaunchStage;
+  steps: { stage: LaunchStage; at: number }[]; // the stages in order with their Unix time; the last one is `stage`
+  error: string | null; // only when failed
+  started_at: number;
+}
+
 /** The Claude desktop task that schedules batch reflection, in the server's local time zone. */
 export interface ReflectionSchedule {
   source: "desktop";
@@ -248,6 +266,8 @@ export interface ResearchView {
   schedule?: ReflectionSchedule | null;
   /** Whether the board runs the station's actions; absent on older servers, which only read. */
   actions?: ResearchActions;
+  /** Starts that go on or ended in the last 10 minutes; absent on older servers. */
+  launches?: Launch[];
 }
 
 /** Why the board only reads: started with --read-only, or no teamster command to run. */
@@ -438,4 +458,5 @@ export type ServerMessage =
   | { type: "event"; event: LogEvent }
   | { type: "accounts"; accounts: Accounts }
   | { type: "machines"; machines: Machines }
+  | { type: "launch"; launch: Launch }
   | { type: "ping"; at: number };

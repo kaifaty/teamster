@@ -94,43 +94,67 @@ is going. A run is a `teamster reflect` task (or, before it, a desktop session o
 at the station and is not counted in any system.
 A click on the station opens its own screen over the map (`board/web/src/map/station/`, titled «Рефлексия»; «← Карта» or Esc goes back,
 and the galaxy stops drawing meanwhile). Under its title one line says what to do next, with at most one button, in this
-order: answer the analyst who waits («Ответить»), answer an implementing agent that needs a decision («Ответить» focuses
-the reply on its card), decide the proposed lessons («Разобрать»), wait while the analyst works, wait while agents
-implement lessons, check a ready PR («Показать» brings its card), apply the accepted lessons («Показать»), or nothing
-until the planned run. A resource bar on top counts the analyst's open
+order: answer the analyst who waits («Ответить» opens the channel), answer an implementing agent that needs a decision
+(«Ответить» opens the lesson in «Переписка» with the focus in the reply to the agent), decide the proposed lessons
+(«Разобрать» opens the first one), wait while the analyst works, wait while agents implement lessons, check a ready PR
+or a done change outside the repository («Показать» opens its lesson), apply the accepted lessons («Показать» opens the
+first one), or nothing until the planned run. A resource bar on top counts the analyst's open
 questions, lessons to decide, accepted lessons waiting for their change, applied lessons, the records not yet reflected on («не разобрано») with
 how many carry a signal, and the time to the planned reflection; each gauge brings its deck into view. The decks:
 - «Расписание»: the station inside a chronometer ring that fills from the last planned run to the next one
   (`schedule` in `GET /api/research`, read from the Claude desktop scheduled task; `board/web/src/map/schedule.ts` puts the
   cron into words), a teal sweep while a run works, the last run and batch, «Внеочередной разбор» and «Вопрос к архиву».
 - «Новый разбор», under «Переписка»: a new study — an extra batch, named tasks, or a question to the archive over a period
-  or projects. «Запустить» starts it, and its channel opens in «Переписка» above; «Команда» shows the equivalent `teamster reflect`.
+  or projects. «Запустить» opens its channel in «Переписка» at once, with your request and the start's steps, and the
+  study's own channel takes its place once `GET /api/research` shows it; the server's error puts the draft back with the
+  error. «Команда» shows the equivalent `teamster reflect`.
 - «Агенты»: the analyst (at work, waiting for your answer, stopped by a failed turn, or free; a click opens its channel) and
   «Архив» with the count of records not yet reflected on.
-- «Переписка»: one channel per study and the open channel's conversation — your request, the analyst's reports with lessons
-  and questions with answer options, and your replies — with the reply field under it: «Отправить» or Cmd/Ctrl+Enter
-  sends the picked options and your text to the study, unless the analyst is at work or the study is closed.
-- «Уроки»: lessons on one line, «на решение» › «к внедрению» › «внедрено», with «отклонено» aside. A card shows the
-  lesson's title, what to do and the proposal, with its evidence and caveats under «Подробнее». A proposed lesson is
-  implemented, accepted without a task, declined with an optional reason, or discussed — in the study that filed it when
-  that study can take a reply, otherwise in a new study over the last 30 days; an accepted one is implemented or marked
-  «Внедрено» with where it landed. For a few seconds after a decision the card offers «Отменить».
-  «Внедрить» asks for «Репозиторий», where the task makes its branch, runs its tests and opens its PR — one from `repos`
-  in `GET /api/research`, a domain lesson's own one or `teamster` first — and for an optional note, and «Запустить» starts a teamster task whose brief the server builds from the
-  lesson (`POST /api/actions/implement`; a proposed lesson becomes accepted). The agent makes the change and opens a
-  PR; changes outside the repositories it only lists in its report. A lesson whose proposal names files outside every
-  git repository (`outside` of the lesson, such as `~/.codex/checks/<repo>/ci_wait.py`) lists them on its card above
-  the buttons. «Внедрить» then lets the agent change exactly those files: it saves a `.bak` copy next to each file
-  first and checks the change on a copy, and these changes have no PR. «Скопировать задание» copies the same change
-  as an assignment for a Claude session that makes it by hand, ending with the `teamster lesson … applied` command; when
-  the clipboard refuses, the assignment is shown to copy. The card then follows the task (`implementation`
-  of the lesson): the agent works; it needs a decision, with its questions and a reply field; its PR is ready, to be
-  checked, merged and then marked «Внедрено», whose note starts with the PR's URL; for a lesson with `outside` files,
-  its change outside the repository is done, to be checked by the agent's report and marked «Внедрено»; it stopped,
-  with its summary and a reply field to go on; or the task is closed. A reply goes to the task with `say`. While a lesson's task is open,
-  «Внедрить» is not offered, and «Посмотреть» leaves the station for the task's ship: the map flies to its system and
-  opens its card. The line under the station's title offers the same while exactly one agent is at work, and shows
-  a ready PR first, then a done change outside the repository.
+- «Уроки»: the stages as tabs, «на решение» › «к внедрению» › «внедрено», with «отклонено» aside, and each lesson as one
+  short row: its title on one line, `<id> · <scope> · <date>` under it, and on the right how its implementation goes —
+  «запускается», «агент работает», «нужен ответ», «PR готов», «правка готова», «остановился» or «не запустился». A row
+  has no buttons: a click opens the lesson in «Переписка» (on a phone the page scrolls there), and the open row is lit.
+- «Переписка», the large middle panel: the channels on the left — one per study, and the studies just ordered — and on
+  the right either the open channel or the open lesson. Choosing a channel closes the lesson; opening a lesson unlights
+  the channel. A lesson stays open while it moves from tab to tab.
+  - A channel is the study's conversation — your request, the analyst's reports with lessons and questions with answer
+    options, and your replies — with the reply field under it: «Отправить» or Cmd/Ctrl+Enter sends the picked options
+    and your text to the study, unless the analyst is at work or the study is closed. The reply shows at once, marked
+    «отправляется» until the server answers; on an error it is marked and the text goes back into the field. A lesson's
+    docket in a report keeps its short text and state, «Принять» and «Отклонить» at once, «Внедрить», which opens the
+    lesson with the start's form, and «Открыть урок».
+  - A lesson shows its head (title, entry, date, scope, state, the study it came from, and «Посмотреть» while its task
+    is open: the map flies to the task's system and opens its card), its whole text — «Когда», «Что делать»,
+    «Предложение», «Доказательства», «Оговорки», with their line breaks — the files outside every git repository that
+    its proposal names (`outside`, such as `~/.codex/checks/<repo>/ci_wait.py`) and the note of its decision. Under the
+    text its implementation is a thread by time: your request («Ты · внедрить в <repo>», with its note when it was sent
+    from this tab), the start's steps, the task's state (the agent works, needs a decision with its questions, opened a
+    PR to check, merge and then mark «Внедрено», changed the files outside the repository without a PR, stopped with its
+    summary, or the task is closed) with, while the agent works, its phase in plain words (Работа, Проверка, Ревью, CI)
+    and its last action, live from the board's `activity` messages, then your replies to the agent. The task's own
+    feed of messages and commands has its place in this thread later. Changes are announced politely to screen readers.
+  - Under the thread stand the lesson's buttons and, while the agent waits, the reply to it (`say` to the task). A
+    proposed lesson is implemented, accepted without a task, declined with an optional reason, or discussed — in the
+    study that filed it when that study can take a reply, otherwise in a new study over the last 30 days, whose channel
+    opens at once; an accepted one is implemented or marked «Внедрено» with where it landed. A decision shows at once,
+    on the row and in the lesson, and goes back with the server's error, which the lesson shows; for 8 seconds the row
+    stays on its tab and the lesson offers «Отменить».
+  - «Внедрить» asks for «Репозиторий», where the task makes its branch, runs its tests and opens its PR — one from `repos`
+    in `GET /api/research`, a domain lesson's own one or `teamster` first — and for an optional note. «Запустить» closes
+    the form at once and shows your request with the first step; the row says «запускается». The server
+    (`POST /api/actions/implement`; a proposed lesson becomes accepted) answers at once with the start and runs it in the
+    background; its steps come as `launch` messages and in `launches` of `GET /api/research`: «Принимаю урок» → «Урок
+    принят», «Обновляю репозиторий» → «Репозиторий обновлён», «Создаю рабочую копию» → «Рабочая копия создана»,
+    «Запускаю агента» → «Агент запущен» (a study's start: «Собираю записи» → «Записи собраны», «Запускаю аналитика» →
+    «Аналитик запущен»), each done step with how long it went. A failed start says «Запуск не удался» with the error
+    and offers «Запустить снова», which opens the form with the same repository; the server's refusal of the request
+    itself brings the form back with what was typed and the error. An older server answers only after the task has
+    started and sends no steps: the thread then says «Внедряется: …» until the research shows the task. For a lesson
+    with `outside` files «Внедрить» lets the agent change exactly those files: it saves a `.bak` copy next to each file
+    first and checks the change on a copy, and these changes have no PR. «Скопировать задание» copies the same change as
+    an assignment for a Claude session that makes it by hand, ending with the `teamster lesson … applied` command; when
+    the clipboard refuses, the assignment is shown to copy. While a lesson's start goes or its task is open, «Внедрить»
+    is not offered.
 - «Не разобрано»: one capsule per record the next planned reflection will read, lit when it carries a signal, the records per
   project and per signal, and the signalled records, each of which can be ordered into a study.
 
@@ -139,7 +163,9 @@ and the screen shows the result. These and a ship's orders below are the only ac
 screen only reads. When the server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
 button copies the equivalent command for the terminal instead and says why; «Внедрить» has no such command and stays
 off. In `npm run dev:fixture` the actions play on the fixtures, so the whole station can be clicked through without a
-server: an implementation started there works for a few seconds, asks a question, and after the answer opens a PR.
+server: a start answers at once and goes through its steps in a few seconds, then its agent shows up on the map with a
+changing last action, asks a question, and after the answer opens a PR; the first start of «Keep the training smoke out
+of the turn» fails, to show that path.
 
 A ship's own screen, its bridge (`board/web/src/map/ship/`), leads with «Сейчас» across the screen: the ship's state
 in plain words with short facts (the turn, the branch's changes, the PR, the stations' results), a strip of the route

@@ -1,18 +1,17 @@
-// The station's console: the state every deck of the screen shares — the open channel and its reply, the lessons'
-// cards, the order — and the actions their buttons run at once through the board server. A board that only reads
-// copies the equivalent `teamster` command instead.
+// The station's console: the state every deck of the screen shares — what «Переписка» shows (a study's channel or a
+// lesson's thread) and its replies, the lessons' cards, the order — and the actions their buttons run through the
+// board server. Each action shows its result at once and puts things back on the server's error. A board that only
+// reads copies the equivalent `teamster` command instead.
 
 import { computed, inject, nextTick, reactive, ref, watch, type InjectionKey, type Ref } from "vue";
-import { readOnlyReason, type ActionBodies, type ActionResult, type ActionRoute, type ActionSender, type LessonBody } from "../../lib/actions";
-import { lessonCommand, sayCommand } from "../../lib/commands";
-import type { Lesson, Study } from "../../types";
+import { readOnlyReason, type ActionBodies, type ActionResult, type ActionRoute, type ActionSender, type ReflectBody } from "../../lib/actions";
+import { sayCommand } from "../../lib/commands";
+import type { Launch, Lesson, Study, TaskSummary } from "../../types";
 import type { Research } from "../research";
 import {
-  defaultRepo,
   discussOrder,
   filedLessons,
   firstStudy,
-  lessonsByEntry,
   openQuestionsAt,
   orderAction,
   reach,
@@ -23,15 +22,14 @@ import {
   type OrderDraft,
   type OrderKind,
   type Reach,
-  type Started,
 } from "../station";
+import { createCards } from "./cards";
 import { createImplementation, type ShipOptions } from "./implement";
+import { localLaunch, mergeLaunches, pendingKey, settlePending, type PendingStudy } from "./launch";
+
+export { HOLD_MS, type CardBusy, type CardForm, type CardState, type Stage } from "./cards";
 
 export type Deck = "core" | "crew" | "comms" | "order" | "lab" | "hold";
-export type Stage = "proposed" | "accepted" | "applied" | "declined";
-
-/** How long a card shows «Принято · Отменить» before its lesson leaves the tab. */
-export const HOLD_MS = 8000;
 
 /** A command copied instead of run, because the board only reads. */
 export interface Copied {
@@ -42,33 +40,13 @@ export interface Copied {
   reason: string;
 }
 
-export type CardForm = "decline" | "apply" | "discuss" | "implement";
-export type CardBusy = CardForm | "accept" | "undo";
-
-
-/** A lesson's card: its open form, the request in flight, and what came of the last one. */
-export interface CardState {
-  form: CardForm | null;
-  note: string;
-  busy: CardBusy | null;
-  error: string;
-  /** The decision just taken, which «Отменить» takes back to `undo`. */
-  done: { status: "accepted" | "declined" | "applied"; undo: "proposed" | "accepted" } | null;
-  copied: Copied | null;
-  /** «Репозиторий»: a repository's path, empty until one is picked. */
-  repo: string;
-  /** The implementation this card started, shown until the research carries it. */
-  started: Started | null;
-}
-
-
 /** The reply composer of one channel. */
 export interface ReplyState {
   busy: boolean;
   error: string;
   copied: Copied | null;
-  /** The reply just sent, shown until the study's own messages carry it. */
-  echo: { text: string; count: number } | null;
+  /** The reply just sent, shown until the study's own messages carry it; `failed` keeps the server's error. */
+  echo: { text: string; count: number; state: "sending" | "sent" | "failed"; error: string } | null;
 }
 
 export interface ConsoleOptions extends ShipOptions {
@@ -78,6 +56,12 @@ export interface ConsoleOptions extends ShipOptions {
   copy?: (text: string) => Promise<boolean>;
   /** Brings a deck into view. */
   jump?: (deck: Deck) => void;
+  /** Scrolls «Переписка» into view where it stands below the lessons, without lighting it. */
+  reveal?: () => void;
+  /** The starts the board's `launch` messages reported. */
+  launches?: Readonly<Ref<readonly Launch[]>>;
+  /** The board's tasks by slug, live. */
+  tasks?: Readonly<Ref<Readonly<Record<string, TaskSummary>>>>;
 }
 
 export type Outcome = { kind: "ok"; result: Extract<ActionResult, { ok: true }> } | { kind: "error"; error: string } | { kind: "copied"; copied: Copied };
@@ -92,17 +76,14 @@ async function clipboard(text: string): Promise<boolean> {
   }
 }
 
-const BLANK_CARD: Readonly<CardState> = Object.freeze({ form: null, note: "", busy: null, error: "", done: null, copied: null, repo: "", started: null });
 const BLANK_REPLY: Readonly<ReplyState> = Object.freeze({ busy: false, error: "", copied: null, echo: null });
 
 export function createConsole(research: Ref<Research>, now: Ref<number>, options: ConsoleOptions) {
   const copy = options.copy ?? clipboard;
   const jump = (deck: Deck) => options.jump?.(deck);
   const studies = computed(() => research.value.studies);
-  const index = computed(() =>
-    lessonsByEntry([research.value.proposed, research.value.accepted, research.value.applied, research.value.declined, research.value.other]),
-  );
   const filed = computed(() => filedLessons(studies.value));
+  const launches = computed(() => mergeLaunches(research.value.launches ?? [], options.launches?.value ?? []));
 
   // ---- actions: run on the server, or copied when the board only reads
 
@@ -115,35 +96,85 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     return result.ok ? { kind: "ok", result } : { kind: "error", error: result.error };
   }
 
-  // ---- the channel that is open in the comms room
+  const cards = createCards({ research, live, run });
+  const { index, edit, openForm } = cards;
+
+  // ---- what «Переписка» shows: a study's channel, a channel just ordered, or a lesson
 
   const keyOf = (study: Study | null) => (study ? studyKey(study) : null);
   const openKey = ref<string | null>(keyOf(firstStudy(studies.value)));
   const openStudy = computed(() => studies.value.find((study) => studyKey(study) === openKey.value) ?? null);
+  /** The lesson open in «Переписка», by entry; it stays open while it moves from tab to tab. */
+  const openEntry = ref<string | null>(null);
+  const openLesson = computed(() => (openEntry.value ? (index.value.get(openEntry.value) ?? null) : null));
   // A study that starts waiting comes forward, unless the human is in another one.
   watch(
     () => keyOf(firstStudy(studies.value)),
     (key) => {
-      if (!openStudy.value) openKey.value = key;
+      if (!openStudy.value && !openPending.value) openKey.value = key;
     },
   );
   function select(study: Study) {
     openKey.value = studyKey(study);
+    openEntry.value = null;
   }
 
-  /** A study an action just started: its channel opens as soon as the research shows it. */
-  const awaiting = ref<string | null>(null);
-  function follow(slug: string | undefined) {
-    awaiting.value = slug ?? null;
-    catchUp();
+  const agentField = ref<HTMLTextAreaElement | null>(null);
+  /** Opens a lesson in «Переписка»: `answer` focuses the reply to its agent, `implement` opens the start's form. */
+  async function showLesson(lesson: Lesson, then: "answer" | "implement" | null = null) {
+    openEntry.value = lesson.entry.trim();
+    options.reveal?.();
+    if (then === "implement") openForm(lesson, "implement");
+    if (then === "answer") await focus(agentField);
   }
-  function catchUp() {
-    const study = awaiting.value ? studies.value.find((item) => item.slug === awaiting.value && !item.archived) : null;
-    if (!study) return;
-    awaiting.value = null;
-    select(study);
+
+  /** Studies ordered from this screen: each is a channel at once, until the research shows it. */
+  const pending = reactive<PendingStudy[]>([]);
+  let pendingCount = 0;
+  const openPending = computed(() => pending.find((item) => pendingKey(item) === openKey.value) ?? null);
+  /** The channels in their order: those just ordered first, then the studies, newest first. */
+  const channels = computed(() => [
+    ...pending.map((item) => ({ key: pendingKey(item), pending: item, study: null })),
+    ...studies.value.map((study) => ({ key: studyKey(study), pending: null, study })),
+  ]);
+  /** The start of a study just ordered: the server's latest news, or its first step before the server answered. */
+  function pendingLaunch(item: PendingStudy): Launch | null {
+    if (!item.slug) return localLaunch("reflect", "preparing", item.at);
+    return launches.value.find((launch) => launch.slug === item.slug) ?? item.launch;
   }
-  watch(studies, catchUp);
+  function settle() {
+    const { left, found } = settlePending(pending, studies.value);
+    // The study takes its channel's place; a lesson opened meanwhile stays open.
+    for (const { pending: item, study } of found) if (openKey.value === pendingKey(item)) openKey.value = studyKey(study);
+    if (found.length) pending.splice(0, pending.length, ...left);
+  }
+  watch(studies, settle);
+  function dropPending(item: PendingStudy) {
+    const at = pending.findIndex((candidate) => candidate.id === item.id);
+    if (at >= 0) pending.splice(at, 1);
+    if (openKey.value === pendingKey(item)) openKey.value = keyOf(firstStudy(studies.value));
+  }
+  function showPending(item: PendingStudy) {
+    openKey.value = pendingKey(item);
+    openEntry.value = null;
+  }
+
+  /** A new study: its channel opens at once with the request; the server's error takes it away. */
+  async function startStudy(body: ReflectBody, command: string): Promise<Outcome> {
+    if (!live.value) return run("reflect", body, command);
+    const mode: Study["mode"] = body.tasks?.length || body.since !== undefined || body.repos?.length ? "study" : "batch";
+    pending.unshift({ id: String(++pendingCount), order: body.order ?? null, mode, at: now.value, slug: null, launch: null });
+    const item = pending[0]!;
+    showPending(item);
+    options.reveal?.();
+    const outcome = await run("reflect", body, command);
+    if (outcome.kind !== "ok" || !outcome.result.slug) dropPending(item);
+    else {
+      Object.assign(item, { slug: outcome.result.slug, launch: outcome.result.launch ?? null });
+      settle();
+    }
+    return outcome;
+  }
 
   // ---- answers to the analyst
 
@@ -174,13 +205,13 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
 
   const replies = reactive<Record<string, ReplyState>>({});
   const replyOf = (study: Study): Readonly<ReplyState> => replies[studyKey(study)] ?? BLANK_REPLY;
-  /** The reply just sent, while the study's messages do not carry it yet. */
+  /** The reply just sent, while the study's messages do not carry it yet; one that failed stays with its error. */
   function echoOf(study: Study) {
     const echo = replies[studyKey(study)]?.echo;
-    return echo && study.messages.length <= echo.count ? echo : null;
+    return echo && (echo.state === "failed" || study.messages.length <= echo.count) ? echo : null;
   }
   /** Whether a reply can go to the study now: not while the analyst works on the last one. */
-  const replyReach = (study: Study | null): Reach => (study && echoOf(study) ? "working" : reach(study));
+  const replyReach = (study: Study | null): Reach => (study && echoOf(study) && echoOf(study)!.state !== "failed" ? "working" : reach(study));
 
   const replyField = ref<HTMLTextAreaElement | null>(null);
   const orderField = ref<HTMLTextAreaElement | null>(null);
@@ -216,6 +247,7 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     openStudy.value && replyReach(openStudy.value) === "ok" ? replyText(openQuestions.value, answersOf(openStudy.value), free.value) : "",
   );
 
+  /** «Отправить»: the reply shows in the channel at once as sending; the server's error gives the field its text back. */
   async function sendReply() {
     const study = openStudy.value;
     const text = reply.value;
@@ -223,117 +255,36 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     const key = studyKey(study);
     const turn = turnKey(study);
     const count = study.messages.length;
-    replies[key] = { busy: true, error: "", copied: null, echo: null };
+    const kept = { draft: drafts[key] ?? "", answers: [...answersOf(study)], custom: [...customOf(study)] };
+    const clear = () => {
+      drafts[key] = "";
+      answers[turn] = [];
+      custom[turn] = [];
+    };
+    replies[key] = { busy: true, error: "", copied: null, echo: live.value ? { text, count, state: "sending", error: "" } : null };
     const state = replies[key]!;
+    if (state.echo) clear();
     const outcome = await run("say", { slug: study.slug, text }, sayCommand(study.slug, text));
     state.busy = false;
     if (outcome.kind === "error") {
-      state.error = outcome.error;
+      if (state.echo) Object.assign(state.echo, { state: "failed", error: outcome.error });
+      else state.error = outcome.error;
+      if (!drafts[key]?.trim()) {
+        drafts[key] = kept.draft;
+        answers[turn] = kept.answers;
+        custom[turn] = kept.custom;
+      }
       return;
     }
     if (outcome.kind === "copied") state.copied = outcome.copied;
-    else state.echo = { text, count };
-    drafts[key] = "";
-    answers[turn] = [];
-    custom[turn] = [];
+    else if (state.echo) state.echo.state = "sent";
+    clear();
   }
 
-  // ---- the lessons' cards
-
-
-  const cards = reactive<Record<string, CardState>>({});
-  const cardOf = (lesson: Lesson): Readonly<CardState> => cards[lesson.entry.trim()] ?? BLANK_CARD;
-  /** The card's state to change: the reactive one, created on first use. */
-  function edit(lesson: Lesson): CardState {
-    const key = lesson.entry.trim();
-    if (!cards[key]) cards[key] = { ...BLANK_CARD };
-    return cards[key]!;
-  }
-
-  function openForm(lesson: Lesson, form: CardForm) {
-    const state = edit(lesson);
-    if (state.busy) return;
-    if (form === "implement" && !live.value) return;
-    // «Внедрено» after the agent's PR names the PR.
-    const note = form === "apply" ? (lesson.implementation?.pr ?? "") : "";
-    Object.assign(state, { form, note, error: "", copied: null });
-    if (form === "implement") state.repo = defaultRepo(lesson, research.value.repos);
-  }
-  function setRepo(lesson: Lesson, path: string) {
-    const state = edit(lesson);
-    if (state.form === "implement") state.repo = path;
-  }
-  function setNote(lesson: Lesson, text: string) {
-    const state = edit(lesson);
-    if (state.form) state.note = text;
-  }
-  function closeForm(lesson: Lesson) {
-    const state = edit(lesson);
-    if (!state.busy) Object.assign(state, { form: null, note: "", error: "" });
-  }
-
-  const listOf = (stage: Stage): Lesson[] =>
-    stage === "declined" ? [...research.value.declined, ...research.value.other] : research.value[stage];
-
-  /** Lessons decided a moment ago stay on their tab while «Отменить» is offered. */
-  const held = reactive<Record<string, { lesson: Lesson; stage: Stage; index: number }>>({});
-  const timers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** `index`: where the lesson stood on its tab before the action, whose refresh has already moved it. */
-  function hold(lesson: Lesson, stage: Stage, index: number) {
-    const key = lesson.entry.trim();
-    held[key] = { lesson, stage, index: Math.max(0, index) };
-    clearTimeout(timers.get(key));
-    timers.set(key, setTimeout(() => release(key), HOLD_MS));
-  }
-  function release(key: string) {
-    clearTimeout(timers.get(key));
-    timers.delete(key);
-    delete held[key];
-    if (cards[key]) cards[key].done = null;
-  }
-
-  async function decide(lesson: Lesson, busy: CardBusy, status: "accepted" | "declined" | "applied", stage: Stage) {
-    const state = edit(lesson);
-    if (state.busy) return;
-    const entry = lesson.entry.trim();
-    const index = listOf(stage).findIndex((item) => item.entry.trim() === entry);
-    const note = state.form ? state.note.trim() : "";
-    const body: LessonBody = { entry, status };
-    if (note) body.note = note;
-    Object.assign(state, { busy, error: "", copied: null });
-    const outcome = await run("lesson", body, lessonCommand(entry, status, note));
-    state.busy = null;
-    if (outcome.kind === "error") {
-      state.error = outcome.error;
-      return;
-    }
-    Object.assign(state, { form: null, note: "" });
-    if (outcome.kind === "copied") {
-      state.copied = outcome.copied;
-      return;
-    }
-    state.done = { status, undo: status === "applied" ? "accepted" : "proposed" };
-    hold(lesson, stage, index);
-  }
-
-  const accept = (lesson: Lesson) => decide(lesson, "accept", "accepted", "proposed");
-  const decline = (lesson: Lesson) => decide(lesson, "decline", "declined", "proposed");
-  const apply = (lesson: Lesson) => decide(lesson, "apply", "applied", "accepted");
-
-  /** «Отменить»: the lesson goes back to where it was. */
-  async function undo(lesson: Lesson) {
-    const state = edit(lesson);
-    if (!state.done || state.busy) return;
-    const entry = lesson.entry.trim();
-    const status = state.done.undo;
-    Object.assign(state, { busy: "undo", error: "" });
-    const outcome = await run("lesson", { entry, status }, lessonCommand(entry, status));
-    state.busy = null;
-    if (outcome.kind === "error") state.error = outcome.error;
-    else release(entry);
-  }
-
-  const implementation = createImplementation({ research, live, act: options.act, openShip: options.openShip, run, cardOf, edit, listOf, hold });
+  const implementation = createImplementation({
+    research, now, live, act: options.act, openShip: options.openShip, run, launches, tasks: options.tasks ?? ref({}),
+    cardOf: cards.cardOf, edit, openForm, listOf: cards.listOf, hold: cards.hold,
+  });
 
   /** «Обсудить»: in the study that filed the lesson when it can take a reply, otherwise a new study. */
   async function discuss(lesson: Lesson) {
@@ -342,49 +293,30 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     else openForm(lesson, "discuss");
   }
 
+  /** «Начать обсуждение»: the new study's channel opens at once; the server's error brings the lesson and its form back. */
   async function startDiscussion(lesson: Lesson) {
     const state = edit(lesson);
     if (state.busy) return;
-    const body = { order: discussOrder(lesson, state.note), since: "30d" };
+    const note = state.note;
+    const body = { order: discussOrder(lesson, note), since: "30d" };
     Object.assign(state, { busy: "discuss", error: "", copied: null });
-    const outcome = await run("reflect", body, reflectBodyCommand(body, new Date(now.value * 1000)));
+    if (live.value) Object.assign(state, { form: null, note: "" });
+    const outcome = await startStudy(body, reflectBodyCommand(body, new Date(now.value * 1000)));
     state.busy = null;
     if (outcome.kind === "error") {
-      state.error = outcome.error;
+      Object.assign(state, { form: "discuss", note, error: outcome.error });
+      if (live.value) void showLesson(lesson);
       return;
     }
     Object.assign(state, { form: null, note: "" });
-    if (outcome.kind === "copied") {
-      state.copied = outcome.copied;
-      return;
-    }
-    follow(outcome.result.slug);
-    jump("comms");
+    if (outcome.kind === "copied") state.copied = outcome.copied;
+    else jump("comms");
   }
 
   // ---- the lab's tabs
 
-  const firstStage = (): Stage => (["proposed", "accepted", "applied"] as const).find((stage) => listOf(stage).length) ?? "proposed";
-  const labStage = ref<Stage>(firstStage());
-  const shown = computed(() => {
-    const list = [...listOf(labStage.value)];
-    for (const [key, item] of Object.entries(held)) {
-      // The lesson as the research shows it now: a card that started an implementation follows its task.
-      if (item.stage === labStage.value && !list.some((lesson) => lesson.entry.trim() === key)) list.splice(Math.min(item.index, list.length), 0, index.value.get(key) ?? item.lesson);
-    }
-    return list;
-  });
-  // New proposals bring the lab back to the decisions, unless the human looks at another stage that has lessons. A
-  // card's own action empties its tab before the card holds the lesson: the tab stays for its «Отменить».
-  watch(
-    () => research.value.proposed.length,
-    (count, before) => {
-      const acting = Object.values(cards).some((card) => card.busy);
-      if (count > (before ?? 0) || (!shown.value.length && !acting)) labStage.value = firstStage();
-    },
-  );
-  function showStage(stage: Stage) {
-    labStage.value = stage;
+  function showStage(stage: "proposed" | "accepted") {
+    cards.labStage.value = stage;
     jump("lab");
   }
 
@@ -409,6 +341,7 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     await order("tasks");
   }
 
+  /** «Запустить»: the study's channel opens at once and the draft clears; the server's error puts the draft back. */
   async function sendOrder() {
     const result = ordered.value;
     if (orderState.busy) return;
@@ -416,25 +349,20 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
       orderState.error = result.error;
       return;
     }
+    const kept = { text: draft.text, tasks: draft.tasks };
     Object.assign(orderState, { busy: true, error: "", done: null, copied: null });
-    const outcome = await run("reflect", result.body, result.command);
+    if (live.value) Object.assign(draft, { text: "", tasks: "" });
+    const outcome = await startStudy(result.body, result.command);
     orderState.busy = false;
     if (outcome.kind === "error") {
+      Object.assign(draft, kept);
+      await nextTick();
       orderState.error = outcome.error;
       return;
     }
     if (outcome.kind === "copied") orderState.copied = outcome.copied;
-    else {
-      orderState.done = outcome.result.slug ?? "";
-      follow(outcome.result.slug);
-    }
-    draft.text = "";
-    draft.tasks = "";
-  }
-
-  function dispose() {
-    for (const timer of timers.values()) clearTimeout(timer);
-    timers.clear();
+    else orderState.done = outcome.result.slug ?? "";
+    Object.assign(draft, { text: "", tasks: "" });
   }
 
   return {
@@ -442,13 +370,24 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     studies,
     repos: computed(() => research.value.repos),
     reposAccess: computed(() => research.value.reposAccess),
-    index,
     filed,
     live,
+    launches,
     openKey,
     openStudy,
+    openEntry,
+    openLesson,
     select,
-    awaiting,
+    showLesson,
+    agentField,
+    channels,
+    pending,
+    openPending,
+    pendingLaunch,
+    showPending,
+    dropPending,
+    /** Whether a study just ordered waits to show up: the screen asks for news more often meanwhile. */
+    awaiting: computed(() => pending.length > 0),
     answersOf,
     customOf,
     choose,
@@ -463,21 +402,10 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     echoOf,
     replyReach,
     sendReply,
-    cardOf,
-    openForm,
-    setNote,
-    setRepo,
-    closeForm,
-    accept,
-    decline,
-    apply,
-    undo,
+    ...cards,
     ...implementation,
     discuss,
     startDiscussion,
-    labStage,
-    shown,
-    listOf,
     showStage,
     draft,
     ordered,
@@ -485,7 +413,6 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     order,
     studyRecord,
     sendOrder,
-    dispose,
   };
 }
 
