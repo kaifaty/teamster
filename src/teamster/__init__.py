@@ -64,7 +64,7 @@ namespaces. Only config.py and __main__.py may use __file__; usage text stays in
 The executors and reviewers registries share the register, get and names API.
 """
 
-__version__ = "1.68.0"
+__version__ = "1.69.0"
 # Raised by a release whose supervisors cannot run beside those of a different value;
 # upgrade --yes then refuses while a supervisor of another data layout is alive.
 DATA_LAYOUT = 1
