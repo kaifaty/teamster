@@ -17,10 +17,15 @@ const props = defineProps<{
   /** «Войти заново» was pressed and the server has not answered yet. */
   starting: boolean;
   loginError: string | null;
-  inputError: string | null;
+  /** Why sending the code or cancelling did not work. */
+  actionError: string | null;
+  /** Sends the code a Claude page shows to the sign-in tool; false when the server refused it. */
+  send: (text: string) => Promise<boolean>;
+  /** Another screen stands over this one: it keeps the focus. */
+  covered?: boolean;
   now: number;
 }>();
-const emit = defineEmits<{ signIn: []; send: [text: string]; cancel: []; dismiss: [] }>();
+const emit = defineEmits<{ signIn: []; cancel: []; dismiss: [] }>();
 
 const live = computed(() => loginLive(props.login));
 const finished = computed(() => !!props.login && !live.value);
@@ -29,7 +34,7 @@ const steps = computed(() => (props.login ? loginSteps(props.login) : []));
 const line = computed(() => (props.login ? loginLine(props.login) : null));
 const left = computed(() => (props.login ? codeLeft(props.login, props.now) : null));
 const command = computed(() => loginCommand(props.family, props.name));
-const waiting = computed(() => props.login?.stage === "waiting" || props.login?.stage === "starting");
+const waiting = computed(() => props.login?.stage === "waiting");
 
 // The one-time code to the clipboard.
 const copied = ref(false);
@@ -46,6 +51,7 @@ async function copyCode() {
 }
 
 // The code a Claude sign-in page shows, back to the sign-in tool; the field takes the focus when the tool asks for it.
+// A code the server refused stays in the field.
 const text = ref("");
 const sending = ref(false);
 const field = ref<HTMLInputElement | null>(null);
@@ -53,22 +59,36 @@ async function submit() {
   const value = text.value.trim();
   if (!value || sending.value) return;
   sending.value = true;
-  emit("send", value);
-  text.value = "";
+  if (await props.send(value)) text.value = "";
   sending.value = false;
 }
 watch(
   () => props.login?.prompt,
   async (prompt) => {
-    if (!prompt) return;
+    if (!prompt || props.covered) return;
     await nextTick();
     field.value?.focus();
+  },
+);
+
+// The buttons a sign-in replaces take the focus with them: it goes to the sign-in's first control instead, or to the
+// deck, rather than to the page behind the screen.
+const panel = ref<HTMLElement | null>(null);
+const deck = ref<HTMLElement | null>(null);
+watch(
+  () => [props.login?.id, props.login?.stage] as const,
+  async () => {
+    await nextTick();
+    const active = document.activeElement;
+    if (props.covered || (active && active !== document.body && active.isConnected)) return;
+    const target = panel.value?.querySelector<HTMLElement>("a[href], input, button:not([disabled])") ?? panel.value ?? deck.value;
+    target?.focus();
   },
 );
 </script>
 
 <template>
-  <section class="deck now" :class="`tone-${nowView.tone}-deck`" aria-labelledby="account-now">
+  <section ref="deck" class="deck now" :class="`tone-${nowView.tone}-deck`" aria-labelledby="account-now" tabindex="-1">
     <div class="deck-head">
       <span class="sigil" aria-hidden="true">◉</span>
       <h3 id="account-now">Сейчас</h3>
@@ -92,7 +112,7 @@ watch(
       Не удалось начать вход: {{ loginError }}. Можно войти в терминале: <code class="mono">{{ command }}</code>
     </p>
 
-    <div v-if="login" class="login well" :class="{ live }" aria-live="polite">
+    <div v-if="login" ref="panel" class="login well" :class="{ live }" aria-live="polite" tabindex="-1">
       <ol class="steps" aria-label="Шаги входа">
         <li v-for="step in steps" :key="step.id" :class="step.state">
           <span class="dot" aria-hidden="true">{{ step.state === "done" ? "✓" : step.state === "failed" ? "✕" : "" }}</span>
@@ -136,9 +156,9 @@ watch(
           />
           <button type="submit" class="key" :class="{ main: login.prompt }" :disabled="!text.trim() || sending">Отправить</button>
         </form>
-        <p v-if="inputError" class="error" role="alert">Код не дошёл: {{ inputError }}</p>
       </div>
 
+      <p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
       <p v-if="finished && login.message" class="message">{{ login.message }}</p>
       <p v-if="failed && login.error && login.error !== login.message" class="error">{{ login.error }}</p>
 
@@ -159,6 +179,11 @@ watch(
 </template>
 
 <style scoped>
+.now:focus,
+.login:focus {
+  outline: none;
+}
+
 .now.tone-bad-deck {
   box-shadow: 0 0 0 1px rgba(255, 141, 122, 0.25);
 }

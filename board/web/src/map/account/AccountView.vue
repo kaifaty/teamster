@@ -10,8 +10,11 @@ import nebula from "../art/nebula.jpg";
 import "../ship/ship.css";
 import {
   FAMILY_NAMES,
+  SIGNED_IN,
   accountsContext,
+  awaitingData,
   cardOf,
+  currentLogin,
   findAccount,
   lastLoginOf,
   latestLogin,
@@ -36,6 +39,8 @@ const props = defineProps<{
   source: BoardSource;
   now: number;
   frame: string;
+  /** A task's bridge or a machine's card stands over this screen: its keys and focus are theirs. */
+  covered?: boolean;
 }>();
 /** `open`: a task on this subscription was picked, its bridge opens over this screen. */
 const emit = defineEmits<{ close: []; open: [slug: string] }>();
@@ -48,20 +53,30 @@ const data = computed(() => props.accounts?.data ?? null);
 const row = computed(() => findAccount(data.value, props.accountKey, props.now));
 const context = computed(() => accountsContext(data.value));
 
-// The sign-in: the server's latest one for this subscription, or the one its answer just gave before any message came.
+// The sign-in: the server's latest one for this subscription, or the one its answer just gave until the board knows it.
 const started = ref<Login | null>(null);
+watch(
+  () => started.value && props.logins[started.value.id],
+  (known) => {
+    if (known) started.value = null;
+  },
+);
 const login = computed(() => {
   const known = latestLogin(props.logins, family.value, name.value);
-  const own = started.value && !props.logins[started.value.id] ? started.value : null;
-  if (!own) return known;
-  return !known || own.started_at >= known.started_at ? own : known;
+  const own = started.value?.family === family.value && started.value.account === name.value ? started.value : null;
+  const latest = !own ? known : !known || own.started_at >= known.started_at ? own : known;
+  return currentLogin(latest, props.now);
 });
 /** A finished sign-in the person put away: «Сейчас» shows the subscription again. */
 const dismissed = ref<string | null>(null);
 const shownLogin = computed(() => (login.value && login.value.id !== dismissed.value ? login.value : null));
+/** Signed in, but the subscription's data is older than the sign-in: it would still say a sign-in is needed. */
+const awaiting = computed(() => awaitingData(login.value, props.accounts?.fetched_at ?? null));
 
-const state = computed(() => (row.value ? stateOf(row.value, shownLogin.value) : null));
-const nowView = computed(() => (row.value ? nowOf(row.value, context.value, props.now) : null));
+const state = computed(() =>
+  awaiting.value ? { text: "вход выполнен", tone: "ok" as const } : row.value ? stateOf(row.value, shownLogin.value, context.value) : null,
+);
+const nowView = computed(() => (awaiting.value ? SIGNED_IN : row.value ? nowOf(row.value, context.value, props.now) : null));
 const limits = computed(() => (row.value ? limitsOf(row.value, context.value, props.now) : []));
 const card = computed(() =>
   row.value ? cardOf(row.value, context.value, lastLoginOf(props.accounts?.last_logins, family.value, name.value), props.accounts?.fetched_at ?? null, props.now) : [],
@@ -86,60 +101,66 @@ async function signIn() {
   else if (result.login) started.value = result.login;
 }
 
-const inputError = ref<string | null>(null);
-async function send(text: string) {
+/** Why sending the code or cancelling did not work. */
+const actionError = ref<string | null>(null);
+async function send(text: string): Promise<boolean> {
   const current = login.value;
   if (!current) return false;
-  inputError.value = null;
+  actionError.value = null;
   const result = await act("login/input", { id: current.id, text });
-  if (!result.ok) inputError.value = result.error;
+  if (!result.ok) actionError.value = `Код не дошёл: ${result.error}`;
   return result.ok;
 }
 
 async function cancel() {
   const current = login.value;
   if (!current) return;
+  actionError.value = null;
   const result = await act("login/cancel", { id: current.id });
-  if (!result.ok) loginError.value = result.error;
+  if (!result.ok) actionError.value = `Не удалось отменить вход: ${result.error}`;
 }
 
 function dismiss() {
   if (login.value && !loginLive(login.value)) dismissed.value = login.value.id;
   loginError.value = null;
+  actionError.value = null;
 }
 
-// «Обновить»: the answer comes as the next accounts snapshot; until then the key says it waits, at most 90 s.
-const refreshing = ref(false);
+// «Обновить»: the answer comes as an accounts message read after the request — for Claude, once the probe has read
+// this subscription's limits anew (its `updatedAt` changes), since a periodic read may land first. At most 160 s.
+const refreshing = ref<{ after: number; updatedAt: number | null } | null>(null);
 const refreshError = ref<string | null>(null);
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 async function refresh() {
   if (refreshing.value) return;
-  refreshing.value = true;
+  refreshing.value = { after: Date.now() / 1000, updatedAt: row.value?.updatedAt ?? null };
   refreshError.value = null;
   const result = await act("account-refresh", body.value);
   if (!result.ok) {
-    refreshing.value = false;
+    refreshing.value = null;
     refreshError.value = result.error;
     return;
   }
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
-    refreshing.value = false;
-  }, 90_000);
+    refreshing.value = null;
+  }, 160_000);
 }
 watch(
-  () => props.accounts?.fetched_at,
-  (next, previous) => {
-    if (next !== previous && refreshing.value) {
-      refreshing.value = false;
-      clearTimeout(refreshTimer);
-    }
+  () => [props.accounts?.fetched_at ?? null, row.value?.updatedAt ?? null, row.value?.needsLogin] as const,
+  ([fetchedAt, updatedAt, needsLogin], previous) => {
+    const waiting = refreshing.value;
+    if (!waiting || fetchedAt === null || fetchedAt < waiting.after) return;
+    const done = family.value === "codex" || updatedAt !== waiting.updatedAt || needsLogin !== previous?.[2];
+    if (!done) return;
+    refreshing.value = null;
+    clearTimeout(refreshTimer);
   },
 );
 
 const back = ref<HTMLButtonElement | null>(null);
 function onKey(event: KeyboardEvent) {
-  if (event.key !== "Escape" || event.isComposing) return;
+  if (event.key !== "Escape" || event.isComposing || props.covered) return;
   event.preventDefault();
   // Escape in a field leaves the field; the next one leaves the screen.
   const field = event.target instanceof HTMLElement && event.target.closest("input, textarea, select");
@@ -185,7 +206,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="key"
-            :disabled="refreshing"
+            :disabled="!!refreshing"
             :title="family === 'claude' ? 'Отправить короткий запрос и прочитать лимиты заново' : 'Прочитать лимиты подписок заново'"
             @click="refresh"
           >
@@ -217,10 +238,11 @@ onBeforeUnmount(() => {
           :login="shownLogin"
           :starting="starting"
           :login-error="loginError"
-          :input-error="inputError"
+          :action-error="actionError"
+          :send="send"
+          :covered="covered"
           :now="now"
           @sign-in="signIn"
-          @send="send"
           @cancel="cancel"
           @dismiss="dismiss"
         />

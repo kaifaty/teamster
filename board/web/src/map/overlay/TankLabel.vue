@@ -16,7 +16,6 @@ const emit = defineEmits<{ open: [key: string] }>();
     :style="label.style"
     :title="label.title"
     :data-tank="label.tank.key"
-    :aria-label="`Подписка ${label.tank.name}: ${label.info}. Открыть экран подписки`"
     @click="emit('open', label.tank.key)"
   >
     <span class="t-name"><span class="glyph" aria-hidden="true">{{ label.tank.executor === "codex" ? "◆" : "✳" }}</span>{{ label.tank.name }}</span>
@@ -25,6 +24,7 @@ const emit = defineEmits<{ open: [key: string] }>();
       <img v-for="cell in label.cells" :key="cell" class="cell" :src="fuelCell" alt="" />
       <span v-if="label.cells" class="visually-hidden">, бесплатных сбросов {{ label.cells }}</span>
       <span v-if="label.tank.admiral" class="visually-hidden">, резерв оркестратора</span>
+      <span class="visually-hidden">. Открыть экран подписки</span>
     </span>
   </button>
 </template>

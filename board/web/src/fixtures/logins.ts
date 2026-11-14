@@ -21,6 +21,8 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
   const timers = new Map<string, ReturnType<typeof setTimeout>[]>();
   const signedIn = new Set<string>();
   let refreshedAt: number | null = null;
+  /** Claude subscriptions whose limits a refresh read anew, with when. */
+  const probed = new Map<string, number>();
   let counter = 0;
 
   function update(id: string, change: Partial<Login>) {
@@ -115,9 +117,10 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
     return { ok: true, output: "" };
   }
 
-  function refresh(): ActionResult {
+  function refresh({ family, account }: AccountBody): ActionResult {
     setTimeout(() => {
       refreshedAt = clock();
+      if (family === "claude") probed.set(account, refreshedAt);
       const current = accounts();
       if (current) emit(patch({ type: "accounts", accounts: current }));
     }, 1500);
@@ -131,7 +134,9 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
       Array.isArray(root[family])
         ? (root[family] as unknown[]).map((entry) => {
             if (typeof entry !== "object" || entry === null) return entry;
-            const item = entry as Record<string, unknown>;
+            const item = { ...(entry as Record<string, unknown>) };
+            const read = family === "claude" ? probed.get(String(item.name)) : undefined;
+            if (read !== undefined) item.updated_at = new Date(read * 1000).toISOString();
             if (!signedIn.has(`${family}:${String(item.name)}`)) return item;
             return family === "codex"
               ? { ...item, status: "available", plan: item.plan ?? "plus", primary: item.primary ?? { used_percent: 3, resets_at: null, window_minutes: 10080 } }
@@ -165,7 +170,7 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
       if (route === "login") return start(body as AccountBody);
       if (route === "login/input") return input(body as LoginInputBody);
       if (route === "login/cancel") return cancel(body as LoginCancelBody);
-      return refresh();
+      return refresh(body as AccountBody);
     },
     patch,
   };

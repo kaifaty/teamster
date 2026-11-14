@@ -30,7 +30,10 @@ export interface AccountsContext {
   /** From this share of the week used, tasks prefer another Codex subscription; from `switchAt`, they leave it. */
   softSwitchAt: number | null;
   switchAt: number | null;
-  /** The credits a Codex subscription keeps untouched, and until when (Unix seconds); null when there is no floor. */
+  /**
+   * The credits a Codex subscription keeps untouched, and until when: the end of that local day, in Unix seconds, as
+   * teamster keeps it; null when there is no floor.
+   */
   creditsFloor: number | null;
   creditsFloorUntil: number | null;
   /** The Claude pool's weights together. */
@@ -43,7 +46,9 @@ const num = (value: unknown): number | null => (typeof value === "number" && Num
 export function accountsContext(data: unknown): AccountsContext {
   const root = isObj(data) ? data : {};
   const thresholds = isObj(root.thresholds) ? root.thresholds : {};
-  const until = typeof root.credits_floor_until === "string" ? Date.parse(root.credits_floor_until) : NaN;
+  // `credits_floor_until` is a local date, YYYY-MM-DD, kept through the end of that day.
+  const date = typeof root.credits_floor_until === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(root.credits_floor_until) : null;
+  const until = date ? new Date(Number(date[1]), Number(date[2]) - 1, Number(date[3]), 23, 59, 59).getTime() : NaN;
   const pool = Array.isArray(root.claude) ? root.claude : [];
   return {
     softSwitchAt: num(thresholds.soft_switch_at),
@@ -62,15 +67,52 @@ export const needsSignIn = (row: AccountRow) => row.needsLogin || row.duplicate;
 
 // The state.
 
+/** A finished sign-in older than this, in seconds, is history: the server forgets it then too. */
+export const LOGIN_RETENTION = 600;
+
+/** The sign-in to show: none once it finished more than LOGIN_RETENTION ago. */
+export function currentLogin(login: Login | null, now: number): Login | null {
+  if (!login || login.finished_at === null) return login;
+  return now - login.finished_at > LOGIN_RETENTION ? null : login;
+}
+
+/** A sign-in that succeeded after the subscription's data was last read: the data still shows the state before it. */
+export function awaitingData(login: Login | null, fetchedAt: number | null): boolean {
+  return login?.stage === "done" && login.finished_at !== null && (fetchedAt ?? 0) < login.finished_at;
+}
+
+/** «Сейчас» between a sign-in's success and the subscription's fresh data. */
+export const SIGNED_IN: NowView = { lead: "Вход выполнен", details: ["Жду новые данные подписки…"], tone: "ok", relogin: false };
+
 /** A sign-in that is still going. */
 export const LIVE_STAGES: readonly LoginStage[] = ["starting", "waiting", "saving", "checking"];
 export const loginLive = (login: Login | null | undefined): boolean => !!login && LIVE_STAGES.includes(login.stage);
 
+/**
+ * Which limit stops a blocked subscription, and until when: the week, the five hours, or a limit teamster names without
+ * a window (Codex: the plan's own refusal; Claude: a limit until a time). A Codex window counts as spent from `switchAt`,
+ * where teamster takes the subscription off.
+ */
+export function spentOf(row: AccountRow, context: AccountsContext): { what: "week" | "burst" | "limit"; until: number | null } {
+  const limit = context.switchAt ?? 100;
+  if (row.executor === "codex") {
+    if (row.weeklyPercent !== null && row.weeklyPercent >= limit) return { what: "week", until: row.weeklyResetsAt };
+    if (row.burst && row.burst.percent >= limit) return { what: "burst", until: row.burst.resetsAt };
+  }
+  return { what: "limit", until: row.limitedUntil };
+}
+
+const SPENT: Record<ReturnType<typeof spentOf>["what"], { pill: string; lead: string }> = {
+  week: { pill: "неделя исчерпана", lead: "Неделя исчерпана" },
+  burst: { pill: "5 часов исчерпаны", lead: "Окно 5 часов исчерпано" },
+  limit: { pill: "лимит", lead: "Лимит" },
+};
+
 /** The pill beside the name. */
-export function stateOf(row: AccountRow, login: Login | null): { text: string; tone: AccountTone } {
+export function stateOf(row: AccountRow, login: Login | null, context: AccountsContext): { text: string; tone: AccountTone } {
   if (loginLive(login)) return { text: "идёт вход", tone: "wait" };
   if (needsSignIn(row)) return { text: "нужен вход", tone: "bad" };
-  if (row.bad) return { text: row.executor === "codex" ? "неделя исчерпана" : "лимит", tone: "sleep" };
+  if (row.bad) return { text: SPENT[spentOf(row, context).what].pill, tone: "sleep" };
   const fuel = fuelOf(row);
   if (fuel === null) return { text: "нет данных", tone: "dim" };
   if (fuel <= LOW_FUEL) return { text: "мало осталось", tone: "low" };
@@ -105,9 +147,10 @@ export function nowOf(row: AccountRow, context: AccountsContext, now: number): N
     return { lead: "Нужен вход", details: [what, "Войди заново — подписка вернётся в работу."], tone: "bad", relogin: true };
   }
   if (row.bad) {
-    const until = row.limitedUntil ?? (row.executor === "codex" ? row.weeklyResetsAt : null);
+    const spent = spentOf(row, context);
+    const until = spent.until;
     return {
-      lead: row.executor === "codex" ? "Неделя исчерпана" : "Лимит",
+      lead: SPENT[spent.what].lead,
       details: [until !== null && until > now ? `Задачи её не берут до ${at(until, now)}.` : "Задачи её не берут до сброса лимита.", ...admiral],
       tone: "sleep",
       relogin: false,

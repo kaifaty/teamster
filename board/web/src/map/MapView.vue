@@ -170,7 +170,9 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
     />
     <AccountView
       v-if="account && active"
+      :key="account"
       :account-key="account"
+      :covered="shipOpen || !!machine"
       :accounts="source.state.value.accounts"
       :logins="source.state.value.logins"
       :tasks="source.state.value.tasks"

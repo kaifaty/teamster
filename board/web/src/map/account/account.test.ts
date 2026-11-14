@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { parseAccounts, type AccountRow } from "../../lib/accounts";
 import type { Login, TaskSummary } from "../../types";
 import {
+  SIGNED_IN,
   accountsContext,
+  awaitingData,
   cardOf,
+  currentLogin,
   codeLeft,
   findAccount,
   lastLoginOf,
@@ -13,6 +16,7 @@ import {
   loginLive,
   loginSteps,
   nowOf,
+  spentOf,
   stateOf,
   tasksOn,
 } from "./account";
@@ -92,14 +96,14 @@ describe("a subscription's state", () => {
   });
 
   it("says in the pill what matters first: a sign-in going, then one needed, then the limits", () => {
-    expect(stateOf(row("codex:spare"), login())).toEqual({ text: "идёт вход", tone: "wait" });
-    expect(stateOf(row("codex:spare"), login({ stage: "failed" }))).toEqual({ text: "нужен вход", tone: "bad" });
-    expect(stateOf(row("codex:twin"), null).text).toBe("нужен вход");
-    expect(stateOf(row("claude:locked"), null).text).toBe("нужен вход");
-    expect(stateOf(row("codex:spent"), null)).toEqual({ text: "неделя исчерпана", tone: "sleep" });
-    expect(stateOf(row("codex:mute"), null)).toEqual({ text: "нет данных", tone: "dim" });
-    expect(stateOf(row("codex:main"), null)).toEqual({ text: "мало осталось", tone: "low" });
-    expect(stateOf(row("claude:pool"), null)).toEqual({ text: "работает", tone: "ok" });
+    expect(stateOf(row("codex:spare"), login(), context)).toEqual({ text: "идёт вход", tone: "wait" });
+    expect(stateOf(row("codex:spare"), login({ stage: "failed" }), context)).toEqual({ text: "нужен вход", tone: "bad" });
+    expect(stateOf(row("codex:twin"), null, context).text).toBe("нужен вход");
+    expect(stateOf(row("claude:locked"), null, context).text).toBe("нужен вход");
+    expect(stateOf(row("codex:spent"), null, context)).toEqual({ text: "неделя исчерпана", tone: "sleep" });
+    expect(stateOf(row("codex:mute"), null, context)).toEqual({ text: "нет данных", tone: "dim" });
+    expect(stateOf(row("codex:main"), null, context)).toEqual({ text: "мало осталось", tone: "low" });
+    expect(stateOf(row("claude:pool"), null, context)).toEqual({ text: "работает", tone: "ok" });
   });
 
   it("makes «Войти заново» the main order only when nothing works without a sign-in", () => {
@@ -108,6 +112,25 @@ describe("a subscription's state", () => {
     expect(nowOf(row("claude:locked"), context, NOW).details[0]).toContain("связке ключей");
     expect(nowOf(row("codex:twin"), context, NOW)).toMatchObject({ lead: "Вошла в чужой аккаунт ChatGPT", relogin: true });
     for (const key of ["codex:main", "codex:spent", "codex:mute", "claude:pool"]) expect(nowOf(row(key), context, NOW).relogin).toBe(false);
+  });
+
+  it("names the Codex window that stopped a subscription, from switch_at, and its own reset", () => {
+    const codex = (primary: unknown, secondary: unknown) =>
+      findAccount({ ...data, codex: [{ name: "x", plan: "plus", primary, secondary, credits: {}, reset_credits: {}, status: "exhausted" }] }, "codex:x", NOW)!;
+    const burst = codex(
+      { used_percent: 99.5, resets_at: iso(NOW + 2 * 3600), window_minutes: 300 },
+      { used_percent: 40, resets_at: iso(NOW + 5 * 86400), window_minutes: 10080 },
+    );
+    expect(spentOf(burst, context)).toEqual({ what: "burst", until: NOW + 2 * 3600 });
+    expect(stateOf(burst, null, context).text).toBe("5 часов исчерпаны");
+    expect(nowOf(burst, context, NOW)).toMatchObject({ lead: "Окно 5 часов исчерпано" });
+    expect(nowOf(burst, context, NOW).details[0]).toMatch(/\(через 2 ч\)\.$/);
+    const week = codex(null, { used_percent: 99, resets_at: iso(NOW + 86400), window_minutes: 10080 });
+    expect(spentOf(week, context)).toEqual({ what: "week", until: NOW + 86400 });
+    // Refused by the plan with no window spent: no weekly reset to promise.
+    const plan = codex(null, { used_percent: 30, resets_at: iso(NOW + 86400), window_minutes: 10080 });
+    expect(stateOf(plan, null, context).text).toBe("лимит");
+    expect(nowOf(plan, context, NOW).details[0]).toBe("Задачи её не берут до сброса лимита.");
   });
 
   it("tells how long a spent subscription rests, and what a working one has left", () => {
@@ -140,6 +163,13 @@ describe("a subscription's limits and card", () => {
     expect(card["Кредиты"]).toMatch(/^58\s851 \(задачам доступно 48\s851; 10\s000 в запасе до 15 дек\.\)$/);
     expect(card["Бесплатные сбросы"]).toMatch(/^2 · сгорают /);
     expect(card["Данные доски"]).toBe("5 с назад");
+  });
+
+  it("keeps the credit floor through the end of its local day, whatever the time zone", () => {
+    const until = accountsContext(data).creditsFloorUntil!;
+    const end = new Date(until * 1000);
+    expect([end.getFullYear(), end.getMonth(), end.getDate(), end.getHours(), end.getMinutes()]).toEqual([2026, 11, 15, 23, 59]);
+    expect(accountsContext({ ...data, credits_floor_until: "15.12.2026" }).creditsFloorUntil).toBeNull();
   });
 
   it("shows a Claude subscription's share of the pool, its limits' age, its reserve and its last sign-in", () => {
@@ -178,6 +208,16 @@ describe("a subscription's limits and card", () => {
 });
 
 describe("a sign-in", () => {
+  it("is history once finished more than ten minutes ago, and says «вход выполнен» until fresher data comes", () => {
+    expect(currentLogin(login({ stage: "done", finished_at: NOW - 599 }), NOW)?.id).toBe("l1");
+    expect(currentLogin(login({ stage: "done", finished_at: NOW - 601 }), NOW)).toBeNull();
+    expect(currentLogin(login(), NOW)?.id).toBe("l1");
+    expect(awaitingData(login({ stage: "done", finished_at: NOW - 3 }), NOW - 60)).toBe(true);
+    expect(awaitingData(login({ stage: "done", finished_at: NOW - 3 }), NOW - 1)).toBe(false);
+    expect(awaitingData(login({ stage: "failed", finished_at: NOW - 3 }), NOW - 60)).toBe(false);
+    expect(SIGNED_IN.relogin).toBe(false);
+  });
+
   it("takes the latest sign-in of the subscription", () => {
     const logins = {
       a: login({ id: "a", started_at: 10 }),
