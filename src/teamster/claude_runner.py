@@ -62,6 +62,8 @@ def stream_unavailable(event, account):
     if (kind == "result" or kind == "system" and event.get("subtype") == "api_retry"):
         if event.get("error_status", event.get("api_error_status")) in (401, 403):
             return "authentication failed"
+        if kind == "result" and not event.get("is_error"):
+            claude_accounts.authenticated(account)
     if kind == "rate_limit_event":
         info = event.get("rate_limit_info")
         if isinstance(info, dict):

@@ -15,8 +15,8 @@
       teamster clean <slug> [--keep-branch]          remove worktree, archive all threads
       teamster accounts [--json] [--refresh]        read account limits and login status
       teamster reset-credit <account> [--credit ID] [--yes]  preview/use a free limit reset
-      teamster login <name> [--browser]              add/sign in to an isolated account
-      teamster claude-login <name> [--config-dir DIR] [--keychain SERVICE]  add/sign in to a Claude account
+      teamster login <name> [--browser] [--events]   add/sign in to an isolated account
+      teamster claude-login <name> [--config-dir DIR] [--keychain SERVICE] [--events]  add/sign in to a Claude account
       teamster claude-probe <name>                  check a Claude token and cache usage limits
       teamster claude-rename <old> <new>            rename a Claude account without moving credentials
       teamster claude-remove <name>                 remove a Claude account from the pool
@@ -403,7 +403,9 @@ def main():
     s = sub.add_parser("login", help="sign in interactively to an isolated account home")
     s.add_argument("name")
     s.add_argument("--browser", action="store_true", help="use browser login instead of device auth")
+    s.add_argument("--events", action="store_true", help="emit JSON events without a terminal")
     s = sub.add_parser("claude-login", help="sign in interactively to an isolated Claude account")
+    s.add_argument("--events", action="store_true", help="emit JSON events and accept codes on stdin")
     s.add_argument("name")
     s.add_argument("--config-dir", metavar="DIR", help="isolated Claude config directory")
     s.add_argument("--keychain", metavar="SERVICE", help="Keychain service for the account token")
@@ -452,7 +454,8 @@ def main():
         a.review = True
     if a.cmd in ("start", "say") and a.fix_rounds is not None and not a.review:
         p.error("--fix-rounds requires --review")
-    if a.cmd in ("start", "scout", "reflect", "say", "review", "_run", "accounts", "reset-credit", "login", "clean"):
+    if (a.cmd in ("start", "scout", "reflect", "say", "review", "_run", "accounts", "reset-credit", "login", "clean")
+            and not (a.cmd == "login" and a.events)):
         config.CODEX["path"] = config.resolve_codex()
     if a.cmd in HOME_LOCKED_COMMANDS:
         with config.home_lock():

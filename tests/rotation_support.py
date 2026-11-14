@@ -497,6 +497,14 @@ elif command == "login":
     # login.json in the account home scripts the sign-in: its exit code and the account it yields.
     login_path = home / "login.json"
     login = json.loads(login_path.read_text()) if login_path.exists() else {}
+    for line in login.get("output", []):
+        print(line, flush=True)
+    if login.get("hold"):
+        child = os.fork()
+        if child == 0:
+            trace({"command": "login-child"})
+        while True:
+            time.sleep(0.1)
     deadline = time.monotonic() + 30
     while "gate" in login and not Path(login["gate"]).exists() and time.monotonic() < deadline:
         time.sleep(0.02)

@@ -1,14 +1,22 @@
 """Task commands, descriptions and main repositories."""
+import codecs
+import errno
+import fcntl
 import json
 import os
 import plistlib
+import pty
 import re
 import runpy
+import selectors
 import shutil
 import signal
+import struct
 import subprocess
 import sys
+import termios
 import time
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -567,6 +575,7 @@ def accounts_json(infos, cfg):
         status = codex_status(info, cfg)
         codex.append({
             "name": info["name"], "plan": info.get("account", {}).get("planType"),
+            "email": info.get("account", {}).get("email"),
             "primary": window(limits.get("primary")), "secondary": window(limits.get("secondary")),
             "credits": {"balance": credits.get("balance"), "unlimited": credits.get("unlimited"),
                         "has_credits": credits.get("hasCredits", credits.get("has_credits")),
@@ -589,7 +598,9 @@ def accounts_json(infos, cfg):
                        "five_hour": window(windows.get("five_hour"), claude=True),
                        "seven_day": window(windows.get("seven_day"), claude=True),
                        "limited_until": iso_time(limited_until),
-                       "token_unavailable": True if claude_accounts.token_marked(info) else None})
+                       "token_unavailable": True if claude_accounts.token_marked(info) else None,
+                       "needs_login": True if (claude_accounts.token_marked(info) or
+                                                info.get("reason") == "authentication failed") else None})
     return {"codex": codex, "claude": claude,
             "thresholds": {"soft_switch_at": cfg.get("soft_switch_at", cfg["switch_at"]),
                            "switch_at": cfg["switch_at"]},
@@ -779,7 +790,174 @@ def cmd_reset_credit(a):
     print_accounts([action["info"]], cfg)
 
 
+class LoginEvents:
+    """The newline-delimited sign-in protocol; credentials stay only in memory."""
+
+    def __init__(self, claude=False):
+        self.claude = claude
+        self.last = None
+        self.opened = False
+        self.code_expected = False
+        self.code_sent = False
+        self.prompted = False
+        self.token = ""
+        self.finished = False
+
+    def send(self, event, **fields):
+        print(json.dumps(dict(event=event, **fields), ensure_ascii=False), flush=True)
+
+    def clean(self, text):
+        # OSC/DCS strings, CSI sequences and the remaining terminal escapes.
+        text = re.sub(r"(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)"
+                      r"|(?:\x1b[PX^_]|[\x90\x98\x9e\x9f]).*?(?:\x1b\\|\x9c)"
+                      r"|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-~]",
+                      "", text, flags=re.DOTALL)
+        return "".join(char for char in text if not unicodedata.category(char).startswith("C"))
+
+    def line(self, text):
+        text = self.clean(text)
+        if self.claude:
+            found = re.search(r"sk-ant-oat01-[A-Za-z0-9_-]+", text)
+            if found:
+                self.token = found.group()
+            text = re.sub(r"sk-ant-oat01-[A-Za-z0-9_-]*", "[token hidden]", text)
+        if not text.strip():
+            return
+        if text != self.last:
+            self.send("output", text=text[:500])
+            self.last = text
+        url = re.search(r"https://[^\s<>\"']+", text)
+        if url and not self.opened:
+            self.send("open", url=url.group().rstrip(".,);]"))
+            self.opened = True
+        if self.claude:
+            if "Paste code here" in text and not self.prompted:
+                self.send("prompt")
+                self.prompted = True
+        elif not self.code_sent:
+            if self.code_expected:
+                code = re.fullmatch(r"[A-Z0-9]{4}-[A-Z0-9]{5}", text.strip())
+                if code:
+                    self.send("code", code=code.group(), expires_at=int(time.time()) + 900)
+                    self.code_sent = True
+            if "Enter this one-time code" in text:
+                self.code_expected = True
+
+    def result(self, status, message="", code=0):
+        self.finished = True
+        self.send("result", ok=code == 0, status=status, message=message)
+        if code:
+            raise SystemExit(code)
+
+
+def run_login_events(a, command):
+    events = LoginEvents(claude=a.cmd == "claude-login")
+
+    def cancelled(signum, frame):
+        raise SystemExit(128 + signum)
+
+    handlers = {sig: signal.signal(sig, cancelled) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        command(a, events)
+    except (SystemExit, KeyboardInterrupt) as exc:
+        if events.finished:
+            raise
+        code = exc.code if isinstance(exc, SystemExit) else 130
+        events.result("failed", str(code) if isinstance(code, str) else "", code=code if isinstance(code, int) and code else 1)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        # Never include a subprocess exception: it can contain credential input/output.
+        events.result("failed", "Claude login failed; account settings were not changed" if events.claude
+                      else "Codex login failed", code=1)
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+
+
+def codex_login_events(argv, environment, events):
+    proc = subprocess.Popen(argv, env=environment, cwd=environment["CODEX_HOME"], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, errors="replace", start_new_session=True)
+    try:
+        for line in proc.stdout:
+            events.line(line)
+        return proc.wait()
+    finally:
+        procs.terminate(proc)
+        proc.stdout.close()
+
+
+def claude_login_events(environment, events):
+    master, slave = pty.openpty()
+    proc = None
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 1000, 0, 0))
+        attributes = termios.tcgetattr(slave)
+        attributes[3] &= ~termios.ECHO
+        termios.tcsetattr(slave, termios.TCSANOW, attributes)
+        proc = subprocess.Popen([config.claude_binary(), "setup-token"], env=environment,
+                                stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        os.close(slave)
+        slave = None
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        input_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        pending, incoming, oversized = "", "", False
+        with selectors.DefaultSelector() as selector:
+            selector.register(master, selectors.EVENT_READ)
+            selector.register(sys.stdin, selectors.EVENT_READ)
+            while True:
+                for key, _ in selector.select(0.2):
+                    if key.fileobj == master:
+                        try:
+                            chunk = os.read(master, 65536)
+                        except OSError as exc:
+                            if exc.errno != errno.EIO:
+                                raise
+                            chunk = b""
+                        pending += decoder.decode(chunk, final=not chunk)
+                        lines = re.split(r"[\r\n]", pending)
+                        pending = lines.pop()
+                        for line in lines:
+                            events.line(line)
+                        if "Paste code here" in events.clean(pending) and not events.prompted:
+                            events.send("prompt")
+                            events.prompted = True
+                        if not chunk:
+                            events.line(pending)
+                            return proc.wait()
+                    else:
+                        chunk = os.read(sys.stdin.fileno(), 4096)
+                        if not chunk:
+                            selector.unregister(sys.stdin)
+                            continue
+                        for char in input_decoder.decode(chunk):
+                            if char == "\n":
+                                line = incoming.removesuffix("\r")
+                                if not oversized and len(line) <= 512 and all(
+                                        not unicodedata.category(c).startswith("C") for c in line):
+                                    events.line(pending)
+                                    os.write(master, line.encode("utf-8") + b"\r")
+                                    events.prompted = False
+                                    pending = ""
+                                incoming, oversized = "", False
+                            elif not oversized:
+                                incoming += char
+                                if len(incoming) > 513:
+                                    incoming, oversized = "", True
+    finally:
+        if proc is not None:
+            procs.terminate(proc)
+        os.close(master)
+        if slave is not None:
+            os.close(slave)
+
+
 def cmd_login(a):
+    if getattr(a, "events", False):
+        return run_login_events(a, _cmd_login)
+    return _cmd_login(a)
+
+
+def _cmd_login(a, events=None):
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,40}", a.name):
         procs.die("invalid account name")
     cfg = config.accounts_config()
@@ -796,13 +974,20 @@ def cmd_login(a):
     accounts.prepare_home(account)
     binary = config.codex_binary()
     try:
-        # The child inherits the person's terminal for the device code or the browser prompt.
-        code = subprocess.run([binary, "login"] + ([] if a.browser else ["--device-auth"]),
-                              env=accounts.account_env(account)).returncode
+        argv = [binary, "login"] + ([] if a.browser else ["--device-auth"])
+        if events:
+            code = codex_login_events(argv, accounts.account_env(account), events)
+        else:
+            # The child inherits the person's terminal for the device code or the browser prompt.
+            code = subprocess.run(argv, env=accounts.account_env(account)).returncode
     except KeyboardInterrupt:
         code = 130
     if code:
+        if events:
+            events.result("failed", code=code if code > 0 else 128 - code)
         raise SystemExit(code if code > 0 else 128 - code)
+    if events:
+        events.send("stage", stage="checking")
     # Like `accounts`, read the homes under the shared lock so migrate-home cannot move them meanwhile.
     with config.home_lock():
         # Re-read the settings: another login may have added an account during this sign-in.
@@ -816,21 +1001,27 @@ def cmd_login(a):
         other = info.get("duplicate") or (others[0]["name"] if others else None)
         status = "duplicate" if other else codex_status(info, cfg) or "unknown"
         record_login("codex", a.name, status)
-    print(ACCOUNTS_HEADER)
-    for item in [info] + others:
-        print(account_line(item, cfg))
+    if not events:
+        print(ACCOUNTS_HEADER)
+        for item in [info] + others:
+            print(account_line(item, cfg))
     ru = cfg.get("language", "en") == "ru"
+    message = ""
     if other:
-        print(f"{a.name} — тот же аккаунт ChatGPT, что и {other}; войди заново другим аккаунтом: "
+        message = (f"{a.name} — тот же аккаунт ChatGPT, что и {other}; войди заново другим аккаунтом: "
               f"teamster login {a.name}" if ru else
               f"{a.name} is the same ChatGPT account as {other}; sign in again with another account: "
               f"teamster login {a.name}")
     elif status == "not_logged_in":
-        print(f"{a.name} не вошёл в аккаунт после codex login; войди заново: teamster login {a.name}" if ru else
+        message = (f"{a.name} не вошёл в аккаунт после codex login; войди заново: teamster login {a.name}" if ru else
               f"{a.name} is not logged in after codex login; sign in again: teamster login {a.name}")
     elif status == "unknown":
-        print(f"не удалось проверить {a.name} после codex login; проверь: teamster accounts" if ru else
+        message = (f"не удалось проверить {a.name} после codex login; проверь: teamster accounts" if ru else
               f"could not check {a.name} after codex login; check it with: teamster accounts")
+    if events:
+        return events.result(status, message, code=0 if status in ("available", "exhausted") else 1)
+    if message:
+        print(message)
     if status not in ("available", "exhausted"):
         raise SystemExit(1)
 
@@ -900,22 +1091,33 @@ def cmd_claude_probe(a):
     probe_claude_account(a.name)
 
 
-def probe_claude_account(name, login=False):
+def probe_claude_account(name, login=False, events=None):
     cfg = config.accounts_config()
     account = next((item for item in claude_accounts.accounts(cfg) if item["name"] == name), None)
     if account is None:
         procs.die(f"Claude account {name!r} does not exist")
-    reason = claude_review.probe(cfg, account)
+    reason = (claude_review.probe(cfg, account, token_via_fd=True, stopped=lambda: False) if events
+              else claude_review.probe(cfg, account))
     if login:
         record_login("claude", name, reason or "ok")
     if reason:
+        if events:
+            return events.result(reason, f"Claude account {name}: {reason}", code=1)
         print(f"Claude account {name}: {reason}")
         raise SystemExit(1)
     windows = claude_accounts.format_windows(claude_accounts.read_limits().get(name, {}))
+    if events:
+        return events.result("ok", f"Claude account {name}: token ok; {windows}")
     print(f"Claude account {name}: token ok; {windows}")
 
 
 def cmd_claude_login(a):
+    if getattr(a, "events", False):
+        return run_login_events(a, _cmd_claude_login)
+    return _cmd_claude_login(a)
+
+
+def _cmd_claude_login(a, events=None):
     if not re.fullmatch(r"[a-z0-9-]+", a.name):
         procs.die("Claude account name must contain only a-z, 0-9 and '-'")
     config.require_claude()
@@ -930,19 +1132,43 @@ def cmd_claude_login(a):
     environment = {key: os.environ[key] for key in ("HOME", "USER", "PATH") if key in os.environ}
     environment.update(LANG="en_US.UTF-8", CLAUDE_CONFIG_DIR=directory)
     Path(directory).mkdir(mode=0o700, parents=True, exist_ok=True)
-    # setup-token displays the credential for the person to paste into the
-    # Keychain prompt. Keep both interactive tools off captured command output.
-    try:
-        with open(terminal_device(), "r+b", buffering=0) as terminal:
-            for argv in ([config.claude_binary(), "setup-token"],
-                         ["security", "add-generic-password", "-U", "-s", service,
-                          "-a", os.environ.get("USER", ""), "-w"]):
-                if subprocess.run(argv, env=environment, stdin=terminal,
-                                  stdout=terminal, stderr=terminal).returncode:
-                    procs.die("Claude login failed; account settings were not changed")
-    except OSError:
-        procs.die("Claude login requires a terminal and the Claude CLI and Keychain tools")
     account = {"name": a.name, "config_dir": directory, "token_keychain": service}
+    if events:
+        code = claude_login_events(environment, events)
+        if code or not events.token:
+            return events.result("failed", "Claude login failed; account settings were not changed", code=1)
+        events.send("stage", stage="saving")
+        # security's interactive command parser reads the password from a pipe,
+        # keeping it out of argv, the environment and the terminal.
+        arguments = ["add-generic-password", "-U", "-s", service,
+                     "-a", os.environ.get("USER", ""), "-w", events.token]
+        # security's parser ends an argument at a closing quote, unlike a shell.
+        command = " ".join('"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+                           for value in arguments) + "\n"
+        proc = subprocess.Popen(["security", "-i"], env=environment, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        try:
+            proc.communicate(command.encode("utf-8"), timeout=config.ACCOUNT_TIMEOUT)
+            if proc.returncode:
+                return events.result("failed", "Claude login failed; account settings were not changed", code=1)
+        finally:
+            procs.terminate(proc)
+        if claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1] != events.token:
+            return events.result("failed", "Claude token could not be read back from Keychain", code=1)
+    else:
+        # setup-token displays the credential for the person to paste into the
+        # Keychain prompt. Keep both interactive tools off captured command output.
+        try:
+            with open(terminal_device(), "r+b", buffering=0) as terminal:
+                for argv in ([config.claude_binary(), "setup-token"],
+                             ["security", "add-generic-password", "-U", "-s", service,
+                              "-a", os.environ.get("USER", ""), "-w"]):
+                    if subprocess.run(argv, env=environment, stdin=terminal,
+                                      stdout=terminal, stderr=terminal).returncode:
+                        procs.die("Claude login failed; account settings were not changed")
+        except OSError:
+            procs.die("Claude login requires a terminal and the Claude CLI and Keychain tools")
     with _locked_claude_settings() as pool:
         previous = next((item for item in pool if item["name"] == a.name), None)
         if previous is None:
@@ -950,10 +1176,16 @@ def cmd_claude_login(a):
         else:
             previous.update(account)
         claude_accounts.clear_limits(a.name)
-    print(f"Claude account {a.name} saved")
+    if events:
+        events.send("stage", stage="checking")
+    else:
+        print(f"Claude account {a.name} saved")
     # The probe writes cached limits; like claude-probe, it must not run while the home moves.
     with config.home_lock():
-        probe_claude_account(a.name, login=True)
+        if events:
+            probe_claude_account(a.name, login=True, events=events)
+        else:
+            probe_claude_account(a.name, login=True)
 
 
 def cmd_docs(a):

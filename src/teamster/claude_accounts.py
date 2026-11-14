@@ -76,12 +76,15 @@ def save_limits(name, info, event_time=None):
         if selected:
             selected["updated_at"] = clock.CLOCK.time()
         previous = limits.get(name, {})
+        authentication_failed = previous.get("reason") == "authentication failed"
         active = limited(previous)
         marked_at = previous.get("limited_at")
         fresh = (result_schema.is_finite_number(event_time)
                  and result_schema.is_finite_number(marked_at) and event_time > marked_at)
         previous.update(selected)
-        if (selected.get("status") in ("allowed", "allowed_warning") and (not active or fresh)
+        if selected.get("status") in ("allowed", "allowed_warning"):
+            previous.pop("reason", None)
+        if (selected.get("status") in ("allowed", "allowed_warning") and (not active or fresh or authentication_failed)
                 and not token_marked(previous)):
             previous.pop("limited_until", None)
             previous.pop("limited_at", None)
@@ -109,6 +112,8 @@ def token_available(name):
             return
         until = info.pop("token_retry_at")
         info.pop("token_unavailable", None)
+        if info.get("reason") == "token unavailable":
+            info.pop("reason", None)
         reset = info.get("limited_until")
         if result_schema.is_finite_number(reset) and reset <= until:
             info.pop("limited_until", None)
@@ -162,7 +167,19 @@ def limited(info, now=None):
     return False
 
 
-def mark_limited(name, token_unavailable=False):
+def authenticated(name):
+    """A successful API response clears the reason, lifting an authentication block."""
+    if not read_limits().get(name, {}).get("reason"):
+        return
+    with _locked_limits() as limits:
+        info = limits.get(name, {})
+        reason = info.pop("reason", None)
+        if reason == "authentication failed":
+            info.pop("limited_until", None)
+            info.pop("limited_at", None)
+
+
+def mark_limited(name, token_unavailable=False, reason=None):
     """Exclude an account until its known reset, or until fresh login/limit data.
 
     A missing token excludes it for TOKEN_RETRY_SECONDS; the next selection
@@ -171,6 +188,10 @@ def mark_limited(name, token_unavailable=False):
     now = clock.CLOCK.time()
     with _locked_limits() as limits:
         info = limits.setdefault(name, {})
+        if token_unavailable:
+            info["reason"] = "token unavailable"
+        elif reason in ("authentication failed", "usage limit"):
+            info["reason"] = reason
         if token_unavailable:
             until = now + TOKEN_RETRY_SECONDS
             if limited(info, now):
