@@ -149,7 +149,8 @@ watch(
         <span v-if="failed" class="dim">или в терминале: <code class="mono">{{ command }}</code></span>
       </div>
 
-      <details v-if="login.output.length" class="output">
+      <!-- A failed sign-in opens the tool's own lines: the reason is usually there. -->
+      <details v-if="login.output.length" class="output" :open="login.stage === 'failed'">
         <summary>Что пишет программа входа</summary>
         <pre class="mono">{{ login.output.join("\n") }}</pre>
       </details>
