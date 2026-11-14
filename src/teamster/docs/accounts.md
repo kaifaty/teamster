@@ -25,6 +25,52 @@ It also exits 1 when the account is not logged in, or its status cannot be read.
 the settings in every case. A finished sign-in appends an [`account_login` row](telemetry.md#the-journal)
 to the journal, which makes the board (`board/` in the repository) refresh accounts at once.
 
+### Sign-in without a terminal
+
+`teamster login <name> --events` and `teamster claude-login <name> --events` support background
+callers with pipes. stdout contains only JSON objects, one per line, flushed after every event.
+stderr remains plain text. Account tables and interactive instructions are omitted. Exit codes
+match the ordinary commands; `result.ok` is true exactly when the command exits zero.
+
+The event protocol is:
+
+- `{"event":"output","text":"…"}`: each nonempty tool output line, with ANSI and other control
+  sequences removed, truncated to 500 characters. Each cleaned line is emitted at most once per sign-in.
+  Claude tokens are replaced with `[token hidden]` before output.
+- `{"event":"open","url":"https://…"}`: the first HTTPS link in the output, once.
+- `{"event":"code","code":"ABCD-EFGHI","expires_at":1900000900}`: Codex's device code;
+  codes contain 6–16 uppercase ASCII letters/digits in hyphen-separated groups and appear on a
+  separate line after `Enter this one-time code` (for example `ABCD-EFGH` or `ABCD-EFGHI`).
+  `expires_at` is Unix seconds when received plus 900. Codex uses `--device-auth` unless `--browser`
+  is also passed; its stdin is `/dev/null`, and both output streams are captured.
+- `{"event":"prompt"}`: Claude printed `Paste code here`. Send a newline-terminated code (or an
+  empty line for Enter) to teamster's stdin. Lines up to 512 characters with no control characters
+  are forwarded to the pseudo-terminal with `\r`; other lines are silently ignored. A new prompt
+  after input emits another event.
+- `{"event":"stage","stage":"saving"}`: Claude obtained its token and is saving it to Keychain.
+- `{"event":"stage","stage":"checking"}`: sign-in completed; teamster is checking the account.
+- `{"event":"result","ok":true,"status":"available","message":""}`: always the last event.
+  Codex statuses are `available`, `exhausted`, `not_logged_in`, `duplicate`, `unknown`, or `failed`
+  if `codex login` failed. Claude statuses are `ok`, `token unavailable`, `authentication failed`,
+  `usage limit`, `request failed`, or `failed`. The message is the ordinary command's explanation
+  in the configured language, or empty.
+
+Claude setup runs in a pseudo-terminal at least 1000 columns wide. teamster extracts its token
+in memory, writes it using `security -i` and `add-generic-password -U`, and verifies it using the
+same Keychain lookup as tasks before saving account settings. The probe receives the token through
+`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, containing only a descriptor number in the environment.
+The token never enters process arguments, child environments, events, files or logs. Failed setup
+or missing output tokens leave settings and Keychain unchanged. A readback mismatch fails without
+saving settings. SIGINT and SIGTERM stop the sign-in tool and its children; cancellation during
+setup saves neither the token nor account settings. Cancellation sends TERM to the tool's process
+group, then KILL after one second if it is still running; repeated cancellation signals during
+cleanup are ignored. From `stage saving` through the Keychain write, readback and settings write,
+cancellation is deferred: teamster finishes saving both the token and the account settings, then
+exits unsuccessfully with `result failed`, without probing the account. In events mode, Keychain
+service and user values containing control characters, double quotes or backslashes are rejected
+before launching a tool. stdin never flushes an unfinished tool output line, so a token arriving
+in multiple reads stays intact and is hidden as a whole.
+
 When the user has chosen multiple subscriptions, the settings can contain:
 
 ```json
@@ -197,7 +243,12 @@ needs refreshing, and any limit marker; a missing Keychain token adds
 `weight`, UTC ISO `updated_at` timestamp (or `null`) and boolean `stale`, alongside its existing
 window and availability fields. `accounts --refresh` first refreshes only stale, unblocked Claude
 accounts using the same locking and failure rules as selection, then prints; it can be combined with
-`--json`. For example:
+`--json`. Codex JSON entries also include `email` from `account/read` (`null` when absent).
+Claude entries include `needs_login: true` while a missing-token mark is active or a saved failure
+reason is `authentication failed` (HTTP 401/403); otherwise it is `null`, including usage limits.
+The cache stores the reason without credential text. A successful API response, successful probe
+or new sign-in clears the authentication failure; a successful token read clears a missing-token
+mark. Existing JSON fields keep their meanings. For example:
 
 ```text
 claude second: weight 20; 5h 4% (reset ...); 7d 13% (reset ...); as of 2026-11-03 10:54
