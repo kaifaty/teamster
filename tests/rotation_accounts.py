@@ -2,8 +2,11 @@
 import io
 import json
 import os
+import signal
+import socketserver
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +18,350 @@ from rotation_support import IMPOSSIBLE_PID, PYTHON, SCRIPT, RotationTestCase
 
 
 class AccountAuthTests(RotationTestCase):
+    def test_codex_login_events_preserve_status_exit_codes_and_journal(self):
+        self.configure()
+        output = ["\x1b7\x1b[32mhttps://login.example.test/device\x9b0m\x1b8", "https://login.example.test/device",
+                  "Enter this one-time code (expires in 15 minutes)", "ABCD-EFGHI", "x" * 600]
+        fixture = self.account(self.home, "A", self.reset)
+        for extra, scenario, status, code in (
+                ([], {"output": output}, "available", 0),
+                ([], {"output": output[:3] + ["ABCD-EFGH"] + output[4:]}, "available", 0),
+                ([], {"output": output, "exit": 7}, "failed", 7),
+                (["--browser"], {"fixture": fixture}, "duplicate", 1)):
+            with self.subTest(status=status):
+                (self.other / "login.json").write_text(json.dumps(scenario))
+                before = time.time()
+                result = subprocess.run([PYTHON, "-I", str(SCRIPT), "login", "second", "--events", *extra],
+                                        env=self.env, cwd=self.root, input="unused\n", text=True,
+                                        capture_output=True, timeout=20)
+                self.assertEqual(result.returncode, code, result.stdout + result.stderr)
+                events = [json.loads(line) for line in result.stdout.splitlines()]
+                self.assertEqual(events[-1]["event"], "result")
+                self.assertEqual((events[-1]["status"], events[-1]["ok"]), (status, code == 0))
+                if status == "available":
+                    self.assertEqual([e for e in events if e["event"] == "open"],
+                                     [{"event": "open", "url": "https://login.example.test/device"}])
+                    device = next(e for e in events if e["event"] == "code")
+                    self.assertEqual(device["code"], scenario["output"][3])
+                    self.assertGreaterEqual(device["expires_at"], int(before) + 900)
+                    self.assertLessEqual(device["expires_at"], int(time.time()) + 900)
+                    self.assertIn({"event": "stage", "stage": "checking"}, events)
+                    lines = [e["text"] for e in events if e["event"] == "output"]
+                    self.assertEqual(lines.count("https://login.example.test/device"), 1)
+                    self.assertEqual(len(lines[-1]), 500)
+                    self.assertNotIn("\x1b", result.stdout)
+                    self.assertEqual(self.telemetry_journal()[-1]["status"], status)
+                elif status == "duplicate":
+                    self.assertIn("тот же аккаунт", events[-1]["message"])
+        self.assertEqual([row["argv"] for row in self.trace() if row["command"] == "login"],
+                         [["--device-auth"], ["--device-auth"], ["--device-auth"], []])
+
+    @contextmanager
+    def claude_event_fixture(self):
+        """Keep the fake Keychain secret in memory, including across processes."""
+        trace = self.root / "event-trace.jsonl"
+        fixture = self.root / "event-fixture.json"
+        fixture.write_text("{}")
+        values = []
+
+        class Keychain(socketserver.StreamRequestHandler):
+            def handle(handler):
+                request = json.loads(handler.rfile.readline())
+                if "save" in request:
+                    values.append(request["save"])
+                token = values[-1] if values else ""
+                if json.loads(fixture.read_text()).get("mismatch"):
+                    token = "different"
+                handler.wfile.write(json.dumps(token).encode() + b"\n")
+
+        with socketserver.TCPServer(("127.0.0.1", 0), Keychain) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            source = r'''import fcntl, json, os, shlex, signal, socket, struct, sys, termios, time, tty
+from pathlib import Path
+fixture = json.loads(Path(FIXTURE).read_text())
+def trace(**fields):
+    fields.update(command=Path(sys.argv[0]).name, argv=sys.argv[1:], env=dict(os.environ), pid=os.getpid())
+    with Path(TRACE).open('a') as stream:
+        stream.write(json.dumps(fields) + '\n')
+token = 'sk-ant-' + 'oat01-' + 'event-secret-1234567890'
+if Path(sys.argv[0]).name == 'security':
+    trace()
+    if fixture.get('save_gate') and sys.argv[1:] == ['-i']:
+        while not Path(fixture['save_gate']).exists():
+            time.sleep(0.01)
+    request = {}
+    if sys.argv[1:] == ['-i']:
+        args = shlex.split(sys.stdin.readline())
+        assert args == ['add-generic-password', '-U', '-s', 'codex-worker-claude-events', '-a', 'fixture-user', '-w', token]
+        request = {'save': args[-1]}
+    else:
+        assert sys.argv[1:] == ['find-generic-password', '-s', 'codex-worker-claude-events', '-a', 'fixture-user', '-w']
+    with socket.create_connection(ADDRESS) as connection:
+        connection.sendall(json.dumps(request).encode() + b'\n')
+        result = json.loads(connection.makefile('rb').readline())
+    print(result)
+    print(token, file=sys.stderr)
+elif sys.argv[1:] == ['setup-token']:
+    assert os.isatty(0) and os.isatty(1)
+    columns = struct.unpack('HHHH', fcntl.ioctl(0, termios.TIOCGWINSZ, b'\0' * 8))[1]
+    trace(columns=columns)
+    if fixture.get('hold'):
+        if fixture.get('ignore_term'):
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        child = os.fork()
+        if child == 0:
+            trace(child=True)
+        while True: time.sleep(0.1)
+    tty.setraw(0)
+    if fixture.get('redraw'):
+        for frame in range(50):
+            spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[frame % 10]
+            print('\x1b[H\x1b[2J' + spinner + ' Opening browser to sign in…\n'
+                  'https://login.example.test/claude\nWaiting for sign-in…', flush=True)
+    print('\x1b]0;hidden title\x07https://login.example.test/claude\nPaste code here: ', end='', flush=True)
+    for attempt in range(2):
+        code = b''
+        while not code.endswith(b'\r'):
+            code += os.read(0, 1)
+        trace(input=code.decode())
+        if attempt == 0:
+            print('\r\nPaste code here: ', end='', flush=True)
+    if not fixture.get('no_token'):
+        if fixture.get('split_token'):
+            print('\r\nPaste code here: ' + token[:20], end='', flush=True)
+            code = b''
+            while not code.endswith(b'\r'):
+                code += os.read(0, 1)
+            trace(input=code.decode())
+            print(token[20:], flush=True)
+        else:
+            print('\r\nToken: \x1b[32m' + token + '\x1b[0m', flush=True)
+    sys.exit(fixture.get('exit', 0))
+else:
+    fd = int(os.environ['CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR'])
+    assert os.read(fd, 4096).decode() == token
+    trace(probe=True)
+    print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed'}}))
+    print(json.dumps({'type': 'result', 'result': 'OK', 'is_error': False}))
+    print(token, file=sys.stderr)
+'''
+            source = source.replace("FIXTURE", repr(str(fixture))).replace("TRACE", repr(str(trace)))
+            source = source.replace("ADDRESS", repr(server.server_address))
+            for name in ("claude", "security"):
+                path = self.root / name
+                path.write_text("#!" + PYTHON + "\n" + source)
+                path.chmod(0o700)
+            self.env.update(HOME=str(self.root), USER="fixture-user", CODEX_TASK_CLAUDE=str(self.root / "claude"))
+            try:
+                yield fixture, trace, values
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
+    def run_claude_event_login(self, *arguments, cancel_saving=False):
+        proc = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "claude-login", "events", "--events", *arguments],
+                                env=self.env, cwd=self.root, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        output = []
+        try:
+            for line in proc.stdout:
+                output.append(line)
+                event = json.loads(line)
+                if cancel_saving and event == {"event": "stage", "stage": "saving"}:
+                    proc.terminate()
+                    (self.root / "save-gate").touch()
+                if event["event"] == "prompt":
+                    proc.stdin.write("x" * 513 + "\ninvalid\x1bcode\n" + ("page-code" if len(
+                        [e for e in output if json.loads(e)["event"] == "prompt"]) == 1 else "") + "\n")
+                    proc.stdin.flush()
+            _, errors = proc.communicate(timeout=20)
+            return subprocess.CompletedProcess(proc.args, proc.returncode, "".join(output), errors)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+
+    def test_claude_login_events_save_verify_probe_and_hide_the_token(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(events[-1]["status"], "ok")
+            self.assertTrue(events[-1]["ok"])
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["saving", "checking"])
+            self.assertEqual([e for e in events if e["event"] == "open"],
+                             [{"event": "open", "url": "https://login.example.test/claude"}])
+            self.assertEqual(sum(e["event"] == "prompt" for e in events), 2)
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertGreaterEqual(rows[0]["columns"], 1000)
+            self.assertEqual([row["input"] for row in rows if "input" in row], ["page-code\r", "\r"])
+            lookup = ["find-generic-password", "-s", "codex-worker-claude-events", "-a", "fixture-user", "-w"]
+            self.assertEqual([row["argv"] for row in rows if row["command"] == "security"],
+                             [["-i"], lookup, lookup])
+            self.assertTrue(rows[-1]["probe"])
+            self.assertEqual(len(values), 1)
+            token = values[0]
+            self.assertIn("[token hidden]", result.stdout)
+            self.assertNotIn(token, result.stdout + result.stderr + json.dumps(rows))
+            for path in self.root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(token.encode(), path.read_bytes(), str(path))
+            self.assertEqual(self.telemetry_journal()[-1]["status"], "ok")
+
+    def test_claude_login_events_deduplicate_redrawn_frames(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"redraw": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            lines = [event["text"] for event in events if event["event"] == "output"]
+            self.assertLessEqual(len(lines), 15)
+            self.assertEqual(sum("Opening browser to sign in" in line for line in lines), 10)
+            self.assertEqual([event for event in events if event["event"] == "open"],
+                             [{"event": "open", "url": "https://login.example.test/claude"}])
+            self.assertEqual(sum(event["event"] == "prompt" for event in events), 2)
+
+    def test_claude_login_events_preserve_split_tokens_across_stdin(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"split_token": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(len(values), 1)
+            token = values[0]
+            self.assertEqual(token, "sk-ant-" + "oat01-" + "event-secret-1234567890")
+            self.assertNotIn(token[:20], result.stdout)
+            self.assertNotIn(token[20:], result.stdout)
+            self.assertEqual(json.loads(result.stdout.splitlines()[-1])["status"], "ok")
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual([row["input"] for row in rows if "input" in row], ["page-code\r", "\r", "\r"])
+
+    def test_claude_login_events_reject_unsafe_keychain_arguments_before_launch(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            settings = self.home / "codex-worker.json"
+            settings.write_text(json.dumps({"language": "en"}))
+            before = settings.read_bytes()
+            for field in ("service", "user"):
+                for bad in ('\n', '"', '\\'):
+                    with self.subTest(field=field, character=repr(bad)), mock.patch.dict(self.env):
+                        arguments = ["--keychain", "service" + bad] if field == "service" else []
+                        if field == "user":
+                            self.env["USER"] = "user" + bad
+                        result = self.run_claude_event_login(*arguments)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(json.loads(result.stdout.splitlines()[-1])["status"], "failed")
+                        self.assertEqual(settings.read_bytes(), before)
+                        self.assertEqual(values, [])
+                        self.assertFalse(trace.exists(), "invalid arguments must fail before launching a tool")
+
+    def test_claude_login_events_finish_saving_before_honoring_cancellation(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"save_gate": str(self.root / "save-gate")}))
+            result = self.run_claude_event_login(cancel_saving=True)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(events[-1], {"event": "result", "ok": False, "status": "failed",
+                                         "message": "Claude login cancelled after saving account settings"})
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["saving"])
+            self.assertEqual(len(values), 1)
+            settings = json.loads((self.home / "codex-worker.json").read_text())
+            self.assertIn("events", [account["name"] for account in settings["claude"]["accounts"]])
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertFalse(any(row.get("probe") for row in rows))
+
+    def test_claude_login_events_reject_missing_token_failed_setup_and_readback_mismatch(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            settings = self.home / "codex-worker.json"
+            settings.write_text(json.dumps({"language": "en"}))
+            before = settings.read_bytes()
+            for scenario in ({"no_token": True}, {"exit": 7}, {"mismatch": True}):
+                with self.subTest(scenario=scenario):
+                    fixture.write_text(json.dumps(scenario))
+                    result = self.run_claude_event_login()
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    events = [json.loads(line) for line in result.stdout.splitlines()]
+                    self.assertEqual(events[-1]["event"], "result")
+                    self.assertEqual(events[-1]["status"], "failed")
+                    self.assertFalse(events[-1]["ok"])
+                    self.assertEqual(settings.read_bytes(), before)
+                    self.assertEqual(len(values), int(bool(scenario.get("mismatch"))))
+                    if scenario.get("no_token"):
+                        self.assertFalse(any(event["event"] == "stage" for event in events))
+                        rows = [json.loads(line) for line in trace.read_text().splitlines()]
+                        self.assertFalse(any(row["command"] == "security" for row in rows))
+
+    def test_login_events_sigterm_stops_the_tool_and_its_children(self):
+        self.configure()
+        alive = self.worker().procs.alive
+        (self.home / "codex-worker.json").write_text((self.home / "claude-accounts.json").read_text())
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"hold": True, "ignore_term": True}))
+            (self.other / "login.json").write_text(json.dumps({"hold": True, "ignore_term": True}))
+            for command, name in (("login", "second"), ("claude-login", "events")):
+                with self.subTest(command=command):
+                    settings = self.home / "codex-worker.json"
+                    before = settings.read_bytes()
+                    proc = subprocess.Popen([PYTHON, "-I", str(SCRIPT), command, name, "--events"],
+                                            env=self.env, cwd=self.root, stdin=subprocess.PIPE,
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    try:
+                        def children():
+                            rows = (([json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else [])
+                                    if command == "claude-login" else self.trace())
+                            return [row["pid"] for row in rows if row.get("child") or row.get("command") in (
+                                "claude", "login", "login-child")]
+                        self.until(lambda: len(children()) >= 2, timeout=20)
+                        pids = children()
+                        started = time.monotonic()
+                        proc.terminate()
+                        time.sleep(0.5)
+                        proc.terminate()
+                        output, errors = proc.communicate(timeout=max(0.01, 2.5 - (time.monotonic() - started)))
+                        self.assertNotEqual(proc.returncode, 0)
+                        self.assertEqual(json.loads(output.splitlines()[-1])["status"], "failed")
+                        self.until(lambda: all(not alive(pid) for pid in pids),
+                                   timeout=max(0.01, 2.5 - (time.monotonic() - started)))
+                        self.assertLess(time.monotonic() - started, 2.5)
+                    finally:
+                        if proc.poll() is None:
+                            proc.kill()
+                            proc.communicate()
+                    if command == "claude-login":
+                        self.assertEqual(settings.read_bytes(), before)
+                        self.assertEqual(values, [])
+
+    def test_accounts_json_reports_and_clears_claude_login_reasons(self):
+        _, fixture, _ = self.claude_probe_fixture()
+        account = {"name": "probe", "config_dir": str(self.root / "claude-probe-account"),
+                   "token_keychain": "fixture-probe-service"}
+        (self.home / "codex-worker.json").write_text(json.dumps({"claude": {"accounts": [account]}}))
+        worker = self.worker()
+        for scenario, needed in (({"missing_token": True}, True),
+                                 ({"events": [{"type": "result", "api_error_status": 401,
+                                               "is_error": True}]}, True),
+                                 ({"events": [{"type": "result", "api_error_status": 403,
+                                               "is_error": True}]}, True),
+                                 ({"events": [{"type": "rate_limit_event", "rate_limit_info": {
+                                     "status": "rejected"}}]}, None)):
+            with self.subTest(scenario=scenario), mock.patch.dict(os.environ, self.env, clear=True):
+                worker.claude_accounts.clear_limits("probe")
+                fixture.write_text(json.dumps(scenario))
+                self.assertIsNotNone(worker.claude_review.probe(worker.config.accounts_config(), account))
+                listing = json.loads(self.cli("accounts", "--json"))
+                self.assertIs(listing["claude"][0]["needs_login"], needed)
+                fixture.write_text(json.dumps({"events": [{"type": "result", "result": "OK"}]}))
+                self.assertIsNone(worker.claude_review.probe(worker.config.accounts_config(), account))
+                self.assertIsNone(json.loads(self.cli("accounts", "--json"))["claude"][0]["needs_login"])
+                self.assertNotIn("reason", worker.claude_accounts.read_limits()["probe"])
+        pool = worker.claude_accounts
+        pool.mark_limited("probe", reason="authentication failed")
+        pool.token_available("probe")
+        self.assertEqual(pool.read_limits()["probe"]["reason"], "authentication failed")
+        pool.save_limits("probe", {"status": "allowed"})
+        self.assertNotIn("reason", pool.read_limits()["probe"])
+        self.assertFalse(pool.limited(pool.read_limits()["probe"]))
+
     def test_claude_login_registers_accounts_without_capturing_credentials(self):
         worker = self.worker()
         trace = self.root / "login-trace.jsonl"
@@ -267,7 +614,7 @@ class AccountAuthTests(RotationTestCase):
         self.assertEqual(worker.commands.accounts_json([], cfg)["claude"], [{
             "name": "probe", "weight": 1, "updated_at": None, "stale": True,
             "five_hour": None, "seven_day": None,
-            "limited_until": None, "token_unavailable": None}])
+            "limited_until": None, "token_unavailable": None, "needs_login": None}])
         windows = {"five_hour": {"utilization": 0.25, "resetsAt": self.reset - 3600},
                    "seven_day": {"utilization": 0.5, "resetsAt": self.reset}}
         allowed = {"type": "rate_limit_event", "rate_limit_info": {

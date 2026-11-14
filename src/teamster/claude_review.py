@@ -83,7 +83,7 @@ def select_account(cfg, role, exclude=(), prefer_unused=(), stopped=None, task_t
     return claude_accounts.select(cfg, role, exclude, prefer_unused)
 
 
-def probe(cfg, account, stale_only=False, stopped=None):
+def probe(cfg, account, stale_only=False, stopped=None, token_via_fd=False):
     """Serialize account probes, rechecking stale snapshots after taking the lock."""
     config.TASKS.mkdir(parents=True, exist_ok=True)
     with (config.TASKS / ("claude-probe-" + account["name"] + ".lock")).open("a") as lock:
@@ -106,10 +106,10 @@ def probe(cfg, account, stale_only=False, stopped=None):
         if stopped is not None and stopped():
             return "request failed"
         claude_accounts.mark_probe_attempt(account["name"])
-        return _probe(cfg, account, stopped)
+        return _probe(cfg, account, stopped, token_via_fd)
 
 
-def _probe(cfg, account, stopped=None):
+def _probe(cfg, account, stopped=None, token_via_fd=False):
     """Send one short request without tools or persisted CLI output."""
     environment, token = claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)
     if stopped is not None and stopped():
@@ -127,17 +127,27 @@ def _probe(cfg, account, stopped=None):
     if cfg["claude"].get("model"):
         args += ["--model", cfg["claude"]["model"]]
     timed_out = False
+    credential_fd = None
+    credential_args = {}
     try:
+        if token_via_fd:
+            credential_fd, writer = os.pipe()
+            with os.fdopen(writer, "wb") as stream:
+                stream.write(token.encode("utf-8"))
+            environment.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+            environment["CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"] = str(credential_fd)
+            credential_args["pass_fds"] = (credential_fd,)
         with tempfile.TemporaryDirectory(prefix="teamster-claude-probe-") as directory:
             if stopped is None:
                 response = subprocess.run(args, cwd=directory, env=environment,
                                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                          stderr=subprocess.DEVNULL, timeout=config.CLAUDE_PROBE_TIMEOUT)
+                                          stderr=subprocess.DEVNULL, timeout=config.CLAUDE_PROBE_TIMEOUT,
+                                          **credential_args)
                 output, returncode = response.stdout, response.returncode
             else:
                 proc = subprocess.Popen(args, cwd=directory, env=environment,
                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, start_new_session=True)
+                                        stderr=subprocess.DEVNULL, start_new_session=True, **credential_args)
                 chunks, eof = [], False
                 deadline = clock.CLOCK.monotonic() + config.CLAUDE_PROBE_TIMEOUT
                 try:
@@ -164,6 +174,9 @@ def _probe(cfg, account, stopped=None):
         timed_out = True
     except OSError:
         return "request failed"
+    finally:
+        if credential_fd is not None:
+            os.close(credential_fd)
     reason, answered = None, False
     for line in output.splitlines():
         if not line.strip():
@@ -184,10 +197,13 @@ def _probe(cfg, account, stopped=None):
             else:
                 answered = isinstance(event.get("result"), str) and bool(event["result"].strip())
     if reason in ("usage limit", "authentication failed"):
-        claude_accounts.mark_limited(account["name"])
+        claude_accounts.mark_limited(account["name"], reason=reason)
     if timed_out:
         return "request failed"
-    return reason or (None if returncode == 0 and answered else "request failed")
+    if reason is None and returncode == 0 and answered:
+        claude_accounts.authenticated(account["name"])
+        return None
+    return reason or "request failed"
 
 
 def record_timeout(st, minutes):

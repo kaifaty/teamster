@@ -89,7 +89,7 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
         task_state.save(st)
         if response["outcome"] != "unavailable" or reason not in LIMIT_REASONS or stopped():
             return
-        claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable")
+        claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable", reason=reason)
         account = claude_review.select_account(cfg, "review", exclude=attempted, stopped=stopped,
                                                task_type=st.get("task_type"))
     st["outcome"] = task_state.stop_outcome(st, stopped) or "unavailable"
@@ -184,7 +184,7 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
         reason = reason or "account unavailable"
         st["error"] = f"No available Claude account: {account['name']} ({reason})"
         if reason in LIMIT_REASONS:
-            claude_accounts.mark_limited(account["name"], token_unavailable=reason == "token unavailable")
+            claude_accounts.mark_limited(account["name"], token_unavailable=reason == "token unavailable", reason=reason)
             if not wrapup:
                 outcome = "limit"
     elif reason and outcome != "completed":

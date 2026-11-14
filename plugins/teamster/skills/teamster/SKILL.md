@@ -19,6 +19,9 @@ Before the first task in a session, read `teamster docs lead-guide`.
 It contains delegation rules, brief structure, commands, budgets, the work loop,
 stop rules and links to the detailed references.
 
+Sign in with `teamster login <name>` or `teamster claude-login <name>`; add `--events`
+for background sign-in through JSON events and pipes (see `teamster docs accounts`).
+
 In Claude Code:
 
 - Run `teamster wait <slug>` as a background Bash command, which reports

@@ -110,7 +110,7 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
                 entry["unavailable"] = response["reason"]
                 if response["reason"] in ("usage limit", "authentication failed", "token unavailable") and not stopped():
                     entry["limited_until"] = claude_accounts.mark_limited(
-                        name, token_unavailable=response["reason"] == "token unavailable")
+                        name, token_unavailable=response["reason"] == "token unavailable", reason=response["reason"])
                     account = claude_review.select_account(cfg, "review", exclude=attempted,
                                                            prefer_unused=used_accounts, stopped=stopped,
                                                            task_type=st.get("task_type"))

@@ -1827,13 +1827,13 @@ worker.notifications.reap_notifications = reap
         encoded = self.cli("accounts", "--json")
         report = json.loads(encoded)
         iso_time = lambda stamp: datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        main = {"name": "main", "plan": "pro",
+        main = {"name": "main", "plan": "pro", "email": "a@example.test",
                 "primary": {"used_percent": 10, "window_minutes": 10080, "resets_at": iso_time(self.reset)},
                 "secondary": {"used_percent": 2, "window_minutes": 300, "resets_at": iso_time(self.reset - 1800)},
                 "credits": {"balance": "123.45", "unlimited": False, "has_credits": True, "spendable": 123.45},
                 "reset_credits": {"available_count": 2, "expires_at": [iso_time(expires), None]},
                 "status": "available"}
-        missing = {"plan": None, "primary": None, "secondary": None,
+        missing = {"plan": None, "email": None, "primary": None, "secondary": None,
                    "credits": {"balance": None, "unlimited": None, "has_credits": None, "spendable": None},
                    "reset_credits": {"available_count": None, "expires_at": None}}
         self.assertEqual(report, {
@@ -1844,10 +1844,10 @@ worker.notifications.reap_notifications = reap
             "claude": [{"name": "reviewer", "weight": 1, "updated_at": None, "stale": True,
                         "five_hour": {"used_percent": 25, "resets_at": iso_time(self.reset - 1800)},
                         "seven_day": {"used_percent": 80, "resets_at": iso_time(self.reset)},
-                        "limited_until": iso_time(self.reset), "token_unavailable": True},
+                        "limited_until": iso_time(self.reset), "token_unavailable": True, "needs_login": True},
                        {"name": "unknown", "weight": 1, "updated_at": None, "stale": True,
                         "five_hour": None, "seven_day": None,
-                        "limited_until": None, "token_unavailable": None}],
+                        "limited_until": None, "token_unavailable": None, "needs_login": None}],
             "thresholds": {"soft_switch_at": 80, "switch_at": 99},
             "credits_floor": 0, "credits_floor_until": None, "duty": None})
         for private in (token, str(self.home), str(self.other), str(claude_home)):
