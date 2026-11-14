@@ -280,8 +280,12 @@ export function cardOf(row: AccountRow, context: AccountsContext, last: LastLogi
     });
   }
   if (last) {
-    const status = loginStatusText(last.status);
-    rows.push({ label: "Последний вход", value: `${formatClock(last.at, now)} — ${status.text}`, tone: status.tone === "ok" ? undefined : status.tone });
+    const status = last.status ? loginStatusText(last.status) : null;
+    rows.push({
+      label: "Последний вход",
+      value: status ? `${formatClock(last.at, now)} — ${status.text}` : formatClock(last.at, now),
+      tone: !status || status.tone === "ok" ? undefined : status.tone,
+    });
   }
   if (fetchedAt !== null) rows.push({ label: "Данные доски", value: formatAge(fetchedAt, now) });
   return rows;

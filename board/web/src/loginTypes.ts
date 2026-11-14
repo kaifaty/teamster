@@ -5,7 +5,7 @@ export interface LastLogin {
   family: "codex" | "claude";
   account: string;
   at: number;
-  status: string; // teamster's outcome: the Codex status, or `ok` or the probe's reason for Claude
+  status: string | null; // teamster's outcome: the Codex status, or `ok` or the probe's reason for Claude
 }
 
 /** A sign-in's step as the server reports it. */
