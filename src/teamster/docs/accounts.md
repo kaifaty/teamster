@@ -35,10 +35,12 @@ match the ordinary commands; `result.ok` is true exactly when the command exits 
 The event protocol is:
 
 - `{"event":"output","text":"…"}`: each nonempty tool output line, with ANSI and other control
-  sequences removed, truncated to 500 characters. Consecutive identical lines are emitted once.
+  sequences removed, truncated to 500 characters. Each cleaned line is emitted at most once per sign-in.
   Claude tokens are replaced with `[token hidden]` before output.
 - `{"event":"open","url":"https://…"}`: the first HTTPS link in the output, once.
 - `{"event":"code","code":"ABCD-EFGHI","expires_at":1900000900}`: Codex's device code;
+  codes contain 6–16 uppercase ASCII letters/digits in hyphen-separated groups and appear on a
+  separate line after `Enter this one-time code` (for example `ABCD-EFGH` or `ABCD-EFGHI`).
   `expires_at` is Unix seconds when received plus 900. Codex uses `--device-auth` unless `--browser`
   is also passed; its stdin is `/dev/null`, and both output streams are captured.
 - `{"event":"prompt"}`: Claude printed `Paste code here`. Send a newline-terminated code (or an

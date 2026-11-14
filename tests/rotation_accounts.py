@@ -25,6 +25,7 @@ class AccountAuthTests(RotationTestCase):
         fixture = self.account(self.home, "A", self.reset)
         for extra, scenario, status, code in (
                 ([], {"output": output}, "available", 0),
+                ([], {"output": output[:3] + ["ABCD-EFGH"] + output[4:]}, "available", 0),
                 ([], {"output": output, "exit": 7}, "failed", 7),
                 (["--browser"], {"fixture": fixture}, "duplicate", 1)):
             with self.subTest(status=status):
@@ -41,7 +42,7 @@ class AccountAuthTests(RotationTestCase):
                     self.assertEqual([e for e in events if e["event"] == "open"],
                                      [{"event": "open", "url": "https://login.example.test/device"}])
                     device = next(e for e in events if e["event"] == "code")
-                    self.assertEqual(device["code"], "ABCD-EFGHI")
+                    self.assertEqual(device["code"], scenario["output"][3])
                     self.assertGreaterEqual(device["expires_at"], int(before) + 900)
                     self.assertLessEqual(device["expires_at"], int(time.time()) + 900)
                     self.assertIn({"event": "stage", "stage": "checking"}, events)
@@ -53,7 +54,7 @@ class AccountAuthTests(RotationTestCase):
                 elif status == "duplicate":
                     self.assertIn("тот же аккаунт", events[-1]["message"])
         self.assertEqual([row["argv"] for row in self.trace() if row["command"] == "login"],
-                         [["--device-auth"], ["--device-auth"], []])
+                         [["--device-auth"], ["--device-auth"], ["--device-auth"], []])
 
     @contextmanager
     def claude_event_fixture(self):
@@ -114,6 +115,11 @@ elif sys.argv[1:] == ['setup-token']:
             trace(child=True)
         while True: time.sleep(0.1)
     tty.setraw(0)
+    if fixture.get('redraw'):
+        for frame in range(50):
+            spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[frame % 10]
+            print('\x1b[H\x1b[2J' + spinner + ' Opening browser to sign in…\n'
+                  'https://login.example.test/claude\nWaiting for sign-in…', flush=True)
     print('\x1b]0;hidden title\x07https://login.example.test/claude\nPaste code here: ', end='', flush=True)
     for attempt in range(2):
         code = b''
@@ -203,6 +209,19 @@ else:
                 if path.is_file():
                     self.assertNotIn(token.encode(), path.read_bytes(), str(path))
             self.assertEqual(self.telemetry_journal()[-1]["status"], "ok")
+
+    def test_claude_login_events_deduplicate_redrawn_frames(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"redraw": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            lines = [event["text"] for event in events if event["event"] == "output"]
+            self.assertLessEqual(len(lines), 15)
+            self.assertEqual(sum("Opening browser to sign in" in line for line in lines), 10)
+            self.assertEqual([event for event in events if event["event"] == "open"],
+                             [{"event": "open", "url": "https://login.example.test/claude"}])
+            self.assertEqual(sum(event["event"] == "prompt" for event in events), 2)
 
     def test_claude_login_events_preserve_split_tokens_across_stdin(self):
         with self.claude_event_fixture() as (fixture, trace, values):

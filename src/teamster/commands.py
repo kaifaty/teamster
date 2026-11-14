@@ -795,7 +795,7 @@ class LoginEvents:
 
     def __init__(self, claude=False):
         self.claude = claude
-        self.last = None
+        self.seen = set()
         self.opened = False
         self.code_expected = False
         self.code_sent = False
@@ -825,17 +825,17 @@ class LoginEvents:
             text = re.sub(r"sk-ant-oat01-[A-Za-z0-9_-]*", "[token hidden]", text)
         if not text.strip():
             return
-        if text != self.last:
+        if text not in self.seen:
             self.send("output", text=text[:500])
-            self.last = text
+            self.seen.add(text)
         url = re.search(r"https://[^\s<>\"']+", text)
         if url and not self.opened:
             self.send("open", url=url.group().rstrip(".,);]"))
             self.opened = True
         if not self.claude and not self.code_sent:
             if self.code_expected:
-                code = re.fullmatch(r"[A-Z0-9]{4}-[A-Z0-9]{5}", text.strip())
-                if code:
+                code = re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)+", text.strip())
+                if code and 6 <= len(code.group().replace("-", "")) <= 16:
                     self.send("code", code=code.group(), expires_at=int(time.time()) + 900)
                     self.code_sent = True
             if "Enter this one-time code" in text:
