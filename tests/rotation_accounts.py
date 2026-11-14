@@ -85,6 +85,7 @@ def trace(**fields):
         stream.write(json.dumps(fields) + '\n')
 token = 'sk-ant-' + 'oat01-' + 'event-secret-1234567890'
 if Path(sys.argv[0]).name == 'security':
+    trace()
     if fixture.get('save_gate') and sys.argv[1:] == ['-i']:
         while not Path(fixture['save_gate']).exists():
             time.sleep(0.01)
@@ -95,7 +96,6 @@ if Path(sys.argv[0]).name == 'security':
         request = {'save': args[-1]}
     else:
         assert sys.argv[1:] == ['find-generic-password', '-s', 'codex-worker-claude-events', '-a', 'fixture-user', '-w']
-    trace()
     with socket.create_connection(ADDRESS) as connection:
         connection.sendall(json.dumps(request).encode() + b'\n')
         result = json.loads(connection.makefile('rb').readline())
@@ -267,6 +267,10 @@ else:
                     self.assertFalse(events[-1]["ok"])
                     self.assertEqual(settings.read_bytes(), before)
                     self.assertEqual(len(values), int(bool(scenario.get("mismatch"))))
+                    if scenario.get("no_token"):
+                        self.assertFalse(any(event["event"] == "stage" for event in events))
+                        rows = [json.loads(line) for line in trace.read_text().splitlines()]
+                        self.assertFalse(any(row["command"] == "security" for row in rows))
 
     def test_login_events_sigterm_stops_the_tool_and_its_children(self):
         self.configure()
