@@ -1,4 +1,4 @@
-"""Cached snapshots from the worker's read-only accounts and report commands."""
+"""Cached account/report snapshots and requested Claude quota probes."""
 
 import asyncio
 import json
@@ -7,12 +7,45 @@ import re
 import time
 from pathlib import Path
 
+from .logins import stop_process
+
 ACCOUNTS_TIMEOUT = 60
+PROBE_TIMEOUT = 90
 OUTPUT_LIMIT = 1024 * 1024
 REPORT_SECONDS = 60
 REPORT_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 REPORT_DIMENSIONS = {"task-type", "effort", "model", "executor", "reviewer"}
 LOGGER = logging.getLogger(__name__)
+
+
+async def probe(script, account):
+    proc = None
+    readers = []
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "python3", "-I", str(script), "claude-probe", account,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE, start_new_session=True, cwd=Path.home(),
+        )
+        readers = [asyncio.create_task(_read_output(proc.stdout, truncate=True)),
+                   asyncio.create_task(_read_output(proc.stderr, truncate=True)),
+                   asyncio.create_task(proc.wait())]
+        done, pending = await asyncio.wait(readers, timeout=PROBE_TIMEOUT)
+        if pending:
+            LOGGER.warning("claude-probe timed out after %s seconds", PROBE_TIMEOUT)
+        else:
+            for reader in done:
+                reader.result()
+            if proc.returncode:
+                LOGGER.warning("claude-probe exited with status %s", proc.returncode)
+    except OSError as exc:
+        LOGGER.warning("claude-probe failed: %s", exc)
+    finally:
+        if proc is not None:
+            await stop_process(proc)
+        for reader in readers:
+            reader.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
 
 
 async def _read_output(stream, truncate=False):

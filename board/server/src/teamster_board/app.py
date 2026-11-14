@@ -14,10 +14,11 @@ import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from .accounts import Accounts, Reports
+from .accounts import Accounts, Reports, probe
 from .actions import Actions, action_body, error
 from .art import MEDIA_TYPES, art_file, art_index
 from .constellations import read_constellations
+from .logins import Logins
 from .machines import Machines
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
@@ -26,6 +27,7 @@ REPOSITORY = Path(__file__).resolve().parents[4]
 PING_SECONDS = 20
 # A new sign-in row in the journal refreshes accounts at once, at most this often.
 LOGIN_REFRESH_SECONDS = 5
+ACCOUNT_REFRESH_SECONDS = 30
 FILE_LIMIT = 256 * 1024
 LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", re.I)
 # The board's files in the worker's data home, by layout. The board never imports the worker.
@@ -166,6 +168,9 @@ class Board:
         self.login_seen = asyncio.Event()
         self._login_at = None
         self._forced_at = float("-inf")
+        self.logins = Logins(settings.teamster, self.publish, self.request_accounts)
+        self.refresh_jobs = {}
+        self._refresh_started = float("-inf")
 
     def publish(self, message):
         for queue in self.clients:
@@ -182,13 +187,56 @@ class Board:
             for message in messages:
                 self.publish(message)
             if self.store.take_logins():
-                self._login_at = time.monotonic()
-                self.login_seen.set()
+                self.request_accounts()
+
+    def request_accounts(self):
+        self._login_at = time.monotonic()
+        self.login_seen.set()
+
+    @property
+    def account_value(self):
+        return {**self.accounts.value, "last_logins": self.store.last_logins()}
+
+    def account_target(self, data):
+        family, account = data.get("family"), data.get("account")
+        if family not in ("codex", "claude") or not isinstance(account, str) or not account:
+            return None, error(400, "Invalid family or account")
+        snapshot = self.accounts.value["data"]
+        rows = snapshot.get(family, []) if isinstance(snapshot, dict) else []
+        if not any(isinstance(row, dict) and row.get("name") == account for row in rows):
+            return None, error(404, "Account not found")
+        return (family, account), None
+
+    async def refresh_accounts(self):
+        value = await self.accounts.refresh(force=True)
+        if value is not None:
+            async with self.lock:
+                self.publish({"type": "accounts", "accounts": self.account_value})
+
+    def account_refresh(self, family, account):
+        key = (family, account)
+        if key in self.refresh_jobs:
+            return error(409, "Account refresh is already running")
+        now = time.monotonic()
+        if family == "codex":
+            if now - self._refresh_started < ACCOUNT_REFRESH_SECONDS:
+                return error(429, "Account refresh is limited to once every 30 seconds")
+            self._refresh_started = now
+        job = asyncio.create_task(self._account_refresh(family, account))
+        self.refresh_jobs[key] = job
+        job.add_done_callback(lambda _: self.refresh_jobs.pop(key, None))
+        return {"ok": True}
+
+    async def _account_refresh(self, family, account):
+        if family == "claude":
+            await probe(self.settings.teamster, account)
+        await self.refresh_accounts()
 
     async def snapshot(self):
         async with self.lock:
             return {"generated_at": time.time(), "tasks": self.store.summaries(),
-                    "accounts": self.accounts.value, "machines": self.machines.value}
+                    "accounts": self.account_value, "machines": self.machines.value,
+                    "logins": self.logins.snapshot()}
 
     async def poll_tasks(self):
         while True:
@@ -206,9 +254,7 @@ class Board:
             if self._login_at is not None and self._login_at <= started:
                 self._login_at = None
             # This loop schedules the refreshes itself, so it bypasses the throttle in Accounts.
-            value = await self.accounts.refresh(force=True)
-            if value is not None:
-                self.publish({"type": "accounts", "accounts": value})
+            await self.refresh_accounts()
             due = started + self.settings.accounts_seconds
 
     async def _wait_for_refresh(self, due):
@@ -258,6 +304,8 @@ def create_app(settings=None):
             yield
         finally:
             board.loop = None
+            await board.logins.close()
+            jobs.extend(list(board.refresh_jobs.values()))
             for job in jobs:
                 job.cancel()
             await asyncio.gather(*jobs, return_exceptions=True)
@@ -332,6 +380,28 @@ def create_app(settings=None):
         if not isinstance(data, dict):
             return data
         return await asyncio.to_thread(board.actions.run, request.url.path.rsplit("/", 1)[-1], data)
+
+    @app.post("/api/actions/login")
+    @app.post("/api/actions/login/input")
+    @app.post("/api/actions/login/cancel")
+    @app.post("/api/actions/account-refresh")
+    async def account_action(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        if board.settings.read_only:
+            return error(403, "read_only")
+        route = request.url.path
+        if route == "/api/actions/login/input":
+            return await board.logins.input(data)
+        if route == "/api/actions/login/cancel":
+            return board.logins.cancel(data)
+        target, failure = board.account_target(data)
+        if failure is not None:
+            return failure
+        if route == "/api/actions/login":
+            return board.logins.start(*target)
+        return board.account_refresh(*target)
 
     @app.get("/api/art")
     async def art():
