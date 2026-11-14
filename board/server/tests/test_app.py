@@ -2001,6 +2001,15 @@ def wait_for_account(predicate, seconds=8):
         time.sleep(0.01)
 
 
+def assert_no_accounts(socket):
+    async def receive():
+        with anyio.move_on_after(0.1):
+            while True:
+                message = await socket._send_rx.receive()
+                assert json.loads(message["text"])["type"] != "accounts"
+    socket.portal.call(receive)
+
+
 @pytest.fixture
 def account_actions(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -2079,8 +2088,19 @@ else:
                                  'account': account, 'at': time.time(), 'status': 'available'}) + '\\n')
     emit('result', ok=True, status='available', message='Signed in')
 ''')
-    calls = []
+    calls, expected_commands = [], []
     execute = asyncio.create_subprocess_exec
+
+    def requested(response):
+        route = response.request.url.path
+        if response.status_code != 200 or route not in ("/api/actions/login", "/api/actions/account-refresh"):
+            return
+        data = json.loads(response.request.content)
+        if route == "/api/actions/login":
+            command = "login" if data["family"] == "codex" else "claude-login"
+            expected_commands.append([command, data["account"], "--events"])
+        elif data["family"] == "claude":
+            expected_commands.append(["claude-probe", data["account"]])
 
     async def recorded(*args, **options):
         calls.append((list(args), options))
@@ -2094,19 +2114,17 @@ else:
     with TestClient(application, base_url="http://localhost", headers={
         "Host": "localhost", "Origin": "http://localhost", "X-Teamster-Board": "1",
     }) as client:
+        client.event_hooks["response"].append(requested)
         wait_for_account(lambda: board.accounts.value["data"] is not None)
         yield client, board, tmp_path, calls
     for argv, options in calls:
-        suffix = argv[3:]
-        expected = (["accounts", "--json"] if suffix[0] == "accounts" else
-                    ["claude-probe", "cl1"] if suffix[0] == "claude-probe" else
-                    ["claude-login" if suffix[1].startswith("cl") else "login", suffix[1], "--events"])
+        expected = ["accounts", "--json"] if argv[3] == "accounts" else expected_commands.pop(0)
         assert argv == ["python3", "-I", str(script), *expected]
-        if suffix[0] != "accounts":
+        if expected[0] != "accounts":
             assert options["start_new_session"] is True
             assert options["cwd"] == tmp_path
             assert options["stdout"] == options["stderr"] == asyncio.subprocess.PIPE
-            assert options["stdin"] == (asyncio.subprocess.DEVNULL if suffix[0] == "claude-probe"
+            assert options["stdin"] == (asyncio.subprocess.DEVNULL if expected[0] == "claude-probe"
                                          else asyncio.subprocess.PIPE)
 
 
@@ -2356,7 +2374,7 @@ def test_account_action_validation_protection_and_read_only(account_actions, rou
 
 
 def test_account_refresh_codex_throttle_and_claude_probe(account_actions):
-    client, board, root, _ = account_actions
+    client, board, root, calls = account_actions
     with client.websocket_connect("/ws") as socket:
         socket.receive_json()
         (root / "accounts-block").touch()
@@ -2372,23 +2390,32 @@ def test_account_refresh_codex_throttle_and_claude_probe(account_actions):
         assert client.post("/api/actions/account-refresh", json=body).status_code == 200
         receive_until(socket, "accounts")
         wait_for_account(lambda: not board.refresh_jobs)
+        before_probe = len(calls)
         (root / "probe-block").touch()
         body = {"family": "claude", "account": "cl1"}
         assert client.post("/api/actions/account-refresh", json=body).json() == {"ok": True}
         wait_for_account(lambda: (root / "probe-ready").exists())
         assert client.post("/api/actions/account-refresh", json=body).status_code == 409
+        assert_no_accounts(socket)
+        assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"]]
         (root / "probe-block").unlink()
         assert receive_until(socket, "accounts")["accounts"]["error"] is None
         wait_for_account(lambda: not board.refresh_jobs)
+        assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"], ["accounts", "--json"]]
 
 
 def test_account_refresh_probe_timeout_still_refreshes(account_actions, monkeypatch):
-    client, board, root, _ = account_actions
+    client, board, root, calls = account_actions
     assert accounts_module.PROBE_TIMEOUT == 90
-    monkeypatch.setattr(accounts_module, "PROBE_TIMEOUT", 0.2)
+    monkeypatch.setattr(accounts_module, "PROBE_TIMEOUT", 2)
+    before_probe = len(calls)
     (root / "probe-block").touch()
     with client.websocket_connect("/ws") as socket:
         socket.receive_json()
         assert client.post("/api/actions/account-refresh", json={"family": "claude", "account": "cl1"}).status_code == 200
+        wait_for_account(lambda: (root / "probe-ready").exists())
+        assert_no_accounts(socket)
+        assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"]]
         assert receive_until(socket, "accounts")["accounts"]["error"] is None
         wait_for_account(lambda: not board.refresh_jobs)
+        assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"], ["accounts", "--json"]]
