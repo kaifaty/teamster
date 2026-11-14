@@ -76,7 +76,7 @@ class AccountAuthTests(RotationTestCase):
         with socketserver.TCPServer(("127.0.0.1", 0), Keychain) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            source = r'''import fcntl, json, os, shlex, socket, struct, sys, termios, time, tty
+            source = r'''import fcntl, json, os, shlex, signal, socket, struct, sys, termios, time, tty
 from pathlib import Path
 fixture = json.loads(Path(FIXTURE).read_text())
 def trace(**fields):
@@ -85,6 +85,9 @@ def trace(**fields):
         stream.write(json.dumps(fields) + '\n')
 token = 'sk-ant-' + 'oat01-' + 'event-secret-1234567890'
 if Path(sys.argv[0]).name == 'security':
+    if fixture.get('save_gate') and sys.argv[1:] == ['-i']:
+        while not Path(fixture['save_gate']).exists():
+            time.sleep(0.01)
     request = {}
     if sys.argv[1:] == ['-i']:
         args = shlex.split(sys.stdin.readline())
@@ -103,6 +106,9 @@ elif sys.argv[1:] == ['setup-token']:
     columns = struct.unpack('HHHH', fcntl.ioctl(0, termios.TIOCGWINSZ, b'\0' * 8))[1]
     trace(columns=columns)
     if fixture.get('hold'):
+        if fixture.get('ignore_term'):
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
         child = os.fork()
         if child == 0:
             trace(child=True)
@@ -117,7 +123,15 @@ elif sys.argv[1:] == ['setup-token']:
         if attempt == 0:
             print('\r\nPaste code here: ', end='', flush=True)
     if not fixture.get('no_token'):
-        print('\r\nToken: \x1b[32m' + token + '\x1b[0m', flush=True)
+        if fixture.get('split_token'):
+            print('\r\nPaste code here: ' + token[:20], end='', flush=True)
+            code = b''
+            while not code.endswith(b'\r'):
+                code += os.read(0, 1)
+            trace(input=code.decode())
+            print(token[20:], flush=True)
+        else:
+            print('\r\nToken: \x1b[32m' + token + '\x1b[0m', flush=True)
     sys.exit(fixture.get('exit', 0))
 else:
     fd = int(os.environ['CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR'])
@@ -140,15 +154,19 @@ else:
                 server.shutdown()
                 thread.join(timeout=5)
 
-    def run_claude_event_login(self):
-        proc = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "claude-login", "events", "--events"],
+    def run_claude_event_login(self, *arguments, cancel_saving=False):
+        proc = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "claude-login", "events", "--events", *arguments],
                                 env=self.env, cwd=self.root, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         output = []
         try:
             for line in proc.stdout:
                 output.append(line)
-                if json.loads(line)["event"] == "prompt":
+                event = json.loads(line)
+                if cancel_saving and event == {"event": "stage", "stage": "saving"}:
+                    proc.terminate()
+                    (self.root / "save-gate").touch()
+                if event["event"] == "prompt":
                     proc.stdin.write("x" * 513 + "\ninvalid\x1bcode\n" + ("page-code" if len(
                         [e for e in output if json.loads(e)["event"] == "prompt"]) == 1 else "") + "\n")
                     proc.stdin.flush()
@@ -186,6 +204,53 @@ else:
                     self.assertNotIn(token.encode(), path.read_bytes(), str(path))
             self.assertEqual(self.telemetry_journal()[-1]["status"], "ok")
 
+    def test_claude_login_events_preserve_split_tokens_across_stdin(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"split_token": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(len(values), 1)
+            token = values[0]
+            self.assertEqual(token, "sk-ant-" + "oat01-" + "event-secret-1234567890")
+            self.assertNotIn(token[:20], result.stdout)
+            self.assertNotIn(token[20:], result.stdout)
+            self.assertEqual(json.loads(result.stdout.splitlines()[-1])["status"], "ok")
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual([row["input"] for row in rows if "input" in row], ["page-code\r", "\r", "\r"])
+
+    def test_claude_login_events_reject_unsafe_keychain_arguments_before_launch(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            settings = self.home / "codex-worker.json"
+            settings.write_text(json.dumps({"language": "en"}))
+            before = settings.read_bytes()
+            for field in ("service", "user"):
+                for bad in ('\n', '"', '\\'):
+                    with self.subTest(field=field, character=repr(bad)), mock.patch.dict(self.env):
+                        arguments = ["--keychain", "service" + bad] if field == "service" else []
+                        if field == "user":
+                            self.env["USER"] = "user" + bad
+                        result = self.run_claude_event_login(*arguments)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(json.loads(result.stdout.splitlines()[-1])["status"], "failed")
+                        self.assertEqual(settings.read_bytes(), before)
+                        self.assertEqual(values, [])
+                        self.assertFalse(trace.exists(), "invalid arguments must fail before launching a tool")
+
+    def test_claude_login_events_finish_saving_before_honoring_cancellation(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"save_gate": str(self.root / "save-gate")}))
+            result = self.run_claude_event_login(cancel_saving=True)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(events[-1], {"event": "result", "ok": False, "status": "failed",
+                                         "message": "Claude login cancelled after saving account settings"})
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["saving"])
+            self.assertEqual(len(values), 1)
+            settings = json.loads((self.home / "codex-worker.json").read_text())
+            self.assertIn("events", [account["name"] for account in settings["claude"]["accounts"]])
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertFalse(any(row.get("probe") for row in rows))
+
     def test_claude_login_events_reject_missing_token_failed_setup_and_readback_mismatch(self):
         with self.claude_event_fixture() as (fixture, trace, values):
             settings = self.home / "codex-worker.json"
@@ -205,10 +270,11 @@ else:
 
     def test_login_events_sigterm_stops_the_tool_and_its_children(self):
         self.configure()
+        alive = self.worker().procs.alive
         (self.home / "codex-worker.json").write_text((self.home / "claude-accounts.json").read_text())
         with self.claude_event_fixture() as (fixture, trace, values):
-            fixture.write_text(json.dumps({"hold": True}))
-            (self.other / "login.json").write_text(json.dumps({"hold": True}))
+            fixture.write_text(json.dumps({"hold": True, "ignore_term": True}))
+            (self.other / "login.json").write_text(json.dumps({"hold": True, "ignore_term": True}))
             for command, name in (("login", "second"), ("claude-login", "events")):
                 with self.subTest(command=command):
                     settings = self.home / "codex-worker.json"
@@ -220,14 +286,20 @@ else:
                         def children():
                             rows = (([json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else [])
                                     if command == "claude-login" else self.trace())
-                            return [row["pid"] for row in rows if row.get("child") or row.get("command") == "login-child"]
-                        self.until(lambda: len(children()) >= 1, timeout=20)
+                            return [row["pid"] for row in rows if row.get("child") or row.get("command") in (
+                                "claude", "login", "login-child")]
+                        self.until(lambda: len(children()) >= 2, timeout=20)
                         pids = children()
+                        started = time.monotonic()
                         proc.terminate()
-                        output, errors = proc.communicate(timeout=25)
+                        time.sleep(0.5)
+                        proc.terminate()
+                        output, errors = proc.communicate(timeout=max(0.01, 2.5 - (time.monotonic() - started)))
                         self.assertNotEqual(proc.returncode, 0)
                         self.assertEqual(json.loads(output.splitlines()[-1])["status"], "failed")
-                        self.until(lambda: all(not self.worker().procs.alive(pid) for pid in pids), timeout=10)
+                        self.until(lambda: all(not alive(pid) for pid in pids),
+                                   timeout=max(0.01, 2.5 - (time.monotonic() - started)))
+                        self.assertLess(time.monotonic() - started, 2.5)
                     finally:
                         if proc.poll() is None:
                             proc.kill()

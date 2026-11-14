@@ -60,7 +60,14 @@ same Keychain lookup as tasks before saving account settings. The probe receives
 The token never enters process arguments, child environments, events, files or logs. Failed setup
 or missing output tokens leave settings and Keychain unchanged. A readback mismatch fails without
 saving settings. SIGINT and SIGTERM stop the sign-in tool and its children; cancellation during
-setup saves neither the token nor account settings.
+setup saves neither the token nor account settings. Cancellation sends TERM to the tool's process
+group, then KILL after one second if it is still running; repeated cancellation signals during
+cleanup are ignored. From `stage saving` through the Keychain write, readback and settings write,
+cancellation is deferred: teamster finishes saving both the token and the account settings, then
+exits unsuccessfully with `result failed`, without probing the account. In events mode, Keychain
+service and user values containing control characters, double quotes or backslashes are rejected
+before launching a tool. stdin never flushes an unfinished tool output line, so a token arriving
+in multiple reads stays intact and is hidden as a whole.
 
 When the user has chosen multiple subscriptions, the settings can contain:
 

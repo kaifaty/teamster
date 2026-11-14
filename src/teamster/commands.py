@@ -802,6 +802,8 @@ class LoginEvents:
         self.prompted = False
         self.token = ""
         self.finished = False
+        self.cancelled = None
+        self.saving = False
 
     def send(self, event, **fields):
         print(json.dumps(dict(event=event, **fields), ensure_ascii=False), flush=True)
@@ -830,11 +832,7 @@ class LoginEvents:
         if url and not self.opened:
             self.send("open", url=url.group().rstrip(".,);]"))
             self.opened = True
-        if self.claude:
-            if "Paste code here" in text and not self.prompted:
-                self.send("prompt")
-                self.prompted = True
-        elif not self.code_sent:
+        if not self.claude and not self.code_sent:
             if self.code_expected:
                 code = re.fullmatch(r"[A-Z0-9]{4}-[A-Z0-9]{5}", text.strip())
                 if code:
@@ -854,7 +852,11 @@ def run_login_events(a, command):
     events = LoginEvents(claude=a.cmd == "claude-login")
 
     def cancelled(signum, frame):
-        raise SystemExit(128 + signum)
+        if events.cancelled is not None:
+            return
+        events.cancelled = signum
+        if not events.saving:
+            raise SystemExit(128 + signum)
 
     handlers = {sig: signal.signal(sig, cancelled) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
@@ -873,6 +875,25 @@ def run_login_events(a, command):
             signal.signal(sig, handler)
 
 
+def terminate_login(proc, events):
+    """Keep ordinary cleanup, but finish cancellation before the caller's kill deadline."""
+    try:
+        if events.cancelled is None:
+            procs.terminate(proc)
+    finally:
+        if events.cancelled is not None:
+            procs.signal_group(proc, signal.SIGTERM)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                proc.poll()
+                if not procs.signal_group(proc, 0):
+                    break
+                time.sleep(0.02)
+            else:
+                procs.signal_group(proc, signal.SIGKILL)
+            proc.wait()
+
+
 def codex_login_events(argv, environment, events):
     proc = subprocess.Popen(argv, env=environment, cwd=environment["CODEX_HOME"], stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -882,7 +903,7 @@ def codex_login_events(argv, environment, events):
             events.line(line)
         return proc.wait()
     finally:
-        procs.terminate(proc)
+        terminate_login(proc, events)
         proc.stdout.close()
 
 
@@ -900,7 +921,7 @@ def claude_login_events(environment, events):
         slave = None
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         input_decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        pending, incoming, oversized = "", "", False
+        pending, incoming, oversized, prompt_count = "", "", False, 0
         with selectors.DefaultSelector() as selector:
             selector.register(master, selectors.EVENT_READ)
             selector.register(sys.stdin, selectors.EVENT_READ)
@@ -916,11 +937,14 @@ def claude_login_events(environment, events):
                         pending += decoder.decode(chunk, final=not chunk)
                         lines = re.split(r"[\r\n]", pending)
                         pending = lines.pop()
-                        for line in lines:
-                            events.line(line)
-                        if "Paste code here" in events.clean(pending) and not events.prompted:
-                            events.send("prompt")
-                            events.prompted = True
+                        for index, line in enumerate(lines + [pending]):
+                            if index < len(lines):
+                                events.line(line)
+                            count = events.clean(line).count("Paste code here")
+                            if count > prompt_count and not events.prompted:
+                                events.send("prompt")
+                                events.prompted = True
+                            prompt_count = count if index == len(lines) else 0
                         if not chunk:
                             events.line(pending)
                             return proc.wait()
@@ -934,10 +958,8 @@ def claude_login_events(environment, events):
                                 line = incoming.removesuffix("\r")
                                 if not oversized and len(line) <= 512 and all(
                                         not unicodedata.category(c).startswith("C") for c in line):
-                                    events.line(pending)
                                     os.write(master, line.encode("utf-8") + b"\r")
                                     events.prompted = False
-                                    pending = ""
                                 incoming, oversized = "", False
                             elif not oversized:
                                 incoming += char
@@ -945,7 +967,7 @@ def claude_login_events(environment, events):
                                     incoming, oversized = "", True
     finally:
         if proc is not None:
-            procs.terminate(proc)
+            terminate_login(proc, events)
         os.close(master)
         if slave is not None:
             os.close(slave)
@@ -1128,6 +1150,10 @@ def _cmd_claude_login(a, events=None):
                                  str(Path.home() / ".claude-accounts" / a.name))
     service = a.keychain or (previous["token_keychain"] if previous else
                              "codex-worker-claude-" + a.name)
+    if events and any(char in '\\"' or unicodedata.category(char).startswith("C")
+                      for value in (service, os.environ.get("USER", "")) for char in value):
+        return events.result("failed", "Keychain service and user must not contain control characters, "
+                             "quotes or backslashes", code=1)
     directory = str(Path(directory).expanduser().resolve())
     environment = {key: os.environ[key] for key in ("HOME", "USER", "PATH") if key in os.environ}
     environment.update(LANG="en_US.UTF-8", CLAUDE_CONFIG_DIR=directory)
@@ -1137,14 +1163,13 @@ def _cmd_claude_login(a, events=None):
         code = claude_login_events(environment, events)
         if code or not events.token:
             return events.result("failed", "Claude login failed; account settings were not changed", code=1)
+        events.saving = True
         events.send("stage", stage="saving")
         # security's interactive command parser reads the password from a pipe,
         # keeping it out of argv, the environment and the terminal.
         arguments = ["add-generic-password", "-U", "-s", service,
                      "-a", os.environ.get("USER", ""), "-w", events.token]
-        # security's parser ends an argument at a closing quote, unlike a shell.
-        command = " ".join('"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
-                           for value in arguments) + "\n"
+        command = " ".join('"' + value + '"' for value in arguments) + "\n"
         proc = subprocess.Popen(["security", "-i"], env=environment, stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True)
@@ -1177,6 +1202,10 @@ def _cmd_claude_login(a, events=None):
             previous.update(account)
         claude_accounts.clear_limits(a.name)
     if events:
+        events.saving = False
+        if events.cancelled is not None:
+            return events.result("failed", "Claude login cancelled after saving account settings",
+                                 code=128 + events.cancelled)
         events.send("stage", stage="checking")
     else:
         print(f"Claude account {a.name} saved")

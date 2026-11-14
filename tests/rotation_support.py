@@ -500,6 +500,9 @@ elif command == "login":
     for line in login.get("output", []):
         print(line, flush=True)
     if login.get("hold"):
+        if login.get("ignore_term"):
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
         child = os.fork()
         if child == 0:
             trace({"command": "login-child"})
