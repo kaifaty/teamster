@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -20,6 +21,7 @@ from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 from teamster_board import access, actions as actions_module
 from teamster_board import app as board_app
 from teamster_board import store as store_module
+from teamster_board import accounts as accounts_module, logins as logins_module
 from teamster_board.app import Settings, create_app
 from teamster_board.research import Research
 
@@ -124,7 +126,7 @@ def test_rest_contract_files_and_unknown_paths(board):
     (directory / "state.json").write_text(json.dumps(state))
     client.portal.call(application.state.board.poll)
     snapshot = client.get("/api/snapshot").json()
-    assert set(snapshot) == {"generated_at", "tasks", "accounts", "machines"}
+    assert set(snapshot) == {"generated_at", "tasks", "accounts", "machines", "logins"}
     assert snapshot["machines"] == {"config_error": None, "items": []}
     assert isinstance(snapshot["generated_at"], float)
     assert len(snapshot["tasks"]) == 1
@@ -133,7 +135,7 @@ def test_rest_contract_files_and_unknown_paths(board):
     assert snapshot["tasks"][0]["link"] is None
     assert snapshot["tasks"][0]["scheduled"] is None
     assert snapshot["tasks"][0]["summary"] == "Change completed."
-    assert set(snapshot["accounts"]) == {"fetched_at", "error", "data"}
+    assert set(snapshot["accounts"]) == {"fetched_at", "error", "data", "last_logins"}
     for name, filename in (("brief", "brief.md"), ("last", "last.md"),
                            ("review", "review.md"), ("check", "check.log")):
         content = "discard this prefix" + "x" * (256 * 1024)
@@ -1991,3 +1993,441 @@ def test_ship_action_slug_and_request_protection(ships, route):
             assert response.status_code == 403
             assert response.json() == {"ok": False, "error": reason}
     assert not calls.exists()
+
+
+def wait_for_account(predicate, seconds=8):
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        assert time.monotonic() < deadline, "Account operation did not finish"
+        time.sleep(0.01)
+
+
+def assert_no_accounts(socket):
+    async def receive():
+        with anyio.move_on_after(0.1):
+            while True:
+                message = await socket._send_rx.receive()
+                assert json.loads(message["text"])["type"] != "accounts"
+    socket.portal.call(receive)
+
+
+@pytest.fixture
+def account_actions(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(board_app, "PING_SECONDS", 0.05)
+    script = tmp_path / "teamster.py"
+    journal = tmp_path / "log.jsonl"
+    old = time.time() - 40 * 86400
+    journal.write_text("".join(json.dumps(row) + "\n" for row in [
+        {"event": "account_login", "family": "codex", "account": "c1", "at": old, "status": "available"},
+        {"event": "account_login", "family": "claude", "account": "cl1", "at": old, "status": "expired"},
+        {"event": "account_login", "family": "claude", "account": "cl1", "at": old + 1, "status": "available"},
+    ]))
+    script.write_text('''import json, os, signal, subprocess, sys, time
+from pathlib import Path
+assert sys.flags.isolated
+root = Path(__file__).parent
+args = sys.argv[1:]
+with (root / 'calls').open('a') as stream:
+    stream.write(json.dumps(args) + '\\n')
+def hold(name):
+    while (root / name).exists():
+        time.sleep(0.01)
+def emit(event, **fields):
+    print(json.dumps(dict(event=event, **fields)), flush=True)
+if args == ['accounts', '--json']:
+    assert sys.stdin.read() == ''
+    hold('accounts-block')
+    print(json.dumps({'codex': [{'name': name} for name in ['c1', 'c2', 'c3', 'fail', 'no-result', 'ignore', 'child-result', 'child-no-result']],
+                      'claude': [{'name': 'cl1'}, {'name': 'cl2'}]}))
+elif args == ['claude-probe', 'cl1']:
+    assert Path.cwd() == root
+    assert sys.stdin.read() == ''
+    assert os.getsid(0) == os.getpid()
+    (root / 'probe-ready').touch()
+    hold('probe-block')
+else:
+    assert Path.cwd() == root
+    command, account, flag = args
+    assert args == ['claude-login' if account.startswith('cl') else 'login', account, '--events']
+    assert os.getsid(0) == os.getpid()
+    if account in ('child-result', 'child-no-result'):
+        if account == 'child-result':
+            emit('result', ok=True, status='available', message='Signed in')
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        child = subprocess.Popen(['sleep', '30'])
+        (root / (account + '-pid')).write_text(str(child.pid))
+        sys.exit(0)
+    if account == 'ignore':
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        emit('open', url='https://example.test/ignore')
+        while True:
+            time.sleep(1)
+    if account == 'no-result':
+        sys.exit(7)
+    if account == 'fail':
+        sys.stderr.write('x' * 2300 + ' failure tail')
+        sys.stderr.flush()
+        emit('result', ok=False, status='expired', message='Sign-in refused')
+        sys.exit(1)
+    print('not json\\n[]\\n{"event":"unknown"}\\n{"event":"open","url":3}', flush=True)
+    print('x' * 70000, flush=True)
+    for index in range(42):
+        emit('output', text=str(index) + ':' + 'x' * 400)
+    emit('open', url='https://example.test/login')
+    if command == 'claude-login':
+        emit('prompt')
+        emit('output', text='received:' + sys.stdin.readline().rstrip('\\n'))
+    else:
+        emit('code', code='ONE-TIME', expires_at=1900000000)
+        while not (root / (account + '-release')).exists():
+            time.sleep(0.01)
+    emit('stage', stage='saving')
+    emit('stage', stage='checking')
+    with (root / 'log.jsonl').open('a') as stream:
+        stream.write(json.dumps({'event': 'account_login', 'family': 'claude' if command == 'claude-login' else 'codex',
+                                 'account': account, 'at': time.time(), 'status': 'available'}) + '\\n')
+    emit('result', ok=True, status='available', message='Signed in')
+''')
+    calls, expected_commands = [], []
+    execute = asyncio.create_subprocess_exec
+
+    def requested(response):
+        route = response.request.url.path
+        if response.status_code != 200 or route not in ("/api/actions/login", "/api/actions/account-refresh"):
+            return
+        data = json.loads(response.request.content)
+        if route == "/api/actions/login":
+            command = "login" if data["family"] == "codex" else "claude-login"
+            expected_commands.append([command, data["account"], "--events"])
+        elif data["family"] == "claude":
+            expected_commands.append(["claude-probe", data["account"]])
+
+    async def recorded(*args, **options):
+        calls.append((list(args), options))
+        return await execute(*args, **options)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recorded)
+    settings = Settings(tmp_path, script, layout="new", poll_seconds=0.01, action_teamster=None,
+                        web_dist=tmp_path / "dist")
+    application = create_app(settings)
+    board = application.state.board
+    with TestClient(application, base_url="http://localhost", headers={
+        "Host": "localhost", "Origin": "http://localhost", "X-Teamster-Board": "1",
+    }) as client:
+        client.event_hooks["response"].append(requested)
+        wait_for_account(lambda: board.accounts.value["data"] is not None)
+        yield client, board, tmp_path, calls
+    for argv, options in calls:
+        expected = ["accounts", "--json"] if argv[3] == "accounts" else expected_commands.pop(0)
+        assert argv == ["python3", "-I", str(script), *expected]
+        if expected[0] != "accounts":
+            assert options["start_new_session"] is True
+            assert options["cwd"] == tmp_path
+            assert options["stdout"] == options["stderr"] == asyncio.subprocess.PIPE
+            assert options["stdin"] == (asyncio.subprocess.DEVNULL if expected[0] == "claude-probe"
+                                         else asyncio.subprocess.PIPE)
+    assert not expected_commands
+
+
+def test_account_login_events_snapshot_and_last_logins(account_actions):
+    client, board, root, _ = account_actions
+    snapshot = client.get("/api/snapshot").json()
+    assert snapshot["logins"] == []
+    historical = snapshot["accounts"]["last_logins"]
+    assert [(row["family"], row["account"], row["status"]) for row in historical] == [
+        ("claude", "cl1", "available"), ("codex", "c1", "available")]
+    assert all(row["at"] < time.time() - 31 * 86400 for row in historical)
+    with client.websocket_connect("/ws") as socket:
+        assert socket.receive_json()["snapshot"]["logins"] == []
+        response = client.post("/api/actions/login", json={"family": "codex", "account": "c1"})
+        assert response.status_code == 200
+        initial = response.json()["login"]
+        assert initial == {"id": initial["id"], "family": "codex", "account": "c1", "stage": "starting",
+                           "started_at": initial["started_at"], "finished_at": None, "url": None,
+                           "code": None, "code_expires_at": None, "prompt": False, "output": [],
+                           "status": None, "ok": None, "message": None, "error": None}
+        changes = [receive_until(socket, "login")["login"] for _ in range(45)]
+        assert changes[0] == initial
+        assert [row["output"][-1].split(":")[0] for row in changes[1:43]] == [str(i) for i in range(42)]
+        waiting = changes[-1]
+        assert waiting["stage"] == "waiting" and waiting["code"] == "ONE-TIME"
+        assert waiting["url"] == "https://example.test/login" and waiting["code_expires_at"] == 1900000000
+        assert len(waiting["output"]) == 40 and all(len(line) == 300 for line in waiting["output"])
+        assert client.get("/api/snapshot").json()["logins"] == [waiting]
+        finished_after = time.monotonic()
+        (root / "c1-release").touch()
+        ending = [receive_until(socket, "login")["login"] for _ in range(3)]
+        assert [row["stage"] for row in ending] == ["saving", "checking", "done"]
+        done = ending[-1]
+        assert done["ok"] is True and done["status"] == "available"
+        assert done["message"] == "Signed in" and done["error"] is None
+        assert done["finished_at"] >= done["started_at"]
+        accounts = receive_until(socket, "accounts")["accounts"]
+        assert time.monotonic() - finished_after < 5
+        # The direct success wakeup and the journal tail may coalesce or produce a second refresh.
+        wait_for_account(lambda: any(row["account"] == "c1" and row["at"] > historical[-1]["at"]
+                                     for row in board.account_value["last_logins"]))
+        assert "last_logins" in accounts
+        assert client.get("/api/snapshot").json()["logins"] == [done]
+        for route in ("input", "cancel"):
+            assert client.post(f"/api/actions/login/{route}", json={"id": done["id"], "text": "code"}).status_code == 409
+        wait_for_account(lambda: not board.logins.jobs)
+        async def expire():
+            board.logins.rows[done["id"]]["finished_at"] = time.time() - 599
+        client.portal.call(expire)
+        assert len(client.get("/api/snapshot").json()["logins"]) == 1
+        async def expired():
+            board.logins.rows[done["id"]]["finished_at"] = time.time() - 601
+        client.portal.call(expired)
+        assert client.get("/api/snapshot").json()["logins"] == []
+
+
+def test_account_login_claude_input(account_actions):
+    client, _, _, _ = account_actions
+    with client.websocket_connect("/ws") as socket:
+        socket.receive_json()
+        identifier = client.post("/api/actions/login", json={"family": "claude", "account": "cl1"}).json()["login"]["id"]
+        while not receive_until(socket, "login")["login"]["prompt"]:
+            pass
+        for text in ("", "  ", "x" * 513, "a\nb", "a\x00b", "a\x7fb", 5):
+            assert client.post("/api/actions/login/input", json={"id": identifier, "text": text}).status_code == 400
+        response = client.post("/api/actions/login/input", json={"id": identifier, "text": "  page code  "})
+        assert response.json() == {"ok": True}
+        changed = receive_until(socket, "login")["login"]
+        assert changed["prompt"] is False
+        received = receive_until(socket, "login")["login"]
+        assert received["output"][-1] == "received:page code"
+        assert [receive_until(socket, "login")["login"]["stage"] for _ in range(3)] == ["saving", "checking", "done"]
+
+
+@pytest.mark.parametrize("account", ["fail", "no-result", "spawn-error"])
+def test_account_login_failure(account_actions, monkeypatch, account):
+    client, board, _, calls = account_actions
+    if account == "spawn-error":
+        execute = asyncio.create_subprocess_exec
+        async def fail(*args, **options):
+            if args[3] == "login":
+                calls.append((list(args), options))
+                raise OSError("Cannot start sign-in")
+            return await execute(*args, **options)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fail)
+    response = client.post("/api/actions/login", json={"family": "codex", "account": "c1" if account == "spawn-error" else account})
+    identifier = response.json()["login"]["id"]
+    wait_for_account(lambda: board.logins.rows[identifier]["stage"] == "failed")
+    row = client.get("/api/snapshot").json()["logins"][0]
+    assert row["ok"] is False and row["finished_at"] is not None
+    if account == "fail":
+        assert row["status"] == "expired" and row["message"] == "Sign-in refused"
+        assert row["error"] == "x" * (2048 - len(" failure tail")) + " failure tail"
+    elif account == "no-result":
+        assert row["error"] == "Sign-in exited without a result"
+    else:
+        assert row["error"] == "Cannot start sign-in"
+
+
+@pytest.mark.parametrize("account", ["child-result", "child-no-result"])
+def test_account_login_finishes_before_descendant_closes_pipes(account_actions, monkeypatch, account):
+    client, board, root, _ = account_actions
+    monkeypatch.setattr(logins_module, "LOGIN_TIMEOUT", 3)
+    finished, refreshed = [], []
+    publish, refresh = board.logins.publish, board.logins.refresh
+
+    def record_finish(message):
+        if message["login"]["stage"] in logins_module.FINISHED:
+            proc = board.logins.processes[message["login"]["id"]]
+            finished.append((proc.returncode, proc.stdout.at_eof()))
+        publish(message)
+
+    def record_refresh():
+        refreshed.append(True)
+        refresh()
+
+    monkeypatch.setattr(board.logins, "publish", record_finish)
+    monkeypatch.setattr(board.logins, "refresh", record_refresh)
+    identifier = client.post("/api/actions/login", json={"family": "codex", "account": account}).json()["login"]["id"]
+    wait_for_account(lambda: board.logins.rows[identifier]["stage"] in logins_module.FINISHED)
+    row = board.logins.rows[identifier]
+    success = account == "child-result"
+    assert row["stage"] == ("done" if success else "failed")
+    assert row["ok"] is success
+    assert row["error"] == (None if success else "Sign-in exited without a result")
+    assert finished == [(0, False)]
+    assert refreshed == ([True] if success else [])
+    child_pid = int((root / (account + "-pid")).read_text())
+    wait_for_account(lambda: not board.logins.jobs)
+
+    def child_stopped():
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    wait_for_account(child_stopped)
+
+
+def test_account_login_cancel_releases_admission_before_process_exits(account_actions):
+    client, board, _, _ = account_actions
+    body = {"family": "codex", "account": "ignore"}
+    first = client.post("/api/actions/login", json=body).json()["login"]["id"]
+    other = client.post("/api/actions/login", json={**body, "account": "c1"}).json()["login"]["id"]
+    wait_for_account(lambda: board.logins.rows[first]["stage"] == "waiting")
+    proc = board.logins.processes[first]
+    assert client.post("/api/actions/login/cancel", json={"id": first}).status_code == 200
+    response = client.post("/api/actions/login", json=body)
+    assert response.status_code == 200
+    replacement = response.json()["login"]["id"]
+    assert replacement != first
+    assert first in board.logins.jobs and proc.returncode is None
+    assert client.post("/api/actions/login", json={**body, "account": "c2"}).status_code == 429
+    wait_for_account(lambda: board.logins.rows[replacement]["stage"] == "waiting")
+    for identifier in (replacement, other):
+        assert client.post("/api/actions/login/cancel", json={"id": identifier}).status_code == 200
+    wait_for_account(lambda: not board.logins.jobs)
+
+
+def test_account_login_and_probe_do_not_signal_finished_groups(account_actions, monkeypatch):
+    client, board, root, _ = account_actions
+    signals = []
+    killpg = logins_module.os.killpg
+
+    def record_signal(pid, sig):
+        signals.append((pid, sig))
+        return killpg(pid, sig)
+
+    monkeypatch.setattr(logins_module.os, "killpg", record_signal)
+    (root / "c1-release").touch()
+    identifier = client.post("/api/actions/login", json={"family": "codex", "account": "c1"}).json()["login"]["id"]
+    wait_for_account(lambda: not board.logins.jobs)
+    assert board.logins.rows[identifier]["stage"] == "done"
+    assert client.post("/api/actions/account-refresh", json={"family": "claude", "account": "cl1"}).status_code == 200
+    wait_for_account(lambda: not board.refresh_jobs)
+    assert (root / "probe-ready").exists()
+    assert signals == []
+
+
+@pytest.mark.parametrize("operation", ["cancel", "timeout"])
+def test_account_login_termination_kills_after_grace(account_actions, monkeypatch, operation):
+    client, board, _, _ = account_actions
+    signals = []
+    killpg = logins_module.os.killpg
+
+    def record_signal(pid, sig):
+        signals.append((pid, sig))
+        return killpg(pid, sig)
+
+    monkeypatch.setattr(logins_module.os, "killpg", record_signal)
+    assert logins_module.KILL_SECONDS == 3
+    assert logins_module.LOGIN_TIMEOUT == 16 * 60
+    if operation == "timeout":
+        monkeypatch.setattr(logins_module, "LOGIN_TIMEOUT", 0.5)
+        monkeypatch.setattr(logins_module, "KILL_SECONDS", 0.05)
+    with client.websocket_connect("/ws") as socket:
+        socket.receive_json()
+        identifier = client.post("/api/actions/login", json={"family": "codex", "account": "ignore"}).json()["login"]["id"]
+        assert receive_until(socket, "login")["login"]["stage"] == "starting"
+        assert receive_until(socket, "login")["login"]["stage"] == "waiting"
+        proc = board.logins.processes[identifier]
+        started = time.monotonic()
+        if operation == "cancel":
+            assert client.post("/api/actions/login/cancel", json={"id": identifier}).json() == {"ok": True}
+        row = receive_until(socket, "login")["login"]
+        assert row["stage"] == ("cancelled" if operation == "cancel" else "failed")
+        if operation == "timeout":
+            assert row["error"] == "Время на вход вышло"
+        wait_for_account(lambda: not board.logins.jobs)
+        assert proc.returncode == -9
+        assert signals == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
+        if operation == "cancel":
+            assert time.monotonic() - started >= 3
+
+
+def test_account_login_admission_and_limits(account_actions):
+    client, board, _, _ = account_actions
+    for family, account in (("codex", "c1 "), ("claude", "c1"), ("codex", "unknown")):
+        assert client.post("/api/actions/login", json={"family": family, "account": account}).status_code == 404
+    for body in ({}, {"family": "other", "account": "c1"}, {"family": "codex", "account": 2}):
+        assert client.post("/api/actions/login", json=body).status_code == 400
+    first = client.post("/api/actions/login", json={"family": "codex", "account": "c1"}).json()["login"]
+    response = client.post("/api/actions/login", json={"family": "codex", "account": "c1"})
+    assert response.status_code == 409 and response.json()["error"] == "Вход уже идёт"
+    assert client.post("/api/actions/login/input", json={"id": first["id"], "text": "code"}).status_code == 409
+    second = client.post("/api/actions/login", json={"family": "claude", "account": "cl1"}).json()["login"]
+    assert client.post("/api/actions/login", json={"family": "codex", "account": "c2"}).status_code == 429
+    assert len(client.get("/api/snapshot").json()["logins"]) == 2
+    for row in (first, second):
+        assert client.post("/api/actions/login/cancel", json={"id": row["id"]}).status_code == 200
+    wait_for_account(lambda: not board.logins.jobs)
+
+
+@pytest.mark.parametrize("route", ["login", "login/input", "login/cancel", "account-refresh"])
+def test_account_action_validation_protection_and_read_only(account_actions, route):
+    client, board, _, calls = account_actions
+    url = f"/api/actions/{route}"
+    body = {"family": "codex", "account": "unknown", "id": "unknown", "text": "code"}
+    assert client.post(url, json=body).status_code == 404
+    assert client.post(url, json={}).status_code == 400
+    for headers in ({"Origin": None}, {"Origin": "http://evil.example"}, {"Host": "evil.example"},
+                    {"X-Teamster-Board": None}, {"Content-Type": "text/plain"}):
+        request = client.build_request("POST", url, json=body)
+        for name, value in headers.items():
+            del request.headers[name]
+            if value is not None:
+                request.headers[name] = value
+        assert client.send(request).status_code == 403
+    assert client.post(url, content="{", headers={"Content-Type": "application/json"}).status_code == 400
+    assert client.post(url, json=[]).status_code == 400
+    assert client.post(url, content="x" * (64 * 1024 + 1), headers={"Content-Type": "application/json"}).status_code == 413
+    board.settings.read_only = True
+    assert client.post(url, json=body).json() == {"ok": False, "error": "read_only"}
+    assert client.post(url, json=body).status_code == 403
+    assert len(calls) == 1  # Only the startup accounts snapshot.
+
+
+def test_account_refresh_codex_throttle_and_claude_probe(account_actions):
+    client, board, root, calls = account_actions
+    with client.websocket_connect("/ws") as socket:
+        socket.receive_json()
+        (root / "accounts-block").touch()
+        body = {"family": "codex", "account": "c1"}
+        assert client.post("/api/actions/account-refresh", json=body).json() == {"ok": True}
+        assert client.post("/api/actions/account-refresh", json=body).status_code == 409
+        assert client.post("/api/actions/account-refresh", json={**body, "account": "c2"}).status_code == 429
+        (root / "accounts-block").unlink()
+        assert receive_until(socket, "accounts")["accounts"]["error"] is None
+        wait_for_account(lambda: not board.refresh_jobs)
+        assert client.post("/api/actions/account-refresh", json=body).status_code == 429
+        board._refresh_started -= 30
+        assert client.post("/api/actions/account-refresh", json=body).status_code == 200
+        receive_until(socket, "accounts")
+        wait_for_account(lambda: not board.refresh_jobs)
+        before_probe = len(calls)
+        (root / "probe-block").touch()
+        body = {"family": "claude", "account": "cl1"}
+        assert client.post("/api/actions/account-refresh", json=body).json() == {"ok": True}
+        wait_for_account(lambda: (root / "probe-ready").exists())
+        assert client.post("/api/actions/account-refresh", json=body).status_code == 409
+        assert_no_accounts(socket)
+        assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"]]
+        (root / "probe-block").unlink()
+        assert receive_until(socket, "accounts")["accounts"]["error"] is None
+        wait_for_account(lambda: not board.refresh_jobs)
+        assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"], ["accounts", "--json"]]
+
+
+def test_account_refresh_probe_timeout_still_refreshes(account_actions, monkeypatch):
+    client, board, root, calls = account_actions
+    assert accounts_module.PROBE_TIMEOUT == 90
+    monkeypatch.setattr(accounts_module, "PROBE_TIMEOUT", 2)
+    before_probe = len(calls)
+    (root / "probe-block").touch()
+    with client.websocket_connect("/ws") as socket:
+        socket.receive_json()
+        assert client.post("/api/actions/account-refresh", json={"family": "claude", "account": "cl1"}).status_code == 200
+        wait_for_account(lambda: (root / "probe-ready").exists())
+        assert_no_accounts(socket)
+        assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"]]
+        assert receive_until(socket, "accounts")["accounts"]["error"] is None
+        wait_for_account(lambda: not board.refresh_jobs)
+        assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"], ["accounts", "--json"]]

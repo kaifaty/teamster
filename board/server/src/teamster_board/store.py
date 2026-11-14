@@ -420,6 +420,7 @@ class Store:
         self._log_signature = None
         self._log_offset = 0
         self._login_seen = {}
+        self._last_logins = {}
         self._new_logins = 0
         self.lock = threading.RLock()
         self._initial_poll = True
@@ -534,6 +535,10 @@ class Store:
             count, self._new_logins = self._new_logins, 0
             return count
 
+    def last_logins(self):
+        with self.lock:
+            return [dict(row) for _, row in sorted(self._last_logins.items())]
+
     def _poll_log(self):
         cutoff = time.time() - LOG_RETENTION_SECONDS
         self._log_events = [event for event in self._log_events if event["at"] >= cutoff]
@@ -578,6 +583,12 @@ class Store:
                     except (ValueError, UnicodeDecodeError, OverflowError, RecursionError):
                         continue
                     login = login_key(row)
+                    if login is not None and login[1] in ("codex", "claude") and login[2]:
+                        key = login[1:]
+                        previous_login = self._last_logins.get(key)
+                        if previous_login is None or login[0] >= previous_login["at"]:
+                            self._last_logins[key] = {"family": login[1], "account": login[2],
+                                                      "at": login[0], "status": text(row.get("status"))}
                     if login is not None and login[0] >= cutoff:
                         # Sign-ins stay out of the ship's log; they only make accounts refresh.
                         if not self._initial_poll and (not reset or login not in self._login_seen):
