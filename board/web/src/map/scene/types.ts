@@ -77,6 +77,8 @@ export interface SceneOptions {
   onResearch: () => void;
   /** A machine's reactor was clicked. */
   onMachine?: (id: string) => void;
+  /** A subscription's fuel tank was clicked: its key, as the tank's. */
+  onTank?: (key: string) => void;
   /** The shapes of the galaxy's world and of the system's, and the camera over the one shown, for the labels. */
   onCamera: (worlds: { galaxy: Size; system: Size }, camera: Camera) => void;
   /** The labels over the canvas: the wheel and a pinch over them move the camera too. */

@@ -1,6 +1,7 @@
-// What is under a point of the galaxy, without Pixi: the stars, the science station and the machines' reactors.
+// What is under a point of the galaxy, without Pixi: the stars, the science station, the machines' reactors and the
+// subscriptions' fuel tanks.
 
-import { RESEARCH_SIZE, starSize, type Point } from "../layout";
+import { BADGE_RISE, RESEARCH_SIZE, TANK_ASPECT, starSize, tankGear, type Point } from "../layout";
 import type { Hit } from "./layer";
 import type { GalaxyModel } from "./types";
 
@@ -31,13 +32,34 @@ export function machineAt(model: GalaxyModel, point: Point): string | null {
   return null;
 }
 
-/** What is under `point` in the galaxy: a star before the station, the station before a reactor, reactors if `machines`. */
-export function galaxyAt(model: GalaxyModel, point: Point, machines = true): Hit | null {
+/** The subscription whose tank, with its badge and day lamps, `point` is on, by the tank's key; or null. */
+export function tankAt(model: GalaxyModel, point: Point): string | null {
+  const column = model.fuel;
+  if (!column) return null;
+  const size = column.size;
+  for (const tank of model.tanks) {
+    const at = column.places.get(tank.key);
+    if (!at) continue;
+    const left = at.x - (size * TANK_ASPECT) / 2;
+    if (point.x >= left && point.x <= left + tankGear(size) && point.y >= at.y - size / 2 - size * BADGE_RISE && point.y <= at.y + size / 2) {
+      return tank.key;
+    }
+  }
+  return null;
+}
+
+/**
+ * What is under `point` in the galaxy: a star before the station, the station before a reactor, reactors if `machines`,
+ * then a tank if `tanks`.
+ */
+export function galaxyAt(model: GalaxyModel, point: Point, machines = true, tanks = true): Hit | null {
   const repo = starAt(model, point);
   if (repo) return { kind: "star", repo };
   if (researchAt(model, point)) return { kind: "research" };
   const id = machines ? machineAt(model, point) : null;
-  return id ? { kind: "machine", id } : null;
+  if (id) return { kind: "machine", id };
+  const key = tanks ? tankAt(model, point) : null;
+  return key ? { kind: "tank", key } : null;
 }
 
 /** The star a hover tells MapView about: only a star, whatever its repository is called. */

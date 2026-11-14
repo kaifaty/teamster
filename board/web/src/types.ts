@@ -392,10 +392,15 @@ export interface TaskChanges {
   uncommitted: number;
 }
 
+// A subscription's sign-ins, and the journal's latest one per subscription.
+export type { LastLogin, Login, LoginStage } from "./loginTypes";
+import type { LastLogin, Login } from "./loginTypes";
+
 export interface Accounts {
   fetched_at: number | null;
   error: string | null;
   data: unknown | null; // `accounts --json` output, passed through unchanged
+  last_logins?: LastLogin[]; // missing from an older server
 }
 
 export interface Gpu {
@@ -462,6 +467,7 @@ export interface Snapshot {
   tasks: TaskSummary[]; // all non-closed tasks, plus at most 50 closed records with the newest updated_at
   accounts: Accounts;
   machines?: Machines; // missing from an older server
+  logins?: Login[]; // sign-ins going and finished in the last 10 minutes; missing from an older server
 }
 
 // WebSocket /ws, server → client only.
@@ -474,4 +480,5 @@ export type ServerMessage =
   | { type: "accounts"; accounts: Accounts }
   | { type: "machines"; machines: Machines }
   | { type: "launch"; launch: Launch }
+  | { type: "login"; login: Login }
   | { type: "ping"; at: number };

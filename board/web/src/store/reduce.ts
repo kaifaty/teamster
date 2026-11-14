@@ -1,4 +1,4 @@
-import type { Accounts, Launch, Machines, ServerMessage, TaskSummary } from "../types";
+import type { Accounts, Launch, Login, Machines, ServerMessage, TaskSummary } from "../types";
 
 export interface BoardState {
   /** False until the first snapshot arrives. */
@@ -15,6 +15,8 @@ export interface BoardState {
   changedAt: Readonly<Record<string, number>>;
   /** The starts of lessons' implementations and studies the server reported, by task slug; a snapshot keeps them. */
   launches: Readonly<Record<string, Launch>>;
+  /** Sign-ins to subscriptions the server runs, by id: the snapshot's list, then each `login` message. */
+  logins: Readonly<Record<string, Login>>;
 }
 
 export const emptyState: BoardState = {
@@ -26,6 +28,7 @@ export const emptyState: BoardState = {
   lastPing: null,
   changedAt: {},
   launches: {},
+  logins: {},
 };
 
 function without<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
@@ -52,6 +55,8 @@ export function reduce(state: BoardState, message: ServerMessage, now: number): 
         lastPing: state.lastPing,
         changedAt: {},
         launches: state.launches,
+        // An older server sends no sign-ins: the ones already known stay.
+        logins: message.snapshot.logins ? Object.fromEntries(message.snapshot.logins.filter((login) => login?.id).map((login) => [login.id, login])) : state.logins,
       };
     }
     case "task": {
@@ -87,6 +92,8 @@ export function reduce(state: BoardState, message: ServerMessage, now: number): 
       return { ...state, lastPing: message.at };
     case "launch":
       return message.launch?.slug ? { ...state, launches: { ...state.launches, [message.launch.slug]: message.launch } } : state;
+    case "login":
+      return message.login?.id ? { ...state, logins: { ...state.logins, [message.login.id]: message.login } } : state;
     default:
       // A newer server may send message types this client does not know yet.
       return state;

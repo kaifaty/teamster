@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // The galaxy's labels over the canvas, from useOverlayLabels: the stars', the science station's, the machines', the
-// constellations' and the tanks'. Each kind is its own component with its own styles.
+// constellations' and the tanks', whose click opens the subscription's screen. Each kind is its own component with its own styles.
 import type { constellationLabels } from "./constellations";
 import ConstellationLabel from "./ConstellationLabel.vue";
 import type { machineLabels } from "./machines";
@@ -25,7 +25,7 @@ defineProps<{
   constellationLabels: ReturnType<typeof constellationLabels>;
   tankLabels: ReturnType<typeof tankLabels>;
 }>();
-const emit = defineEmits<{ enter: [repo: string]; openResearch: []; openMachine: [id: string, opener: HTMLElement] }>();
+const emit = defineEmits<{ enter: [repo: string]; openResearch: []; openMachine: [id: string, opener: HTMLElement]; openAccount: [key: string] }>();
 </script>
 
 <template>
@@ -39,5 +39,5 @@ const emit = defineEmits<{ enter: [repo: string]; openResearch: []; openMachine:
     @open="(id, opener) => emit('openMachine', id, opener)"
   />
   <ConstellationLabel v-for="label in constellationLabels" :key="label.name" :label="label" />
-  <TankLabel v-for="label in tankLabels" :key="label.tank.key" :label="label" />
+  <TankLabel v-for="label in tankLabels" :key="label.tank.key" :label="label" @open="emit('openAccount', $event)" />
 </template>

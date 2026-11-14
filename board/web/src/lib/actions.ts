@@ -1,11 +1,24 @@
 // The board's actions: the board server runs `teamster lesson`, `say`, `reflect`, `verdict`, `review`, `stop` and
 // `clean`, and starts a lesson's implementation (POST /api/actions/*), for the science station's buttons and the orders
-// on a ship's bridge. The board tab's task card only copies commands.
+// on a ship's bridge; and it signs in to a subscription and refreshes its data, for the subscription's screen. The board
+// tab's task card only copies commands.
 
-import type { ActionsOff, Launch } from "../types";
+import type { ActionsOff, Launch, Login } from "../types";
 import type { Verdict } from "./commands";
 
-export type ActionRoute = "lesson" | "say" | "reflect" | "implement" | "verdict" | "review" | "stop" | "clean";
+export type ActionRoute =
+  | "lesson"
+  | "say"
+  | "reflect"
+  | "implement"
+  | "verdict"
+  | "review"
+  | "stop"
+  | "clean"
+  | "login"
+  | "login/input"
+  | "login/cancel"
+  | "account-refresh";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -84,6 +97,22 @@ export interface ReflectBody {
   repos?: string[];
 }
 
+/** A subscription: its family and its name in `accounts --json`. */
+export interface AccountBody {
+  family: "codex" | "claude";
+  account: string;
+}
+
+/** What the person typed for a Claude sign-in: the code from the sign-in page, 1–512 characters. */
+export interface LoginInputBody {
+  id: string;
+  text: string;
+}
+
+export interface LoginCancelBody {
+  id: string;
+}
+
 export interface ActionBodies {
   lesson: LessonBody;
   say: SayBody;
@@ -93,13 +122,17 @@ export interface ActionBodies {
   review: ReviewBody;
   stop: StopBody;
   clean: CleanBody;
+  login: AccountBody;
+  "login/input": LoginInputBody;
+  "login/cancel": LoginCancelBody;
+  "account-refresh": AccountBody;
 }
 
 /**
  * `launch`: a newer server answers `implement` and `reflect` at once and runs the start in the background, whose steps
  * then come as `launch` messages; an older one answers once the task has started, without it.
  */
-export type ActionResult = { ok: true; output: string; slug?: string; launch?: Launch } | { ok: false; error: string };
+export type ActionResult = { ok: true; output: string; slug?: string; launch?: Launch; login?: Login } | { ok: false; error: string };
 
 export type ActionSender = <R extends ActionRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
 
@@ -116,6 +149,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 /** A start as the contract has it: a slug, a stage and its steps. */
 export const isLaunch = (value: unknown): value is Launch =>
   isRecord(value) && typeof value.slug === "string" && !!value.slug && typeof value.stage === "string" && Array.isArray(value.steps);
+
+/** A sign-in as the contract has it: an id, a family, an account and a stage. */
+export const isLogin = (value: unknown): value is Login =>
+  isRecord(value) &&
+  typeof value.id === "string" &&
+  !!value.id &&
+  (value.family === "codex" || value.family === "claude") &&
+  typeof value.account === "string" &&
+  typeof value.stage === "string" &&
+  Array.isArray(value.output);
 
 /** One request to the board server; a refusal, a bad answer or a lost connection all come back as `ok: false`. */
 export async function requestAction<R extends ActionRoute>(
@@ -144,6 +187,7 @@ export async function requestAction<R extends ActionRoute>(
     const result: ActionResult = { ok: true, output: typeof data.output === "string" ? data.output : "" };
     if (typeof data.slug === "string" && data.slug) result.slug = data.slug;
     if (isLaunch(data.launch)) result.launch = data.launch;
+    if (isLogin(data.login)) result.login = data.login;
     return result;
   }
   if (isRecord(data) && typeof data.error === "string" && data.error.trim()) {

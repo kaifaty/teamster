@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Accounts, Machines, Snapshot, TaskSummary } from "../types";
+import type { Accounts, Login, Machines, Snapshot, TaskSummary } from "../types";
 import { emptyState, reduce, type BoardState } from "./reduce";
 
 const task = (slug: string, extra: Partial<TaskSummary> = {}): TaskSummary => ({
@@ -94,4 +94,21 @@ describe("reduce", () => {
     expect(reduce(next, { type: "launch", launch: later }, 2).launches["lesson-u1"]).toBe(later);
     expect(reduce(next, { type: "snapshot", snapshot: snapshot([]) }, 3).launches).toBe(next.launches);
   });
+
+  it("keeps sign-ins by id: a login message adds or replaces one, a snapshot with logins replaces them all", () => {
+    const login = (id: string, stage: Login["stage"]): Login => ({
+      id, family: "codex", account: "main", stage, started_at: 10, finished_at: null, url: null, code: null, code_expires_at: null,
+      prompt: false, output: [], status: null, ok: null, message: null, error: null,
+    });
+    let state = reduce(loaded(), { type: "login", login: login("l1", "starting") }, 1);
+    state = reduce(state, { type: "login", login: login("l1", "waiting") }, 2);
+    state = reduce(state, { type: "login", login: login("l2", "done") }, 3);
+    expect(Object.fromEntries(Object.values(state.logins).map((entry) => [entry.id, entry.stage]))).toEqual({ l1: "waiting", l2: "done" });
+    // An older server's snapshot says nothing of sign-ins: the known ones stay.
+    expect(reduce(state, { type: "snapshot", snapshot: snapshot([]) }, 4).logins).toBe(state.logins);
+    const fresh = reduce(state, { type: "snapshot", snapshot: { ...snapshot([]), logins: [login("l3", "checking")] } }, 5);
+    expect(Object.keys(fresh.logins)).toEqual(["l3"]);
+    expect(reduce(state, { type: "login", login: {} as Login }, 6)).toBe(state);
+  });
 });
+

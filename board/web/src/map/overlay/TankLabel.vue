@@ -1,17 +1,23 @@
 <script setup lang="ts">
-// A tank's label: the account's name, what is left in it, and its free resets as spare cells.
+// A tank's label: the account's name, what is left in it, and its free resets as spare cells. A click opens the
+// subscription's screen.
 import fuelCell from "../art/fuel-cell.png";
 import type { tankLabels } from "./tanks";
 
 defineProps<{ label: ReturnType<typeof tankLabels>[number] }>();
+const emit = defineEmits<{ open: [key: string] }>();
 </script>
 
 <template>
-  <div
+  <button
+    type="button"
     class="tank"
     :class="[label.tank.executor, { row: label.row, low: label.low, admiral: label.tank.admiral }]"
     :style="label.style"
     :title="label.title"
+    :data-tank="label.tank.key"
+    :aria-label="`Подписка ${label.tank.name}: ${label.info}. Открыть экран подписки`"
+    @click="emit('open', label.tank.key)"
   >
     <span class="t-name"><span class="glyph" aria-hidden="true">{{ label.tank.executor === "codex" ? "◆" : "✳" }}</span>{{ label.tank.name }}</span>
     <span class="t-info num">
@@ -20,7 +26,7 @@ defineProps<{ label: ReturnType<typeof tankLabels>[number] }>();
       <span v-if="label.cells" class="visually-hidden">, бесплатных сбросов {{ label.cells }}</span>
       <span v-if="label.tank.admiral" class="visually-hidden">, резерв оркестратора</span>
     </span>
-  </div>
+  </button>
 </template>
 
 <style scoped src="./overlay.css"></style>
@@ -39,12 +45,25 @@ defineProps<{ label: ReturnType<typeof tankLabels>[number] }>();
   border: 1px solid rgba(214, 170, 96, 0.28);
   border-radius: 3px;
   background: rgba(8, 11, 18, 0.8);
+  color: inherit;
+  font: inherit;
   font-size: 11.5px;
   line-height: 14px;
+  text-align: left;
   white-space: nowrap;
   transform: translateY(-50%);
   pointer-events: auto;
-  cursor: help;
+  cursor: pointer;
+}
+
+.tank:hover {
+  border-color: rgba(243, 198, 78, 0.7);
+  background: rgba(16, 20, 30, 0.92);
+}
+
+.tank:focus-visible {
+  outline: 2px solid #f3c64e;
+  outline-offset: 2px;
 }
 
 .tank.row {
