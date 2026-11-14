@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -2126,6 +2127,7 @@ else:
             assert options["stdout"] == options["stderr"] == asyncio.subprocess.PIPE
             assert options["stdin"] == (asyncio.subprocess.DEVNULL if expected[0] == "claude-probe"
                                          else asyncio.subprocess.PIPE)
+    assert not expected_commands
 
 
 def test_account_login_events_snapshot_and_last_logins(account_actions):
@@ -2201,11 +2203,12 @@ def test_account_login_claude_input(account_actions):
 
 @pytest.mark.parametrize("account", ["fail", "no-result", "spawn-error"])
 def test_account_login_failure(account_actions, monkeypatch, account):
-    client, board, _, _ = account_actions
+    client, board, _, calls = account_actions
     if account == "spawn-error":
         execute = asyncio.create_subprocess_exec
         async def fail(*args, **options):
             if args[3] == "login":
+                calls.append((list(args), options))
                 raise OSError("Cannot start sign-in")
             return await execute(*args, **options)
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fail)
@@ -2307,6 +2310,14 @@ def test_account_login_and_probe_do_not_signal_finished_groups(account_actions, 
 @pytest.mark.parametrize("operation", ["cancel", "timeout"])
 def test_account_login_termination_kills_after_grace(account_actions, monkeypatch, operation):
     client, board, _, _ = account_actions
+    signals = []
+    killpg = logins_module.os.killpg
+
+    def record_signal(pid, sig):
+        signals.append((pid, sig))
+        return killpg(pid, sig)
+
+    monkeypatch.setattr(logins_module.os, "killpg", record_signal)
     assert logins_module.KILL_SECONDS == 3
     assert logins_module.LOGIN_TIMEOUT == 16 * 60
     if operation == "timeout":
@@ -2327,6 +2338,7 @@ def test_account_login_termination_kills_after_grace(account_actions, monkeypatc
             assert row["error"] == "Время на вход вышло"
         wait_for_account(lambda: not board.logins.jobs)
         assert proc.returncode == -9
+        assert signals == [(proc.pid, signal.SIGTERM), (proc.pid, signal.SIGKILL)]
         if operation == "cancel":
             assert time.monotonic() - started >= 3
 
