@@ -766,7 +766,9 @@ of the installed executable selected by `--teamster`:
   with `{ok: true, login: Login}`. The account must exactly match a `name` in the current
   `accounts.data[family]`, otherwise 404; invalid field types or family get 400. A second sign-in
   for the same family/account gets 409 with `error: "Вход уже идёт"`; a third concurrent sign-in
-  across accounts gets 429. The background process has exactly the argv
+  across accounts gets 429. Only unfinished login objects count toward these limits; cancellation
+  releases the slot immediately, even while the old process group is still stopping.
+  The background process has exactly the argv
   `python3 -I <settings.teamster> login <account> --events` for Codex, or
   `python3 -I <settings.teamster> claude-login <account> --events` for Claude, with no shell,
   piped stdin/stdout/stderr, a separate process group and the user's home as cwd.
@@ -792,6 +794,12 @@ Login stdout is JSON lines: `output` with `text` appends a bounded output line; 
 finishes as `done` when `ok` is true, otherwise `failed`. A launch error or exit without a result
 also sets `failed`. Non-object, malformed and unknown stdout events are ignored. Every changed
 login object, including its initial and final states and input updates, is published as `login`.
+Once `result` has been read and the teamster process has exited, the login finishes immediately,
+without waiting for stdout or stderr EOF. After an exit without a result, remaining events and EOF
+are awaited for at most 2 seconds. Descendants keeping the pipes open are stopped in the background
+with SIGTERM, then SIGKILL after 3 seconds if needed; this cleanup delays neither the finished login
+object nor the accounts refresh. Login and probe cleanup send no signals when the process has
+already been reaped and both pipes have reached EOF.
 A successful sign-in requests an accounts refresh within 5 seconds of completion, without waiting
 for journal polling. `logins` includes active and recently finished objects in the snapshot;
 these objects are held only in memory and disappear on restart.

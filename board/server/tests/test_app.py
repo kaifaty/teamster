@@ -2013,7 +2013,7 @@ def account_actions(tmp_path, monkeypatch):
         {"event": "account_login", "family": "claude", "account": "cl1", "at": old, "status": "expired"},
         {"event": "account_login", "family": "claude", "account": "cl1", "at": old + 1, "status": "available"},
     ]))
-    script.write_text('''import json, os, signal, sys, time
+    script.write_text('''import json, os, signal, subprocess, sys, time
 from pathlib import Path
 assert sys.flags.isolated
 root = Path(__file__).parent
@@ -2028,7 +2028,7 @@ def emit(event, **fields):
 if args == ['accounts', '--json']:
     assert sys.stdin.read() == ''
     hold('accounts-block')
-    print(json.dumps({'codex': [{'name': name} for name in ['c1', 'c2', 'c3', 'fail', 'no-result', 'ignore']],
+    print(json.dumps({'codex': [{'name': name} for name in ['c1', 'c2', 'c3', 'fail', 'no-result', 'ignore', 'child-result', 'child-no-result']],
                       'claude': [{'name': 'cl1'}, {'name': 'cl2'}]}))
 elif args == ['claude-probe', 'cl1']:
     assert Path.cwd() == root
@@ -2041,6 +2041,13 @@ else:
     command, account, flag = args
     assert args == ['claude-login' if account.startswith('cl') else 'login', account, '--events']
     assert os.getsid(0) == os.getpid()
+    if account in ('child-result', 'child-no-result'):
+        if account == 'child-result':
+            emit('result', ok=True, status='available', message='Signed in')
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        child = subprocess.Popen(['sleep', '30'])
+        (root / (account + '-pid')).write_text(str(child.pid))
+        sys.exit(0)
     if account == 'ignore':
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         emit('open', url='https://example.test/ignore')
@@ -2196,6 +2203,87 @@ def test_account_login_failure(account_actions, monkeypatch, account):
         assert row["error"] == "Sign-in exited without a result"
     else:
         assert row["error"] == "Cannot start sign-in"
+
+
+@pytest.mark.parametrize("account", ["child-result", "child-no-result"])
+def test_account_login_finishes_before_descendant_closes_pipes(account_actions, monkeypatch, account):
+    client, board, root, _ = account_actions
+    monkeypatch.setattr(logins_module, "LOGIN_TIMEOUT", 3)
+    finished, refreshed = [], []
+    publish, refresh = board.logins.publish, board.logins.refresh
+
+    def record_finish(message):
+        if message["login"]["stage"] in logins_module.FINISHED:
+            proc = board.logins.processes[message["login"]["id"]]
+            finished.append((proc.returncode, proc.stdout.at_eof()))
+        publish(message)
+
+    def record_refresh():
+        refreshed.append(True)
+        refresh()
+
+    monkeypatch.setattr(board.logins, "publish", record_finish)
+    monkeypatch.setattr(board.logins, "refresh", record_refresh)
+    identifier = client.post("/api/actions/login", json={"family": "codex", "account": account}).json()["login"]["id"]
+    wait_for_account(lambda: board.logins.rows[identifier]["stage"] in logins_module.FINISHED)
+    row = board.logins.rows[identifier]
+    success = account == "child-result"
+    assert row["stage"] == ("done" if success else "failed")
+    assert row["ok"] is success
+    assert row["error"] == (None if success else "Sign-in exited without a result")
+    assert finished == [(0, False)]
+    assert refreshed == ([True] if success else [])
+    child_pid = int((root / (account + "-pid")).read_text())
+    wait_for_account(lambda: not board.logins.jobs)
+
+    def child_stopped():
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    wait_for_account(child_stopped)
+
+
+def test_account_login_cancel_releases_admission_before_process_exits(account_actions):
+    client, board, _, _ = account_actions
+    body = {"family": "codex", "account": "ignore"}
+    first = client.post("/api/actions/login", json=body).json()["login"]["id"]
+    other = client.post("/api/actions/login", json={**body, "account": "c1"}).json()["login"]["id"]
+    wait_for_account(lambda: board.logins.rows[first]["stage"] == "waiting")
+    proc = board.logins.processes[first]
+    assert client.post("/api/actions/login/cancel", json={"id": first}).status_code == 200
+    response = client.post("/api/actions/login", json=body)
+    assert response.status_code == 200
+    replacement = response.json()["login"]["id"]
+    assert replacement != first
+    assert first in board.logins.jobs and proc.returncode is None
+    assert client.post("/api/actions/login", json={**body, "account": "c2"}).status_code == 429
+    wait_for_account(lambda: board.logins.rows[replacement]["stage"] == "waiting")
+    for identifier in (replacement, other):
+        assert client.post("/api/actions/login/cancel", json={"id": identifier}).status_code == 200
+    wait_for_account(lambda: not board.logins.jobs)
+
+
+def test_account_login_and_probe_do_not_signal_finished_groups(account_actions, monkeypatch):
+    client, board, root, _ = account_actions
+    signals = []
+    killpg = logins_module.os.killpg
+
+    def record_signal(pid, sig):
+        signals.append((pid, sig))
+        return killpg(pid, sig)
+
+    monkeypatch.setattr(logins_module.os, "killpg", record_signal)
+    (root / "c1-release").touch()
+    identifier = client.post("/api/actions/login", json={"family": "codex", "account": "c1"}).json()["login"]["id"]
+    wait_for_account(lambda: not board.logins.jobs)
+    assert board.logins.rows[identifier]["stage"] == "done"
+    assert client.post("/api/actions/account-refresh", json={"family": "claude", "account": "cl1"}).status_code == 200
+    wait_for_account(lambda: not board.refresh_jobs)
+    assert (root / "probe-ready").exists()
+    assert signals == []
 
 
 @pytest.mark.parametrize("operation", ["cancel", "timeout"])
