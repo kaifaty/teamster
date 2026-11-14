@@ -4,6 +4,7 @@ The board is a local web view of teamster tasks and Claude Code sessions from th
 desktop app. The server reads existing files and pushes changes over a WebSocket. Task orders and
 science station actions run the installed `teamster` command: replies, verdicts, reviews, stopping
 and cleaning tasks, lesson decisions, implementations and new reflection orders.
+Subscription sign-ins and refreshes use the accounts script's event login and probe commands.
 
 ## Sources
 
@@ -34,6 +35,9 @@ and cleaning tasks, lesson decisions, implementations and new reflection orders.
   periodic call that starts after they were read comes first. The pause never delays periodic calls. Rows
   present when the server starts, or re-read after the journal is replaced, force none. These rows are
   not `LogEvent`s.
+  `Accounts.last_logins` retains the latest `account_login` row per `(family, account)`, including
+  rows already present at startup and rows older than the event history window. Each entry has
+  `family`, `account`, `at` and `status`; no credentials are read or returned.
 - Reports: `python3 -I <script> report --json --since <date> [--by <dimensions>]`, using the same script
   as accounts. Both commands have a 60-second timeout and a 1 MiB stdout limit. Report stderr goes
   only to server logs; accounts errors retain their stderr reason. A report response is cached for
@@ -230,6 +234,25 @@ interface Accounts {
   fetched_at: number | null;
   error: string | null;
   data: unknown | null;       // `accounts --json` output, passed through unchanged
+  last_logins: { family: "codex" | "claude"; account: string; at: number; status: string | null }[];
+}
+
+interface Login {
+  id: string;
+  family: "codex" | "claude";
+  account: string;
+  stage: "starting" | "waiting" | "saving" | "checking" | "done" | "failed" | "cancelled";
+  started_at: number;
+  finished_at: number | null;
+  url: string | null;
+  code: string | null;
+  code_expires_at: number | null;
+  prompt: boolean;
+  output: string[];           // newest 40 lines in order, each at most 300 characters
+  status: string | null;
+  ok: boolean | null;
+  message: string | null;
+  error: string | null;       // failure: last 2 KiB of stderr, or an explanatory reason
 }
 
 interface Gpu {
@@ -303,6 +326,7 @@ interface Snapshot {
   tasks: TaskSummary[];       // all non-closed tasks, plus at most 50 closed records with the newest updated_at
   accounts: Accounts;
   machines: Machines;
+  logins: Login[];            // active sign-ins and those finished within the last 10 minutes
 }
 
 type LessonStatus = "proposed" | "accepted" | "applied" | "declined" | "other";
@@ -734,6 +758,52 @@ fallback.
 
 #### Task and science station actions
 
+Account actions use the same body and header validation as the actions below and return
+403 `read_only` under `--read-only`. They use `settings.teamster` (the accounts script), independently
+of the installed executable selected by `--teamster`:
+
+- `POST /api/actions/login` with `{family: "codex" | "claude", account: string}` returns immediately
+  with `{ok: true, login: Login}`. The account must exactly match a `name` in the current
+  `accounts.data[family]`, otherwise 404; invalid field types or family get 400. A second sign-in
+  for the same family/account gets 409 with `error: "Вход уже идёт"`; a third concurrent sign-in
+  across accounts gets 429. Only unfinished login objects count toward these limits; cancellation
+  releases the slot immediately, even while the old process group is still stopping.
+  The background process has exactly the argv
+  `python3 -I <settings.teamster> login <account> --events` for Codex, or
+  `python3 -I <settings.teamster> claude-login <account> --events` for Claude, with no shell,
+  piped stdin/stdout/stderr, a separate process group and the user's home as cwd.
+- `POST /api/actions/login/input` with `{id: string, text: string}` sends trimmed text plus `\n`
+  to Claude's stdin and returns `{ok: true}`. Text must be 1–512 characters after trimming and
+  contain no control characters (400 otherwise). Unknown id gets 404; a finished sign-in or a
+  Codex sign-in gets 409. `prompt` becomes false after input.
+- `POST /api/actions/login/cancel` with `{id: string}` returns `{ok: true}`, sets `cancelled` and
+  sends SIGTERM to the process group, followed by SIGKILL after 3 seconds if it remains alive.
+  Unknown id gets 404; an already finished sign-in gets 409. A sign-in exceeding 16 minutes is
+  stopped the same way, with `stage: "failed"` and `error: "Время на вход вышло"`.
+- `POST /api/actions/account-refresh` with `{family, account}` validates the target exactly as login
+  does and returns immediately with `{ok: true}`. A refresh already running for this family/account
+  gets 409. Codex requests an extra accounts snapshot; Codex refresh requests share a 30-second
+  admission interval (429 during that interval). Claude runs exactly
+  `python3 -I <settings.teamster> claude-probe <account>` with a 90-second timeout, then refreshes
+  accounts, including after a failed or timed-out probe. The result uses the ordinary `accounts`
+  WebSocket message, with `last_logins` included.
+
+Login stdout is JSON lines: `output` with `text` appends a bounded output line; `open` with `url` or
+`code` with `code` and Unix `expires_at` sets `waiting`; `prompt` sets `prompt: true`; `stage` with
+`saving` or `checking` sets that stage. The final `result` has `ok`, `status` and `message` and
+finishes as `done` when `ok` is true, otherwise `failed`. A launch error or exit without a result
+also sets `failed`. Non-object, malformed and unknown stdout events are ignored. Every changed
+login object, including its initial and final states and input updates, is published as `login`.
+Once `result` has been read and the teamster process has exited, the login finishes immediately,
+without waiting for stdout or stderr EOF. After an exit without a result, remaining events and EOF
+are awaited for at most 2 seconds. Descendants keeping the pipes open are stopped in the background
+with SIGTERM, then SIGKILL after 3 seconds if needed; this cleanup delays neither the finished login
+object nor the accounts refresh. Login and probe cleanup send no signals when the process has
+already been reaped and both pipes have reached EOF.
+A successful sign-in requests an accounts refresh within 5 seconds of completion, without waiting
+for journal polling. `logins` includes active and recently finished objects in the snapshot;
+these objects are held only in memory and disappear on restart.
+
 `actions.enabled` is true when the server starts without `--read-only` and an installed `teamster`
 executable is available. `--teamster PATH` selects it; the default is `shutil.which("teamster")` at
 startup, independently of the accounts/report script. Otherwise `actions.reason` is `read_only`
@@ -744,7 +814,7 @@ closed, 10-second timeout, the user's home as working directory) once, for the f
 order that needs it, and keeps the answer until it restarts; the first `X.Y.Z` in its stdout is the
 version. A failed, timed-out or unparsable probe means `queue: false`; disabled actions never probe.
 
-Only these POST endpoints execute commands:
+Task and science station POST endpoints execute these commands:
 
 - `/api/actions/lesson`: `{entry: string, status: "accepted" | "declined" | "applied" | "proposed", note?: string}`
   runs `teamster lesson <entry> <status>`, adding `--note=<note>` only for a nonempty trimmed note.
@@ -895,7 +965,9 @@ There is no merge endpoint for ordinary tasks.
 
 ## REST
 
-- `GET /api/snapshot` → `Snapshot`.
+- `GET /api/snapshot` → `Snapshot`, including `logins` and `accounts.last_logins`.
+- `POST /api/actions/login`, `/api/actions/login/input`, `/api/actions/login/cancel` and
+  `/api/actions/account-refresh` → the immediate responses described under account actions above.
 - `GET /api/events?since=<unix>&until=<unix>` → `Events`. Both bounds are inclusive finite Unix
   seconds. `until` defaults to now; `since` defaults to 24 hours before `until`. Reversed windows,
   invalid numbers and windows longer than 31 days get 422. Only events retained for the last 31 days
@@ -1004,10 +1076,11 @@ Server → client only; the server ignores client messages. Every message is one
   `closed` if it was archived), or a session's metadata disappeared or became archived.
 - `{"type": "activity", "slug": string, "activity": Activity}` — new latest activity of a live task.
 - `{"type": "launch", "launch": Launch}` — every launch stage transition, first and last included.
+- `{"type": "login", "login": Login}` — every change to a sign-in, first and final states included.
 - `{"type": "event", "event": LogEvent}` — a newly read completed event, from the same polling cycle
   as tasks. Cursor resets rebuild history without resending previously published event content.
   History is fetched through `/api/events`; it is not added to `Snapshot`.
-- `{"type": "accounts", "accounts": Accounts}` — new account data.
+- `{"type": "accounts", "accounts": Accounts}` — new account data, including `last_logins`.
 - `{"type": "machines", "machines": Machines}` — at the end of a machine polling cycle when data
   changed, comparing without `checked_at`. Metric and history changes count as changes.
 - `{"type": "ping", "at": number}` — every 20 s.

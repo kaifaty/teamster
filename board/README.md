@@ -21,9 +21,47 @@ metrics and listens on localhost; it has no task control endpoints except scienc
 lesson decisions, lesson implementation (`implement`), `say` to reflection or implementation tasks,
 and new `reflect` orders. These run the installed `teamster`
 command, found on `PATH` at startup; `--teamster PATH` selects its executable explicitly, and
-`--read-only` disables all station actions. They require a matching same-origin `Origin`,
+`--read-only` disables all actions, including account login and refresh. They require a matching same-origin `Origin`,
 `Content-Type: application/json` and `X-Teamster-Board: 1`. Ordinary task stop, clean, verdict and
 merge operations remain unavailable. The server never sends CORS headers.
+
+The server also supports subscription account actions for the account details page:
+
+- `POST /api/actions/login` with `{family: "codex" | "claude", account}` returns `{ok: true, login}`
+  immediately. The account must exactly match a current `accounts.data[family][].name` (404 otherwise).
+  A duplicate sign-in gets 409 (`Вход уже идёт`); at most two sign-ins run concurrently (429 otherwise).
+  It runs `python3 -I <settings.teamster> login <account> --events` or
+  `python3 -I <settings.teamster> claude-login <account> --events`, using the accounts script selected by
+  `BOARD_TEAMSTER_COMMAND`, independently of `--teamster`. There is no shell; all three streams are
+  pipes, cwd is the user's home and each login has its own process group.
+- `POST /api/actions/login/input` with `{id, text}` sends trimmed Claude input plus a newline and
+  clears `prompt`; text must have 1–512 characters without control characters (400 otherwise).
+  Unknown ids get 404; finished and Codex sign-ins get 409. It returns `{ok: true}`.
+- `POST /api/actions/login/cancel` with `{id}` returns `{ok: true}` and marks the sign-in `cancelled`.
+  The whole process group receives SIGTERM and, if still alive after 3 seconds, SIGKILL. Unknown ids
+  get 404; finished sign-ins get 409. A 16-minute timeout uses the same termination and marks `failed`
+  with `Время на вход вышло`.
+- `POST /api/actions/account-refresh` with `{family, account}` validates the same target and returns
+  `{ok: true}` immediately. A refresh already running for that account gets 409. Codex requests an
+  extra accounts snapshot, with a shared 30-second cooldown (429); Claude first runs
+  `python3 -I <settings.teamster> claude-probe <account>` with a 90-second timeout. After the probe,
+  including failure or timeout, the snapshot refreshes. Results arrive as ordinary `accounts` messages.
+
+These routes use the same JSON body and origin/header protection described above (403), including
+`--read-only` (403 `read_only`). A login object contains
+`{id, family, account, stage, started_at, finished_at, url, code, code_expires_at, prompt, output,
+status, ok, message, error}`. All times are Unix seconds; optional values start as null, `prompt`
+as false and `output` as an empty list. Stages are `starting`, `waiting` after an `open` or `code`
+event, `saving`/`checking` from stage events, then `done` for a successful result, `failed` for an
+unsuccessful result, missing result or launch error, or `cancelled`. The JSON-line stdout events are
+`output` (`text`), `open` (`url`), `code` (`code`, `expires_at`), `prompt`, `stage` (`stage`) and the
+final `result` (`ok`, `status`, `message`); other lines are ignored. `output` retains the newest
+40 lines, each at most 300 characters; failure `error` holds the last 2 KiB of stderr or a reason.
+Each change arrives as `{"type":"login","login":...}`. `GET /api/snapshot` includes `logins`,
+containing active sign-ins and those finished within 10 minutes, held only until server restart.
+Success requests an accounts refresh within 5 seconds. The snapshot's `accounts` and all
+`{"type":"accounts","accounts":...}` messages include `last_logins`: the latest journal
+`account_login` per account, `[{family, account, at, status}]`, including rows present at startup.
 
 The frontend builds into `board/web/dist`, which the server serves with an SPA fallback:
 
@@ -194,7 +232,7 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
   project and per signal, and the signalled records, each of which can be ordered into a study.
 
 The station's buttons act at once: the board server runs `teamster lesson`, `say` or `reflect` (`POST /api/actions/*`)
-and the screen shows the result. These and a ship's orders below are the only actions the board runs; every other
+and the screen shows the result. These, a ship's orders below and the account actions above are the actions the board runs; every other
 screen only reads. When the server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
 button copies the equivalent command for the terminal instead and says why; «Внедрить» has no such command and stays
 off. In `npm run dev:fixture` the actions play on the fixtures, so the whole station can be clicked through without a
