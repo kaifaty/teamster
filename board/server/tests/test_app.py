@@ -125,7 +125,7 @@ def test_rest_contract_files_and_unknown_paths(board):
     (directory / "state.json").write_text(json.dumps(state))
     client.portal.call(application.state.board.poll)
     snapshot = client.get("/api/snapshot").json()
-    assert set(snapshot) == {"generated_at", "tasks", "accounts", "machines"}
+    assert set(snapshot) == {"generated_at", "tasks", "accounts", "machines", "logins"}
     assert snapshot["machines"] == {"config_error": None, "items": []}
     assert isinstance(snapshot["generated_at"], float)
     assert len(snapshot["tasks"]) == 1
@@ -134,7 +134,7 @@ def test_rest_contract_files_and_unknown_paths(board):
     assert snapshot["tasks"][0]["link"] is None
     assert snapshot["tasks"][0]["scheduled"] is None
     assert snapshot["tasks"][0]["summary"] == "Change completed."
-    assert set(snapshot["accounts"]) == {"fetched_at", "error", "data"}
+    assert set(snapshot["accounts"]) == {"fetched_at", "error", "data", "last_logins"}
     for name, filename in (("brief", "brief.md"), ("last", "last.md"),
                            ("review", "review.md"), ("check", "check.log")):
         content = "discard this prefix" + "x" * (256 * 1024)
