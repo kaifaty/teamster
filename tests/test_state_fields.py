@@ -4,6 +4,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -275,6 +276,12 @@ st[dynamic_key] = 1
     def test_this_version_reads_the_state_of_earlier_releases(self):
         directories = sorted(FIXTURES.glob("state-*"))
         self.assertTrue(directories)
+        # scripts/bump_version.py writes the fixtures of the release it replaces; a PR adds none.
+        package = (SCRIPT.parent / "__init__.py").read_text(encoding="utf-8")
+        current = tuple(map(int, re.search(r'(?m)^__version__ = "([^"]+)"$', package)[1].split(".")))
+        later = [path.name for path in directories
+                 if tuple(map(int, path.name[len("state-"):].split("."))) >= current]
+        self.assertEqual(later, [], "state fixtures come from scripts/bump_version.py, not from a PR")
         for directory in directories:
             data = self.home / directory.name
             env = {key: value for key, value in os.environ.items() if not key.startswith(("TEAMSTER_", "CODEX_"))}

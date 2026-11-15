@@ -1,7 +1,7 @@
 """Write state.json fixtures of this version with the fake Codex, in a temporary home.
 
-Run with python3 -I tests/make_state_fixtures.py tests/fixtures/state-<version> on the
-release before the one that changes state fields. Paths are rewritten to ROOT_PLACEHOLDER
+scripts/bump_version.py runs python3 -I tests/make_state_fixtures.py tests/fixtures/state-<version>
+in a worktree of the replaced release when the new release changes STATE_FIELDS. Paths are rewritten to ROOT_PLACEHOLDER
 and the live pid of the sleeping supervisor to a pid that cannot exist.
 """
 import json
