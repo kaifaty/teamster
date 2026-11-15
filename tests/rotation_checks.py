@@ -20,7 +20,7 @@ class CheckGuardTests(RotationTestCase):
             directory.mkdir(parents=True)
         (task / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
             {"cmd": command, "seconds": 60, "outcome": "passed"},
-            {"cmd": command, "seconds": 900, "outcome": "failed"},
+            {"cmd": command, "seconds": 1500, "outcome": "failed"},
             {"cmd": command, "outcome": "passed"},
             *({"cmd": command, "seconds": 9000, "outcome": outcome}
               for outcome in ("unavailable", "stopped")),
@@ -29,7 +29,7 @@ class CheckGuardTests(RotationTestCase):
             {"cmd": command, "seconds": 9000, "outcome": "passed"}]}))
         self.assertIsNone(worker.checking.long_check_median(self.repo, command, 30))
         (archive / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
-            {"cmd": command, "seconds": 1200, "outcome": "timeout"}]}))
+            {"cmd": command, "seconds": 900, "outcome": "timeout"}]}))
         for limit, expected in ((None, None), (60, None), (45, None), (30, 15)):
             with self.subTest(limit=limit):
                 self.assertEqual(worker.checking.long_check_median(self.repo, command, limit), expected)
@@ -49,9 +49,13 @@ class CheckGuardTests(RotationTestCase):
             self.assertEqual(key(compound), key("A=1 make && sh -c '~/.checks/repo/ios-check.sh --fast' ; true"))
             for first, second in ((script, "~/.checks/repo/android-check.sh"), (script, f"{script} --fast"),
                                   (f"make && {script}", f"{script} && make"),
-                                  (f"make && {script}", f"make | {script}")):
+                                  (f"make && {script}", f"make | {script}"),
+                                  (f"{script} --lane b", f"{script} --lane d")):
                 with self.subTest(first=first, second=second):
                     self.assertNotEqual(key(first), key(second))
+            self.assertEqual(key('sh -c "CHECK_LANE=c $HOME/.checks/repo/ios-check.sh" > /tmp/check.log 2>&1'),
+                             key(f"CHECK_LANE=c {script} > /tmp/check.log 2>&1"))
+            self.assertNotEqual(key(f"sh -c {script} > /tmp/check.log"), key(script))
             self.assertEqual(key("echo 'unterminated"), "echo 'unterminated")
             task = worker.config.TASKS / "spellings"
             task.mkdir(parents=True)

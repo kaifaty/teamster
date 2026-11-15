@@ -21,8 +21,9 @@ CHECK_INTERPRETERS = {"sh", "bash", "zsh"}
 def check_key(command):
     """Comparison key of a check command, ignoring how the same check is written.
 
-    Leading NAME=value assignments, a single-string ``sh|bash|zsh -c`` wrapper
-    and an interpreter before a script path are dropped, and ``~``, ``$HOME``
+    Leading NAME=value assignments, an ``sh|bash|zsh -c`` wrapper (its string
+    is normalized and any following words such as redirections are kept after
+    it) and an interpreter before a script path are dropped, and ``~``, ``$HOME``
     and ``${HOME}`` at the start of a word become the home directory. Parts of
     a compound command keep their order. Unparsable strings compare verbatim.
     """
@@ -48,11 +49,11 @@ def check_key(command):
         while part and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", part[0]):
             part = part[1:]
         if part and os.path.basename(part[0]) in CHECK_INTERPRETERS:
-            if len(part) == 3 and part[1] == "-c":
+            if len(part) >= 3 and part[1] == "-c":
                 inner = check_key(part[2])
                 key.extend(inner if isinstance(inner, tuple) else (inner,))
-                continue
-            if len(part) > 1 and not part[1].startswith("-"):
+                part = part[3:]
+            elif len(part) > 1 and not part[1].startswith("-"):
                 part = part[1:]
         home = os.path.expanduser("~")
         for word in part:
