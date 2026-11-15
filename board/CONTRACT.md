@@ -1055,6 +1055,7 @@ under `~/.codex/checks/<repository directory>/`: for example, `chromvoid-infra` 
 `kaifaty/infra`. When `land.py` exists, landing runs
 `python3 <checks directory>/land.py <title> <body>` in the task worktree from `state.json`.
 The title is `result.pr_title`, falling back to `Merge <slug>`, and the body is `result.pr_body`.
+For `land.py`, a title without the required `Merge ` prefix gets that prefix added.
 The script pushes the branch, opens or reuses its PR, waits for CI and merges; exit 0 confirms success.
 If it reports that main advanced or that there is a conflict, the board sends one repair `say` to
 merge `origin/main`, run checks and push. A CI failure sends one repair `say` with the output tail,
@@ -1063,7 +1064,7 @@ failure or any other error produces `failed` with the output tail.
 
 Without `land.py`, the board reuses an open PR for the task branch or creates one through
 `tea api --login forgejo /repos/kaifaty/<origin repository>/pulls`, using the task branch and base and
-the result's title and body. It then runs `ci_wait.py`, or `pr_ci.py` when that is the available waiter,
+the result's title and body. It then runs `pr_ci.py`, or `ci_wait.py` when that is the available waiter,
 in the task worktree. Exit 0 permits merging, exit 1 gets the same single CI repair and retry, and
 exit 75 produces `failed` with «CI не читается: …». With no waiter, a branch without
 `.forgejo/workflows/` may merge directly; otherwise landing fails with
@@ -1077,8 +1078,8 @@ after a restart it waits for a still-running process instead of starting another
 result of a finished process.
 
 A PR value that does not begin with `http://` or `https://` means no PR. With no PR, a `done`
-implementation whose lesson lists `outside` files can be applied directly; a Forgejo implementation
-can have its PR opened during landing as described above.
+implementation whose lesson lists `outside` files can be applied directly. For own Forgejo repositories,
+the task branch must also have no commits ahead of its base; otherwise landing opens its PR as above.
 
 After a merge or an outside-only change, the board runs `teamster lesson <entry> applied --note <PR URL
 or outside files>`, `teamster verdict <slug> accepted --note "landed by the board"`, and

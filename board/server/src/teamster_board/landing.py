@@ -267,9 +267,17 @@ class Landing:
                 self._state_failed(receipt, state, f"Агент остановился: {state.get('outcome') or 'unknown'}")
                 return
             if not pr:
-                if not lesson["outside"]:
-                    origin = self._run(["git", "remote", "get-url", "origin"], Path(state["repo"]))
-                    if own_forgejo(origin):
+                origin = self._run(["git", "remote", "get-url", "origin"], Path(state["repo"]))
+                forgejo = own_forgejo(origin)
+                outside_only = bool(lesson["outside"]) and not receipt.get("forgejo")
+                if forgejo and outside_only:
+                    outside_only = int(self._run(["git", "rev-list", "--count", f"{state['base']}..HEAD"],
+                                                 Path(state["worktree"]))) == 0
+                if outside_only:
+                    receipt["outside"] = True
+                    self._save()
+                else:
+                    if forgejo:
                         self._forgejo(slug, state, receipt, origin)
                     else:
                         host, owner, _ = remote_parts(origin)
@@ -279,9 +287,6 @@ class Landing:
                             self._state_failed(receipt, state, "У задачи нет PR для слияния")
                     if not receipt.get("merged"):
                         return
-                else:
-                    receipt["outside"] = True
-                    self._save()
             if pr and not receipt.get("merged"):
                 self._merge(slug, state, receipt, pr, label)
                 if not receipt.get("merged"):
@@ -450,6 +455,10 @@ class Landing:
     def _job_result(self, receipt):
         job = receipt["forgejo_job"]
         result, log = Path(job["result"]), Path(job["log"])
+        if not log.exists() and not result.exists():
+            receipt.pop("forgejo_job")
+            self._save()
+            return None, ""
         with log.open("rb") as stream:
             stream.seek(0, 2)
             stream.seek(max(0, stream.tell() - 4000))
@@ -460,6 +469,12 @@ class Landing:
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return None, output
+            if result.exists():
+                return json.loads(result.read_text())["returncode"], output
+            if not output:
+                receipt.pop("forgejo_job")
+                self._save()
+                return None, ""
         raise ValueError(f"Landing process exited without a result: {output[-1000:]}")
 
     def _forgejo_repair(self, slug, state, receipt, output, conflict=False):
@@ -491,6 +506,7 @@ class Landing:
         land = scripts / "land.py"
         job = receipt.get("forgejo_job")
         code, output = self._job_result(receipt) if job else (None, "")
+        job = receipt.get("forgejo_job")
         # land.py prints the PR URL as soon as it has opened it, before waiting for CI.
         for candidate in re.findall(r"https?://[^\s]+", output):
             parsed = urlsplit(candidate)
@@ -543,6 +559,8 @@ class Landing:
                 self._stage(receipt, "failed", f"{label} закрыт без слияния")
                 return
         if not job and land.is_file():
+            if not title.startswith("Merge "):
+                title = f"Merge {title}"
             self._start_job(slug, state, receipt, ["python3", str(land), title, body], "land")
             self._stage(receipt, "waiting", f"Жду CI {label} на Forgejo")
             return
@@ -559,7 +577,7 @@ class Landing:
             receipt["pr"] = pull["html_url"]
             self._save()
         if not job:
-            waiter = next((scripts / name for name in ("ci_wait.py", "pr_ci.py")
+            waiter = next((scripts / name for name in ("pr_ci.py", "ci_wait.py")
                            if (scripts / name).is_file()), None)
             if waiter:
                 self._start_job(slug, state, receipt, ["python3", str(waiter)], "waiter", pull["head"]["sha"])
