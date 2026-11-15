@@ -44,9 +44,29 @@ def _published(repo, merge_sha, receipt, save):
     return None
 
 
+def _cleanup(repo, receipt, save):
+    name = receipt.get("release_worktree")
+    if name is None:
+        return
+    worktree = Path(name)
+    if (not worktree.is_absolute() or worktree.name != "worktree"
+            or not worktree.parent.name.startswith("teamster-release-")
+            or worktree.is_symlink() or worktree.parent.is_symlink()):
+        raise ValueError("Invalid release worktree path")
+    registered = _git(repo, "worktree", "list", "--porcelain", "-z").stdout.split("\0")
+    if any(row.startswith("worktree ") and Path(row[9:]).resolve() == worktree.resolve()
+           for row in registered):
+        _git(repo, "worktree", "remove", "--force", str(worktree))
+    if worktree.parent.exists():
+        shutil.rmtree(worktree.parent)
+    receipt.pop("release_worktree")
+    save()
+
+
 def release(repo, merge_sha, files, receipt, save):
     """Publish at most one release after this merge, reconciling an interrupted push."""
     repo = Path(repo)
+    _cleanup(repo, receipt, save)
     _git(repo, "fetch", "origin", "main")
     published = _published(repo, merge_sha, receipt, save)
     if published is not None:
@@ -59,8 +79,10 @@ def release(repo, merge_sha, files, receipt, save):
         base = _git(repo, "rev-parse", "origin/main").stdout.strip()
         with tempfile.TemporaryDirectory(prefix="teamster-release-") as directory:
             worktree = Path(directory) / "worktree"
-            _git(repo, "worktree", "add", "--detach", str(worktree), "origin/main")
+            receipt["release_worktree"] = str(worktree)
+            save()
             try:
+                _git(repo, "worktree", "add", "--detach", str(worktree), "origin/main")
                 version = _run(["python3", "-I", "scripts/bump_version.py", level, "--commit"],
                                worktree).stdout.strip().splitlines()[-1]
                 if not RELEASE.fullmatch("Release " + version):
@@ -84,7 +106,7 @@ def release(repo, merge_sha, files, receipt, save):
                 if attempt or not advanced:
                     raise ValueError("git push failed: " + (pushed.stderr or pushed.stdout).strip()[-2000:])
             finally:
-                _git(repo, "worktree", "remove", "--force", str(worktree))
+                _cleanup(repo, receipt, save)
     raise ValueError("The release could not be pushed")
 
 

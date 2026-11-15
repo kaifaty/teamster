@@ -1016,22 +1016,27 @@ There is no merge endpoint for ordinary tasks.
 
 With actions enabled and without `--no-land`, the server finishes only lesson tasks identified by the
 `lesson-` slug and implementation brief described above. Landing runs in a background thread, one task
-at a time under a shared lock, without holding up API responses. Other tasks are never landed.
+at a time under its own lock, without holding the actions API lock. Other tasks are never landed.
 
 A PR is eligible only after its supervisor exits with `outcome: "completed"`, its last result is
 `done`, the current turn's saved check passed or is absent, its latest review is clean (or the fix
 cycle stopped at `clean` or `only P3`), and its task CI passed. Questions keep `landing: null` so the
 card can ask for the answer. An unsuccessful result, saved check, review, CI or cycle produces `failed`
 with a Russian explanation. Immediately before merging, `gh pr view` must show an open PR with
-`mergeStateStatus: "CLEAN"`, and `gh pr checks` must show every check as pass or skip.
+`mergeStateStatus: "CLEAN"`, and `gh pr checks` must show every check as pass or skip. A temporary
+non-CLEAN state or pending checks keeps landing at `waiting`. Waiting or unsuccessful steps are
+checked again after 30 seconds, even when the task's state file has not changed.
 
 The server merges only when `origin` points at github.com with owner `kaifaty`, using
-`gh pr merge <url> --merge --delete-branch`. Other origins produce `manual` with exactly:
+`gh pr merge <url> --merge --delete-branch --match-head-commit <sha>`. The PR head must match the
+task's saved CI SHA; the merge also requires that head to remain unchanged. Other origins produce
+`manual` with exactly:
 
 - For owner `mytonwallet-org`: «В MyWallet PR сливаешь ты: там свои правила и боты ревью».
 - For every other owner or host: «В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях».
 
-When GitHub reports `mergeable: "CONFLICTING"` or `mergeStateStatus: "DIRTY"`, the server sends one
+When the task's check, review and CI permit landing, and GitHub reports `mergeable: "CONFLICTING"`
+or `mergeStateStatus: "DIRTY"`, the server sends one
 `teamster say <slug> <order> --max-minutes 30 --review --fix-rounds 1 --ci`; the order asks the task to
 merge `origin/<base>`, resolve conflicts, run checks and push. When that cycle finishes, landing is
 checked again. A second conflict ends as `failed`. With no PR, a `done` implementation whose lesson
@@ -1043,7 +1048,8 @@ or outside files>`, `teamster verdict <slug> accepted --note "landed by the boar
 temporary git worktree from fresh `origin/main`: `python3 -I scripts/bump_version.py <minor|patch>
 --commit`, then `git push origin HEAD:main`. Changes confined to `*.md` select patch; all others select
 minor. A push rejected because main advanced is retried once after fetching and bumping from the new
-base. The temporary worktree is removed afterward. The server then runs `uv tool upgrade teamster`,
+base. The temporary worktree is recorded before creation and removed afterward; after an interrupted
+release, the next attempt removes that recorded worktree before continuing. The server then runs `uv tool upgrade teamster`,
 finding uv on PATH or at `~/.local/bin/uv`, and exposes the released version in `landing.version`.
 
 Landing progress survives restarts: merged PRs are not merged again, release completion is checked

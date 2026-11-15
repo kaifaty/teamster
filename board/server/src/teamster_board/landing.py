@@ -17,6 +17,7 @@ from .store import Record, Store, alive, mapping, turn_check
 
 LOGGER = logging.getLogger("uvicorn.error")
 TIMEOUT = 120
+RETRY_SECONDS = 30
 MYWALLET = "В MyWallet PR сливаешь ты: там свои правила и боты ревью"
 MANUAL = "В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях"
 FIELDS = ("stage", "text", "pr", "version")
@@ -48,8 +49,9 @@ class Landing:
         self.path = actions.research.tasks_path.parent / "board-landings.json"
         self.lock = threading.Lock()
         self.worker_lock = threading.Lock()
+        self.run_lock = threading.Lock()
         self.thread = None
-        self.failed = set()
+        self.retry_at = {}
         self.receipts = {}
         self.load_error = None
         try:
@@ -117,7 +119,8 @@ class Landing:
                                     encoding="utf-8", errors="replace", timeout=TIMEOUT)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ValueError(f"{Path(argv[0]).name}: {exc}") from exc
-        if result.returncode:
+        # gh pr checks uses exit 8 while checks are pending; its JSON still contains their buckets.
+        if result.returncode and not (argv[:3] == ["gh", "pr", "checks"] and result.returncode == 8):
             message = (result.stderr.strip() or result.stdout.strip())[-1000:]
             raise ValueError(f"{Path(argv[0]).name}: {message or f'exit {result.returncode}'}")
         return result.stdout.strip()
@@ -148,7 +151,7 @@ class Landing:
     def run_once(self, refresh=True):
         if self.disabled:
             return
-        with self.actions.lock:
+        with self.run_lock:
             if refresh:
                 self.actions.research.invalidate()
             lessons = copy.deepcopy(self.actions.research.view()["lessons"])
@@ -160,8 +163,7 @@ class Landing:
                 if state is None:
                     continue
                 key = self._key(implementation["slug"], implementation["created"])
-                signature = (key, json.dumps(state, sort_keys=True))
-                if signature in self.failed:
+                if time.monotonic() < self.retry_at.get(key, 0):
                     continue
                 receipt = self.receipts.setdefault(key, {"pr": None, "version": None})
                 if receipt.get("stage") == "landed":
@@ -173,12 +175,11 @@ class Landing:
                     if self.load_error:
                         raise ValueError(self.load_error)
                     self._land(lesson, implementation, state, receipt)
-                    if receipt.get("stage") in ("failed", "manual"):
-                        self.failed.add(signature)
                 except Exception as exc:
                     LOGGER.exception("Lesson landing failed: %s", implementation["slug"])
-                    self.failed.add(signature)
                     self._stage(receipt, "failed", f"Не удалось довести внедрение: {str(exc)[-1000:]}")
+                if receipt.get("stage") in ("waiting", "failed", "manual"):
+                    self.retry_at[key] = time.monotonic() + RETRY_SECONDS
 
     def _land(self, lesson, implementation, state, receipt):
         slug = implementation["slug"]
@@ -281,21 +282,6 @@ class Landing:
         if view.get("state") != "OPEN":
             self._stage(receipt, "failed", f"{label} закрыт без слияния")
             return
-        if view.get("mergeable") == "CONFLICTING" or view.get("mergeStateStatus") == "DIRTY":
-            if receipt.get("conflict_attempted"):
-                self._stage(receipt, "failed", "После исправления PR всё ещё конфликтует с базой")
-                return
-            base = view.get("baseRefName")
-            if not isinstance(base, str) or not re.fullmatch(r"[A-Za-z0-9._/-]+", base):
-                raise ValueError("Invalid PR base branch")
-            receipt.update(conflict_attempted=True, repair_cycle=cycle(state))
-            self._stage(receipt, "waiting", "Отправляю задаче исправление конфликтов с базой")
-            self._run([self.actions.command, "say", slug,
-                       f"Merge origin/{base}, resolve conflicts, run checks and push.",
-                       "--max-minutes", "30", "--review", "--fix-rounds", "1", "--ci"], Path.home())
-            receipt["repair_sent"] = True
-            self._save()
-            return
         check = turn_check(state)
         if check is not None and check.get("outcome") != "passed":
             self._stage(receipt, "failed", "Сохранённая проверка последнего хода не прошла")
@@ -314,16 +300,39 @@ class Landing:
                 reason = f"CI не прошёл после {rounds} попыток починки" if rounds else "CI задачи не прошёл"
                 self._stage(receipt, "failed", reason)
             return
+        head = view.get("headRefOid")
+        if (not isinstance(head, str) or re.fullmatch(r"[0-9a-fA-F]{40,64}", head) is None
+                or head != ci.get("sha")):
+            self._stage(receipt, "failed", f"HEAD {label} не совпадает с коммитом, прошедшим CI задачи")
+            return
+        if view.get("mergeable") == "CONFLICTING" or view.get("mergeStateStatus") == "DIRTY":
+            if receipt.get("conflict_attempted"):
+                self._stage(receipt, "failed", "После исправления PR всё ещё конфликтует с базой")
+                return
+            base = view.get("baseRefName")
+            if not isinstance(base, str) or not re.fullmatch(r"[A-Za-z0-9._/-]+", base):
+                raise ValueError("Invalid PR base branch")
+            receipt.update(conflict_attempted=True, repair_cycle=cycle(state))
+            self._stage(receipt, "waiting", "Отправляю задаче исправление конфликтов с базой")
+            self._run([self.actions.command, "say", slug,
+                       f"Merge origin/{base}, resolve conflicts, run checks and push.",
+                       "--max-minutes", "30", "--review", "--fix-rounds", "1", "--ci"], Path.home())
+            receipt["repair_sent"] = True
+            self._save()
+            return
         if view.get("mergeStateStatus") != "CLEAN":
-            self._stage(receipt, "failed", f"{label} пока не готов к слиянию")
+            self._stage(receipt, "waiting", f"Жду готовности {label} к слиянию")
             return
         checks = json.loads(self._run(["gh", "pr", "checks", pr, "--json", "bucket"], repo))
+        if isinstance(checks, list) and any(row.get("bucket") == "pending" for row in checks):
+            self._stage(receipt, "waiting", f"Жду CI {label}")
+            return
         if not isinstance(checks, list) or not checks or any(row.get("bucket") not in ("pass", "skip") for row in checks):
             self._stage(receipt, "failed", f"Проверки {label} не прошли")
             return
         receipt["files"] = [row["path"] for row in view.get("files", [])]
         self._stage(receipt, "merging", f"Сливаю {label}")
-        self._run(["gh", "pr", "merge", pr, "--merge", "--delete-branch"], repo)
+        self._run(["gh", "pr", "merge", pr, "--merge", "--delete-branch", "--match-head-commit", head], repo)
         view = json.loads(self._run(["gh", "pr", "view", pr, "--json", fields], repo))
         if view.get("state") != "MERGED":
             raise ValueError("GitHub did not confirm the merge")

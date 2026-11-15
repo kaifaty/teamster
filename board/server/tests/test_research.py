@@ -944,7 +944,7 @@ def test_landing_release_and_upgrade(tmp_path, monkeypatch, files, version):
     assert landing_release.release(repo, merged, files, receipt,
                                    lambda: saves.append(dict(receipt))) == version
     assert receipt["released"] and receipt["release_version"] == version
-    assert any(not saved["released"] for saved in saves)
+    assert any(saved.get("released") is False for saved in saves)
     assert git(repo, "log", "origin/main", "--format=%s", "-1") == "Release " + version
     assert len(git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
     # Both PATH lookup and the launchd fallback execute only this temporary fake.
@@ -955,6 +955,7 @@ def test_landing_release_and_upgrade(tmp_path, monkeypatch, files, version):
     monkeypatch.setenv("PATH", str(uv.parent) + os.pathsep + os.environ["PATH"])
     landing_release.upgrade()
     assert (tmp_path / "upgrade-args").read_text().splitlines() == ["tool", "upgrade", "teamster"]
+    (tmp_path / "upgrade-args").unlink()
     monkeypatch.setattr(landing_release.shutil, "which", lambda _: None)
     landing_release.upgrade()
     assert (tmp_path / "upgrade-args").read_text().splitlines() == ["tool", "upgrade", "teamster"]
@@ -1003,7 +1004,15 @@ def test_landing_release_recovers_push_before_receipt_save(tmp_path, monkeypatch
         landing_release.release(repo, merged, ["worker.py"], receipt, crash)
     # The restart may have only the receipt written before the successful push.
     receipt["released"] = False
+    # A killed server leaves its registered worktree and directory behind.
+    directory = tmp_path / "teamster-release-interrupted"
+    worktree = directory / "worktree"
+    git(repo, "worktree", "add", "--detach", str(worktree), receipt["release_commit"])
+    receipt["release_worktree"] = str(worktree)
+    assert worktree.is_dir()
     assert landing_release.release(repo, merged, ["worker.py"], receipt, lambda: None) == "1.3.0"
+    assert not directory.exists() and "release_worktree" not in receipt
+    assert len(git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
     subjects = git(repo, "log", "origin/main", "--format=%s").splitlines()
     assert subjects.count("Release 1.3.0") == 1
     assert sum(subject.startswith("Release ") for subject in subjects) == 1
