@@ -830,8 +830,17 @@ class CheckGuardTests(RotationTestCase):
                 self.assertNotIn("check_paths", state)
 
     def test_check_paths_return_union_without_mutating_state(self):
-        self.commit_fixture({"scripts/first.sh": "exit 0\n", "scripts/second.sh": "exit 0\n"})
+        self.commit_fixture({"scripts/first.sh": "exit 0\n", "scripts/second.sh": "exit 0\n",
+                             "scripts/loaded.sh": "exit 1\n"})
         worker = self.worker()
+        loaded = {"worktree": str(self.repo), "base": "origin/main", "check": "true",
+                  "check_loaded": "scripts/loaded.sh"}
+        self.assertEqual(worker.checking.check_paths(loaded), ["scripts/loaded.sh"])
+        (self.repo / "scripts/loaded.sh").write_text("exit 0\n")
+        self.git("add", "--", "scripts/loaded.sh")
+        self.git("commit", "--quiet", "-m", "Weaken the loaded check")
+        self.assertEqual([change["path"] for change in worker.checking.guarded_changes(loaded)],
+                         ["scripts/loaded.sh"])
         state = {"worktree": str(self.repo), "check": "sh scripts/first.sh"}
         self.assertEqual(worker.checking.check_paths(state), ["scripts/first.sh"])
         self.assertNotIn("check_paths", state)

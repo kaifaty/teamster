@@ -38,12 +38,14 @@ def check_paths(st):
     """Read saved and existing relative paths from top-level check tokens."""
     paths = set(st.get("check_paths", []))
     root = Path(st["worktree"])
-    try:
-        lexer = shlex.shlex(st.get("check") or "", posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        tokens = []
+    tokens = []
+    for command in (st.get("check"), st.get("check_loaded")):
+        try:
+            lexer = shlex.shlex(command or "", posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens.extend(list(lexer))
+        except ValueError:
+            continue
     candidates = []
     for token in tokens:
         candidates.append(token)

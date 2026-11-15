@@ -66,8 +66,8 @@ The supervisor guards:
 - test directories: `tests/`, `test/`, `__tests__/`, `spec/`;
 - test filenames: `test_*`, `*_test.*`, `*.test.*`, `*.spec.*`;
 - CI paths: `.github/workflows/`, `.gitlab-ci.yml`, `.forgejo/workflows/`;
-- existing relative repository paths among the check's top-level tokens, including `NAME=path` and
-  `--opt=path`;
+- existing relative repository paths among the top-level tokens of `--check` and `--check-loaded`,
+  including `NAME=path` and `--opt=path`;
 - patterns passed with repeatable `start --guard "GLOB"`.
 
 Discovered paths and patterns persist in task state, even after the files are deleted. Commands nested
