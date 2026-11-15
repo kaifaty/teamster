@@ -195,7 +195,7 @@ STATE_FIELDS = {
     "reflect_file": StateField("task"),
     "reflect_order": StateField("task"),
     "reflect_turns": StateField("history"),
-    "parallel": StateField("task"),  # start --parallel: resume --all may continue it beside other tasks.
+    "parallel": StateField("task"),  # Whether start got --parallel.
     # Whether start or say asked for --review, kept after the supervisor takes its pending order.
     "review_after": StateField("turn", spawn_reset=lambda st, turn: bool(turn["pending"]["review_after"])),
     # The cycle this supervisor runs: its kind and effort, the step it is in and the last PR,

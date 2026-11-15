@@ -167,8 +167,7 @@ st[dynamic_key] = 1
             "parallel": True, "review_after": False,
             "cycle": {"kind": "work", "effort": "high", "step": "ci", "ci": True,
                       "pr": "https://example.invalid/pull/0"},
-            "resumed": [{"at": 1001, "signal": "SIGTERM", "signal_at": 1000, "started": 900, "step": "work",
-                         "turn": 10}],
+            "resumed": [{"at": 1001, "signal": "SIGTERM", "signal_at": 1000, "step": "work", "turn": 10}],
         }
         self.assertEqual(set(st), set(self.worker.task_state.STATE_FIELDS))
         return st

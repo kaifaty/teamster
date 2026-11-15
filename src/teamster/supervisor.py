@@ -124,6 +124,9 @@ def legacy_cycle(st):
         cycle.update(kind="work" if st.get("work_completed") else "review", step="review")
     elif st.get("check_pid") or (checks and checks[-1].get("outcome") == "interrupted"):
         cycle["step"] = "check"
+    elif st.get("result") is None:
+        # The turn left no result: whatever CI recorded when the stopped supervisor passed it, the turn goes on.
+        cycle.update(step="fix" if st.get("rounds") else "work", ci=False)
     elif ci and (ci.get("outcome") == "pending" or ci.get("reason") == "stopped"):
         cycle["step"] = "ci"
     else:
@@ -215,8 +218,7 @@ def resume(slug, loaded):
                                                  cfg, source="resume")
             now = clock.CLOCK.time()
             st.setdefault("resumed", []).append({"at": now, "signal": cut["signal"], "signal_at": cut["at"],
-                                                 "started": st["turn_started"], "step": step,
-                                                 "turn": st.get("turns", 0)})
+                                                 "step": step, "turn": st.get("turns", 0)})
             st["cycle"] = dict(cycle, step=step)
             st["pending"] = {"prompt": prompt, "effort": cycle.get("effort"), "current_message": True,
                              "review_after": bool(st.get("review_after")), "resume": step}

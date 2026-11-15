@@ -378,7 +378,7 @@ def main():
     add_command_options(s, "review")
     s = sub.add_parser("resume", help="continue tasks whose cycle an external signal cut short, from the step it stopped at")
     s.add_argument("slugs", nargs="*", metavar="slug")
-    s.add_argument("--all", action="store_true", help="every task cut short; those whose cycles overlapped together, any other alone")
+    s.add_argument("--all", action="store_true", help="every task cut short, all at once")
     s = sub.add_parser("wait")
     s.add_argument("slug")
     s.add_argument("--timeout", type=int, default=0)

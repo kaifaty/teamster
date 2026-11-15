@@ -294,32 +294,11 @@ def cmd_review(a):
     print(f"reviewing {a.slug}, pid {st['pid']}")
 
 
-def interrupted_spans(st):
-    """The (start, cut) times of the cycles of the current turn of st that a signal cut short: the one cut short
-    now and those resumed since the turn started."""
-    spans = [(entry["started"], entry["signal_at"] or 0) for entry in st.get("resumed", [])
-             if "started" in entry and entry["turn"] == st.get("turns", 0)]
-    cut = task_state.interruption(st)
-    if cut is not None:
-        spans.append((st["turn_started"], cut["at"] or 0))
-    return spans
-
-
-def ran_in_parallel(st, states):
-    """Whether resume may continue st beside other tasks: a cycle of it that a signal cut short overlapped one of
-    another task, resumed since or not. start --parallel alone does not count; the tasks may never have run
-    at the same time."""
-    mine = interrupted_spans(st)
-    return any(other["slug"] != st["slug"] and start < other_cut and other_start < cut_at
-               for other in states for other_start, other_cut in interrupted_spans(other)
-               for start, cut_at in mine)
-
-
 def cmd_resume(a):
     if bool(a.slugs) == bool(a.all):
         procs.die("resume takes task slugs or --all")
-    states = [task_state.load(p.parent.name) for p in sorted(config.TASKS.glob("*/state.json"))]
     if a.all:
+        states = [task_state.load(p.parent.name) for p in sorted(config.TASKS.glob("*/state.json"))]
         candidates = [st for st in states if supervisor.resume_refusal(st) is None]
         if not candidates:
             print("nothing to resume")
@@ -329,18 +308,11 @@ def cmd_resume(a):
         refusals = [reason for reason in map(supervisor.resume_refusal, candidates) if reason is not None]
         if refusals:
             procs.die("cannot resume: " + "; ".join(refusals))
-    # As with start: tasks whose interrupted cycles overlapped continue together; any other runs alone, after them.
-    parallel = {st["slug"]: ran_in_parallel(st, states) for st in candidates}
-    running = task_state.running_tasks()
-    for st in sorted(candidates, key=lambda st: (not parallel[st["slug"]], st["turn_started"])):
-        if not parallel[st["slug"]] and running:
-            hint = ("  (started with --parallel, but its interrupted cycle overlapped no other)" if st.get("parallel") else "")
-            print(f"waiting: {config.COMMAND} resume {st['slug']}{hint}")
-            continue
+    # Tasks one restart cut short were running together then; they all continue together.
+    for st in candidates:
         move = installs.follow_pin(st, upgrade=True)
         cut = task_state.interruption(st)
         resumed, step = supervisor.resume(st["slug"], st)
-        running.append(st["slug"])
         if move:
             print(move)
         print(f"resumed {st['slug']} from {step} (turn {resumed.get('turns', 0)}, interrupted by "

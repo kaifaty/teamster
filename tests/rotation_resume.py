@@ -249,7 +249,7 @@ class ResumeTests(RotationTestCase):
     def test_resume_refuses_stopped_and_running_tasks_and_say_still_continues(self):
         self.configure(language="en")
         self.account(self.home, "A", self.reset, runs=[
-            {"mode": "hold"}, {"mode": "hold"}, {"mode": "hold"}, {"mode": "complete", "reply": self.work_result()}])
+            {"mode": "hold"}, {"mode": "hold"}, {"mode": "complete", "reply": self.work_result()}])
         self.start("resume-stopped")
         self.until(lambda: self.state("resume-stopped").get("codex_pid"), timeout=60)
         self.assertIn("still running", self.refused("resume", "resume-stopped"))
@@ -259,16 +259,6 @@ class ResumeTests(RotationTestCase):
         self.assertIn("nothing to resume", self.resume("--all"))
         self.cli("say", "resume-stopped", "Hold on.")
         self.interrupt("resume-stopped", lambda: len(self.invocations()) == 2)
-        # Beside a live supervisor the task waits, and no new process starts.
-        self.start("resume-live")
-        self.until(lambda: len(self.invocations()) == 3, timeout=60)
-        pid = self.state("resume-stopped")["pid"]
-        self.assertIn("waiting: teamster resume resume-stopped", self.resume("--all"))
-        state = self.state("resume-stopped")
-        self.assertEqual((state["outcome"], state["pid"], len(self.invocations())), ("interrupted", pid, 3))
-        self.assertNotIn("resumed", state)
-        self.cli("stop", "resume-live")
-        self.wait("resume-live")
         self.cli("say", "resume-stopped", "Continue from the worktree.")
         self.wait("resume-stopped")
         state = self.state("resume-stopped")
@@ -276,46 +266,33 @@ class ResumeTests(RotationTestCase):
         self.assertNotIn("resumed", state)
         self.assertIn("Continue from the worktree.", self.invocations()[-1]["prompt"])
 
-    def test_resume_all_continues_overlapping_cycles_and_holds_the_rest(self):
+    def test_resume_all_continues_every_candidate_at_once(self):
         self.configure(language="en")
-        self.account(self.home, "A", self.reset, runs=[{"mode": "hold"}] * 4 + [
-            {"mode": "complete", "reply": self.work_result()}] * 4 + [{"mode": "hold"}])
-        self.start("resume-alone")
-        self.start("resume-beside", "--parallel")
-        self.until(lambda: len(self.invocations()) == 2, timeout=60)
-        for slug in ("resume-alone", "resume-beside"):
-            self.interrupt(slug, lambda: True)
-        # --parallel alone does not make a task continue beside others: its cycle overlapped none.
-        self.start("resume-later", "--parallel")
-        self.interrupt("resume-later", lambda: len(self.invocations()) == 3)
-        self.start("resume-last")
-        self.interrupt("resume-last", lambda: len(self.invocations()) == 4)
-        # A task resumed on its own still counts for those that ran beside it.
-        self.assertIn("resumed resume-alone from work", self.resume("resume-alone"))
-        output = self.resume("--all")
-        self.assertIn("resumed resume-beside from work", output)
-        self.assertIn("waiting: teamster resume resume-later  (started with --parallel, "
-                      "but its interrupted cycle overlapped no other)", output)
-        self.assertIn("waiting: teamster resume resume-last\n", output)
-        for slug in ("resume-alone", "resume-beside"):
-            self.wait(slug)
-            self.assertEqual(self.state(slug)["outcome"], "completed")
-        # With no supervisor running, only one of the tasks that ran alone continues.
-        output = self.resume("--all")
-        self.assertIn("resumed resume-later from work", output)
-        self.assertIn("waiting: teamster resume resume-last\n", output)
-        self.assertNotIn("resumed resume-last", output)
-        self.wait("resume-later")
-        self.assertIn("resumed resume-last from work", self.resume("--all"))
-        self.wait("resume-last")
-        self.assertEqual(self.state("resume-later")["outcome"], "completed")
-        # A later turn that ran alone does not inherit the overlap of the turn resumed beside another task.
-        self.cli("say", "resume-alone", "Continue alone.")
-        self.interrupt("resume-alone", lambda: len(self.invocations()) == 9)
+        self.account(self.home, "A", self.reset, runs=[{"mode": "hold"}] * 3 + [
+            {"mode": "complete", "write_files": {"tracked.txt": "implemented\n"}, "commit_files": ["tracked.txt"],
+             "push": True, "reply": self.work_result()}])
+        self.start("resume-legacy", "--ci-command", "true")
+        self.interrupt("resume-legacy", lambda: len(self.invocations()) == 1)
+        # A state of an earlier version has no cycle record: a turn without a result goes on despite CI.
+        path = self.home / "claude-tasks" / "resume-legacy" / "state.json"
+        state = self.state("resume-legacy")
+        self.assertIsNone(state["result"])
+        path.write_text(json.dumps({key: value for key, value in state.items()
+                                    if key not in ("cycle", "review_after")}))
+        self.start("resume-other")
+        self.interrupt("resume-other", lambda: len(self.invocations()) == 2)
         self.start("resume-live")
-        self.until(lambda: len(self.invocations()) == 10, timeout=60)
-        self.assertIn("waiting: teamster resume resume-alone\n", self.resume("--all"))
-        self.assertEqual(self.state("resume-alone")["outcome"], "interrupted")
+        self.until(lambda: len(self.invocations()) == 3, timeout=60)
+        output = self.resume("--all")
+        self.assertIn("resumed resume-legacy from work", output)
+        self.assertIn("resumed resume-other from work", output)
+        self.assertNotIn("waiting", output)
+        for slug in ("resume-legacy", "resume-other"):
+            self.wait(slug)
+            state = self.state(slug)
+            self.assertEqual((state["outcome"], state["result"]), ("completed", self.work_result()))
+        self.assertEqual(len(self.invocations()), 5)
+        self.assertEqual(self.state("resume-legacy")["ci"]["outcome"], "passed")
         self.cli("stop", "resume-live")
         self.wait("resume-live")
 
@@ -328,7 +305,7 @@ class ResumeTests(RotationTestCase):
         self.until(lambda: any(event["command"] == "holding" for event in self.claude_trace()), timeout=60)
         cut_at = clock.time()
         self.interrupt(slug, lambda: True, signal.SIGINT)
-        session, started = self.state(slug)["session_id"], self.state(slug)["turn_started"]
+        session = self.state(slug)["session_id"]
         self.assertEqual(self.state(slug)["signal"], {"signum": signal.SIGINT, "name": "SIGINT", "at": cut_at})
         self.advance_fake_clock(600)
         self.assertIn(f"resumed {slug} from work (turn 1, interrupted by SIGINT at ", self.resume(slug))
@@ -336,7 +313,7 @@ class ResumeTests(RotationTestCase):
         state = self.state(slug)
         self.assertEqual(state["outcome"], "completed")
         self.assertEqual(state["resumed"], [{"at": cut_at + 600, "signal": "SIGINT", "signal_at": cut_at,
-                                             "started": started, "step": "work", "turn": 1}])
+                                             "step": "work", "turn": 1}])
         first, resumed = self.claude_invocations()
         self.assertEqual(resumed["argv"][resumed["argv"].index("--resume") + 1], first["session_id"])
         self.assertEqual((state["session_id"], resumed["session_id"]), (session, session))
