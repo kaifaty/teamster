@@ -163,7 +163,8 @@ class VersionInstallTests(unittest.TestCase):
     def test_bump_version_writes_state_fixtures_of_the_replaced_release(self):
         paths = ("src/teamster/__init__.py", "plugins/teamster/.claude-plugin/plugin.json")
         current = re.search(rb'__version__ = "([^"]+)"', (ROOT / paths[0]).read_bytes())[1]
-        # The fake writer records which checkout ran it, so the fixture must come from the release.
+        # The fake writer records which checkout ran it, and the writer at HEAD always fails,
+        # so the fixture must come from the release's own writer in the release checkout.
         writer = ("import pathlib, sys\n"
                   "target = pathlib.Path(sys.argv[1]) / 'work-done'\n"
                   "target.mkdir(parents=True)\n"
@@ -192,6 +193,7 @@ class VersionInstallTests(unittest.TestCase):
                 git("commit", "-q", "-m", "Release 1.2.3")
                 released = state_module.read_text()
                 state_module.write_text(changed)
+                (repo / "tests/make_state_fixtures.py").write_text(writer % 4)
                 git("commit", "-q", "-am", "Change state")
                 result = subprocess.run([PYTHON, "-I", str(repo / "scripts/bump_version.py"), "minor", "--commit"],
                                         cwd=self.root, env=self.env, text=True, capture_output=True, timeout=60)
