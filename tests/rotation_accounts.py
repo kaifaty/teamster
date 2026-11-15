@@ -23,12 +23,15 @@ class AccountAuthTests(RotationTestCase):
         output = ["\x1b7\x1b[32mhttps://login.example.test/device\x9b0m\x1b8", "https://login.example.test/device",
                   "Enter this one-time code (expires in 15 minutes)", "ABCD-EFGHI", "x" * 600]
         fixture = self.account(self.home, "A", self.reset)
-        for extra, scenario, status, code in (
-                ([], {"output": output}, "available", 0),
-                ([], {"output": output[:3] + ["ABCD-EFGH"] + output[4:]}, "available", 0),
-                ([], {"output": output, "exit": 7}, "failed", 7),
-                (["--browser"], {"fixture": fixture}, "duplicate", 1)):
-            with self.subTest(status=status):
+        # Only a 6-16 character code after the prompt is the device code.
+        decoys = ["ABCD-1234"] + output[:3] + ["AB-CD"] + output[3:]
+        for extra, scenario, status, code, device_code in (
+                ([], {"output": output}, "available", 0, "ABCD-EFGHI"),
+                ([], {"output": output[:3] + ["ABCD-EFGH"] + output[4:]}, "available", 0, "ABCD-EFGH"),
+                ([], {"output": decoys}, "available", 0, "ABCD-EFGHI"),
+                ([], {"output": output, "exit": 7}, "failed", 7, None),
+                (["--browser"], {"fixture": fixture}, "duplicate", 1, None)):
+            with self.subTest(status=status, output=scenario.get("output", [])[:1]):
                 (self.other / "login.json").write_text(json.dumps(scenario))
                 before = time.time()
                 result = subprocess.run([PYTHON, "-I", str(SCRIPT), "login", "second", "--events", *extra],
@@ -41,20 +44,27 @@ class AccountAuthTests(RotationTestCase):
                 if status == "available":
                     self.assertEqual([e for e in events if e["event"] == "open"],
                                      [{"event": "open", "url": "https://login.example.test/device"}])
-                    device = next(e for e in events if e["event"] == "code")
-                    self.assertEqual(device["code"], scenario["output"][3])
+                    codes = [e for e in events if e["event"] == "code"]
+                    self.assertEqual([e["code"] for e in codes], [device_code])
+                    device = codes[0]
                     self.assertGreaterEqual(device["expires_at"], int(before) + 900)
                     self.assertLessEqual(device["expires_at"], int(time.time()) + 900)
-                    self.assertIn({"event": "stage", "stage": "checking"}, events)
+                    # The account is checked only after `codex login` has succeeded.
+                    self.assertEqual([e for e in events if e["event"] == "stage"],
+                                     [{"event": "stage", "stage": "checking"}])
+                    self.assertGreater(events.index({"event": "stage", "stage": "checking"}),
+                                       events.index(device))
                     lines = [e["text"] for e in events if e["event"] == "output"]
                     self.assertEqual(lines.count("https://login.example.test/device"), 1)
                     self.assertEqual(len(lines[-1]), 500)
                     self.assertNotIn("\x1b", result.stdout)
                     self.assertEqual(self.telemetry_journal()[-1]["status"], status)
+                elif status == "failed":
+                    self.assertEqual([e for e in events if e["event"] == "stage"], [])
                 elif status == "duplicate":
                     self.assertIn("тот же аккаунт", events[-1]["message"])
         self.assertEqual([row["argv"] for row in self.trace() if row["command"] == "login"],
-                         [["--device-auth"], ["--device-auth"], ["--device-auth"], []])
+                         [["--device-auth"]] * 4 + [[]])
 
     @contextmanager
     def claude_event_fixture(self):
@@ -353,7 +363,11 @@ else:
                 fixture.write_text(json.dumps({"events": [{"type": "result", "result": "OK"}]}))
                 self.assertIsNone(worker.claude_review.probe(worker.config.accounts_config(), account))
                 self.assertIsNone(json.loads(self.cli("accounts", "--json"))["claude"][0]["needs_login"])
-                self.assertNotIn("reason", worker.claude_accounts.read_limits()["probe"])
+                limits = worker.claude_accounts.read_limits()["probe"]
+                self.assertNotIn("reason", limits)
+                if needed:
+                    # The successful answer lifts the exclusion too, not only the reason.
+                    self.assertFalse(worker.claude_accounts.limited(limits), limits)
         pool = worker.claude_accounts
         pool.mark_limited("probe", reason="authentication failed")
         pool.token_available("probe")
