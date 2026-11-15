@@ -28,17 +28,7 @@ export const SPACE = {
   storm: "#17121f",
   stormEdge: "#3a2d4a",
   lightning: "#e6dcff",
-  /** The dim warning light of an empty fuel tank. */
-  empty: "#ff7a50",
-  /** The science station's glow and its probes. */
-  research: "#a77bff",
 } as const;
-
-/**
- * The rings around a machine's reactor while they are calm, outside in; a busy ring turns gold and an overloaded one
- * red. The label's dots before the free resources take the same colours.
- */
-export const RINGS = { cpu: "#9fd0ff", memory: "#5fd6c8", gpu: "#c39bff" } as const;
 
 /** `hull` also colours the inspection's scanner over a ship that the family reviews. */
 export const FLEET: Record<Family, { hull: string; engine: string }> = {

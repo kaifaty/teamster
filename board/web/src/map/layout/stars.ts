@@ -1,6 +1,5 @@
 // Where the galaxy's stars stand: the lattice, the constellations and the parts of the galaxy kept clear of them.
 
-import { fuelColumnRect, type FuelColumn } from "./fuel";
 import {
   constellationKey,
   LABEL_ZOOM,
@@ -13,8 +12,6 @@ import {
   type StarShape,
 } from "./galaxy";
 import { hashName, type Point, type Rect, type Size } from "./geometry";
-import { machineColumnRect, machineNoteRoom, type MachineColumn } from "./machines";
-import { RESEARCH_SIZE, researchPosition } from "./research";
 
 /** Two steps of the lattice differ by this ratio, so that a galaxy that gains or loses a star usually keeps its lattice. */
 const SPACING_LADDER = 1.08;
@@ -22,22 +19,6 @@ const SPACING_LADDER = 1.08;
 const SPARE = 1.25;
 /** The share of a step a star stands off its node, so that the rows do not look ruled. */
 const NODE_JITTER = 0.12;
-
-/**
- * The parts of the galaxy where no star stands: the science station, the fuel tanks and the machines' reactors
- * with their labels, and the parts `covered` by the map's own panels.
- */
-export function galaxyKeepOuts(size: Size, covered: readonly Rect[], machines: MachineColumn | null = null, fuel: FuelColumn | null = null): Rect[] {
-  const station = researchPosition(size, covered, machines, fuel);
-  const result: Rect[] = [
-    { x0: station.x - 150, y0: station.y - RESEARCH_SIZE / 2 - 40, x1: station.x + 150, y1: station.y + RESEARCH_SIZE / 2 + 85 },
-  ];
-  // Each whole column, the gaps between its rows too: a star there could never show its label, see MapView.
-  for (const rect of [machines ? machineColumnRect(machines) : null, machines ? machineNoteRoom(machines) : null, fuel ? fuelColumnRect(fuel) : null]) {
-    if (rect) result.push(rect);
-  }
-  return [...result, ...covered];
-}
 
 const overlaps = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 /**
@@ -51,7 +32,7 @@ function unit(name: string): number {
   return ((hash ^ (hash >>> 16)) >>> 0) / 2 ** 32;
 }
 
-/** The region the stars stand in, a little in from the edges; the keep-outs take the panels and the columns. */
+/** The region the stars stand in, a little in from the edges; the keep-outs take the panels. */
 function galaxyRegion(size: Size): Rect {
   return { x0: 50, y0: 40, x1: size.width - 50, y1: size.height - 30 };
 }
@@ -95,7 +76,7 @@ const reachOf = (count: number, spacing: number) => spacing * (1.2 + Math.sqrt(c
 /**
  * Where constellation `name` of `count` stars may have its middle, the most open first, at most `limit` of them: free
  * nodes with the most free room around them within its reach, the nearest nodes counting most, so that it settles in open
- * sky rather than around the science station, along a column or at the edge; and away from the middles in `taken`, so
+ * sky rather than at a panel or the edge; and away from the middles in `taken`, so
  * that two constellations do not run into each other. Equal nodes go by the constellation's name.
  */
 export function centreChoices(
@@ -189,8 +170,8 @@ function placeStars(
     if (before && fits(star, before)) put(star, before, true);
   }
   /**
-   * A constellation's star with its label stands this far from what stands inside the galaxy, the science station, so
-   * that the cloud does not take it in; the panels and the columns along the edges need no more than the label's room.
+   * A constellation's star with its label stands this far from whatever stands inside the galaxy, so that the cloud does
+   * not take it in; the panels along the edges need no more than the label's room.
    */
   const margin = spacing * 0.6;
   const inner = blocked.filter((rect) => rect.x0 > region.x0 && rect.y0 > region.y0 && rect.x1 < region.x1 && rect.y1 < region.y1);
@@ -201,7 +182,7 @@ function placeStars(
   };
   /**
    * Puts `list` around `centre`, each star on the free spot of the fine lattice nearest it, and tells how far they spread:
-   * the sum of their squared distances from their own middle, more for every star close to the science station, and a
+   * the sum of their squared distances from their own middle, more for every star close to what stands inside the galaxy, and a
    * great deal for every star left without a spot.
    */
   const gather = (list: readonly StarShape[], centre: Point): number => {
@@ -266,7 +247,7 @@ function placeStars(
     const keepOuts = rooms.slice(0, blocked.length);
     const room = nearest.find((item) => free(starCore(star, item.node, lattice), cores) && free(starCore(star, item.node, lattice), keepOuts));
     // A busy star without its label's room waits for the zoom; any star without room for itself makes the lattice
-    // narrow too. In a galaxy fuller than its room it may touch another star, but never a panel or the station.
+    // narrow too. In a galaxy fuller than its room it may touch another star, but never a panel.
     if (star.live || !room) crowded++;
     const squeezed = room ?? nearest.find((item) => free(starCore(star, item.node, lattice), keepOuts));
     put(star, squeezed?.node ?? nearest[0]?.node ?? home, false);

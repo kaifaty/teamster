@@ -48,6 +48,8 @@ export interface CameraDeps {
 
 export interface SceneCamera {
   readonly viewport: Size;
+  /** The part of the window above the control panel, where the galaxy is fitted. */
+  readonly galaxyFree: View;
   /** The galaxy's world and its fitted camera. */
   readonly world: Size;
   readonly fit: Camera;
@@ -66,8 +68,8 @@ export interface SceneCamera {
   fitOf(): Camera;
   /** The world point under the screen point `screen`. */
   worldPoint(screen: Point): Point;
-  /** Lays the galaxy out for a window of `viewport`. */
-  layoutGalaxy(viewport: Size): void;
+  /** Lays the galaxy out for a window of `viewport`, in its part above the `bottom` pixels the control panel covers. */
+  layoutGalaxy(viewport: Size, bottom?: number): void;
   /** Lays the system out in the part of the window `insets` leave free. */
   layoutSystem(insets: Insets): void;
   /** Shows a system or the galaxy; a system shown starts from its fitted view. */
@@ -97,8 +99,10 @@ export interface SceneCamera {
 
 export function createCamera(initial: Size, deps: CameraDeps): SceneCamera {
   let viewport = initial;
-  let world = worldSize(viewport);
-  let fit = fitCamera(world, viewport);
+  /** The galaxy is fitted above the control panel at the bottom of the window. */
+  let galaxyFree: View = freeView(viewport, NO_INSETS);
+  let world = worldSize(galaxyFree);
+  let fit = fitCamera(world, galaxyFree);
   /** The parts of the window under the map's panels; a system is laid out in the rest, `free`, with its own world. */
   let insets: Insets = NO_INSETS;
   let free: View = freeView(viewport, insets);
@@ -108,7 +112,7 @@ export function createCamera(initial: Size, deps: CameraDeps): SceneCamera {
   let galaxyView = fit;
   let systemView = systemFit;
   /** The fitted cameras and the views they were last laid out for. */
-  let fitted = { fit, viewport };
+  let fitted: { fit: Camera; viewport: View } = { fit, viewport: galaxyFree };
   let systemFitted: { fit: Camera; viewport: View } = { fit: systemFit, viewport: free };
   let inSystem = false;
   /** Where a zoom by the wheel or a key glides to; a trackpad and fingers move the camera at once. */
@@ -121,8 +125,8 @@ export function createCamera(initial: Size, deps: CameraDeps): SceneCamera {
   const view = (): Camera => (inSystem ? systemView : galaxyView);
   const worldOf = (): Size => (inSystem ? systemWorld : world);
   const fitOf = (): Camera => (inSystem ? systemFit : fit);
-  /** `camera` kept over the world shown: see clampCamera. A system is kept within the free part of the window. */
-  const clampView = (camera: Camera): Camera => clampCamera(camera, worldOf(), inSystem ? free : viewport);
+  /** `camera` kept over the world shown: see clampCamera. Each is kept within its free part of the window. */
+  const clampView = (camera: Camera): Camera => clampCamera(camera, worldOf(), inSystem ? free : galaxyFree);
   const report = () => deps.onCamera({ galaxy: world, system: systemWorld }, view());
 
   function worldPoint(screen: Point): Point {
@@ -130,15 +134,16 @@ export function createCamera(initial: Size, deps: CameraDeps): SceneCamera {
     return { x: (screen.x - tx) / zoom, y: (screen.y - ty) / zoom };
   }
 
-  function layoutGalaxy(next: Size) {
+  function layoutGalaxy(next: Size, bottom = 0) {
     viewport = next;
-    const shaped = worldSize(viewport);
+    galaxyFree = freeView(viewport, { ...NO_INSETS, bottom });
+    const shaped = worldSize(galaxyFree);
     const reshaped = shaped.width !== world.width || shaped.height !== world.height;
     world = shaped;
-    fit = fitCamera(world, viewport);
+    fit = fitCamera(world, galaxyFree);
     // A new window keeps what the cameras looked at; a world of another shape starts from the whole of it.
-    galaxyView = reshaped ? fit : refitCamera(galaxyView, fitted, fit, viewport, world);
-    fitted = { fit, viewport };
+    galaxyView = reshaped ? fit : refitCamera(galaxyView, fitted, fit, galaxyFree, world);
+    fitted = { fit, viewport: galaxyFree };
   }
 
   function layoutSystem(next: Insets) {
@@ -219,6 +224,9 @@ export function createCamera(initial: Size, deps: CameraDeps): SceneCamera {
   return {
     get viewport() {
       return viewport;
+    },
+    get galaxyFree() {
+      return galaxyFree;
     },
     get world() {
       return world;

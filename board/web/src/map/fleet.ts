@@ -1,6 +1,6 @@
-// The galaxy from the board's data: one star per repository and one fuel tank per account.
+// The galaxy from the board's data: one star per repository; and the subscriptions, which the control panel shows.
 
-import { parseAccounts } from "../lib/accounts";
+import { parseAccounts, type DutyInfo } from "../lib/accounts";
 import type { TaskSummary } from "../types";
 
 export type Family = "codex" | "claude";
@@ -15,7 +15,7 @@ export interface Star {
   dots: { executor: Family; state: "work" | "attention" | "ready" | "sleep" }[];
 }
 
-/** A subscription as a fuel tank at the galaxy's edge. */
+/** A subscription, as the control panel shows it. */
 export interface Tank {
   key: string;
   name: string;
@@ -27,6 +27,8 @@ export interface Tank {
   status: string | null;
   /** The account kept for the orchestrator (teamster's duty account): new tasks skip it. */
   admiral: boolean;
+  /** Why and since when it is on duty, for the duty account; null for the others. */
+  duty: DutyInfo | null;
   /**
    * Unix seconds when the tank refills: an exhausted or limited account at the end of its limit, any other at the weekly
    * reset; null when unknown or when the account needs a login or a token rather than a reset.
@@ -38,13 +40,8 @@ export interface Tank {
   burst: { percent: number; resetsAt: number | null } | null;
 }
 
-/** Below this share the tank is shown as low. */
+/** Below this share a subscription is shown as low. */
 export const LOW_FUEL = 20;
-
-/** The tank gives nothing or almost nothing: its glass runs red and it blinks a warning light. */
-export function tankEmpty(tank: Pick<Tank, "bad" | "fuel">): boolean {
-  return tank.bad || (tank.fuel !== null && tank.fuel <= LOW_FUEL);
-}
 
 /** How long until `at` (Unix seconds), short: "3 д", "10 ч", "25 мин"; null without a future time. */
 export function untilText(at: number | null, now: number): string | null {
@@ -53,13 +50,6 @@ export function untilText(at: number | null, now: number): string | null {
   if (minutes < 60) return `${minutes} мин`;
   const hours = Math.round(minutes / 60);
   return hours < 36 ? `${hours} ч` : `${Math.round(hours / 24)} д`;
-}
-
-/** The lamps beside a tank, one per day of the week: as many burn as days are left until it refills, 0 to 7. */
-export const DAY_LAMPS = 7;
-export function daysLeft(at: number | null, now: number): number {
-  if (at === null || at <= now) return 0;
-  return Math.min(DAY_LAMPS, Math.ceil((at - now) / 86400));
 }
 
 /**
@@ -155,6 +145,7 @@ export function tanks(data: unknown, now: number): Tank[] {
       bad: row.bad,
       status: row.status,
       admiral: row.duty !== null,
+      duty: row.duty,
       refillAt: row.bad ? row.limitedUntil : row.weeklyResetsAt,
       resets: row.resets,
       burst: row.burst,

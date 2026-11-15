@@ -3,9 +3,8 @@ import { HULL_SIZE } from "./fleet";
 import { PLACES } from "./placement";
 import {
   CHECKPOINT, COUNT_ROOM, MAX_ZOOM, ROUTE, inCheckpoint, lanesOf, STATIONS, SUN_RADIUS, backdropOf, clampCamera, defaultCovered, fitCamera, freeView, parkingOf, parkingOrder,
-  homeWorld, plateAt, plateRoom, skyChoices, stationOf, systemWorldSize, toolbarBand, columnSpan,
-  TANK_ASPECT, TANK_MIN_SIZE, TANK_SIZE, BADGE_RISE, fuelColumnRect, fuelPositions, fuelRoom, tankGear, tankLabelSize, type TankShape,
-  RESEARCH_SIZE, LABEL_MAX_WIDTH, MACHINE_LABEL_WIDTH_PX, MACHINE_MIN_SIZE, MACHINE_SIZE, machineColumnRect, machineLabelAnchor, machinePositions, machineRoom, machineRooms, galaxyKeepOuts, galaxyLayout, limitZoom, logCorner, refitCamera, researchPosition, starFootprint, starLabelSize,
+  homeWorld, plateAt, plateRoom, skyChoices, stationOf, systemWorldSize, toolbarBand,
+  LABEL_MAX_WIDTH, galaxyLayout, limitZoom, refitCamera, starFootprint, starLabelSize,
   starRadius, starSize, stationAt, systemFrame, worldSize, zoomCamera, LABEL_ZOOM as LABEL_ZOOM_FULL, type Rect, type StarShape,
 } from "./layout";
 
@@ -318,7 +317,7 @@ describe("galaxy", () => {
       const live = i % 5 < 2 ? 1 + ((i * 7) % 16) : 0;
       return { repo: `repo-${i}`, live, attention: live && i % 4 === 0 ? 1 + (i % 3) : 0, ready: live ? Math.floor(live / 2) : 0, sleeping: 0 };
     });
-  const blockedFor = (world: { width: number; height: number }) => galaxyKeepOuts(world, defaultCovered(world));
+  const blockedFor = (world: { width: number; height: number }) => defaultCovered(world);
   const hit = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 
   it("spreads a few stars wide and many densely, drawing a crowd smaller", () => {
@@ -334,7 +333,7 @@ describe("galaxy", () => {
     expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(size.width * 0.4);
   });
 
-  it("never lets two stars overlap, nor the station, the toolbar or the log", () => {
+  it("never lets two stars overlap, nor the toolbar", () => {
     for (const world of SIZES) {
       const blocked = blockedFor(world);
       for (const count of [1, 6, 15, 34, 60, 100]) {
@@ -401,26 +400,11 @@ describe("galaxy", () => {
     expect(kept.length).toBeGreaterThanOrEqual(stars.length - 3);
   });
 
-  it("leaves the science station's corner to it, with room for its label below", () => {
-    for (const world of SIZES) {
-      for (const count of [1, 6, 12, 25, 60, 120]) {
-        const station = researchPosition(world);
-        for (const point of galaxyLayout(fleet(count), world, blockedFor(world)).places.values()) {
-          const dx = Math.abs(point.x - station.x);
-          const dy = point.y - station.y;
-          // Below the station its label, down to the keep-out's bottom edge.
-          const clear = dx > RESEARCH_SIZE * 0.5 + 60 || dy < -(RESEARCH_SIZE * 0.5 + 60) || dy > RESEARCH_SIZE * 0.5 + 85;
-          expect(clear, `${count} repositories, star at ${point.x},${point.y}`).toBe(true);
-        }
-      }
-    }
-  });
-
-  it("gives a column the height between what covers the top edge and the bottom edge over it", () => {
-    const covered = defaultCovered(size);
-    expect(columnSpan(size, covered, 0, 200)).toEqual({ top: toolbarBand(size).y1 + 12, bottom: logCorner(size).y0 - 12 });
-    expect(columnSpan(size, covered, size.width - 200, size.width)).toEqual({ top: toolbarBand(size).y1 + 12, bottom: size.height - 20 });
-    expect(columnSpan(size, [], 0, 200)).toEqual({ top: 20, bottom: size.height - 20 });
+  it("keeps the stars under the toolbar's band and nowhere else out of the galaxy", () => {
+    expect(defaultCovered(size)).toEqual([toolbarBand(size)]);
+    const galaxy = galaxyLayout(fleet(12), size, blockedFor(size));
+    // Without the columns and the station the stars reach the galaxy's lower corners too.
+    expect(Math.max(...[...galaxy.places.values()].map((point) => point.y))).toBeGreaterThan(size.height * 0.7);
   });
 
   it("sizes a busy label by its name and badges, and a quiet one by its name", () => {
@@ -438,289 +422,9 @@ describe("galaxy", () => {
   });
 });
 
-describe("machines", () => {
-  /** The fixture's machines, with the statuses their labels show. */
-  const FIXTURE = [
-    { id: "lapka", name: "lapka", status: "перегружена: память, GPU" },
-    { id: "kedr", name: "kedr", status: "свободна" },
-    { id: "sosna", name: "sosna", status: "занята: видеопамять" },
-    { id: "olha", name: "olha", status: "нет связи: не отвечает" },
-    { id: "yasen", name: "yasen", status: "нет данных" },
-  ];
-  const machines = (count: number) => Array.from({ length: count }, (_, i) => ({ id: `machine-${i}`, name: `machine-${i}`, status: "занята: видеопамять" }));
-  const [WIDE, TALL] = SIZES as [{ width: number; height: number }, { width: number; height: number }];
-  /** The full view's zoom of a 1400×900 window and of a 390×844 phone, and others around them. */
-  const ZOOMS = new Map([[WIDE, [0.75, 0.855, 0.9]], [TALL, [0.39, 0.5]]]);
-  const hit = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
-  /** The reactor with its rings: as tall as it is wide. */
-  const body = (at: { x: number; y: number }, size: number): Rect => ({ x0: at.x - size / 2, y0: at.y - size / 2, x1: at.x + size / 2, y1: at.y + size / 2 });
-
-  it("is the same every time, keeps the order and stands in one column along the right edge", () => {
-    for (const world of SIZES) {
-      const column = machinePositions(FIXTURE, world);
-      expect(machinePositions(FIXTURE, world)).toEqual(column);
-      const points = [...column.places.values()];
-      expect([...column.places.keys()]).toEqual(FIXTURE.map((machine) => machine.id));
-      expect(new Set(points.map((point) => point.x)).size).toBe(1);
-      expect(points[0]!.x + column.size / 2).toBeLessThanOrEqual(world.width);
-      expect(points[0]!.x).toBeGreaterThan(world.width * 0.85);
-      points.slice(1).forEach((point, i) => expect(point.y).toBeGreaterThan(points[i]!.y));
-    }
-  });
-
-  it("draws the stations larger on a phone, and smaller in a long column down to its least size", () => {
-    expect(machinePositions(machines(1), WIDE).size).toBe(MACHINE_SIZE.wide);
-    expect(machinePositions(machines(1), TALL).size).toBe(MACHINE_SIZE.tall);
-    expect(machinePositions(machines(16), WIDE).size).toBe(MACHINE_MIN_SIZE);
-    // The fixture's five machines in the full view: at least 80 pixels on a 1400×900 window, 48 on a 390×844 phone.
-    expect(machinePositions(FIXTURE, WIDE, 0.855).size * 0.855).toBeGreaterThanOrEqual(80);
-    expect(machinePositions(FIXTURE, TALL, 0.39).size * 0.39).toBeGreaterThanOrEqual(48);
-  });
-
-  it("puts the name and what is free on the left of a reactor in a wide world, the name alone in a tall one", () => {
-    for (const world of SIZES) {
-      const column = machinePositions(FIXTURE, world);
-      expect(column.status).toBe(world === WIDE);
-      for (const machine of FIXTURE) {
-        const anchor = machineLabelAnchor(machine.id, column)!;
-        const at = column.places.get(machine.id)!;
-        expect(anchor.y).toBe(at.y);
-        expect(anchor.x).toBeLessThan(at.x - column.size / 2);
-        expect(column.labels.get(machine.id)!.width).toBeLessThanOrEqual(MACHINE_LABEL_WIDTH_PX);
-      }
-    }
-    const long = { id: "x", name: "x", status: "перегружена: процессор, память, GPU, видеопамять, диск /data" };
-    expect(machinePositions([long], WIDE).labels.get("x")!.width).toBe(MACHINE_LABEL_WIDTH_PX);
-  });
-
-  it("keeps the stations with their labels inside the world, apart from each other and clear of the toolbar and the log", () => {
-    for (const world of SIZES) {
-      for (const zoom of ZOOMS.get(world)!) {
-        for (const list of [machines(1), machines(4), FIXTURE, machines(12)]) {
-          const column = machinePositions(list, world, zoom, true);
-          const what = `${list.length} machines in ${world.width}x${world.height} at ${zoom}`;
-          const rooms = machineRooms(column);
-          const bodies = [...column.places.values()].map((at) => body(at, column.size));
-          for (const room of [...rooms, ...bodies]) {
-            expect(room.x0, what).toBeGreaterThanOrEqual(0);
-            expect(room.y0, what).toBeGreaterThanOrEqual(0);
-            expect(room.x1, what).toBeLessThanOrEqual(world.width);
-            expect(room.y1, what).toBeLessThanOrEqual(world.height);
-            for (const panel of defaultCovered(world)) expect(hit(room, panel), what).toBe(false);
-          }
-          // Up to the column's limit every row has its own room, and a label keeps clear of every station.
-          if (list.length < 12) expect(column.size, what).toBeGreaterThan(MACHINE_MIN_SIZE);
-          if (column.size > MACHINE_MIN_SIZE) {
-            rooms.forEach((a, i) => rooms.slice(i + 1).forEach((b) => expect(hit(a, b), what).toBe(false)));
-            for (const { id } of list) {
-              const anchor = machineLabelAnchor(id, column)!;
-              const size = column.labels.get(id)!;
-              const label = { x0: anchor.x - size.width / zoom, y0: anchor.y - size.height / zoom / 2, x1: anchor.x, y1: anchor.y + size.height / zoom / 2 };
-              for (const station of bodies) expect(hit(label, station), what).toBe(false);
-            }
-          }
-        }
-      }
-    }
-  });
-
-  it("covers the whole column with one rect, the gaps between its rows included, and not the config's line", () => {
-    expect(machineColumnRect(machinePositions([], WIDE))).toBeNull();
-    for (const world of SIZES) {
-      for (const list of [machines(1), FIXTURE, machines(12)]) {
-        const column = machinePositions(list, world, ZOOMS.get(world)![0], true);
-        const rect = machineColumnRect(column)!;
-        const ids = [...column.places.keys()];
-        const rooms = ids.map((id) => machineRoom(id, column));
-        for (const room of rooms) {
-          expect(rect.x0).toBeLessThanOrEqual(room.x0);
-          expect(rect.x1).toBeGreaterThanOrEqual(room.x1);
-          expect(rect.y0).toBeLessThanOrEqual(room.y0);
-          expect(rect.y1).toBeGreaterThanOrEqual(room.y1);
-        }
-        // Each gap between two rows, as wide as the widest label's room.
-        rooms.slice(1).forEach((room, i) => {
-          const gap = { x0: Math.min(...rooms.map((r) => r.x0)), y0: rooms[i]!.y1, x1: column.right, y1: room.y0 };
-          expect(rect.x0).toBeLessThanOrEqual(gap.x0);
-          expect(rect.y0).toBeLessThanOrEqual(gap.y0);
-          expect(rect.y1).toBeGreaterThanOrEqual(gap.y1);
-        });
-        expect(rect.x1).toBe(column.right);
-        expect(rect.y0).toBeGreaterThan(column.note!.y);
-      }
-    }
-  });
-
-  it("keeps the stations above the ship's log that spans a tall window", () => {
-    for (const room of machineRooms(machinePositions(FIXTURE, TALL, 0.39))) expect(room.y1).toBeLessThanOrEqual(logCorner(TALL).y0);
-  });
-
-  it("puts the science station in the lower right corner, left of the machines and above the log", () => {
-    const alone = researchPosition(WIDE);
-    expect(alone.x).toBeGreaterThan(WIDE.width * 0.8);
-    expect(alone.x + 200 / 0.75 / 2).toBeLessThanOrEqual(WIDE.width - 20);
-    expect(alone.y + 93 + 40 / 0.75).toBeLessThanOrEqual(WIDE.height - 20);
-    expect(alone.y).toBeGreaterThan(WIDE.height * 0.7);
-    for (const [world, zoom, label] of [[WIDE, 0.855, { width: 200, height: 40 }], [TALL, 0.39, { width: 176, height: 36 }]] as const) {
-      const column = machinePositions(FIXTURE, world, zoom);
-      const station = researchPosition(world, defaultCovered(world), column);
-      expect(station.x).toBeLessThan(researchPosition(world).x);
-      const sprite = { x0: station.x - RESEARCH_SIZE / 2, y0: station.y - RESEARCH_SIZE / 2, x1: station.x + RESEARCH_SIZE / 2, y1: station.y + RESEARCH_SIZE / 2 };
-      const box = { x0: station.x - label.width / zoom / 2, y0: station.y + 93, x1: station.x + label.width / zoom / 2, y1: station.y + 93 + label.height / zoom };
-      expect(box.x0).toBeGreaterThanOrEqual(0);
-      expect(sprite.y0).toBeGreaterThanOrEqual(0);
-      for (const covered of defaultCovered(world)) {
-        expect(hit(box, covered)).toBe(false);
-        expect(hit(sprite, covered)).toBe(false);
-      }
-      for (const room of machineRooms(column)) {
-        expect(hit(box, room)).toBe(false);
-        expect(hit(sprite, room)).toBe(false);
-      }
-    }
-    // On a phone the log spans the bottom: the station stands above it.
-    const phone = researchPosition(TALL);
-    expect(phone.y + 93 + 36 / 0.75).toBeLessThanOrEqual(logCorner(TALL).y0);
-  });
-
-  it("lets no star stand in the machines' column, the gaps between its rows included", () => {
-    const inside = (at: { x: number; y: number }, r: Rect) => at.x >= r.x0 && at.x <= r.x1 && at.y >= r.y0 && at.y <= r.y1;
-    for (const [world, zoom] of [[WIDE, 0.855], [TALL, 0.39]] as const) {
-      for (const machineCount of [1, 2, 4, 5, 12]) {
-        const list = machineCount === 5 ? FIXTURE : machines(machineCount);
-        const column = machinePositions(list, world, zoom);
-        const rect = machineColumnRect(column)!;
-        const blocked = galaxyKeepOuts(world, defaultCovered(world), column);
-        for (const count of [6, 34, 150]) {
-          const stars = Array.from({ length: count }, (_, i) => ({ repo: `repo-${i}`, live: i % 3 ? 0 : 1 + (i % 7), attention: 0, ready: 0, sleeping: 0 }));
-          const galaxy = galaxyLayout(stars, world, blocked, null, zoom);
-          const what = `${machineCount} machines, ${count} stars in ${world.width}x${world.height}`;
-          for (const at of galaxy.places.values()) expect(inside(at, rect), what).toBe(false);
-        }
-      }
-    }
-  });
-});
-
-describe("fuel tanks", () => {
-  const [WIDE, TALL] = SIZES as [{ width: number; height: number }, { width: number; height: number }];
-  const ZOOMS = new Map([[WIDE, [0.75, 0.855, 1.06]], [TALL, [0.375, 0.5]]]);
-  const hit = (a: Rect, b: Rect) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
-  const tank = (key: string, executor: "codex" | "claude" = "codex", resets = 0): TankShape => ({ key, executor, name: key, info: "83% · ↻ 5 д", resets });
-  /** The board's subscriptions: two Codex accounts with free resets and three Claude ones. */
-  const BOARD: TankShape[] = [
-    tank("main", "codex", 2),
-    tank("second", "codex", 2),
-    tank("default", "claude"),
-    tank("kaifaty-self", "claude"),
-    tank("my-corp", "claude"),
-  ];
-  const many = (count: number) => Array.from({ length: count }, (_, i) => tank(`account-${i}`, i % 2 ? "claude" : "codex"));
-  /** The tank with its badge and lamps. */
-  const gear = (at: { x: number; y: number }, size: number): Rect => ({
-    x0: at.x - (size * TANK_ASPECT) / 2,
-    y0: at.y - size / 2 - size * BADGE_RISE,
-    x1: at.x - (size * TANK_ASPECT) / 2 + tankGear(size),
-    y1: at.y + size / 2,
-  });
-
-  it("stands in a column on the left of a wide galaxy, in order, each label on the right of its tank", () => {
-    const fuel = fuelPositions(BOARD, WIDE, 0.855);
-    expect(fuel.row).toBe(false);
-    expect(fuelPositions(BOARD, WIDE, 0.855)).toEqual(fuel);
-    const points = BOARD.map((shape) => fuel.places.get(shape.key)!);
-    expect(new Set(points.map((point) => point.x)).size).toBe(1);
-    expect(points[0]!.x).toBeLessThan(WIDE.width * 0.1);
-    points.slice(1).forEach((point, i) => expect(point.y).toBeGreaterThan(points[i]!.y));
-    // Codex and Claude stand a little apart.
-    expect(points[2]!.y - points[1]!.y).toBeGreaterThan(points[1]!.y - points[0]!.y);
-    for (const shape of BOARD) {
-      const anchor = fuel.anchors.get(shape.key)!;
-      expect(anchor.y).toBe(fuel.places.get(shape.key)!.y);
-      expect(anchor.x).toBeGreaterThan(gear(fuel.places.get(shape.key)!, fuel.size).x1);
-    }
-  });
-
-  it("stands in a row under the toolbar of a tall galaxy, each label under its tank and no wider than its share", () => {
-    const fuel = fuelPositions(BOARD, TALL, 0.375);
-    expect(fuel.row).toBe(true);
-    const points = BOARD.map((shape) => fuel.places.get(shape.key)!);
-    expect(new Set(points.map((point) => point.y)).size).toBe(1);
-    points.slice(1).forEach((point, i) => expect(point.x).toBeGreaterThan(points[i]!.x));
-    const share = (TALL.width - 40) / BOARD.length;
-    for (const shape of BOARD) {
-      expect(fuel.anchors.get(shape.key)!.y).toBeGreaterThan(fuel.places.get(shape.key)!.y + fuel.size / 2);
-      expect(fuel.labels.get(shape.key)!.width / 0.375).toBeLessThanOrEqual(share);
-    }
-  });
-
-  it("keeps the tanks with their labels inside the world, apart from each other and clear of the toolbar and the log", () => {
-    for (const world of SIZES) {
-      for (const zoom of ZOOMS.get(world)!) {
-        for (const list of [[tank("solo")], BOARD, many(9)]) {
-          const fuel = fuelPositions(list, world, zoom);
-          const what = `${list.length} tanks in ${world.width}x${world.height} at ${zoom}`;
-          const rooms = list.map((shape) => fuelRoom(shape.key, fuel));
-          for (const room of rooms) {
-            expect(room.x0, what).toBeGreaterThanOrEqual(0);
-            expect(room.y0, what).toBeGreaterThanOrEqual(0);
-            expect(room.x1, what).toBeLessThanOrEqual(world.width);
-            expect(room.y1, what).toBeLessThanOrEqual(world.height);
-            for (const panel of defaultCovered(world)) expect(hit(room, panel), what).toBe(false);
-          }
-          if (fuel.size > TANK_MIN_SIZE) rooms.forEach((a, i) => rooms.slice(i + 1).forEach((b) => expect(hit(a, b), what).toBe(false)));
-        }
-      }
-    }
-  });
-
-  it("draws the tanks larger on a phone, and smaller in a long column down to their least size", () => {
-    expect(fuelPositions([tank("solo")], WIDE).size).toBe(TANK_SIZE.wide);
-    expect(fuelPositions([tank("solo")], TALL, 0.375).size).toBe(TANK_SIZE.tall);
-    expect(fuelPositions(many(14), WIDE).size).toBe(TANK_MIN_SIZE);
-    // The board's five tanks in the full view: at least 60 pixels tall on a 1400×900 window, 48 on a phone.
-    expect(fuelPositions(BOARD, WIDE, 0.855).size * 0.855).toBeGreaterThanOrEqual(60);
-    expect(fuelPositions(BOARD, TALL, 0.375).size * 0.375).toBeGreaterThanOrEqual(48);
-  });
-
-  it("sizes a label by its name, its line and its spare cells, up to its widest", () => {
-    expect(tankLabelSize(tank("main", "codex", 2)).width).toBeGreaterThan(tankLabelSize(tank("main")).width);
-    expect(tankLabelSize({ ...tank("x".repeat(60)) }).width).toBe(150);
-  });
-
-  it("lets no star stand among the tanks, and moves the science station clear of their labels", () => {
-    const inside = (at: { x: number; y: number }, r: Rect) => at.x >= r.x0 && at.x <= r.x1 && at.y >= r.y0 && at.y <= r.y1;
-    for (const [world, zoom] of [[WIDE, 0.855], [TALL, 0.375]] as const) {
-      const fuel = fuelPositions(BOARD, world, zoom);
-      const rect = fuelColumnRect(fuel)!;
-      for (const shape of BOARD) {
-        const room = fuelRoom(shape.key, fuel);
-        expect(rect.x0).toBeLessThanOrEqual(room.x0);
-        expect(rect.y1).toBeGreaterThanOrEqual(room.y1);
-      }
-      const blocked = galaxyKeepOuts(world, defaultCovered(world), null, fuel);
-      for (const count of [6, 34]) {
-        const stars = Array.from({ length: count }, (_, i) => ({ repo: `repo-${i}`, live: i % 3 ? 0 : 1 + (i % 7), attention: 0, ready: 0, sleeping: 0 }));
-        for (const at of galaxyLayout(stars, world, blocked, null, zoom).places.values()) expect(inside(at, rect)).toBe(false);
-      }
-      const station = researchPosition(world, defaultCovered(world), null, fuel);
-      const sprite = { x0: station.x - RESEARCH_SIZE / 2, y0: station.y - RESEARCH_SIZE / 2, x1: station.x + RESEARCH_SIZE / 2, y1: station.y + RESEARCH_SIZE / 2 };
-      for (const shape of BOARD) expect(hit(sprite, fuelRoom(shape.key, fuel))).toBe(false);
-    }
-    expect(fuelColumnRect(fuelPositions([], WIDE))).toBeNull();
-  });
-
-  it("starts a phone's machine column under the row of tanks", () => {
-    const fuel = fuelPositions(BOARD, TALL, 0.375);
-    const rect = fuelColumnRect(fuel)!;
-    const column = machinePositions([{ id: "a", name: "a", status: "" }, { id: "b", name: "b", status: "" }], TALL, 0.375, false, [...defaultCovered(TALL), { ...rect, y0: 0 }]);
-    for (const room of machineRooms(column)) expect(room.y0).toBeGreaterThan(rect.y1);
-  });
-});
-
 describe("constellations in the galaxy", () => {
   const size = { width: 1600, height: 1000 };
-  const blocked = galaxyKeepOuts(size, defaultCovered(size));
+  const blocked = defaultCovered(size);
   /** A board of `count` stars, some busy; the first `members` of every fifth one form a constellation. */
   const board = (count: number): StarShape[] =>
     Array.from({ length: count }, (_, i) => ({ repo: `repo-${String(i).padStart(2, "0")}`, live: i % 3 ? 0 : 1 + (i % 5), attention: 0, ready: 0, sleeping: 0 }));
@@ -745,7 +449,7 @@ describe("constellations in the galaxy", () => {
   });
 
   it("keeps the other stars a step and more from a constellation's stars, where there is room", () => {
-    const stars = board(14);
+    const stars = board(16);
     const groups = groupOf(stars, 3);
     const galaxy = galaxyLayout(stars, size, blocked, null, LABEL_ZOOM_FULL, groups);
     for (const star of stars) {

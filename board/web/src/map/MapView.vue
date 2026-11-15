@@ -1,14 +1,14 @@
 <script setup lang="ts">
-// The fleet's map: a Pixi scene of the galaxy and its star systems, with HTML labels over it, the toolbar, the dock and
-// the panels. The composables in ./use hold its parts; the builders in ./overlay make its labels' texts, and the
-// components there draw them.
+// The fleet's map: a Pixi scene of the galaxy and its star systems, with HTML labels over it, the toolbar, the control
+// panel at the bottom (./console) and the panels. The composables in ./use hold its parts; the builders in ./overlay make
+// its labels' texts, and the components there draw them.
 import { computed, ref } from "vue";
 import type { Board } from "../store/board";
 import AccountView from "./account/AccountView.vue";
 import frameLight from "./art/frame-light.png";
+import MapConsole from "./console/MapConsole.vue";
 import DaySummary from "./DaySummary.vue";
 import FleetPanel from "./FleetPanel.vue";
-import MapDock from "./MapDock.vue";
 import MapToolbar from "./MapToolbar.vue";
 import GalaxyLabels from "./overlay/GalaxyLabels.vue";
 import SystemLabels from "./overlay/SystemLabels.vue";
@@ -26,8 +26,8 @@ import { useSystemFleet } from "./use/useSystemFleet";
 /** `machine`: the machine whose card is open over the map, or null. */
 const props = defineProps<{ board: Board; active: boolean; machine?: string | null }>();
 /**
- * `machine`: a machine's reactor was clicked, with the label to give the focus back to; `panel`: the map opened a
- * ship's bridge or the science station's screen, which replace the machine's card.
+ * `machine`: a machine was clicked in the control panel, with the button to give the focus back to; `panel`: the map
+ * opened a ship's bridge or the science station's screen, which replace the machine's card.
  */
 const emit = defineEmits<{ board: []; machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
 
@@ -42,14 +42,13 @@ const sources = useMapSources(props);
 const { now, demo, sourceKind, source, loaded, emblemOf, events, eventsError, loadResearch } = sources;
 
 const model = useGalaxyModel(props, sources);
-const { starList, systemNames, pickerGroups, station, machineNote } = model;
+const { starList, systemNames, pickerGroups, station, tankList, machinesData } = model;
 
 const panels = useMapPanels({
   props,
   sources,
   model,
   host,
-  overlay,
   fleetPanel,
   summaryButton,
   onMachine: (id, opener) => emit("machine", id, opener),
@@ -58,10 +57,10 @@ const panels = useMapPanels({
 const { repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip, showOnMap } = panels;
 const { account, openAccount, closeAccount } = panels;
 const { openMachine, flying, enter, leave, goTo, summaryOpen, closeSummary } = panels;
-const { compactDock, logOpen, fleetVisible, toggleFleet, showStation } = panels;
+const { narrow, logOpen, fleetVisible, toggleFleet, showStation } = panels;
 
 const labels = useOverlayLabels(sources, model);
-const { starLabels, constellationLabels, stationLabel, tankLabels, machineLabels, machineNoteStyle } = labels;
+const { starLabels, constellationLabels } = labels;
 
 const { entries, groups, plates, hidden } = useSystemFleet(sources, model, panels);
 
@@ -99,22 +98,7 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
 
     <div v-show="!failure" ref="host" class="stage">
       <div ref="overlay" class="overlay" :class="{ flying }" :style="{ '--frame': `url(${frameLight})` }">
-        <GalaxyLabels
-          v-if="!repo"
-          :star-labels="starLabels"
-          :station-label="stationLabel"
-          :research-open="researchOpen"
-          :machine-labels="machineLabels"
-          :machine="machine"
-          :machine-note-style="machineNoteStyle"
-          :machine-note="machineNote"
-          :constellation-labels="constellationLabels"
-          :tank-labels="tankLabels"
-          @enter="enter"
-          @open-research="openResearch"
-          @open-machine="openMachine"
-          @open-account="openAccount"
-        />
+        <GalaxyLabels v-if="!repo" :star-labels="starLabels" :constellation-labels="constellationLabels" @enter="enter" />
         <SystemLabels v-else :plates="plates" @show-station="showStation" />
       </div>
       <FleetPanel
@@ -130,16 +114,27 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
         @hover="hovered = $event"
         @close="toggleFleet"
       />
-      <MapDock
+      <MapConsole
         v-model:logOpen="logOpen"
         :frame="frameLight"
+        :now="now"
+        :tanks="tankList"
+        :stars="starList"
+        :machines="machinesData"
+        :machine="machine ?? null"
+        :account="account"
+        :station="station"
+        :research-open="researchOpen"
         :log-events="events"
         :events-error="eventsError"
         :repo="repo"
         :system-names="systemNames"
         :emblem-of="emblemOf"
-        :compact-dock="compactDock"
+        :narrow="narrow"
         @go="goTo"
+        @open-account="openAccount"
+        @machine="openMachine"
+        @open-research="openResearch"
       />
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
       <p v-else-if="!starList.length" class="status">Пока ни одной задачи.</p>
@@ -267,23 +262,22 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
   visibility: hidden;
 }
 
-/* The open system's ships, at the right side of the map under the toolbar. */
+/* The open system's ships, at the right side of the map under the toolbar and above the control panel. */
 .stage > .fleet {
   position: absolute;
   top: var(--below-toolbar, 46px);
   right: 10px;
   z-index: 2;
   width: 300px;
-  max-height: calc(100% - var(--below-toolbar, 46px) - 8px);
+  max-height: calc(100% - var(--below-toolbar, 46px) - var(--console-room, 0px) - 8px);
 }
 
 @media (max-width: 760px) {
-  /* The list opens over the map, above the dock's line. */
+  /* The list opens over the map, above the control panel's strip. */
   .stage > .fleet {
     left: 4px;
     right: 4px;
     width: auto;
-    max-height: calc(100% - var(--below-toolbar, 46px) - 52px);
   }
 }
 </style>

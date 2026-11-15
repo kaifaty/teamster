@@ -3,7 +3,7 @@
 
 import { nextTick, onBeforeUnmount, ref, watch, type Ref } from "vue";
 import { placeLabels, type StarLabel } from "../declutter";
-import { fuelColumnRect, labelDrop, machineColumnRect, starSize, type Camera, type Rect, type Size } from "../layout";
+import { labelDrop, starSize, type Camera, type Rect, type Size } from "../layout";
 import type { GalaxyModel } from "./useGalaxyModel";
 import type { OverlayLabels } from "./useOverlayLabels";
 
@@ -48,22 +48,10 @@ export function useStarLabels(overlay: Readonly<Ref<HTMLElement | null>>, repo: 
     const frame = box.getBoundingClientRect();
     const relative = (rect: DOMRect): Rect => ({ x0: rect.left - frame.left, y0: rect.top - frame.top, x1: rect.right - frame.left, y1: rect.bottom - frame.top });
     const root = box.closest(".map") ?? box;
-    const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .dock, .overlay .station, .overlay .tank, .overlay .machine, .overlay .machine-note, .overlay .constellation")]
+    // The control panel's own box, not what opens over the map from it: the long list of events hides the labels anyway.
+    const obstacles = [...root.querySelectorAll<HTMLElement>(".toolbar, .console, .overlay .constellation")]
       .filter((el) => el.offsetParent !== null)
       .map((el) => relative(el.getBoundingClientRect()));
-    // The machines' stations and the tanks are drawn on the canvas: each whole column keeps the labels off, the gaps between
-    // its rows too, so that no star's label stands across a station's wings or a tank's lamps.
-    const column = model.machineColumn.value;
-    const fuel = model.fuelColumn.value;
-    for (const rect of [column ? machineColumnRect(column) : null, fuel ? fuelColumnRect(fuel) : null]) {
-      if (!rect) continue;
-      obstacles.push({
-        x0: camera.tx + rect.x0 * camera.zoom,
-        y0: camera.ty + rect.y0 * camera.zoom,
-        x1: camera.tx + rect.x1 * camera.zoom,
-        y1: camera.ty + rect.y1 * camera.zoom,
-      });
-    }
     const layout = model.galaxy.value;
     const names = layout.spacing * camera.zoom >= QUIET_NAMES_PX;
     const placed: StarLabel[] = [];
@@ -100,8 +88,8 @@ export function useStarLabels(overlay: Readonly<Ref<HTMLElement | null>>, repo: 
   }
 
   watch([labels.starLabels, repo], () => void nextTick(measureLabels), { flush: "post" });
-  // The machines', the tanks' and the constellations' labels are obstacles for the stars' ones.
-  watch([labels.machineLabels, labels.machineNoteStyle, labels.tankLabels, labels.constellationLabels], () => void nextTick(scheduleLabels), { flush: "post" });
+  // The constellations' labels are obstacles for the stars' ones.
+  watch(labels.constellationLabels, () => void nextTick(scheduleLabels), { flush: "post" });
   watch(hoveredStar, scheduleLabels);
   onBeforeUnmount(() => cancelAnimationFrame(labelFrame));
 

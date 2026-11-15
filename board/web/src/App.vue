@@ -231,7 +231,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <!-- On the map the machines stand in the galaxy as reactors. -->
+    <!-- On the map the machines stand in the control panel under the map. -->
     <MachinesStrip
       v-show="view === 'board'"
       :machines="board.state.value.machines"

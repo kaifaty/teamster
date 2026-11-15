@@ -1,0 +1,118 @@
+/*
+ * What the control panel's blocks share: the heading and the rows. The blocks stand inside the dark compartments of the
+ * panel's cast frame (MapConsole.vue), so they have no frame or glass of their own. Each block takes this scoped,
+ * <style scoped src>, so it reaches only that block's own elements. Their colours are fixed, like the map's labels.
+ */
+
+.console-block {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  color: #e8e2d4;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.c-title {
+  flex: none;
+  margin: 0;
+  padding: 0 3px 1px;
+  overflow: hidden;
+  color: #f3c27a;
+  font-size: 12px;
+  line-height: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.c-rows {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(214, 170, 96, 0.35) transparent;
+}
+
+/* A row is a button over the whole width, light on hover and with the board's gold ring on focus. */
+.c-row {
+  display: grid;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 1px 3px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.c-row:hover {
+  background: rgba(214, 170, 96, 0.16);
+}
+
+.c-row:focus-visible,
+.c-press:focus-visible {
+  outline: 2px solid #f3c64e;
+  outline-offset: -1px;
+}
+
+.c-press {
+  cursor: pointer;
+}
+
+.c-press:hover {
+  background-color: rgba(26, 24, 20, 0.94);
+}
+
+.c-name,
+.c-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.c-name {
+  font-weight: 650;
+}
+
+.c-muted {
+  color: #a89c86;
+}
+
+.c-note {
+  padding: 2px 4px;
+  color: #a89c86;
+}
+
+.c-note.bad {
+  color: #ff8d7a;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A narrow window: rows tall enough for a finger. */
+@media (max-width: 760px) {
+  .c-row {
+    min-height: 40px;
+    align-content: center;
+  }
+}

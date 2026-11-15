@@ -279,7 +279,14 @@
           "switch_at": 99
         },
         "credits_floor": 0,
-        "credits_floor_until": null
+        "credits_floor_until": null,
+        "duty": {
+          "account": "claude-pool-1",
+          "family": "claude",
+          "since": 1793988600,
+          "checked_at": 1794000008,
+          "reason": "наибольший запас недели среди аккаунтов Claude"
+        }
       },
       "last_logins": [
         {
