@@ -2584,6 +2584,10 @@ elif name == "tea":
         print(json.dumps(pull))
     elif method == "POST" and path.endswith("/42/merge"):
         assert body["Do"] == "merge" and body["delete_branch_after_merge"] is True
+        assert body["head_commit_id"] == pull["head"]["sha"]
+        if body["head_commit_id"] != control.get("head_at_merge", pull["head"]["sha"]):
+            print("PR head changed", file=sys.stderr)
+            sys.exit(1)
         pull.update(merged=True, state="closed", merge_commit_sha="b" * 40)
         print(json.dumps({"merged": True}))
     else:
@@ -3255,7 +3259,7 @@ def test_landing_refuses_unpublished_or_stale_pr(request, host, publication):
     actions.landing.run_once()
     value = task["lesson"](actions)["implementation"]["landing"]
     assert value["stage"] == "failed"
-    if publication == "head behind":
+    if publication in ("head behind", "not pushed"):
         assert value["text"] == "Ветка задачи не запушена: PR #42 отстаёт от проверенного коммита"
     assert not [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]
     assert not [row for row in task["records"]("tea") if "-X" in row or "-d" in row]
@@ -3306,6 +3310,23 @@ def forgejo_landing(landing_task, landing_clock):
 
     task.update(worktree=worktree, checks=checks, script=script, drive=drive)
     return task
+
+
+@pytest.mark.parametrize("gate,script", [("check", "land.py"), ("review", "pr_ci.py")])
+def test_landing_forgejo_requires_saved_check_and_review_before_services(forgejo_landing, gate, script):
+    task = forgejo_landing
+    task["script"](script)
+    if gate == "check":
+        task["state"]["checks"][-1]["outcome"] = "failed"
+    else:
+        task["state"]["review_result"] = {"verdict": "defects", "findings": [{"severity": "P1"}]}
+    task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed"
+    assert task["records"]("tea") == task["records"]("land.py") == task["records"]("pr_ci.py") == []
+    assert task["records"]("teamster") == []
+    assert not any(row.get("forgejo_job") for row in actions.landing.receipts.values())
 
 
 @pytest.mark.parametrize("title", [None, "Board: keep check", "Merge the lesson"])
@@ -3361,9 +3382,12 @@ def test_landing_forgejo_land_script_repairs_once_and_retries(forgejo_landing, f
     task["drive"](actions, lambda: bool(task["records"]("teamster")))
     says = task["records"]("teamster")
     assert len(says) == 1 and says[0][:2] == ["say", task["slug"]]
-    assert ("origin/main" if failure == "conflict" else "CI") in says[0][2]
-    if failure == "ci":
-        assert "job lint failed" in says[0][2]
+    if failure == "conflict":
+        assert says[0][2] == "Merge origin/main, resolve conflicts, run checks and push."
+    else:
+        assert says[0][2].startswith("CI failed: ")
+        assert output in says[0][2]
+        assert says[0][2].endswith(". Fix it, run checks and push.")
     assert len(task["records"]("land.py")) == 1
     task["state"].update(turns=2, turn_finished=3)
     task["write"]()
@@ -3386,11 +3410,13 @@ def test_landing_forgejo_land_script_reports_other_errors(forgejo_landing):
     assert task["records"]("teamster") == []
 
 
-@pytest.mark.parametrize("waiter,code,existing,second_failure", [
-    ("ci_wait.py", 0, False, False), ("pr_ci.py", 0, True, False),
-    ("ci_wait.py", 1, False, False), ("ci_wait.py", 1, False, True), ("pr_ci.py", 75, False, False),
+@pytest.mark.parametrize("waiter,code,existing,second_failure,head_race", [
+    ("ci_wait.py", 0, False, False, False), ("pr_ci.py", 0, True, False, False),
+    ("ci_wait.py", 1, False, False, False), ("ci_wait.py", 1, False, True, False),
+    ("pr_ci.py", 75, False, False, False), ("ci_wait.py", 0, False, False, True),
 ])
-def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, waiter, code, existing, second_failure):
+def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, landing_clock, waiter, code,
+                                               existing, second_failure, head_race):
     task = forgejo_landing
     task["script"](waiter)
     if existing:
@@ -3404,31 +3430,49 @@ def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, waiter, code
         old.update(number=41, html_url=task["pr"].replace("/42", "/41"), state="closed", merged=True,
                    merge_commit_sha="b" * 40, head={"ref": "lesson-branch", "sha": "c" * 40})
         task["configure"](forgejo_old_pr=old)
+    if head_race:
+        task["configure"](head_at_merge="c" * 40)
+    saved_state = (task["directory"] / "state.json").read_bytes()
     actions = task["make"]()
     actions.landing.run_once()
     if code == 1:
         task["drive"](actions, lambda: bool(task["records"]("teamster")))
-        assert task["records"]("teamster")[0][:2] == ["say", task["slug"]]
-        assert "job lint failed" in task["records"]("teamster")[0][2]
+        order = task["records"]("teamster")[0]
+        assert order[:2] == ["say", task["slug"]]
+        assert order[2].startswith("CI failed: ")
+        assert "job lint failed" in order[2]
+        assert order[2].endswith(". Fix it, run checks and push.")
         task["state"].update(turns=2, turn_finished=3)
         task["write"]()
         actions = task["make"]()
-    expected = "failed" if code == 75 or second_failure else "landed"
+    if code == 75:
+        task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed")
+        assert "CI не читается:" in task["lesson"](actions)["implementation"]["landing"]["text"]
+        assert task["records"]("teamster") == []
+        assert len(task["records"](waiter)) == 1
+        assert (task["directory"] / "state.json").read_bytes() == saved_state
+        actions.landing.run_once()
+        assert len(task["records"](waiter)) == 1
+        landing_clock[0] += 31
+        actions.landing.run_once()
+        actions = task["make"]()
+    expected = "failed" if second_failure or head_race else "landed"
     task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == expected)
     calls = task["records"]("tea")
     creates = [row for row in calls if "/repos/kaifaty/infra/pulls" in row and "-d" in row]
     assert len(creates) == (0 if existing else 1)
     merges = [row for row in calls if "/repos/kaifaty/infra/pulls/42/merge" in row]
-    assert len(merges) == (0 if expected == "failed" else 1)
-    assert len(task["records"](waiter)) == (2 if code == 1 else 1)
+    assert len(merges) == (0 if second_failure else 1)
+    assert len(task["records"](waiter)) == (2 if code in (1, 75) else 1)
     rows = [json.loads(row) for row in task["control"].with_name("landing-calls.jsonl").read_text().splitlines()]
     assert all(row["cwd"] == str(task["worktree"]) for row in rows if row["command"] == waiter)
     assert len([row for row in task["records"]("teamster") if row[0] == "say"]) == (1 if code == 1 else 0)
     assert task["records"]("gh") == []
     if existing:
         assert task["records"]("ci_wait.py") == []
-    if code == 75:
-        assert "CI не читается:" in task["lesson"](actions)["implementation"]["landing"]["text"]
+    if head_race:
+        assert "PR head changed" in task["lesson"](actions)["implementation"]["landing"]["text"]
+        assert json.loads(task["control"].read_text())["forgejo_pr"]["merged"] is False
         assert task["records"]("teamster") == []
     if second_failure:
         assert "job lint failed again" in task["lesson"](actions)["implementation"]["landing"]["text"]
@@ -3453,6 +3497,33 @@ def test_landing_forgejo_reads_result_written_before_runner_unlocks(landing_task
     monkeypatch.setattr(Path, "exists", result_arrives)
     assert task["make"]().landing._job_result(receipt) == (0, "CI passed\n")
     assert raced == [True]
+
+
+def test_landing_runner_allows_two_hours_for_ci(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    result = tmp_path / "runner-result.json"
+    waits, kills = [], []
+
+    def wait(timeout=None):
+        waits.append(timeout)
+        # Model CI that takes ten minutes without delaying the test.
+        if timeout is not None and timeout < 600:
+            raise subprocess.TimeoutExpired("ci_wait.py", timeout)
+        return 0
+
+    def start(argv, **kwargs):
+        assert argv == ["python3", "ci_wait.py"]
+        assert kwargs == {"start_new_session": True}
+        return SimpleNamespace(pid=12345, wait=wait)
+
+    monkeypatch.setattr(subprocess, "Popen", start)
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: kills.append((pid, sig)))
+    monkeypatch.setattr(sys, "argv", ["runner", str(result), "python3", "ci_wait.py"])
+    exec(landing_module.RUNNER, {})
+    assert waits == [7200]
+    assert kills == []
+    assert json.loads(result.read_text()) == {"returncode": 0}
 
 
 @pytest.mark.parametrize("saved_log", [None, "", "Runner stopped before saving its result\n"])

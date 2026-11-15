@@ -468,8 +468,11 @@ class Landing:
         receipt["forgejo_job"] = {"log": str(log), "result": str(result), "kind": kind, "sha": sha}
         self._save()
         # Lock before spawning so recovery cannot mistake the runner's startup for a dead job.
-        with log.open("w") as stream:
+        with log.open("a+") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            stream.seek(0)
+            stream.truncate()
+            result.unlink(missing_ok=True)
             process = subprocess.Popen([sys.executable, "-c", RUNNER, str(result), *argv],
                                        cwd=state["worktree"], stdin=subprocess.DEVNULL,
                                        stdout=stream, stderr=subprocess.STDOUT, start_new_session=True,
@@ -545,7 +548,9 @@ class Landing:
                 return
             if code:
                 if job["kind"] == "waiter" and code == 75:
+                    receipt.pop("forgejo_job")
                     self._stage(receipt, "failed", f"CI не читается: {output[-1000:]}")
+                    self._save()
                 elif job["kind"] == "waiter" and code == 1:
                     self._forgejo_repair(slug, state, receipt, output)
                 elif job["kind"] == "land" and re.search(

@@ -1072,8 +1072,9 @@ Without `land.py`, the board reuses an open PR for the task branch or creates on
 `tea api --login forgejo /repos/kaifaty/<origin repository>/pulls`, using the task branch and base and
 the result's title and body. It then runs `pr_ci.py`, or `ci_wait.py` when that is the available waiter,
 in the task worktree. Exit 0 permits merging, exit 1 gets the same single CI repair and retry, and
-exit 75 produces `failed` with «CI не читается: …». With no waiter, a branch without
-`.forgejo/workflows/` may merge directly; otherwise landing fails with
+exit 75 produces `failed` with «CI не читается: …». CI read failures retry the waiter after
+30 seconds without sending a repair order. With no waiter, a branch without `.forgejo/workflows/`
+may merge directly; otherwise landing fails with
 «Нет скрипта ожидания CI в ~/.codex/checks/<repository directory>/».
 The merge uses `tea api --login forgejo -X POST /repos/kaifaty/<origin repository>/pulls/<n>/merge`
 with `Do: merge` and remote branch deletion enabled.
