@@ -180,9 +180,10 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
     lesson with the start's form, and «Открыть урок».
   - A lesson shows its head (title, entry, date, scope, state, the study it came from, and «Посмотреть» while its task
     is open: the map flies to the task's system and opens its card), its whole text — «Когда», «Что делать»,
-    «Предложение», «Доказательства», «Оговорки», with their line breaks — the files outside every git repository that
-    its proposal names (`outside`, such as `~/.codex/checks/<repo>/ci_wait.py`) and the note of its decision. Under the
-    text its implementation is a thread by time: your request («Ты · внедрить в <repo>», with its note when it was sent
+    «Предложение» with «Где менять: …» under it once the place is known (the lesson's `target`, or the repositories the
+    board knows that the proposal names), «Доказательства», «Оговорки», with their line breaks — the files outside
+    every git repository that its proposal names (`outside`, such as `~/.codex/checks/<repo>/ci_wait.py`) and the note
+    of its decision. Under the text its implementation is a thread by time: your request («Ты · внедрить в <repo>», with its note when it was sent
     from this tab), the start's steps, the task's state (the agent works, needs a decision with its questions, opened a
     PR to check, merge and then mark «Внедрено», changed the files outside the repository without a PR, stopped with its
     summary, or the task is closed) with, while the agent works, its phase in plain words (Работа, Проверка, Ревью, CI)
@@ -212,9 +213,18 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
     opens at once; an accepted one is implemented or marked «Внедрено» with where it landed. A decision shows at once,
     on the row and in the lesson, and goes back with the server's error, which the lesson shows; for 8 seconds the row
     stays on its tab and the lesson offers «Отменить».
-  - «Внедрить» asks for «Репозиторий», where the task makes its branch, runs its tests and opens its PR — one from `repos`
-    in `GET /api/research`, a domain lesson's own one or `teamster` first — and for an optional note. «Запустить» closes
-    the form at once and shows your request with the first step; the row says «запускается». The server
+  - Where the task starts — the repository where it makes its branch, runs its tests and opens its PR, one from `repos`
+    in `GET /api/research` — comes from the lesson's place. With a `target` (places in order: a repository's name or a
+    `~/…` path outside git; `null` or absent in older reports), its repositories in their order, the first the board
+    knows to start in; the place is clear with exactly one repository the board knows, or with only `~/` paths, which
+    start in the repository of a domain lesson's scope when the board knows it, otherwise in `teamster`. Without a
+    `target`, the repositories the board knows that the proposal names as a word of their own, in the order they appear,
+    clear with exactly one; when it names none, a domain lesson's own repository or `teamster`, and never clear.
+  - When the place is clear, «Внедрить в <repo>» starts the task there at once with no note, and the small link
+    «Другой репозиторий или уточнение» beside it opens the form. Otherwise «Внедрить» opens the form: «Репозиторий»
+    starts at the place's first repository, with «Урок меняет ещё: …» under it when the lesson has other repositories
+    — their parts the agent lists in its report, to start separately — and an optional note. «Запустить» closes the
+    form at once and shows your request with the first step; the row says «запускается». The server
     (`POST /api/actions/implement`; a proposed lesson becomes accepted) answers at once with the start and runs it in the
     background; its steps come as `launch` messages and in `launches` of `GET /api/research`: «Принимаю урок» → «Урок
     принят», «Обновляю репозиторий» → «Репозиторий обновлён», «Создаю рабочую копию» → «Рабочая копия создана»,
@@ -238,7 +248,9 @@ button copies the equivalent command for the terminal instead and says why; «В
 off. In `npm run dev:fixture` the actions play on the fixtures, so the whole station can be clicked through without a
 server: a start answers at once and goes through its steps in a few seconds, then its agent shows up on the map with a
 changing last action, asks a question, and after the answer opens a PR; the first start of «Keep the training smoke out
-of the turn» fails, to show that path.
+of the turn» fails, to show that path. The lessons of `batch-2026-11-08.md` show each place: W1's proposal names
+`teamster`, W2's `target` has two repositories and a skill, W3's only a skill, W4's a repository the board does not
+know, W5's one it knows; T1 is an older lesson without a `target`.
 
 A ship's own screen, its bridge (`board/web/src/map/ship/`), leads with «Сейчас» across the screen: the ship's state
 in plain words with short facts (the turn, the branch's changes, the PR, the stations' results), a strip of the route

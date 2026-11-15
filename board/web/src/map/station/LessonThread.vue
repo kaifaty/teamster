@@ -14,6 +14,7 @@ import { useFollow } from "./feed";
 import LaunchSteps from "./LaunchSteps.vue";
 import LessonActions from "./LessonActions.vue";
 import LessonImplementation from "./LessonImplementation.vue";
+import { lessonWhere } from "./place";
 
 const props = defineProps<{ lesson: Lesson; now: number }>();
 const desk = useConsole();
@@ -24,6 +25,8 @@ const filed = computed(() => desk.filed.value.get(entry.value) ?? null);
 const what = computed(() => props.lesson.lesson ?? filed.value?.lesson ?? null);
 const proposal = computed(() => props.lesson.proposal ?? filed.value?.proposal ?? null);
 const outside = computed(() => outsideOf(props.lesson));
+/** «Где менять»: the lesson's `target`, or the repositories its proposal names. */
+const where = computed(() => lessonWhere({ proposal: proposal.value, target: props.lesson.target }, desk.repos.value));
 const scope = computed(() => {
   const lesson = props.lesson;
   return lesson.scope === "invariant" ? "общий" : lesson.scope === "domain" ? lesson.repos.join(", ") || lesson.scope_text : lesson.scope_text;
@@ -91,7 +94,10 @@ const follow = useFollow(scroller, () => news.value, feedCount, () => asked.valu
         <dt>Когда</dt>
         <dd>{{ lesson.cue }}</dd>
         <template v-if="what"><dt>Что делать</dt><dd>{{ what }}</dd></template>
-        <template v-if="proposal"><dt>Предложение</dt><dd>{{ proposal }}</dd></template>
+        <template v-if="proposal || where.length">
+          <dt>Предложение</dt>
+          <dd><template v-if="proposal">{{ proposal }}</template><span v-if="where.length" class="where">Где менять: {{ where.join(", ") }}</span></dd>
+        </template>
         <template v-if="lesson.evidence"><dt>Доказательства</dt><dd>{{ lesson.evidence }}</dd></template>
         <template v-if="lesson.caveats"><dt>Оговорки</dt><dd>{{ lesson.caveats }}</dd></template>
       </dl>
@@ -231,6 +237,11 @@ const follow = useFollow(scroller, () => news.value, feedCount, () => asked.valu
   margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.where {
+  display: block;
+  color: var(--st-dim);
 }
 
 .outside {

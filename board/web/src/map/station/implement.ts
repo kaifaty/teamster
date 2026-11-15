@@ -10,6 +10,7 @@ import type { Research } from "../research";
 import { canImplement, implementBody, startPending } from "../station";
 import type { CardState, Stage } from "./cards";
 import type { Copied, Outcome } from "./console";
+import { lessonPlace } from "./place";
 import { firstStage, launching, lessonBadge, lessonLaunch, localLaunch, phaseText, type LessonStart } from "./launch";
 
 /** Why «Внедрить» is off on a board that only reads: it has no command to copy. */
@@ -142,6 +143,22 @@ export function createImplementation(context: ImplementContext) {
     }
   }
 
+  /** Where the lesson's task starts, by its `target` or its proposal. */
+  const placeOf = (lesson: Lesson) => lessonPlace(lesson, research.value.repos);
+
+  /**
+   * «Внедрить в <repo>»: the lesson's place is clear, so its task starts there at once, with no note — as «Запустить»
+   * would. A lesson whose place is not clear opens the form instead.
+   */
+  async function implementHere(lesson: Lesson, stage: "proposed" | "accepted") {
+    const place = placeOf(lesson);
+    if (!place.clear) return context.openForm(lesson, "implement");
+    const state = edit(lesson);
+    if (state.busy || !live.value) return;
+    Object.assign(state, { repo: place.repo, note: "" });
+    await implement(lesson, stage);
+  }
+
   /** «Запустить снова»: the form with the repository of the start that failed. */
   function retry(lesson: Lesson) {
     const launch = launchOf(lesson);
@@ -226,7 +243,7 @@ export function createImplementation(context: ImplementContext) {
     else state.sent = sent;
   }
   return {
-    implementOff, offersImplement, startGoes, requestOf, launchOf, badgeOf, implement, retry, shipOf, watchAgent, workOf,
+    implementOff, offersImplement, startGoes, requestOf, launchOf, badgeOf, placeOf, implement, implementHere, retry, shipOf, watchAgent, workOf,
     agentOf, setAgentText, agentSent, sayToAgent,
   };
 }

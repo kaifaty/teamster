@@ -7,7 +7,8 @@ import type { LessonBody } from "../../lib/actions";
 import { lessonCommand } from "../../lib/commands";
 import type { Lesson, LessonStatus } from "../../types";
 import type { Research } from "../research";
-import { defaultRepo, lessonsByEntry, type Started } from "../station";
+import { lessonsByEntry, type Started } from "../station";
+import { lessonPlace } from "./place";
 import type { Copied, Outcome } from "./console";
 import { withDecisions, type Decision } from "./launch";
 
@@ -77,7 +78,7 @@ export function createCards({ research, live, run }: CardsContext) {
     // «Внедрено» after the agent's PR names the PR.
     const note = form === "apply" ? (lesson.implementation?.pr ?? "") : "";
     Object.assign(state, { form, note, error: "", copied: null });
-    if (form === "implement") state.repo = defaultRepo(lesson, research.value.repos);
+    if (form === "implement") state.repo = lessonPlace(lesson, research.value.repos).repo;
   }
   function setRepo(lesson: Lesson, path: string) {
     const state = edit(lesson);
