@@ -1245,10 +1245,12 @@ def test_station_implement_outside_brief_from_research(station, lesson_repo, mon
     (archive / "INDEX.md").write_text(
         f"| 2026-11-10 | {entry} | domain home-infra | CI | proposed |\n")
     (archive / "batch-2026-11-10.md").write_text(
-        "## X4. Wait for a run\nproposal: ci_wait.py: when no run exists, exit 75.\n")
+        "## X4. Wait for a run\nproposal: ci_wait.py: when no run exists, exit 75.\n"
+        "target: ~/.codex/checks/home-infra/ci_wait.py, home-infra\n")
     application.state.board.research.invalidate()
     before = client.get("/api/research").json()["lessons"][0]
     assert before["outside"] == ["~/.codex/checks/home-infra/ci_wait.py"]
+    assert before["target"] == ["~/.codex/checks/home-infra/ci_wait.py", "home-infra"]
     assert before["status"] == "proposed"
     response = client.post("/api/actions/implement", json={
         "entry": entry, "repo": str(lesson_repo), "outside": ["~/.claude/settings.json"],
@@ -1273,6 +1275,7 @@ def test_station_implement_outside_brief_from_research(station, lesson_repo, mon
 
 Признак: CI
 Предложение: ci_wait.py: when no run exists, exit 75.
+Где менять: ~/.codex/checks/home-infra/ci_wait.py, home-infra
 
 Файлы вне репозитория: пользователь разрешил этой задаче менять только эти файлы вне репозитория:
 - ~/.codex/checks/home-infra/ci_wait.py

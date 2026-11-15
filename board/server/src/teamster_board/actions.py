@@ -132,10 +132,11 @@ def implementation_brief(lesson, note, started, lesson_id):
     ]
     details = []
     for field, label in (("cue", "Признак"), ("lesson", "Что делать"), ("proposal", "Предложение"),
-                         ("evidence", "Доказательства"), ("caveats", "Оговорки")):
+                         ("target", "Где менять"), ("evidence", "Доказательства"), ("caveats", "Оговорки")):
         if lesson[field]:
+            value = ", ".join(lesson[field]) if field == "target" else lesson[field]
             separator = "\n" if field == "evidence" else " "
-            details.append(f"{label}:{separator}{lesson[field]}")
+            details.append(f"{label}:{separator}{value}")
     if details:
         paragraphs.append("\n".join(details))
     if note:

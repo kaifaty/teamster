@@ -1126,9 +1126,10 @@ class RotationTestCase(unittest.TestCase):
         archive = self.home / "claude-tasks" / ".archive"
         return {path.relative_to(archive): path.read_bytes() for path in archive.rglob("*") if path.is_file()}
 
-    def reflect_lesson(self, lesson_id, cue, scope="invariant", repos=()):
+    def reflect_lesson(self, lesson_id, cue, scope="invariant", repos=(), target=()):
         return {"id": lesson_id, "cue": cue, "lesson": "Do it differently.", "evidence": "new-task round 1 F1",
-                "scope": scope, "repos": list(repos), "earlier": [], "caveats": "", "proposal": "A check."}
+                "scope": scope, "repos": list(repos), "earlier": [], "caveats": "", "proposal": "A check.",
+                "target": list(target)}
 
     def reflect_result(self, status="done", lessons=(), questions=(), options=None, report="Records: 1."):
         return {"status": status, "summary": "Reflected on one record.", "report": report,

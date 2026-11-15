@@ -345,7 +345,8 @@ interface Lesson {             // one row of INDEX.md, in file order
   title: string | null;        // own archive file's lesson heading
   lesson: string | null;       // own section's fields, trimmed, ≤ 2000 chars each
   proposal: string | null;
-  outside: string[];           // proposal paths outside every git repository, as ~/ paths; at most 10
+  target: string[] | null;     // places of the change from the section's target: line, in order; null without it
+  outside: string[];           // target and proposal paths outside every git repository, as ~/ paths; at most 10
   evidence: string | null;     // preserves line breaks, including evidence lists
   caveats: string | null;
   implementation: Implementation | null;
@@ -633,16 +634,31 @@ what waits for the next batch, including its planned schedule. Material and less
   `evidence:`, `scope:`, `earlier:`, `caveats:` or `proposal:`. A value includes the text after the
   colon and every following line up to another field or the section's end, preserving line breaks.
   Values are trimmed and cut to 2000 characters; empty or missing fields, files or sections give `null`.
+  `target` is read from the section's line starting with `target:`, the places of the change written by
+  reflection (`src/teamster/docs/reflection.md`): a repository directory name such as `gothic`, or a
+  `~/` path outside every git repository. Only that line counts, and following lines belong to no field;
+  with several such lines the last wins. Its text after the colon, cut to 2000 characters, is split on
+  commas; each place is trimmed, stripped of surrounding backticks and trimmed again, and empty places are
+  dropped, so `target:` with nothing after it gives `[]`. A section without the line, or a missing file or
+  section, gives `null` (reports written before reflection named targets).
   Later files' additions are ignored. Lesson files share the batch file signature cache and 64 KiB
   read limit, and symbolic links are skipped.
-- Each lesson's `outside` is computed only from `proposal`; a `null` proposal gives `[]`.
-  Home-path candidates start with `~/`, `$HOME/`, `${HOME}/` or the board user's absolute home
-  directory (`Path.home()`). After the prefix, take the longest run of `[A-Za-z0-9._@+/-]`,
+- Each lesson's `outside` is computed from `target`, then `proposal`; other fields never contribute,
+  and a `null` target and proposal give `[]`. Each `target` place starting with `~/` is a home-path
+  candidate as a whole, spaces included. In `proposal`, home-path candidates start with `~/`, `$HOME/`,
+  `${HOME}/` or the board user's absolute home directory (`Path.home()`). After the prefix, take the
+  longest run of `[A-Za-z0-9._@+/-]`,
   stripping trailing `.`, `,`, `:`, `;` and `/`. Absolute paths outside home are ignored without
   probing them. A check-script token `name.ext` or `dir/name.ext`, with no leading `/` or `~`
   and an alphanumeric extension, is also a candidate when it names an existing regular file,
   not a symbolic link, at `<home>/.codex/checks/<repo>/<token>` for one of the lesson's `repos`,
   or at `<home>/.codex/checks/<token>` when the token contains `/`.
+  A skill name is a candidate too: a whole `target` place, or a `proposal` token with no prefix and no
+  `/`, matching `[A-Za-z0-9][A-Za-z0-9._@+-]*` and equal to the name of an entry in
+  `<home>/.claude/skills/` or `<home>/.codex/skills/` that holds `SKILL.md` as an existing regular file,
+  not a symbolic link. It gives `.claude/skills/<name>/SKILL.md` or `.codex/skills/<name>/SKILL.md`, both
+  when both exist. A name inside a path or a file name (`scripts/agent-router`, `agent-router.md`) is not
+  a skill name. Each `skills` directory is listed at most once per lesson.
   The home directory itself and existing directories, including symbolic links to directories,
   are excluded. Nonexistent file paths remain eligible, even without an extension.
   Detection never follows a candidate outside home. Resolve a candidate only for home containment
@@ -651,7 +667,7 @@ what waits for the next batch, including its planned schedule. Material and less
   without git or subprocesses. Results use `~/` plus the original lexical path relative to home,
   normalized without `.` or `..`, preserving symbolic-link directory names. Check-script paths use
   `.codex/checks/<repo>/<token>` or `.codex/checks/<token>`. Deduplicate in first-appearance order,
-  retaining at most 10 paths.
+  target places before proposal tokens, retaining at most 10 paths.
 - `repos`: `state.json`'s `repo` from all live task and archive directories, excluding `kind: "scout"`,
   `kind: "reflect"` and the archive directory itself. A missing `kind` counts as work.
   Only existing repositories whose common git directory's `config` contains a `[remote "origin"]`
@@ -662,7 +678,8 @@ what waits for the next batch, including its planned schedule. Material and less
   `/.git/worktrees/<name>` identifies the main repository before `/.git`. Missing or invalid targets
   are skipped. Discovery reads files only; it runs neither git nor subprocesses. Git metadata files
   and their immediate directories that are symbolic links are skipped; metadata reads are limited
-  to 64 KiB per file. Main repository paths are resolved and deduplicated; `name` is the resolved
+  to 64 KiB per file, and the common git directory's `config`, which grows with branch and remote
+  sections, to 1 MiB. Main repository paths are resolved and deduplicated; `name` is the resolved
   directory's name. Sort by `name`, then `path`, retaining at most 100. This list is independent of
   the batch and study age windows.
 - `repos_access`: `"scanning"` until the first repository search finishes; `"denied"` when the last
@@ -835,8 +852,9 @@ Task and science station POST endpoints execute these commands:
   launch has that slug. The final slug
   must match `[a-z0-9][a-z0-9-]{1,40}` (400 otherwise).
   The temporary brief begins `Внедрить урок «<entry>»: <title, falling back to cue>.`, identifies the
-  lesson's archive file and includes cue, lesson, proposal, evidence, caveats and the user's note in
-  that order, omitting empty fields and their labels. Its fixed completion criteria require implementing
+  lesson's archive file and includes cue, lesson, proposal, the places of a nonempty `target` as
+  `Где менять: <places joined by ", ">`, evidence, caveats and the user's note in that order, omitting
+  empty fields and their labels. Its fixed completion criteria require implementing
   the proposal in the selected repository, tests and affected documentation, reporting work outside
   the repository in `remaining`, and `needs_decision` with questions when a choice is needed.
   These criteria stay unchanged when the lesson's `outside` is empty. Otherwise, the brief takes
