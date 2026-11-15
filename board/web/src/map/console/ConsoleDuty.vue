@@ -75,8 +75,15 @@ const emit = defineEmits<{ open: [key: string] }>();
 }
 
 .d-head {
+  display: -webkit-box;
+  flex: none;
   max-width: 100%;
   color: #f3c64e;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .console-duty.none .d-head {
@@ -113,7 +120,9 @@ const emit = defineEmits<{ open: [key: string] }>();
 }
 
 .console-duty.compact .d-head {
+  display: block;
   flex: 0 1 auto;
+  white-space: nowrap;
 }
 
 .console-duty.compact .d-line,

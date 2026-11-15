@@ -289,7 +289,9 @@ function onKey(event: KeyboardEvent) {
   overscroll-behavior: contain;
 }
 
+/* Over the map the wings keep their whole height, the sheet scrolls, and the sky does not show through. */
 .console.narrow .console-wing {
+  flex: none;
   grid-template-columns: none;
   grid-auto-rows: auto;
   height: auto;
@@ -297,11 +299,7 @@ function onKey(event: KeyboardEvent) {
 
 .console.narrow .console-wing > :deep(.console-block) {
   height: auto;
-}
-
-.console.narrow .console-wing > :deep(.console-subscriptions),
-.console.narrow .console-wing > :deep(.console-machines) {
-  max-height: none;
+  background-color: rgba(8, 10, 15, 0.98);
 }
 
 .console.narrow .console-wing > :deep(.console-reflection) {

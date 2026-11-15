@@ -33,6 +33,8 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
   function feed() {
     if (!scene) return;
     stage.measureInsets();
+    // The stage may have been measured before the scene was made: it takes the insets as they are.
+    scene.setInsets(stage.insets.value);
     scene.setGalaxy(model.galaxyModel());
     scene.setArt(repoArt.value);
     scene.setView(repo.value);

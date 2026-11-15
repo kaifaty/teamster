@@ -25,11 +25,12 @@ const emit = defineEmits<{ open: [key: string] }>();
         >
           <span class="s-line">
             <span class="c-name"><span class="glyph" :class="row.executor" aria-hidden="true">{{ row.executor === "codex" ? "◆" : "✳" }}</span>{{ row.name }}</span>
-            <span class="s-left num">{{ row.left }}<span v-if="row.until" class="c-muted"> · {{ row.until }}</span></span>
+            <span class="s-left num">{{ row.left }}</span>
           </span>
           <span class="s-line">
             <span class="s-bar" aria-hidden="true"><span :style="{ width: `${row.bar}%` }"></span></span>
             <span v-if="row.cells" class="s-cells" aria-hidden="true"><img v-for="cell in row.cells" :key="cell" class="cell" :src="fuelCell" alt="" /></span>
+            <span v-if="row.until" class="s-until c-muted num">{{ row.until }}</span>
           </span>
         </button>
       </li>
@@ -42,7 +43,7 @@ const emit = defineEmits<{ open: [key: string] }>();
 <style scoped>
 .s-row {
   --fuel: #9aa3b0;
-  gap: 2px;
+  gap: 0;
 }
 
 .s-row.codex {
@@ -114,8 +115,15 @@ const emit = defineEmits<{ open: [key: string] }>();
   color: #a89c86;
 }
 
+.s-until {
+  flex: none;
+  font-size: 11px;
+  line-height: 12px;
+}
+
 .s-bar {
   flex: 1;
+  min-width: 24px;
   height: 4px;
   overflow: hidden;
   border-radius: 2px;
