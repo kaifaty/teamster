@@ -31,6 +31,7 @@ SUMMARY_FIELDS = {
     "model", "effort", "column", "phase", "phase_started_at", "alive", "turn", "fix_round",
     "outcome", "result_status", "summary", "pr", "ci", "sleeping_until", "created", "updated_at",
     "activity", "title", "link", "scheduled", "check", "review", "findings_left", "stop", "left",
+    "lead_verdict", "lead_verdict_at",
 }
 
 
@@ -1858,7 +1859,10 @@ def test_ship_action_argv(ships, caplog, route, body, expected):
     caplog.set_level("INFO", logger="uvicorn.error")
     response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "output": "finished"}
+    answer = response.json()
+    if route == "verdict":
+        assert answer.pop("task")["slug"] == slug
+    assert answer == {"ok": True, "output": "finished"}
     record = json.loads(calls.read_text())
     argv = [route, slug, *expected]
     if route == "say":
@@ -1869,6 +1873,32 @@ def test_ship_action_argv(ships, caplog, route, body, expected):
     logs = [row.message for row in caplog.records if row.message.startswith("/api/actions/")]
     assert len(logs) == 1 and f"/api/actions/{route} argv=" in logs[0] and "exit=0" in logs[0]
     assert "--private" not in logs[0]
+
+
+def test_ship_verdict_answer_and_socket_carry_the_verdict(ships):
+    client, application, settings, _, _, _ = ships
+    directory = settings.path("tasks") / "accepted"
+    directory.mkdir()
+    (directory / "state.json").write_text(json.dumps({
+        "kind": "work", "repo": "/src/project", "created": 100, "turn_finished": 200,
+        "outcome": "completed", "result": {"status": "done"}}))
+    board = application.state.board
+    board.store.poll()
+
+    class Client:
+        messages = []
+        put_nowait = messages.append
+
+    board.clients.add(Client)
+    # teamster verdict appends its journal row; the board reads it before it answers.
+    settings.path("telemetry").write_text(json.dumps({
+        "v": 1, "kind": "verdict", "at": 300, "slug": "accepted", "repo": "project",
+        "created": 100, "verdict": "accepted", "note": None}) + "\n")
+    response = client.post("/api/actions/verdict", json={"slug": "accepted", "verdict": "accepted"})
+    board.clients.discard(Client)
+    task = response.json()["task"]
+    assert (task["column"], task["lead_verdict"], task["lead_verdict_at"]) == ("review_me", "accepted", 300)
+    assert {"type": "task", "task": task} in Client.messages
 
 
 @pytest.mark.parametrize("route,body,allowed", [

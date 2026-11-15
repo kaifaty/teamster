@@ -21,6 +21,9 @@ LOG_RETENTION_SECONDS = 31 * 24 * 3600
 # A larger queue.json reads as an empty queue.
 QUEUE_BYTES = 1024 * 1024
 LOG_LIMIT = 5000
+LEAD_VERDICTS = ("accepted", "revised", "redone", "dropped")
+# An archived record's folder ends in its archive time; the journal knows the task by the slug before it.
+ARCHIVED = re.compile(r"(.+)-([0-9]{8}T[0-9]{6}Z)")
 
 
 def number(value):
@@ -284,6 +287,16 @@ def log_event(row):
     return event
 
 
+def verdict_key(row):
+    """A lead verdict journal row as ((repo, slug, created), (at, verdict)), or None."""
+    if not isinstance(row, dict) or row.get("kind") != "verdict" or row.get("verdict") not in LEAD_VERDICTS:
+        return None
+    at, repo, slug = number(row.get("at")), text(row.get("repo")), text(row.get("slug"))
+    if at is None or repo is None or slug is None:
+        return None
+    return (repo, slug, number(row.get("created"))), (at, row["verdict"])
+
+
 def login_key(row):
     """A sign-in journal row from `teamster login` or `claude-login`, or None."""
     if not isinstance(row, dict) or row.get("event") != "account_login":
@@ -419,6 +432,8 @@ class Store:
         self._log_seen = {}
         self._log_signature = None
         self._log_offset = 0
+        # The latest lead verdict per (repo, slug, created): kept past the log window while the server runs.
+        self._verdicts = {}
         self._login_seen = {}
         self._last_logins = {}
         self._new_logins = 0
@@ -459,6 +474,27 @@ class Store:
         paths.extend((path, True) for _, _, path in sorted(archived, reverse=True)[:50])
         return paths
 
+    def _lead_verdict(self, slug, record, repo):
+        """The task's latest lead verdict and its time, or (None, None).
+
+        A verdict belongs to the task with the same repository, slug and birth (`created`); a legacy verdict without
+        a birth belongs to a task born before it. It counts only when written after the task's last turn began
+        and ended: a new turn makes it void.
+        """
+        state = record.state
+        match = ARCHIVED.fullmatch(slug) if record.archived else None
+        slug = match.group(1) if match else slug
+        created = number(state.get("created"))
+        found = [self._verdicts.get((repo, slug, created))]
+        legacy = self._verdicts.get((repo, slug, None)) if created is not None else None
+        if legacy is not None and legacy[0] >= created:
+            found.append(legacy)
+        found = max((item for item in found if item is not None), default=None)
+        turn = [at for at in (number(state.get("turn_started")), number(state.get("turn_finished"))) if at is not None]
+        if found is None or (turn and found[0] <= max(turn)):
+            return None, None
+        return found[1], found[0]
+
     def _summary(self, slug, record):
         state = record.state
         now = time.time()
@@ -483,12 +519,14 @@ class Store:
         executor = state.get("executor", "codex")
         summary = text(result.get("summary"))
         ci = mapping(state.get("ci"))
+        repo = Path(state.get("repo") or state.get("worktree") or "").name
+        verdict, verdict_at = self._lead_verdict(slug, record, repo)
         return {
             "slug": slug,
             "kind": state.get("kind", "work"),
             "title": None,
             "link": None,
-            "repo": Path(state.get("repo") or state.get("worktree") or "").name,
+            "repo": repo,
             "branch": text(state.get("branch")),
             "task_type": text(state.get("task_type")),
             "executor": executor,
@@ -513,6 +551,8 @@ class Store:
             "updated_at": record.updated_at,
             "activity": record.activity if is_alive else None,
             "scheduled": None,
+            "lead_verdict": verdict,
+            "lead_verdict_at": verdict_at,
             **cargo_summary(state),
         }
 
@@ -582,6 +622,11 @@ class Store:
                         event = log_event(row)
                     except (ValueError, UnicodeDecodeError, OverflowError, RecursionError):
                         continue
+                    verdict = verdict_key(row)
+                    if verdict is not None:
+                        key, value = verdict
+                        if key not in self._verdicts or value[0] >= self._verdicts[key][0]:
+                            self._verdicts[key] = value
                     login = login_key(row)
                     if login is not None and login[1] in ("codex", "claude") and login[2]:
                         key = login[1:]
@@ -642,6 +687,8 @@ class Store:
 
     def _poll(self):
         messages = []
+        # The journal first: a verdict read now shows in this poll's task summaries.
+        log_messages = self._poll_log()
         paths = self._paths()
         present = {path.name for path, _ in paths}
         for slug in list(self.records):
@@ -680,7 +727,7 @@ class Store:
                     messages.append({"type": "activity", "slug": slug, "activity": summary["activity"]})
             self.records[slug] = record
         messages.extend(self._poll_sessions())
-        messages.extend(self._poll_log())
+        messages.extend(log_messages)
         self._initial_poll = False
         return messages
 
@@ -901,6 +948,7 @@ class Store:
             "updated_at": updated_at, "activity": record.activity if is_alive else None,
             "scheduled": state.get("scheduledTaskId"),
             "check": None, "review": None, "findings_left": 0, "stop": None, "left": 0,
+            "lead_verdict": None, "lead_verdict_at": None,
         }
 
     def _poll_sessions(self):
@@ -931,6 +979,13 @@ class Store:
                 if summary["activity"] is not None and summary["activity"] != old_activity:
                     messages.append({"type": "activity", "slug": slug, "activity": summary["activity"]})
         return messages
+
+    def summary(self, slug):
+        """One task's current summary, or None."""
+        with self.lock:
+            session = self.session_records.get(slug) if self._safe_slug(slug) else None
+            record = session or self._record(slug)
+            return None if record is None else record.summary.copy()
 
     def summaries(self):
         with self.lock:

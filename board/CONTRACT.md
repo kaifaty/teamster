@@ -26,6 +26,8 @@ Subscription sign-ins and refreshes use the accounts script's event login and pr
   replaces the cached events. Missing files give an empty history; symbolic links are never opened.
   Malformed lines, unknown kinds and lines without a finite numeric `at` are skipped. Only the
   `LogEvent` fields below are retained, for the last 31 days, in memory; no history is written.
+  Separately, the server keeps the latest lead verdict per repository, slug and `created` from the
+  whole journal, without the 31-day limit, for `TaskSummary.lead_verdict` (see "Lead verdict").
 - Accounts: `python3 -I <script> accounts --json` (never `--refresh`), at most once per
   `BOARD_ACCOUNTS_SECONDS` (default 300). The script path comes from `BOARD_TEAMSTER_COMMAND`, then `BOARD_CODEX_TASK` and defaults to this
   repository's `src/teamster/__main__.py`. When the journal tail reads a new row with
@@ -154,6 +156,9 @@ interface TaskSummary {
   findings_left: number;      // object entries of review_result.findings
   stop: string | null;        // auto_fix_stop: why the automatic cycle stopped, one line ≤ 200 chars
   left: number;               // result.remaining lines plus result.questions lines
+  // The lead's verdict on the task's last turn (see "Lead verdict"); null for sessions.
+  lead_verdict: "accepted" | "revised" | "redone" | "dropped" | null;
+  lead_verdict_at: number | null; // the verdict's journal `at`
 }
 
 interface TaskDetail extends TaskSummary {
@@ -583,6 +588,18 @@ Strings are collapsed to one line and cut to 200 characters; required strings ar
 ones `null`. A field of the wrong type — a string instead of a list, a number instead of an object, a list item
 that is not an object, a non-string where a string is expected — counts as missing and never raises.
 
+### Lead verdict
+
+`teamster verdict` appends a `kind: "verdict"` journal row with `repo` (the repository basename), `slug`,
+`created` (the task's birth) and `verdict`. A row belongs to the task whose `repo` (as in `TaskSummary`),
+slug (an archived record's folder without its timestamp suffix) and `created` are equal; a row without
+`created` belongs to a task born at or before its `at`. A verdict for an earlier task with the same slug
+does not carry over. Of the matching rows the one with the latest `at` counts. It counts only when its
+`at` is after both `turn_started` and `turn_finished` of `state.json`: once the task begins a new turn,
+`lead_verdict` and `lead_verdict_at` are `null` again. Rows with another verdict or without a finite
+`at` or a nonempty `repo` and `slug` are ignored. The journal is read before the task folders on every
+poll, so a new verdict changes the summary in the same poll; it does not change `column`.
+
 ### Desktop session mapping
 
 Sessions use the same `TaskSummary`, with these values:
@@ -590,7 +607,7 @@ Sessions use the same `TaskSummary`, with these values:
 - `slug` is `sessionId` (`local_<uuid>`); `kind` is `session`, `executor` is `claude`.
 - `title` comes from metadata; `link` is `claude://claude.ai/epitaxy/<sessionId>`.
 - `reviewer`, `task_type`, `account`, `ci`, `outcome`, `result_status`, `summary`, `sleeping_until`, `check`,
-  `review` and `stop` are `null`; `fix_round`, `findings_left` and `left` are 0; the detail's `cargo` is `null`. `model` and `effort` come from metadata; `turn` is `completedTurns`.
+  `review`, `stop`, `lead_verdict` and `lead_verdict_at` are `null`; `fix_round`, `findings_left` and `left` are 0; the detail's `cargo` is `null`. `model` and `effort` come from metadata; `turn` is `completedTurns`.
 - `repo` comes from `originCwd`, falling back to `cwd`: for a path containing `/.claude/worktrees/`,
   use the directory name immediately before that segment; otherwise use the last directory name.
   An application service directory inside `BOARD_CLAUDE_DESKTOP_DIR` gives `"(no folder)"`.
@@ -911,7 +928,8 @@ Task and science station POST endpoints execute these commands:
 - `/api/actions/verdict`: `{slug: string, verdict: "accepted" | "revised" | "redone" | "dropped", note?: string}`
   runs `teamster verdict <slug> <verdict>`, adding `--note=<note>` for a nonempty trimmed note ≤ 200
   characters. Live and archived `work` and `review` tasks are allowed, even while alive; other kinds
-  and sessions get 409.
+  and sessions get 409. On success the server polls at once, publishing the changed task over the
+  WebSocket, and the answer adds `task: TaskSummary` with the recorded `lead_verdict`.
 - `/api/actions/review`: `{slug: string, review_angles?: string | string[], reviewer?: string, effort?: string}`
   runs `teamster review <slug>`, followed by `--effort`, `--reviewer`, `--review-angles` when present,
   each as one `--option=value` word. Values have the same rules as say options. Only non-archived,
