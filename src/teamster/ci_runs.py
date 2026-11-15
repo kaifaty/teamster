@@ -534,7 +534,9 @@ def ci_cycle(st, cfg, effort, stopped, sleep):
     if not st.get("ci_enabled"):
         return
     while True:
-        task_state.mark_step(st, "ci", ci=True)
+        if not stopped():
+            # A stopped cycle never reached CI: keep the step the signal cut short.
+            task_state.mark_step(st, "ci", ci=True)
         ci = wait_ci(st, stopped, sleep, cfg.get("ci_queued_minutes", 20))
         if stopped() or ci["outcome"] != "failed" or ci["rounds"] >= st.get("ci_rounds", 1):
             return

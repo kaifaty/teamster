@@ -118,7 +118,7 @@ cut short and prints `nothing to resume` when there is none. Scouts, reflections
 finished cycles and live supervisors are refused with the reason and a nonzero exit; so is a task whose
 worker or check process from the interrupted cycle is still alive. Like `start`, a task continues alone
 unless it ran in parallel: resume continues every task whose interrupted cycle overlapped in time an interrupted
-cycle of another task, including one resumed since,
+cycle of another task, including one resumed since within the same turn,
 or else one other task while no supervisor runs, and prints `waiting: teamster resume <slug>` for the rest.
 `start --parallel` alone does not count; the waiting line only notes it. Run that command once the running task
 ends.

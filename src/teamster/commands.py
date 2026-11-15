@@ -295,8 +295,10 @@ def cmd_review(a):
 
 
 def interrupted_spans(st):
-    """The (start, cut) times of the cycles of st that a signal cut short: the current one and those resumed."""
-    spans = [(entry["started"], entry["signal_at"] or 0) for entry in st.get("resumed", []) if "started" in entry]
+    """The (start, cut) times of the cycles of the current turn of st that a signal cut short: the one cut short
+    now and those resumed since the turn started."""
+    spans = [(entry["started"], entry["signal_at"] or 0) for entry in st.get("resumed", [])
+             if "started" in entry and entry["turn"] == st.get("turns", 0)]
     cut = task_state.interruption(st)
     if cut is not None:
         spans.append((st["turn_started"], cut["at"] or 0))
