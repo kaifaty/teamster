@@ -87,7 +87,8 @@ const emit = defineEmits<{ open: [id: string, opener: HTMLElement] }>();
 .m-info {
   padding-left: 13px;
   color: #c9c1b0;
-  font-size: 11.5px;
+  font-size: 11px;
+  line-height: 13px;
 }
 
 .m-row.dim .m-info {

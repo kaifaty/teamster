@@ -79,17 +79,22 @@ stars stand on a hexagonal lattice whose step follows their count, so a few stan
 evenly, clear of the toolbar; a star keeps its place while it fits there (`galaxyLayout` in
 `board/web/src/map/layout/stars.ts`).
 The control panel runs along the bottom of the map across its whole width, the same over the galaxy and over a system
-(`board/web/src/map/console/`, its texts in `texts.ts`). Its left wing holds «Дежурный» and «Подписки», its lower centre
-«События», its right wing «Машины» and «Рефлексия»; the wings stand taller than the centre, and the panel takes at most
-about a fifth of the window's height. «Дежурный» is the duty account, the one teamster keeps for the orchestrator and new
-tasks skip: a place for its portrait, «Дежурный · <name>», its family, the week left and the time to the refill
+(`board/web/src/map/console/`, its texts in `texts.ts`). It stands in a cast bronze frame: two wings drawn by
+`art/console-wing.png` (the right one is the same picture mirrored) keep the picture's proportions and stand about 26% of
+the window's height, no more than a fifth of its width each; a lower strip, `art/console-strip.png` stretched through
+`border-image` so that its rails and end caps keep their shape, joins them at 62% of their height. The blocks stand
+inside the frame's dark compartments, placed in shares of the picture, with thin amber dividers between them. The left
+wing holds «Дежурный» and «Подписки», the centre «События», the right wing «Машины» and «Рефлексия». Every subscription has a portrait, the next one of its family in
+order (`duty-claude-1…3.jpg`, `duty-codex-1…2.jpg`, round again past the last; `portraitNames`); an exhausted, limited or
+logged-out subscription's portrait is greyed out. «Дежурный» is the duty account, the one teamster keeps for the
+orchestrator and new tasks skip: its portrait large in an amber-edged window, and over its foot «Дежурный · <name>», its family, the week left and the time to the refill
 («83% · ↻ 5 д»), since when it is on duty, the reason in its title, and «в работе N · ждут тебя M» over the live tasks,
 counted as the systems' labels count them; without one it says «Дежурный не назначен». «Подписки» lists every
-subscription as a row: its name, a bar of the week's limit left in the family's colour, red at 20% or less and grey
+subscription as a row: its small portrait, its name, a bar of the week's limit left in the family's colour, red at 20% or less and grey
 when exhausted, limited or logged out, the share left, the time to the refill (the weekly reset, or the end of the limit
 that ran out) and a spare cell for every free reset of a Codex account; the duty's row stands out, and a row's title has
-the five-hour window, the reset times and when the free resets expire. On a phone the panel folds to a strip with the
-duty and the newest event, and «Ещё» opens the subscriptions, the machines and the reflection over the map.
+the five-hour window, the reset times and when the free resets expire. On a phone the panel folds to a strip in the centre's
+rails with the duty and the newest event, and «Ещё» opens the subscriptions, the machines and the reflection over the map.
 A click on the duty or a subscription's row opens the subscription's own screen (`board/web/src/map/account/`), over the
 map like a ship's bridge. «Сейчас» says the state in plain words — works and how much of the week is left, little left, the week
 spent or a limit until when, no data, or a sign-in needed (a Codex account logged out or signed in to the same ChatGPT
@@ -104,8 +109,8 @@ messages: its steps, the sign-in page to open and, for Codex, the one-time code 
 Claude, a field for the code the page shows, sent with `login/input`; «Отменить вход» (`login/cancel`), how it ended, the
 sign-in tool's own lines folded, and the `teamster login` or `claude-login` command to do the same in a terminal. The
 token never reaches the page. The logic lives in `account.ts`; `dev:fixture` plays both sign-ins on its own accounts.
-«Машины» lists every machine of the machines strip: its name after a dot of its status's colour, and its CPU and memory
-(«CPU 52 % · память 2,6 ГБ из 36»), or the strip's words «нет связи» and «нет данных» while nothing live is known; the
+«Машины» lists every machine of the machines strip: its name after a dot of its status's colour, and its CPU in use and
+its memory free («CPU 52 % · RAM 2,6 ГБ»), or the strip's words «нет связи» and «нет данных» while nothing live is known; the
 title has the rest. A click on a machine opens the same machine card as on «Доска». The map tab has no machines strip:
 there the machines live in the control panel, as the accounts do.
 A busy star's label is one line: its name, its tasks and badges for alarms, tasks waiting for you and sleeping ones.
@@ -140,7 +145,7 @@ constellation's name and its repositories, where `*` stands for any run of chara
 `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse", "my-support"]}]}`. The galaxy
 gathers their stars in one place under a faint cloud with the constellation's name, and the system picker groups them.
 The server reads the file on each request through `GET /api/constellations`; it stays outside this public repository.
-At the right end of the control panel, the block «Рефлексия» shows the science station's picture in a window, fed by
+At the right end of the control panel, the block «Рефлексия» shows the science station's picture in an amber-edged window, fed by
 `GET /api/research`, with the reflection's most pressing note ([reflection.md](../src/teamster/docs/reflection.md)):
 «ждёт ответа N» while the analyst waits for your answer, «идёт разбор» while a run is going, «ждут решения N» while
 lessons wait for your decision, else the date of the last run. A run is a `teamster reflect` task (or, before it, a
@@ -296,7 +301,8 @@ The map's code in `board/web/src/map/`:
 - `use/` — the composables `MapView.vue` is made of: the sources, the model, the panels, the labels, the scene.
 - `console/` — the control panel under the map: `MapConsole.vue` with its left wing (`.console-left`: `ConsoleDuty.vue`,
   `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue`) and right wing (`.console-right`:
-  `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts and `console.css` holds what the blocks share.
+  `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts, `portraits.ts` finds the subscriptions'
+  pictures, and `console.css` holds what the blocks share.
 - `overlay/` — the labels over the canvas: the `.ts` builders make their texts and places, and a component for each
   kind draws one (`StarLabel.vue`, `StationPlate.vue`…), with its own styles; `overlay.css` holds what they share. A new
   object's label is a new component there, listed in `GalaxyLabels.vue` or `SystemLabels.vue`.

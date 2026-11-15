@@ -39,17 +39,22 @@ const emit = defineEmits<{ open: [] }>();
   padding: 0;
 }
 
+/* The station's window: its corners follow the frame's compartment, an amber edge runs round it like the duty's. */
 .r-window {
   display: flex;
   flex: 1;
   flex-direction: column;
   align-items: center;
+  box-sizing: border-box;
   min-height: 0;
   margin: 0;
-  padding: 2px 6px 4px;
-  border: 0;
-  border-radius: 2px;
-  background: radial-gradient(ellipse at 50% 40%, rgba(95, 214, 200, 0.12), transparent 70%);
+  padding: 4px 6px 4px;
+  border: 1px solid rgba(240, 165, 70, 0.75);
+  border-radius: var(--window-radius, 6px);
+  background: radial-gradient(ellipse at 50% 42%, rgba(167, 123, 255, 0.2), rgba(95, 214, 200, 0.05) 55%, #060910 80%);
+  box-shadow:
+    0 0 0 1px rgba(20, 12, 4, 0.9),
+    0 0 6px rgba(240, 150, 50, 0.35);
   color: #bfeee6;
   font: inherit;
 }

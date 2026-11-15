@@ -3,7 +3,7 @@
 
 import { ADMIRAL_NOTE } from "../../lib/accounts";
 import { formatClock, formatUntil } from "../../lib/format";
-import { cpuMeter, dataAge, errorLabel, memoryMeter, statusLevel, statusText } from "../../lib/machines";
+import { cpuMeter, dataAge, errorLabel, formatBytes, memoryMeter, statusLevel, statusText } from "../../lib/machines";
 import type { Machine } from "../../types";
 import { LOW_FUEL, untilText, type Star, type Tank } from "../fleet";
 import { shortDate, type Research } from "../research";
@@ -88,11 +88,38 @@ export function subscriptionRow(tank: Tank, now: number) {
 
 export type SubscriptionRow = ReturnType<typeof subscriptionRow>;
 
+/** How many portraits each family has: duty-claude-1…3 and duty-codex-1…2 in ../art. */
+export const PORTRAITS = { claude: 3, codex: 2 } as const;
+
+/**
+ * Each subscription's portrait, by its key: the next one of its family in the order given, «duty-claude-1»,
+ * «duty-claude-2»…, and round again when a family has more subscriptions than portraits.
+ */
+export function portraitNames(tanks: readonly Pick<Tank, "key" | "executor">[]): Map<string, string> {
+  const seen = { claude: 0, codex: 0 };
+  const names = new Map<string, string>();
+  for (const tank of tanks) {
+    const number = (seen[tank.executor]++ % PORTRAITS[tank.executor]) + 1;
+    names.set(tank.key, `duty-${tank.executor}-${number}`);
+  }
+  return names;
+}
+
 /** "в работе 12 · ждут тебя 3": the live tasks of every system, and those that wait for you, as the systems' labels count them. */
 export function liveLine(stars: readonly Pick<Star, "live" | "ready">[]): string {
   const live = stars.reduce((sum, star) => sum + star.live, 0);
   const ready = stars.reduce((sum, star) => sum + star.ready, 0);
   return `в работе ${live} · ждут тебя ${ready}`;
+}
+
+/** "21:39" today, "14.11 21:39" on another day: short enough for the duty's window. */
+export function shortClock(at: number, now: number): string {
+  const date = new Date(at * 1000);
+  const today = new Date(now * 1000);
+  const two = (value: number) => String(value).padStart(2, "0");
+  const time = `${two(date.getHours())}:${two(date.getMinutes())}`;
+  const sameDay = date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth() && date.getDate() === today.getDate();
+  return sameDay ? time : `${two(date.getDate())}.${two(date.getMonth() + 1)} ${time}`;
 }
 
 /**
@@ -103,19 +130,22 @@ export function dutyBlock(tanks: readonly Tank[], stars: readonly Pick<Star, "li
   const tank = tanks.find((item) => item.duty) ?? null;
   const live = liveLine(stars);
   if (!tank) {
-    return { key: null, heading: "Дежурный не назначен", family: null, executor: null, info: null, since: null, title: "Teamster не назначил дежурную подписку", live, label: null };
+    return { key: null, heading: "Дежурный не назначен", name: null, family: null, executor: null, info: null, since: null, off: false, title: "Teamster не назначил дежурную подписку", live, label: null };
   }
   const since = tank.duty?.since ?? null;
   const reason = tank.duty?.reason ?? null;
   const info = tankInfo(tank, now);
-  const sinceText = since !== null ? `дежурит с ${formatClock(since, now)}` : null;
+  const sinceText = since !== null ? `дежурит с ${shortClock(since, now)}` : null;
   return {
     key: tank.key,
     heading: `Дежурный · ${tank.name}`,
+    name: tank.name,
     family: FAMILY[tank.executor],
     executor: tank.executor,
     info,
     since: sinceText,
+    /** It gives nothing now: its portrait is greyed out, as its row is. */
+    off: tank.bad,
     title: [`Дежурный · ${tank.name} · ${FAMILY[tank.executor]}`, reason ? `Почему: ${reason}` : null, ADMIRAL_NOTE].filter(Boolean).join("\n"),
     live,
     label: `Дежурный ${tank.name}, ${FAMILY[tank.executor]}: ${info}${sinceText ? `, ${sinceText}` : ""}. Открыть экран подписки`,
@@ -125,7 +155,8 @@ export function dutyBlock(tanks: readonly Tank[], stars: readonly Pick<Star, "li
 export type DutyBlock = ReturnType<typeof dutyBlock>;
 
 /**
- * A machine's row: its name, then its CPU and memory, or its status in the words of the board's strip while nothing is
+ * A machine's row: its name, then its CPU in use and its memory free («CPU 52 % · RAM 2,6 ГБ», the title says more), or
+ * its status in the words of the board's strip while nothing is
  * known of them — «нет связи», «нет данных».
  */
 export function machineRow(machine: Machine, now: number) {
@@ -133,7 +164,7 @@ export function machineRow(machine: Machine, now: number) {
   const metrics = machine.status === "offline" || machine.status === "unknown" ? null : machine.metrics;
   const cpu = metrics?.cpu ? cpuMeter(metrics.cpu) : null;
   const memory = metrics?.memory ? memoryMeter(metrics.memory) : null;
-  const parts = [cpu ? `CPU ${cpu.value}` : null, memory ? `память ${memory.value}` : null].filter(Boolean);
+  const parts = [cpu ? `CPU ${cpu.value}` : null, metrics?.memory ? `RAM ${formatBytes(metrics.memory.available_bytes)}` : null].filter(Boolean);
   const line = parts.length ? parts.join(" · ") : status;
   // A failed probe that has not yet made the machine offline, and data that is not fresh: in the title, as the card has them.
   const mark = machine.error && machine.status !== "offline" ? `⚠ ${errorLabel(machine.error)}` : null;

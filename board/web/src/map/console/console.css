@@ -1,7 +1,7 @@
 /*
- * What the control panel's blocks share: the board's light frame, the dark glass behind it, the heading and the rows.
- * Each block takes it scoped, <style scoped src>, so it reaches only that block's own elements. They stand on the dark
- * sky in both of the board's themes, so their colours are fixed, like the map's labels.
+ * What the control panel's blocks share: the heading and the rows. The blocks stand inside the dark compartments of the
+ * panel's cast frame (MapConsole.vue), so they have no frame or glass of their own. Each block takes this scoped,
+ * <style scoped src>, so it reaches only that block's own elements. Their colours are fixed, like the map's labels.
  */
 
 .console-block {
@@ -11,11 +11,6 @@
   min-width: 0;
   min-height: 0;
   height: 100%;
-  padding: 2px 4px 4px;
-  border: 10px solid transparent;
-  border-image: var(--frame) 30 / 10px / 0 stretch;
-  background: rgba(8, 10, 15, 0.9);
-  background-clip: padding-box;
   color: #e8e2d4;
   font-size: 12px;
   line-height: 16px;
@@ -24,7 +19,7 @@
 .c-title {
   flex: none;
   margin: 0;
-  padding: 0 3px 3px;
+  padding: 0 3px 2px;
   overflow: hidden;
   color: #f3c27a;
   font-size: 12px;
@@ -48,9 +43,10 @@
 /* A row is a button over the whole width, light on hover and with the board's gold ring on focus. */
 .c-row {
   display: grid;
+  box-sizing: border-box;
   width: 100%;
   margin: 0;
-  padding: 2px 4px;
+  padding: 1px 3px;
   border: 1px solid transparent;
   border-radius: 3px;
   background: none;

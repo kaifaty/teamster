@@ -3,7 +3,8 @@ import { ADMIRAL_NOTE } from "../../lib/accounts";
 import { formatClock, formatUntil } from "../../lib/format";
 import type { Machine } from "../../types";
 import type { Tank } from "../fleet";
-import { dutyBlock, machineRow, MAX_CELLS, reflectionNote, subscriptionRow, tankTitle, type ReflectionMarks } from "./texts";
+import { PORTRAIT_URLS } from "./portraits";
+import { dutyBlock, machineRow, MAX_CELLS, PORTRAITS, portraitNames, reflectionNote, shortClock, subscriptionRow, tankTitle, type ReflectionMarks } from "./texts";
 
 const NOW = 1_800_000_000;
 const tank = (overrides: Partial<Tank>): Tank => ({
@@ -26,16 +27,28 @@ describe("the duty block", () => {
       heading: "Дежурный · pool",
       family: "Claude",
       info: "64% · ↻ 3 д",
-      since: `дежурит с ${formatClock(since, NOW)}`,
+      since: `дежурит с ${shortClock(since, NOW)}`,
       live: "в работе 8 · ждут тебя 2",
     });
     expect(block.title).toBe(["Дежурный · pool · Claude", "Почему: больше всего осталось", ADMIRAL_NOTE].join("\n"));
     expect(block.label).toContain("Открыть экран подписки");
   });
 
+  it("tells since when in hours and minutes, with the day when it is not today", () => {
+    const today = new Date(NOW * 1000);
+    today.setHours(9, 5, 0, 0);
+    const morning = today.getTime() / 1000;
+    expect(shortClock(morning, NOW)).toBe("09:05");
+    const before = new Date(today);
+    before.setDate(today.getDate() - 1);
+    const day = `${String(before.getDate()).padStart(2, "0")}.${String(before.getMonth() + 1).padStart(2, "0")}`;
+    expect(shortClock(before.getTime() / 1000, NOW)).toBe(`${day} 09:05`);
+  });
+
   it("says no one is on duty, and still counts the live tasks", () => {
     const block = dutyBlock([tank({})], stars, NOW);
-    expect(block).toMatchObject({ key: null, heading: "Дежурный не назначен", family: null, info: null, since: null, label: null, live: "в работе 8 · ждут тебя 2" });
+    expect(block).toMatchObject({ key: null, heading: "Дежурный не назначен", family: null, info: null, since: null, off: false, label: null, live: "в работе 8 · ждут тебя 2" });
+    expect(dutyBlock([tank({ admiral: true, duty: { reason: null, since: null }, bad: true, status: "лимит" })], [], NOW)).toMatchObject({ off: true, since: null });
     expect(dutyBlock([], [], NOW).live).toBe("в работе 0 · ждут тебя 0");
   });
 });
@@ -84,6 +97,34 @@ describe("a subscription's row", () => {
   });
 });
 
+describe("the subscriptions' portraits", () => {
+  it("go in order within each family and round again past the last one", () => {
+    const list = [
+      tank({ key: "claude:a", executor: "claude" }),
+      tank({ key: "codex:a" }),
+      tank({ key: "claude:b", executor: "claude" }),
+      tank({ key: "codex:b" }),
+      tank({ key: "claude:c", executor: "claude" }),
+      tank({ key: "codex:c" }),
+      tank({ key: "claude:d", executor: "claude" }),
+    ];
+    expect([...portraitNames(list)]).toEqual([
+      ["claude:a", "duty-claude-1"],
+      ["codex:a", "duty-codex-1"],
+      ["claude:b", "duty-claude-2"],
+      ["codex:b", "duty-codex-2"],
+      ["claude:c", "duty-claude-3"],
+      ["codex:c", "duty-codex-1"],
+      ["claude:d", "duty-claude-1"],
+    ]);
+  });
+
+  it("name a picture for every portrait there is", () => {
+    const names = Object.entries(PORTRAITS).flatMap(([family, count]) => Array.from({ length: count }, (_, i) => `duty-${family}-${i + 1}`));
+    expect(Object.keys(PORTRAIT_URLS).sort()).toEqual(names.sort());
+  });
+});
+
 describe("a machine's row", () => {
   const machine = (overrides: Partial<Machine>): Machine => ({
     id: "m1", name: "gpu-box", role: null, status: "free", reasons: [], checked_at: NOW, sampled_at: NOW, error: null, host: null, history: [],
@@ -99,7 +140,7 @@ describe("a machine's row", () => {
 
   it("tells the CPU and the memory free of a live machine", () => {
     const row = machineRow(machine({ role: "сборка" }), NOW);
-    expect(row).toMatchObject({ id: "m1", name: "gpu-box", line: "CPU 13 % · память 24 ГБ из 64", level: "ok", dim: false });
+    expect(row).toMatchObject({ id: "m1", name: "gpu-box", line: "CPU 13 % · RAM 24 ГБ", level: "ok", dim: false });
     expect(row.title.split("\n").slice(0, 2)).toEqual(["gpu-box · сборка", "свободна"]);
     expect(machineRow(machine({ status: "busy", reasons: ["cpu"] }), NOW)).toMatchObject({ level: "warn" });
   });
