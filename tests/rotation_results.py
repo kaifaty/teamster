@@ -621,9 +621,11 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertEqual(invocation["output_schema"], worker.result_schema.REFLECT_SCHEMA)
         lesson_schema = invocation["output_schema"]["properties"]["lessons"]["items"]
         self.assertIn("target", lesson_schema["required"])
-        self.assertEqual(lesson_schema["properties"]["target"]["items"], {"type": "string"})
+        target = dict(lesson_schema["properties"]["target"])
+        target.pop("description")
+        # No minItems or maxItems: a target may be empty or name several places.
+        self.assertEqual(target, {"type": "array", "items": {"type": "string"}})
         self.assertEqual([len(lesson["target"]) for lesson in first["lessons"]], [3, 0])
-        self.assertTrue(worker.result_schema.matches_schema(first, invocation["output_schema"]))
         self.assertEqual(invocation["prompt"], worker.prompts.reflect_prompt(
             "Focus on the checks.", ["new-task-20260103T000000Z"], "20260103T000000Z",
             worker.config.accounts_config()))

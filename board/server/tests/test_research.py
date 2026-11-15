@@ -135,6 +135,7 @@ def test_lesson_sections_batch_study_and_signature_cache(tmp_path, monkeypatch):
 | 2026-11-09 | batch-2026-11-09.md W2 | invariant | CI | proposed |
 | 2026-11-09 | study-2026-11-09-checks.md T4 | domain gothic | checks | accepted |
 | 2026-11-09 | batch-2026-11-09.md W3 | invariant | absent | proposed |
+| 2026-11-09 | batch-2026-11-09.md W4 | invariant | no target | proposed |
 """)
     batch.write_text("""# Batch 2026-11-09
 through: 20261109T000000Z
@@ -192,8 +193,10 @@ lesson: Never read this for W3.
         "evidence": "task gothic, check.log line 12", "caveats": "One repository.", "proposal": None,
     }
     assert fields(lessons[2]) == dict.fromkeys(research_module.LESSON_FIELDS)
+    # W3 has no section; W4's section has no target: line, as in reports written before the field.
+    assert lessons[3]["caveats"] == "This belongs to W4."
     assert [row["target"] for row in lessons] == [
-        ["teamster", "~/.codex/AGENTS.md"], ["gothic", "~/.claude/skills/agent-router/SKILL.md"], None]
+        ["teamster", "~/.codex/AGENTS.md"], ["gothic", "~/.claude/skills/agent-router/SKILL.md"], None, None]
     assert research.view()["lessons"] == lessons
     assert opened == [batch, study]
     with original(study, "w") as stream:
@@ -305,6 +308,8 @@ def test_lesson_outside_never_probes_paths_outside_home(tmp_path, monkeypatch):
     skills = home / ".claude" / "skills"
     skills.mkdir(parents=True)
     (skills / "escape").symlink_to(elsewhere, target_is_directory=True)
+    (elsewhere / "rule.md").write_text("# Rule\n")
+    (home / "rule.md").symlink_to(elsewhere / "rule.md")
     monkeypatch.setattr(research_module.Path, "home", classmethod(lambda cls: home))
     original_stat, original_lstat = research_module.Path.stat, research_module.Path.lstat
 
@@ -320,7 +325,8 @@ def test_lesson_outside_never_probes_paths_outside_home(tmp_path, monkeypatch):
     assert research_module.outside_paths(
         f"{elsewhere}/file.py ~/escape/file.py ~/../elsewhere/file.py file.py", ["repo"]) == []
     assert research_module.outside_paths(None, [], [
-        "~/escape/file.py", "~/../elsewhere/file.py", "~/.claude/skills/escape/SKILL.md", "escape"]) == []
+        "~/escape/file.py", "~/../elsewhere/file.py", "~/.claude/skills/escape/SKILL.md", "escape",
+        "~/rule.md"]) == []
 
 
 def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp_path):
@@ -394,7 +400,8 @@ def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp
     (no_origin / ".git" / "config").unlink()
     # gothic's config is 74 KiB, past the 64 KiB limit of the other git files; a config is read up to 1 MiB.
     for size, listed in ((74 * 1024, True), (1024 * 1024, True), (1024 * 1024 + 1, False)):
-        (no_origin / ".git" / "config").write_text(origin + "#" * (size - len(origin)))
+        # The origin section comes last, past the 64 KiB a truncated read would see.
+        (no_origin / ".git" / "config").write_text("#" * (size - len(origin) - 1) + "\n" + origin)
         assert (no_origin / ".git" / "config").stat().st_size == size
         assert view_repos() == ([*expected, {"name": "no-origin", "path": str(no_origin)}] if listed else expected)
     for index in range(101):
