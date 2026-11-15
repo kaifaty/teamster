@@ -1,10 +1,10 @@
 """Delegate coding to Codex in a git worktree, with autonomous subscription rotation.
 
-      teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
+      teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-loaded CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
       teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E]  read-only research
       teamster reflect <slug> ["order" | --file FILE] [--task SLUG ... | [--since YYYY-MM-DD|Nd] [--repo NAME ...]] [--executor codex|claude] [--effort E] [--model M] [--max-minutes M]  batch reflection or a study of chosen records
       teamster lesson "<entry>" accepted|applied|declined|proposed [--note TEXT]  record the user's decision on a lesson in INDEX.md
-      teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-timeout SEC] [--no-base-check] [--upgrade] [--queue]
+      teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-loaded CMD] [--check-timeout SEC] [--no-base-check] [--upgrade] [--queue]
       teamster review <slug> [--effort E] [--review-model M] [--max-weekly P] [--reviewer codex|claude] [--review-angles LIST]  fresh review (task must be idle)
       teamster wait <slug> [--timeout SEC] [--through-sleep]  wait, show rotations and the result
       teamster status [<slug>]                       state, account and current thread
@@ -230,8 +230,11 @@ OPTION_REGISTRY = (
     {"names": ("--check",), "argparse": {}, "synopsis": "[--check CMD]",
      "commands": {"start": {"help": "shell command to run after completed work turns; saved for follow-ups"},
                   "say": {"group": "checks", "help": "replace the saved check command"}}},
+    {"names": ("--check-loaded",), "argparse": {}, "synopsis": "[--check-loaded CMD]",
+     "commands": {"start": {"help": "shell command for the check rerun after excessive machine load"},
+                  "say": {"help": "replace the saved check command for excessive machine load"}}},
     {"names": ("--no-check",), "argparse": {"action": "store_true"}, "synopsis": "[--no-check]",
-     "commands": {"say": {"group": "checks", "help": "remove the saved check command"}}},
+     "commands": {"say": {"group": "checks", "help": "remove both saved check commands"}}},
     {"names": ("--check-timeout",), "argparse": {"type": check_timeout},
      "synopsis": "[--check-timeout SEC]",
      "commands": {"start": {"default": 1800, "help": "check timeout in seconds (default: 1800)"},
@@ -450,6 +453,8 @@ def main():
                                  + ("--since" if a.since is not None else "--repo"))
     else:
         a = p.parse_args()
+    if a.cmd == "say" and a.no_check and a.check_loaded is not None:
+        p.error("argument --check-loaded: not allowed with argument --no-check")
     if a.cmd in ("start", "say") and a.review_angles is not None:
         a.review = True
     if a.cmd in ("start", "say") and a.fix_rounds is not None and not a.review:

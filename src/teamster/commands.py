@@ -96,6 +96,7 @@ def cmd_start(a):
           "review_model": None if getattr(a, "review_model", None) == "default" else getattr(a, "review_model", None),
           "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "check": a.check, "check_timeout": a.check_timeout,
+          "check_loaded": a.check_loaded,
           "guards": a.guard, "base_check": a.base_check,
           "sandbox": sandbox, "writable_dirs": cfg["writable_dirs"], "no_push": no_push,
           "review_angles": a.review_angles,
@@ -245,9 +246,9 @@ def cmd_say(a):
     if st.get("no_push") and (options.get("ci") or options.get("ci_command") is not None):
         procs.die("--no-push task cannot enable --ci or --ci-command; CI requires a published branch")
     if scouting and any(name in options for name in (
-            "check", "review", "check_timeout", "fix_rounds", "no_base_check", "review_angles", "reviewer",
+            "check", "check_loaded", "review", "check_timeout", "fix_rounds", "no_base_check", "review_angles", "reviewer",
             "review_model", "ci", "no_ci", "ci_command", "no_ci_command", "ci_rounds")):
-        procs.die(f"{st['kind']} is read-only; say --check, --check-timeout, --review, --reviewer, --review-model, --review-angles, --fix-rounds, --ci, --no-ci, --ci-command, --no-ci-command, --ci-rounds and --no-base-check are not supported")
+        procs.die(f"{st['kind']} is read-only; say --check, --check-loaded, --check-timeout, --review, --reviewer, --review-model, --review-angles, --fix-rounds, --ci, --no-ci, --ci-command, --no-ci-command, --ci-rounds and --no-base-check are not supported")
     if not queued:
         require_idle(st, queue_hint=True)
     msg = Path(a.file).read_text() if a.file else a.message

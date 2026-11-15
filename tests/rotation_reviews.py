@@ -2232,6 +2232,55 @@ class ReviewFixTests(RotationTestCase):
         self.assertRegex(output, r"== auto-fix: 1 rounds?")
         self.assertIn("Found two defects.", output, "the last completed review must remain visible")
 
+    def test_load_rerun_result_controls_review_and_the_next_fix_prompt(self):
+        self.configure(language="en", check_load_per_cpu=30, check_load_wait_minutes=0)
+        self.enable_fake_clock()
+        worker = self.worker()
+        cfg = worker.config.accounts_config()
+        for rerun_passes in (True, False):
+            with self.subTest(rerun_passes=rerun_passes):
+                slug = "load-cycle-" + str(int(rerun_passes))
+                self.start(slug, "--check", "true")
+                self.wait(slug)
+                state = self.state(slug)
+                command = ("if ! test -f check-once; then touch check-once; "
+                           "echo first-load-failure; exit 1; fi; "
+                           "if ! test -f check-twice; then touch check-twice; "
+                           f"echo second-load-result; exit {0 if rerun_passes else 2}; fi; "
+                           "echo check-green")
+                state.update(check=command, fix_rounds=2, rounds=[])
+                prompts = []
+
+                def work_turn(st, cfg, prompt, *args, **kwargs):
+                    prompts.append(prompt)
+                    st.update(outcome="completed", result=self.work_result())
+
+                with mock.patch.dict(os.environ, self.env, clear=True), \
+                        mock.patch.object(worker.checking, "_check_load", return_value=100), \
+                        mock.patch.object(worker.checking.os, "cpu_count", return_value=2), \
+                        mock.patch.object(worker.turns, "work_turn", side_effect=work_turn), \
+                        mock.patch.object(worker.review_cycle, "review_turn",
+                                          return_value=self.review_result(False)) as review, \
+                        mock.patch.object(worker.notifications, "notify") as notify:
+                    worker.review_cycle.auto_fix(state, cfg, self.review_result(), None,
+                                                 lambda: False, worker.clock.CLOCK.sleep)
+                expected = ["passed", "failed", "passed"] if rerun_passes else [
+                    "passed", "failed", "failed", "passed"]
+                self.assertEqual([check["outcome"] for check in state["checks"]], expected)
+                self.assertEqual(state["checks"][2]["rerun"], "load")
+                self.assertEqual(state["auto_fix_stop"], "clean")
+                review.assert_called_once()
+                self.assertEqual(len(prompts), 1 if rerun_passes else 2)
+                failed = [call for call in notify.call_args_list if call.args[2] == "check_failed"]
+                self.assertEqual(len(failed), 0 if rerun_passes else 1)
+                if not rerun_passes:
+                    tail = prompts[1].split("check.log (40):\n", 1)[1]
+                    self.assertIn("second-load-result", tail)
+                    self.assertIn("exit 2", prompts[1])
+                    self.assertNotIn("first-load-failure", tail)
+                    self.assertEqual(state["rounds"][0]["check"], state["checks"][2])
+                    self.assertEqual(failed[0].kwargs["outcome"], "failed")
+
     def test_incomplete_fix_results_without_commits_stop_before_checks_and_review(self):
         self.configure()
         for status in ("needs_decision", "blocked", "partial"):

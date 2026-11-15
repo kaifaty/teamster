@@ -137,6 +137,8 @@ def wait_check_lines(st):
             if not item:
                 continue
             load = f"; load {item['load'][0]:.1f} → {item['load'][1]:.1f}" if "load" in item else ""
+            if item.get("rerun") == "load":
+                load += "; load rerun"
             if name == "base tests" and item["outcome"] == "skipped":
                 yield f"== base tests: skipped ({item['reason']})"
             elif item["outcome"] == "unavailable":
@@ -147,7 +149,7 @@ def wait_check_lines(st):
                 reason = "timeout, " if item["outcome"] == "timeout" else ""
                 yield f"== {name}: {label} ({reason}exit {item['exit']}, {item['seconds']:.0f} s){load}"
             if name != "base tests" and item["outcome"] in ("failed", "timeout", "unavailable"):
-                yield item.get("tail", checking.check_tail(st))
+                yield item.get("tail", checking.check_tail(st, item.get("log", "check.log")))
             elif name == "base tests" and item.get("tail"):
                 yield item["tail"]
 

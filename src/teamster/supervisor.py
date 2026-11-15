@@ -133,9 +133,13 @@ def apply_say(st, options, cfg):
         st["reviewer"] = options["reviewer"]
     if options.get("no_check"):
         st["check"] = None
+        st["check_loaded"] = None
         st["check_paths"] = []
-    elif options.get("check") is not None:
-        st["check"] = options["check"]
+    else:
+        if options.get("check") is not None:
+            st["check"] = options["check"]
+        if options.get("check_loaded") is not None:
+            st["check_loaded"] = options["check_loaded"]
     if options.get("no_base_check"):
         st["base_check"] = False
     if options.get("check_timeout") is not None:
@@ -317,7 +321,7 @@ def cmd__run(a):
         if (working
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
-            check = checking.saved_check(st, cfg, stopped, pending.get("review_after"))
+            check = checking.saved_check(st, cfg, stopped, sleep, pending.get("review_after"))
         if (st.get("kind") not in ("scout", "reflect") and st.get("outcome") == "completed" and pending.get("review_after") and not stopped()
                 and not st.get("review_skipped") and (check is None or check["outcome"] in checking.CHECK_NOT_FAILED)
                 and not budgets.stop_at_weekly_budget(st)):

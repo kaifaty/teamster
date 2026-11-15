@@ -90,12 +90,14 @@ def check_paths(st):
     """Read saved and existing relative paths from top-level check tokens."""
     paths = set(st.get("check_paths", []))
     root = Path(st["worktree"])
-    try:
-        lexer = shlex.shlex(st.get("check") or "", posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        tokens = []
+    tokens = []
+    for command in (st.get("check"), st.get("check_loaded")):
+        try:
+            lexer = shlex.shlex(command or "", posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens.extend(list(lexer))
+        except ValueError:
+            continue
     candidates = []
     for token in tokens:
         candidates.append(token)
@@ -318,10 +320,11 @@ def _check_load():
         return None
 
 
-def execute_check(st, stopped, cwd, filename):
+def execute_check(st, stopped, cwd, filename, command=None):
     """Run the saved check after work, owning and reaping its process group."""
     if stopped():
         return None
+    command = st["check"] if command is None else command
     started = time.monotonic()
     measured_started = clock.CLOCK.monotonic()
     load_started = _check_load()
@@ -330,7 +333,7 @@ def execute_check(st, stopped, cwd, filename):
     code = None
     with (config.TASKS / st["slug"] / filename).open("wb") as log:
         try:
-            args = ["/bin/sh", "-c", st["check"]]
+            args = ["/bin/sh", "-c", command]
             env = dict(os.environ)
             if st.get("sandbox") == "workspace":
                 args = [config.codex_binary(), "sandbox"] + sandboxing.sandbox_args(st) + ["--"] + args
@@ -366,7 +369,7 @@ def execute_check(st, stopped, cwd, filename):
     if stopped():
         outcome = task_state.stop_outcome(st, stopped)
         st["outcome"] = outcome
-    result = {"cmd": st["check"], "exit": code, "seconds": round(clock.CLOCK.monotonic() - measured_started, 3),
+    result = {"cmd": command, "exit": code, "seconds": round(clock.CLOCK.monotonic() - measured_started, 3),
               "at": clock.CLOCK.time(), "outcome": outcome}
     if load_started is not None and load_finished is not None:
         result["load"] = [load_started, load_finished]
@@ -375,18 +378,18 @@ def execute_check(st, stopped, cwd, filename):
     return result
 
 
-def run_check(st, stopped):
+def run_check(st, stopped, command=None):
     if stopped():
         return None
     with telemetry_log.record_phase(st, "check", stopped) as phase:
-        result = _run_check(st, stopped)
+        result = _run_check(st, stopped, command)
         phase.check = result
         phase.finish(outcome=task_state.stop_outcome(st, stopped) or (result or {}).get("outcome"))
         return result
 
 
-def _run_check(st, stopped):
-    result = execute_check(st, stopped, st["worktree"], "check.log")
+def _run_check(st, stopped, command=None):
+    result = execute_check(st, stopped, st["worktree"], "check.log", command)
     if result is None:
         return None
     st.setdefault("checks", []).append(result)
@@ -451,8 +454,39 @@ def _run_base_check(st, stopped):
     return result
 
 
-def saved_check(st, cfg, stopped, review_after=True):
+def _rerun_loaded_check(st, cfg, stopped, sleep, check):
+    threshold = cfg.get("check_load_per_cpu", 30) * (os.cpu_count() or 1)
+    if (threshold == 0 or check["outcome"] not in ("failed", "timeout")
+            or not any(load > threshold for load in check.get("load", []))):
+        return check
+    started = clock.CLOCK.monotonic()
+    deadline = started + cfg.get("check_load_wait_minutes", 15) * 60
+    load = _check_load()
+    while not stopped() and load is not None and load >= threshold:
+        remaining = deadline - clock.CLOCK.monotonic()
+        if remaining <= 0:
+            break
+        sleep(min(config.SLEEP_STEP, remaining))
+        load = _check_load()
+    if stopped():
+        return None
+    waited = round(clock.CLOCK.monotonic() - started, 3)
+    log = config.TASKS / st["slug"] / "check.log"
+    check["log"] = f"check-{len(st['checks'])}.log"
+    log.replace(log.with_name(check["log"]))
+    task_state.save(st)
+    result = run_check(st, stopped, st.get("check_loaded") or st["check"])
+    if result is None:
+        return check
+    result.update(rerun="load", load_threshold=threshold, wait_seconds=waited, load_before_rerun=load)
+    task_state.save(st)
+    return result
+
+
+def saved_check(st, cfg, stopped, sleep, review_after=True):
     check = run_check(st, stopped) if st.get("check") and not stopped() else None
+    if check:
+        check = _rerun_loaded_check(st, cfg, stopped, sleep, check)
     if check and check["outcome"] == "passed" and st.get("base_check") and not stopped():
         check["base_check"] = run_base_check(st, stopped)
         task_state.save(st)

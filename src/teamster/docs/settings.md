@@ -16,6 +16,8 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `ci` | `false` | initial task CI setting; see [Task CI options](#task-ci-options) |
 | `ci_timeout_minutes` | `30` | maximum wait for CI checks or a CI command per attempt |
 | `ci_queued_minutes` | `20` | how long GitHub CI waits when only never-started checks remain before it records `skipped`; see [ci.md](ci.md) |
+| `check_load_per_cpu` | `30` | finite number ≥ 0; rerun a failed or timed-out saved check once when its start or end load exceeds this times the CPU count; 0 disables reruns |
+| `check_load_wait_minutes` | `15` | finite number ≥ 0; maximum wait for load to fall before that rerun; 0 reruns immediately |
 | `sandbox`, `writable_dirs` | `"off"`, `[]` | [sandbox.md](sandbox.md) |
 | `accounts`, `switch_at`, `credits`, `wait_for_reset`, `use_reset_credits`, `reset_credit_min_hours` | | [accounts.md](accounts.md) |
 | `credits_floor` | `0` | finite number ≥ 0; with `credits: true`, an account runs on credits only while its balance is above it; see [accounts.md](accounts.md#credits) |
@@ -25,6 +27,10 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `duty.relative_margin` | `25` | finite number ≥ 0; the duty account moves within a family only to a room at least this many percent larger ([accounts.md](accounts.md#duty-account)) |
 | `duty.absolute_margin` | `100` | finite number ≥ 0; the same move also needs a room at least this many units larger |
 | `duty.claude_only_task_types` | `["visual", "layout"]` | task types (`--task-type`) that a Claude duty account still takes when it is the only Claude account left |
+
+Load reruns use the saved check command or the alternative saved with `start --check-loaded CMD`.
+`say` inherits the alternative, `say --check-loaded CMD` replaces it, and `say --no-check` removes
+both commands. See [checks.md](checks.md) for the two recorded runs and interruptible load wait.
 
 ## Task models
 
