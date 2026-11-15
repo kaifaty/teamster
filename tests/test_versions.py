@@ -189,6 +189,8 @@ class VersionInstallTests(unittest.TestCase):
                     return source_git(repo, self.env, *args).strip()
 
                 git("init", "-q", "-b", "main")
+                git("config", "user.name", "Release Test")
+                git("config", "user.email", "release@example.test")
                 git("add", ".")
                 git("commit", "-q", "-m", "Release 1.2.3")
                 released = state_module.read_text()
