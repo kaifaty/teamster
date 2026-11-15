@@ -10,7 +10,7 @@ import type { Research } from "../research";
 import { canImplement, implementBody, startPending } from "../station";
 import type { CardState, Stage } from "./cards";
 import type { Copied, Outcome } from "./console";
-import { lessonPlace } from "./place";
+import type { LessonPlace } from "./place";
 import { firstStage, launching, lessonBadge, lessonLaunch, localLaunch, phaseText, type LessonStart } from "./launch";
 
 /** Why «Внедрить» is off on a board that only reads: it has no command to copy. */
@@ -73,10 +73,12 @@ export interface ImplementContext extends ShipOptions {
   openForm: (lesson: Lesson, form: "implement") => void;
   listOf: (stage: Stage) => Lesson[];
   hold: (lesson: Lesson, stage: Stage, index: number) => void;
+  /** Where the lesson's task starts. */
+  placeOf: (lesson: Lesson) => LessonPlace;
 }
 
 export function createImplementation(context: ImplementContext) {
-  const { research, now, live, act, run, launches, tasks, cardOf, edit, listOf, hold, openShip } = context;
+  const { research, now, live, act, run, launches, tasks, cardOf, edit, listOf, hold, openShip, placeOf } = context;
   /** «Внедрить» is off on a board that only reads, with the reason as its hint. */
   const implementOff = computed(() => (live.value ? null : IMPLEMENT_OFF));
 
@@ -142,9 +144,6 @@ export function createImplementation(context: ImplementContext) {
       if (stage === "proposed") hold(lesson, stage, index);
     }
   }
-
-  /** Where the lesson's task starts, by its `target` or its proposal. */
-  const placeOf = (lesson: Lesson) => lessonPlace(lesson, research.value.repos);
 
   /**
    * «Внедрить в <repo>»: the lesson's place is clear, so its task starts there at once, with no note — as «Запустить»
@@ -243,7 +242,7 @@ export function createImplementation(context: ImplementContext) {
     else state.sent = sent;
   }
   return {
-    implementOff, offersImplement, startGoes, requestOf, launchOf, badgeOf, placeOf, implement, implementHere, retry, shipOf, watchAgent, workOf,
+    implementOff, offersImplement, startGoes, requestOf, launchOf, badgeOf, implement, implementHere, retry, shipOf, watchAgent, workOf,
     agentOf, setAgentText, agentSent, sayToAgent,
   };
 }

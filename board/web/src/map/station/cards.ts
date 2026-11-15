@@ -8,7 +8,7 @@ import { lessonCommand } from "../../lib/commands";
 import type { Lesson, LessonStatus } from "../../types";
 import type { Research } from "../research";
 import { lessonsByEntry, type Started } from "../station";
-import { lessonPlace } from "./place";
+import type { LessonPlace } from "./place";
 import type { Copied, Outcome } from "./console";
 import { withDecisions, type Decision } from "./launch";
 
@@ -41,9 +41,11 @@ export interface CardsContext {
   research: Ref<Research>;
   live: Readonly<Ref<boolean>>;
   run: (route: "lesson", body: LessonBody, command: string) => Promise<Outcome>;
+  /** Where the lesson's task starts: the form's «Репозиторий» starts there. */
+  placeOf: (lesson: Lesson) => LessonPlace;
 }
 
-export function createCards({ research, live, run }: CardsContext) {
+export function createCards({ research, live, run, placeOf }: CardsContext) {
   /** Decisions in flight, by entry: the lessons show them before the research does. */
   const decisions = reactive<Record<string, Decision>>({});
   const lists = computed(() => withDecisions(research.value, decisions));
@@ -78,7 +80,7 @@ export function createCards({ research, live, run }: CardsContext) {
     // «Внедрено» after the agent's PR names the PR.
     const note = form === "apply" ? (lesson.implementation?.pr ?? "") : "";
     Object.assign(state, { form, note, error: "", copied: null });
-    if (form === "implement") state.repo = lessonPlace(lesson, research.value.repos).repo;
+    if (form === "implement") state.repo = placeOf(lesson).repo;
   }
   function setRepo(lesson: Lesson, path: string) {
     const state = edit(lesson);

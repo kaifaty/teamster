@@ -218,8 +218,11 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
     `~/…` path outside git; `null` or absent in older reports), its repositories in their order, the first the board
     knows to start in; the place is clear with exactly one repository the board knows, or with only `~/` paths, which
     start in the repository of a domain lesson's scope when the board knows it, otherwise in `teamster`. Without a
-    `target`, the repositories the board knows that the proposal names as a word of their own, in the order they appear,
-    clear with exactly one; when it names none, a domain lesson's own repository or `teamster`, and never clear.
+    `target`, the repositories the board knows that the proposal (the lesson's own, or its docket's) names as a word of
+    its own with the same case, in the order they appear; the place is clear when it names exactly one and that one is
+    the guess by scope — one of a domain lesson's repositories, any other lesson's `teamster`. A proposal that names
+    none keeps that guess, clear only when the lesson has `outside` files and the board knows the guess. The lesson's
+    other repositories are every one after the place's first, known to the board or not.
   - When the place is clear, «Внедрить в <repo>» starts the task there at once with no note, and the small link
     «Другой репозиторий или уточнение» beside it opens the form. Otherwise «Внедрить» opens the form: «Репозиторий»
     starts at the place's first repository, with «Урок меняет ещё: …» under it when the lesson has other repositories
@@ -250,7 +253,8 @@ server: a start answers at once and goes through its steps in a few seconds, the
 changing last action, asks a question, and after the answer opens a PR; the first start of «Keep the training smoke out
 of the turn» fails, to show that path. The lessons of `batch-2026-11-08.md` show each place: W1's proposal names
 `teamster`, W2's `target` has two repositories and a skill, W3's only a skill, W4's a repository the board does not
-know, W5's one it knows; T1 is an older lesson without a `target`.
+know, W5's one it knows; T1 is an older lesson without a `target`, and V1 one that changes only a file outside
+git.
 
 A ship's own screen, its bridge (`board/web/src/map/ship/`), leads with «Сейчас» across the screen: the ship's state
 in plain words with short facts (the turn, the branch's changes, the PR, the stations' results), a strip of the route

@@ -256,9 +256,11 @@ describe("a lesson's implementation", () => {
     const board = [
       { name: "teamster", path: "/dev/teamster" },
       { name: "gothic", path: "/dev/gothic" },
+      { name: "agent", path: "/dev/agent" },
+      { name: "infra", path: "/dev/infra" },
     ];
     const SKILL = "~/.claude/skills/agent-router/SKILL.md";
-    const lesson = (patch: Partial<Lesson>): Pick<Lesson, "scope" | "repos" | "proposal" | "target"> => ({ scope: "invariant", repos: [], proposal: null, ...patch });
+    const lesson = (patch: Partial<Lesson>): Pick<Lesson, "scope" | "repos" | "proposal" | "target" | "outside"> => ({ scope: "invariant", repos: [], proposal: null, ...patch });
 
     it("A1: an invariant lesson without target whose proposal names teamster starts there at once", () => {
       const a1 = lesson({ proposal: "teamster, задача lesson-z1: воркер перезапускает проверку после rebase" });
@@ -286,11 +288,33 @@ describe("a lesson's implementation", () => {
         expect(lessonWhere(old, board)).toEqual([]);
       }
       // A proposal that names two repositories starts in the first it names, and asks.
-      expect(lessonPlace(lesson({ proposal: "Gothic: the save test; teamster: the brief." }), board)).toEqual({ repo: "/dev/gothic", name: "gothic", others: ["teamster"], clear: false });
+      expect(lessonPlace(lesson({ proposal: "gothic: the save test; teamster: the brief." }), board)).toEqual({ repo: "/dev/gothic", name: "gothic", others: ["teamster"], clear: false });
     });
 
-    it("a target repository the board does not know is not clear, and the form starts empty", () => {
-      expect(lessonPlace(lesson({ target: ["mytonwallet-frontend"] }), board)).toEqual({ repo: "", name: "", others: ["mytonwallet-frontend"], clear: false });
+    it("names a repository only with its case: «Agent V2» is no repository agent", () => {
+      const a3 = lesson({ proposal: "Дописать раздел Agent V2 в brief teamster; Infra не трогать." });
+      expect(lessonWhere(a3, board)).toEqual(["teamster"]);
+      expect(lessonPlace(a3, board)).toMatchObject({ repo: "/dev/teamster", clear: true });
+    });
+
+    it("without target, is clear only when the one named repository is the guess by scope", () => {
+      // An invariant lesson's guess is teamster: naming only agent asks, with agent in the form.
+      expect(lessonPlace(lesson({ proposal: "agent: route the brief." }), board)).toEqual({ repo: "/dev/agent", name: "agent", others: [], clear: false });
+      const domain = lesson({ scope: "domain", repos: ["gothic"] });
+      expect(lessonPlace({ ...domain, proposal: "gothic: the save test." }, board)).toMatchObject({ repo: "/dev/gothic", clear: true });
+      expect(lessonPlace({ ...domain, proposal: "teamster: the brief." }, board)).toMatchObject({ repo: "/dev/teamster", clear: false });
+    });
+
+    it("without target or named repositories, a change outside git starts in the guess by scope at once", () => {
+      const outside = lesson({ scope: "domain", repos: ["gothic"], outside: [SKILL], proposal: `Add a rule to ${SKILL}.` });
+      expect(lessonPlace(outside, board)).toEqual({ repo: "/dev/gothic", name: "gothic", others: [], clear: true });
+      expect(lessonPlace({ ...outside, scope: "invariant", repos: [] }, board)).toMatchObject({ repo: "/dev/teamster", clear: true });
+      // A guess the board does not know asks.
+      expect(lessonPlace({ ...outside, repos: ["gone"] }, board)).toMatchObject({ repo: "", clear: false });
+    });
+
+    it("a target repository the board does not know is not clear, the form starts empty, and nothing else is named", () => {
+      expect(lessonPlace(lesson({ target: ["mytonwallet-frontend"] }), board)).toEqual({ repo: "", name: "", others: [], clear: false });
     });
   });
 

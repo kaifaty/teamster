@@ -43,35 +43,52 @@ export function namedRepos(text: string | null | undefined, repos: readonly Rese
   const found: { name: string; at: number }[] = [];
   for (const { name } of repos) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    // Not a part of a longer name or of a path, a hidden directory or a file's name with its extension.
-    const match = new RegExp(`(?<![\\p{L}\\p{N}_.~/-])${escaped}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`, "iu").exec(text);
+    // Case matters: «Agent V2» is no repository `agent`. Not a part of a longer name or of a path, a hidden directory
+    // or a file's name with its extension.
+    const match = new RegExp(`(?<![\\p{L}\\p{N}_.~/-])${escaped}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`, "u").exec(text);
     if (match && !found.some((item) => item.name === name)) found.push({ name, at: match.index });
   }
   return found.sort((a, b) => a.at - b.at).map((item) => item.name);
 }
 
+/** The lesson's fields its place reads; `proposal` is the one its card shows. */
+export type PlacedLesson = Pick<Lesson, "scope" | "repos" | "proposal" | "target" | "outside">;
+
 /**
- * Where «Внедрить» starts the lesson's task. With a `target`, its repositories in their order, the first the board
- * knows to start in; the place is clear with exactly one repository the board knows, or with only `~/` paths, which go
- * from the repository of the lesson's scope, or `teamster`. Without one, the repositories the board knows that the
- * proposal names, clear when it names exactly one; when it names none, the guess by the lesson's scope, never clear.
+ * Where «Внедрить» starts the lesson's task, and the lesson's other repositories: every one after the place's first,
+ * known to the board or not.
+ *
+ * With a `target`, its repositories in their order, the first the board knows to start in; the place is clear with
+ * exactly one repository the board knows, or with only `~/` paths, which start in the repository of the lesson's
+ * scope, or `teamster`.
+ *
+ * Without one, the repositories the board knows that the proposal names, starting in the first; the place is clear
+ * when it names exactly one and that one is the guess by scope — one of a domain lesson's repositories, any other
+ * lesson's `teamster`. A proposal that names none keeps the guess by scope, clear only when the lesson changes files
+ * outside git (`outside`) and the board knows the guess, as with a `target` of `~/` paths only.
  */
-export function lessonPlace(lesson: Pick<Lesson, "scope" | "repos" | "proposal" | "target">, repos: readonly ResearchRepo[]): LessonPlace {
+export function lessonPlace(lesson: PlacedLesson, repos: readonly ResearchRepo[]): LessonPlace {
   const pathOf = (name: string) => repos.find((repo) => repo.name === name)?.path ?? "";
   const place = (names: readonly string[], repo: string, clear: boolean): LessonPlace => {
     const name = repos.find((item) => item.path === repo)?.name ?? "";
-    return { repo, name, others: [...new Set(names)].filter((item) => item !== name), clear: clear && !!repo };
+    const first = names[0];
+    return { repo, name, others: [...new Set(names)].filter((item) => item !== first && item !== name), clear: clear && !!repo };
   };
+  const guess = defaultRepo(lesson, repos);
   const target = targetOf(lesson);
   if (target.length) {
     const names = [...new Set(target.filter((item) => !isHomePath(item)))];
-    if (!names.length) return place([], defaultRepo(lesson, repos) || pathOf("teamster"), true);
+    if (!names.length) return place([], guess || pathOf("teamster"), true);
     const known = names.find((name) => pathOf(name));
     return place(names, known ? pathOf(known) : "", names.length === 1);
   }
   const named = namedRepos(lesson.proposal, repos);
-  if (named.length) return place(named, pathOf(named[0]!), named.length === 1);
-  return place(lesson.scope === "domain" ? lesson.repos : [], defaultRepo(lesson, repos), false);
+  if (named.length) {
+    const only = named.length === 1 ? named[0]! : null;
+    const scoped = !!only && (lesson.scope === "domain" ? lesson.repos.includes(only) : only === "teamster");
+    return place(named, pathOf(named[0]!), scoped);
+  }
+  return place(lesson.scope === "domain" ? lesson.repos : [], guess, !!lesson.outside?.length);
 }
 
 /** «Где менять» on a lesson's card: its `target`, or the repositories its proposal names; empty when unknown. */
