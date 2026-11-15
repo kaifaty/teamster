@@ -6,6 +6,7 @@
       teamster lesson "<entry>" accepted|applied|declined|proposed [--note TEXT]  record the user's decision on a lesson in INDEX.md
       teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-loaded CMD] [--check-timeout SEC] [--no-base-check] [--upgrade] [--queue]
       teamster review <slug> [--effort E] [--review-model M] [--max-weekly P] [--reviewer codex|claude] [--review-angles LIST]  fresh review (task must be idle)
+      teamster resume <slug>... | --all              continue cycles an external signal cut short, where they stopped
       teamster wait <slug> [--timeout SEC] [--through-sleep]  wait, show rotations and the result
       teamster status [<slug>]                       state, account and current thread
       teamster stats <slug>                          codex_stats.py for every task thread
@@ -305,6 +306,7 @@ COMMAND_HANDLERS = {
     "lesson": commands.cmd_lesson,
     "say": commands.cmd_say,
     "review": commands.cmd_review,
+    "resume": commands.cmd_resume,
     "wait": wait_view.cmd_wait,
     "status": commands.cmd_status,
     "stats": commands.cmd_stats,
@@ -329,7 +331,7 @@ COMMAND_HANDLERS = {
 }
 # Commands that write task records, journals or cached limits hold the settings
 # lock shared, so migrate-home cannot move the data home under them.
-HOME_LOCKED_COMMANDS = ("start", "scout", "reflect", "lesson", "say", "review", "clean", "verdict", "accounts", "reset-credit",
+HOME_LOCKED_COMMANDS = ("start", "scout", "reflect", "lesson", "say", "review", "resume", "clean", "verdict", "accounts", "reset-credit",
                         "claude-probe", "upgrade", "versions")
 
 
@@ -374,6 +376,9 @@ def main():
     s = sub.add_parser("review")
     s.add_argument("slug")
     add_command_options(s, "review")
+    s = sub.add_parser("resume", help="continue tasks whose cycle an external signal cut short, from the step it stopped at")
+    s.add_argument("slugs", nargs="*", metavar="slug")
+    s.add_argument("--all", action="store_true", help="every task cut short, all at once")
     s = sub.add_parser("wait")
     s.add_argument("slug")
     s.add_argument("--timeout", type=int, default=0)
@@ -459,7 +464,7 @@ def main():
         a.review = True
     if a.cmd in ("start", "say") and a.fix_rounds is not None and not a.review:
         p.error("--fix-rounds requires --review")
-    if (a.cmd in ("start", "scout", "reflect", "say", "review", "_run", "accounts", "reset-credit", "login", "clean")
+    if (a.cmd in ("start", "scout", "reflect", "say", "review", "resume", "_run", "accounts", "reset-credit", "login", "clean")
             and not (a.cmd == "login" and a.events)):
         config.CODEX["path"] = config.resolve_codex()
     if a.cmd in HOME_LOCKED_COMMANDS:

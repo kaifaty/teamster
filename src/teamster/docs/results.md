@@ -91,7 +91,7 @@ separately from the implementation `result.status`, saved checks, CI and reset-c
 | `failed` | Exec or the supervisor failed, or no usable authenticated account remains. | Read the error and logs; resolve the cause, including any requested login, before a follow-up. |
 | `refused` | The model refused for possible cybersecurity risk; no retry or account rotation follows. `wait` shows the first 200 characters of the refusal. | Read the refusal and reassess the task rather than starting another automatic fix cycle. |
 | `stopped` | A durable `stop` request addressed this supervisor. | Inspect the preserved work and decide whether to continue with `say`. |
-| `interrupted` | A signal interrupted the supervisor without a matching `stop` request. | Check the preserved worktree with `git status`, then continue with `say`; if it repeats, inspect the signal line in `stderr.log`. |
+| `interrupted` | A signal interrupted the supervisor without a matching `stop` request. | Continue with `teamster resume <slug>` ([resuming](#resuming-an-interrupted-cycle)); if it repeats, inspect the signal line in `stderr.log`. |
 | `exhausted` | Account capacity is unavailable and reset waiting is disabled or exceeded eight days. | Inspect `accounts` and the recorded reset time; resolve availability before continuing with `say`. |
 | `budget_exhausted` | The turn reached its time cap, or the task reached its weekly budget. | Use the check, wrap-up and remaining work to decide whether to split the task. For a time stop, split or send a budgeted `say`; for a weekly stop, raise the saved budget with `say --max-weekly P` only after that decision. |
 | `stuck` | The same command failed with the same nonzero exit code and last 2 KB of output `repeat_limit` times. Other commands do not reset the count; a successful run of that command does. | Investigate the failure yourself or take it to the user; do not start another automatic fix cycle. |
@@ -103,6 +103,41 @@ result with numbers and attempts. The wrap-up has a 10-minute cap and is stopped
 `wait` prints the stop reason, then the wrap-up result. For a weekly stop it prints, for example,
 `== turn stopped: weekly budget 10% exhausted (spent 10.4%)`. Saved-check behavior is described in
 [checks.md](checks.md#when-the-saved-check-runs).
+
+## Resuming an interrupted cycle
+
+A cycle is cut short when its supervisor is gone and the cycle either ended `interrupted` or recorded no
+result at all, as after a shutdown that killed the supervisor (a supervisor pid that is not alive, without
+`turn_finished`). `wait` and `status` then print
+`interrupted externally by <signal> at <time>; continue: teamster resume <slug>`, with
+`an unknown signal (the supervisor left no result)` and the time of the last state save when nothing was
+recorded; `status` shows such a task as `interrupted`, not `running`.
+
+`teamster resume <slug>...` continues each named task; `teamster resume --all` continues every work task
+cut short and prints `nothing to resume` when there is none. Scouts, reflections, tasks ended by `stop`,
+finished cycles and live supervisors are refused with the reason and a nonzero exit; so is a task whose
+worker or check process from the interrupted cycle is still alive. `--all` continues every candidate at once,
+also beside other running tasks: the tasks one restart cut short were running together when it came.
+
+The cycle continues from the step it stopped at, in the same turn and with the task's saved settings
+(`--review`, `--fix-rounds`, review angles, reviewer, check, CI and limits):
+
+| Cut short during | Resume |
+|---|---|
+| a work turn or a fix round (review or CI) | continues the same thread with a message that names the signal and its time, says the turn was not the worker's fault, and gives the uncommitted file count, the unpushed commit count and the PR; then the usual check, review, fix rounds and CI |
+| a review | runs the review again, then the fix rounds |
+| after a saved review, before its fix round | starts that fix round from the saved review |
+| the saved check or the CI wait | runs it again without a worker turn, then the rest of the cycle; a fix round's check is recorded in that round, and its failure starts the next round allowed |
+
+Rounds already started count against `--fix-rounds` and `--ci-rounds`; a resumed fix round records its
+decisions, check and changes like any other, and a failing check starts the next round it allows. The cycle
+reviews only when its `start` or `say` passed `--review`; a task saved by 1.76.0 or earlier has no such record,
+so past the step it was in its cycle continues without a review. Such a task whose turn left no result continues
+its work turn, or its fix round, even when CI is enabled. Each resume appends
+`{"at", "signal", "signal_at", "step", "turn"}` to `resumed` in `state.json`. The resumed cycle keeps the
+turn number, so `report` counts its final outcome, not the interrupted one, and does not count it as a
+follow-up. A manual `say` after an interruption still works and starts a new turn. resume never starts by
+itself.
 
 ## What `wait` prints
 

@@ -146,6 +146,9 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
     st.pop("review_result", None)
     task_state.save(st)
     angles = selected_review_angles(st, cfg) if angles is None else angles
+    if st.get("cycle") is not None:
+        # resume continues from a saved review only when every angle of it has a result.
+        st["cycle"]["angles"] = len(angles) or 1
     try:
         if angles:
             prompt = prompts.review_prompt(st, cfg, with_angles=True)
@@ -325,60 +328,83 @@ def has_reviewable_commits(st, base):
     return bool(procs.sh(config.GIT + ["rev-list", "--max-count=1", f"{base}..HEAD"], cwd=st["worktree"]))
 
 
-def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
-    """Bounded work/check/review loop under the original supervisor and wait."""
+def fix_round(st, cfg, entry, prompt, before, effort, stopped, sleep):
+    """Run the work turn of a fix round from HEAD before and record its changes and decisions in entry."""
+    task_state.mark_step(st, "fix")
+    work_paths = checking.check_paths(st)
+    turns.work_turn(st, cfg, prompt, effort, True, stopped, sleep, new_turn=False, work_paths=work_paths)
+    after = procs.sh(config.GIT + ["rev-parse", "HEAD"], cwd=st["worktree"])
+    entry.update(fix_round_changes(st, before, after, merge_round="base_merge" in entry))
+    result = st.get("result")
+    entry["decisions"] = result["findings"] if result is not None else []
+    task_state.save(st)
+    return result
+
+
+def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None, resume_prompt=None, resume_check=False):
+    """Bounded work/check/review loop under the original supervisor and wait.
+
+    resume_prompt continues the last round of st, which an external signal cut short, in its thread;
+    resume_check continues that round from its check, after its work turn had finished.
+    """
     failed_check = None
-    if budgets.stop_at_weekly_budget(st):
+    resuming = resume_prompt is not None or resume_check
+    if not resuming and budgets.stop_at_weekly_budget(st):
         return
-    if st.get("outcome") == "refused":
+    if not resuming and st.get("outcome") == "refused":
         st["auto_fix_stop"] = "review refused"
         return
-    while not stopped() and st.get("outcome") == "completed":
-        if budgets.stop_at_weekly_budget(st):
-            return
-        conflict = base_merge is not None and base_merge["outcome"] == "conflict"
-        if failed_check is None and not conflict:
-            if review is None or any(entry["outcome"] == "completed" and entry.get("result") is None
-                                     for entry in review.get("angles", [])):
-                st["auto_fix_stop"] = "review unknown"
+    while resuming or (not stopped() and st.get("outcome") == "completed"):
+        if resuming:
+            # The round's entry is saved; only its work turn or check and what follows are left.
+            resuming = False
+            entry = st["rounds"][-1]
+            before = (st.get("cycle") or {}).get("fix_head") or procs.sh(
+                config.GIT + ["rev-parse", "HEAD"], cwd=st["worktree"])
+            result = (st.get("result") if resume_check else
+                      fix_round(st, cfg, entry, resume_prompt, before, effort, stopped, sleep))
+        else:
+            if budgets.stop_at_weekly_budget(st):
                 return
-            if review["verdict"] == "clean":
-                st["auto_fix_stop"] = "clean"
+            conflict = base_merge is not None and base_merge["outcome"] == "conflict"
+            if failed_check is None and not conflict:
+                if review is None or any(entry["outcome"] == "completed" and entry.get("result") is None
+                                         for entry in review.get("angles", [])):
+                    st["auto_fix_stop"] = "review unknown"
+                    return
+                if review["verdict"] == "clean":
+                    st["auto_fix_stop"] = "clean"
+                    return
+                if review["findings"] and all(finding["severity"] == "P3" for finding in review["findings"]):
+                    st["auto_fix_stop"] = "only P3"
+                    return
+                escalations = fix_code_findings(st, review)
+                if escalations:
+                    st["auto_fix_stop"] = "escalate"
+                    st["auto_fix_escalations"] = escalations
+                    return
+            if conflict and len(st["rounds"]) >= st["fix_rounds"]:
+                st["auto_fix_stop"] = st["review_skipped"] = "base conflict"
                 return
-            if review["findings"] and all(finding["severity"] == "P3" for finding in review["findings"]):
-                st["auto_fix_stop"] = "only P3"
+            if len(st["rounds"]) >= st["fix_rounds"]:
+                st["auto_fix_stop"] = "check " + failed_check["outcome"] if failed_check else "rounds_exhausted"
                 return
-            escalations = fix_code_findings(st, review)
-            if escalations:
-                st["auto_fix_stop"] = "escalate"
-                st["auto_fix_escalations"] = escalations
-                return
-        if conflict and len(st["rounds"]) >= st["fix_rounds"]:
-            st["auto_fix_stop"] = st["review_skipped"] = "base conflict"
-            return
-        if len(st["rounds"]) >= st["fix_rounds"]:
-            st["auto_fix_stop"] = "check " + failed_check["outcome"] if failed_check else "rounds_exhausted"
-            return
-        message = prompts.fix_prompt(st, review, failed_check, cfg, base_merge=base_merge if conflict else None)
-        entry = {"review": None if failed_check or conflict else review, "decisions": [], "check": None}
-        if conflict:
-            entry["base_merge"] = base_merge
-        base_merge = None
-        st["rounds"].append(entry)
-        st.update(kind="work", result=None, outcome="running", reset_wait_seconds=0)
-        st.pop("review_skipped", None)
-        st.pop("publish", None)
-        prompt = threads.followup_prompt(st, message, cfg, source="review")
-        task_state.save(st)
-        work_paths = checking.check_paths(st)
-        before = procs.sh(config.GIT + ["rev-parse", "HEAD"], cwd=st["worktree"])
-        turns.work_turn(st, cfg, prompt, effort, True, stopped, sleep, new_turn=False, work_paths=work_paths)
-        after = procs.sh(config.GIT + ["rev-parse", "HEAD"], cwd=st["worktree"])
-        entry.update(fix_round_changes(st, before, after, merge_round="base_merge" in entry))
-        result = st.get("result")
-        entry["decisions"] = result["findings"] if result is not None else []
-        task_state.save(st)
+            message = prompts.fix_prompt(st, review, failed_check, cfg, base_merge=base_merge if conflict else None)
+            entry = {"review": None if failed_check or conflict else review, "decisions": [], "check": None}
+            if conflict:
+                entry["base_merge"] = base_merge
+            base_merge = None
+            st["rounds"].append(entry)
+            st.update(kind="work", result=None, outcome="running", reset_wait_seconds=0)
+            st.pop("review_skipped", None)
+            st.pop("publish", None)
+            prompt = threads.followup_prompt(st, message, cfg, source="review")
+            before = procs.sh(config.GIT + ["rev-parse", "HEAD"], cwd=st["worktree"])
+            if st.get("cycle") is not None:
+                st["cycle"]["fix_head"] = before
+            result = fix_round(st, cfg, entry, prompt, before, effort, stopped, sleep)
         if not stopped() and st.get("outcome") in ("budget_exhausted", "stuck"):
+            task_state.mark_step(st, "check")
             entry["check"] = checking.saved_check(st, cfg, stopped, sleep, review_after=False)
             if budgets.budget_stop(st) == "weekly":
                 st["auto_fix_stop"] = "budget"
@@ -393,6 +419,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
                     or not has_reviewable_commits(st, before)):
                 st["review_skipped"] = st["auto_fix_stop"]
                 return
+        task_state.mark_step(st, "check")
         check = checking.saved_check(st, cfg, stopped, sleep)
         entry["check"] = check
         task_state.save(st)
@@ -407,6 +434,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
         st["work_completed"] = True
         if budgets.stop_at_weekly_budget(st):
             return
+        task_state.mark_step(st, "review")
         base_merge = check_base_merge(st, stopped)
         if stopped():
             return
@@ -422,6 +450,8 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
         review = review_turn(st, cfg, prompts.review_prompt(st, cfg), effort, stopped, sleep, angles=next_angles)
         if review_only:
             return
+        if review is not None and st.get("outcome") == "completed" and not stopped():
+            task_state.mark_step(st, "after_review")
         if st.get("outcome") == "refused":
             st["auto_fix_stop"] = "review refused"
             return

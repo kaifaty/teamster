@@ -534,6 +534,9 @@ def ci_cycle(st, cfg, effort, stopped, sleep):
     if not st.get("ci_enabled"):
         return
     while True:
+        if not stopped():
+            # A stopped cycle never reached CI: keep the step the signal cut short.
+            task_state.mark_step(st, "ci", ci=True)
         ci = wait_ci(st, stopped, sleep, cfg.get("ci_queued_minutes", 20))
         if stopped() or ci["outcome"] != "failed" or ci["rounds"] >= st.get("ci_rounds", 1):
             return
@@ -546,9 +549,10 @@ def ci_cycle(st, cfg, effort, stopped, sleep):
         st.pop("publish", None)
         st.pop("review_skipped", None)
         prompt = threads.followup_prompt(st, message, cfg, source="ci")
-        task_state.save(st)
+        task_state.mark_step(st, "fix")
         turns.work_turn(st, cfg, prompt, effort, True, stopped, sleep, new_turn=False)
         if not stopped() and st.get("outcome") in ("completed", "budget_exhausted", "stuck"):
+            task_state.mark_step(st, "check")
             checking.saved_check(st, cfg, stopped, sleep, review_after=False)
         result = st.get("result") or {}
         if stopped() or st.get("outcome") != "completed" or result.get("status") != "done":
