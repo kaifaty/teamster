@@ -18,6 +18,8 @@
   "devDependencies": {
     "@types/markdown-it": "^14.2.0",
     "@vitejs/plugin-vue": "^6.0.10",
+    "@vue/test-utils": "^2.6.0",
+    "happy-dom": "^21.0.4",
     "typescript": "^6.0.3",
     "vite": "^8.3.6",
     "vitest": "^5.1.0",

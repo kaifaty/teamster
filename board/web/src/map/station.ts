@@ -3,7 +3,7 @@
 
 import type { ImplementBody, ReflectBody } from "../lib/actions";
 import { answerText, lessonCommand, reflectCommand, reflectSlug } from "../lib/commands";
-import type { Implementation, Lesson, PendingRecord, ResearchRepo, Signal, Study, StudyMessage, StudyQuestion } from "../types";
+import type { Implementation, Lesson, PendingRecord, Signal, Study, StudyMessage, StudyQuestion } from "../types";
 import type { Research } from "./research";
 import type { Clock } from "./schedule";
 
@@ -253,22 +253,6 @@ export function implementBody(entry: string, repo: string, note: string): Implem
   const body: ImplementBody = { entry: entry.trim(), repo };
   if (note.trim()) body.note = note.trim();
   return body;
-}
-
-/**
- * The repository the lesson form's «Репозиторий» starts with, as its path: a domain lesson's first named repository
- * the board knows, any other lesson's `teamster`; empty when there is none, and the human picks one.
- */
-export function defaultRepo(lesson: Pick<Lesson, "scope" | "repos">, repos: readonly ResearchRepo[]): string {
-  const named = (name: string) => repos.find((repo) => repo.name === name)?.path;
-  if (lesson.scope === "domain") {
-    for (const name of lesson.repos) {
-      const path = named(name);
-      if (path) return path;
-    }
-    return "";
-  }
-  return named("teamster") ?? "";
 }
 
 /** «Внедрить» is offered while the lesson has no implementation, or only a closed one. */

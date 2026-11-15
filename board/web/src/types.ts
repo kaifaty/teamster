@@ -137,6 +137,11 @@ export interface Lesson {
   caveats?: string | null;
   /** Files outside every git repository that the proposal names, as `~/…`; absent on older servers. */
   outside?: string[];
+  /**
+   * Where the change goes, in order: a repository's name (`teamster`) or a path `~/…` outside every git repository;
+   * `null` in an older report, absent on older servers.
+   */
+  target?: string[] | null;
   /** The task that implements the lesson, the newest one; absent on older servers. */
   implementation?: Implementation | null;
 }
