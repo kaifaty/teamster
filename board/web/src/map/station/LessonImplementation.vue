@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// How a lesson's implementation goes, in its thread: the agent works — with the task's phase and its last action, live,
+// How a lesson's implementation goes, in its thread: the board lands its PR by itself — waits, merges, releases teamster,
+// landed, left to the human, or failed, in the server's own words with «PR #N» linked — the agent works — with the task's phase and its last action, live,
 // or, under the agent's feed, its phase and how long it goes — needs a decision, opened a PR, changed the files outside
 // the repository without one, stopped, or the task is closed. A stopped agent's whole report replaces its summary's
 // first line once it is known. The reply to the agent stands under the thread, with the lesson's buttons.
@@ -23,8 +24,13 @@ const report = computed(() => {
 </script>
 
 <template>
-  <div v-if="line" class="implementation" :class="line.kind">
-    <p v-if="line.kind === 'pr'" class="line">
+  <div v-if="line" class="implementation" :class="line.kind === 'landing' ? ['landing', line.tone] : line.kind">
+    <p v-if="line.kind === 'landing'" class="line" :role="line.tone === 'stopped' ? 'alert' : undefined">
+      <span v-if="line.tone === 'working'" class="busy-dot" aria-hidden="true"></span>
+      <template v-if="line.pr">{{ line.before }}<a :href="line.pr" target="_blank" rel="noopener">{{ line.label }}</a>{{ line.after }}</template>
+      <template v-else>{{ line.text }}</template>
+    </p>
+    <p v-else-if="line.kind === 'pr'" class="line">
       {{ line.before }}<a :href="line.pr" target="_blank" rel="noopener">{{ line.label }}</a>{{ line.after }}
     </p>
     <p v-else-if="line.answer && sent" class="line">Ответ отправлен — агент продолжает</p>
@@ -60,6 +66,7 @@ const report = computed(() => {
 }
 
 .implementation.pr,
+.implementation.done,
 .implementation.outside {
   border-left-color: var(--st-green);
 }
@@ -81,6 +88,34 @@ const report = computed(() => {
 
 .working .line {
   color: var(--st-teal);
+}
+
+.done .line {
+  color: var(--st-green);
+}
+
+/* The board at work on the PR: a lamp that breathes, as the agent's does. */
+.busy-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--st-teal);
+  vertical-align: 1px;
+  animation: busy-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes busy-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .busy-dot {
+    animation: none;
+  }
 }
 
 .closed .line {

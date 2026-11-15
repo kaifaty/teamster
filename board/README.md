@@ -151,8 +151,8 @@ A click on the station opens its own screen over the map (`board/web/src/map/sta
 and the galaxy stops drawing meanwhile). Under its title one line says what to do next, with at most one button, in this
 order: answer the analyst who waits («Ответить» opens the channel), answer an implementing agent that needs a decision
 («Ответить» opens the lesson in «Переписка» with the focus in the reply to the agent), decide the proposed lessons
-(«Разобрать» opens the first one), wait while the analyst works, wait while agents implement lessons, check a ready PR
-or a done change outside the repository («Показать» opens its lesson), apply the accepted lessons («Показать» opens the
+(«Разобрать» opens the first one), wait while the analyst works, wait while agents implement lessons or the board lands
+their PRs, check a ready PR the board leaves to you or a done change outside the repository («Показать» opens its lesson), apply the accepted lessons («Показать» opens the
 first one), or nothing until the planned run. A resource bar on top counts the analyst's open
 questions, lessons to decide, accepted lessons waiting for their change, applied lessons, the records not yet reflected on («не разобрано») with
 how many carry a signal, and the time to the planned reflection; each gauge brings its deck into view. The decks:
@@ -167,7 +167,8 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
   «Архив» with the count of records not yet reflected on.
 - «Уроки»: the stages as tabs, «на решение» › «к внедрению» › «внедрено», with «отклонено» aside, and each lesson as one
   short row: its title on one line, `<id> · <scope> · <date>` under it, and on the right how its implementation goes —
-  «запускается», «агент работает», «нужен ответ», «PR готов», «правка готова», «остановился» or «не запустился». A row
+  «запускается», «агент работает», «внедряется» (the board lands its PR), «нужен ответ», «PR готов», «правка готова»,
+  «остановился» or «не запустился». A row
   has no buttons: a click opens the lesson in «Переписка» (on a phone the page scrolls there), and the open row is lit.
 - «Переписка», the large middle panel: the channels on the left — one per study, and the studies just ordered — and on
   the right either the open channel or the open lesson. Choosing a channel closes the lesson; opening a lesson unlights
@@ -189,6 +190,14 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
     summary, or the task is closed) with, while the agent works, its phase in plain words (Работа, Проверка, Ревью, CI)
     and its last action, live from the board's `activity` messages, then your replies to the agent. Changes are
     announced politely to screen readers.
+  - «Внедрить» goes all the way: the board server merges the lesson's PR itself, marks the lesson applied and releases
+    teamster. While it does, `implementation.landing` of `GET /api/research` (`{stage, text, pr, version}`) says where
+    it stands, and the lesson shows its `text` in place of the task's state, with «PR #N» in it linking to the PR:
+    `waiting`, `merging`, `releasing` and `upgrading` show it at work, as an agent at work, with «Посмотреть» while the
+    ship is on the map and without «Внедрено»; `landed` shows only the text, with no buttons; `manual` — a PR the human
+    merges — keeps «Посмотреть» and «Внедрено»; `failed` shows the reason as a problem, with «Посмотреть» and
+    «Внедрено». Only without `landing` (`null`, or an older server that sends none) does a done task's PR ask to check,
+    merge and mark «Внедрено» by hand. `dev:fixture` has a lesson at each stage.
   - Between the start's steps and the task's state stands the agent's work by time, as in a chat, from
     `GET /api/tasks/{slug}/feed`: its messages whole with their line breaks; its commands, edits and tools as one line
     each, marked «команда», «правка» or «инструмент», cut with an ellipsis and whole on hover; its thinking as a dimmed

@@ -7,6 +7,7 @@ import type { ActionSender, SayBody } from "../../lib/actions";
 import { sayCommand } from "../../lib/commands";
 import type { Launch, LaunchStage, Lesson, TaskSummary } from "../../types";
 import type { Research } from "../research";
+import { landingOf } from "../landing";
 import { canImplement, implementBody, startPending } from "../station";
 import type { CardState, Stage } from "./cards";
 import type { Copied, Outcome } from "./console";
@@ -167,10 +168,11 @@ export function createImplementation(context: ImplementContext) {
     if (path && state.form === "implement") state.repo = path;
   }
 
-  /** The ship that implements the lesson: its task's slug and system, while the task is open. */
+  /** The ship that implements the lesson: its task's slug and system, while the task is open and its PR not landed. */
   function shipOf(lesson: Lesson): { slug: string; repo: string } | null {
     const started = cardOf(lesson).started;
     const task = lesson.implementation;
+    if (landingOf(task)?.stage === "landed") return null;
     const launch = launchOf(lesson);
     if (launch?.slug && launch.repo && launch.stage === "done" && task?.slug !== launch.slug) return { slug: launch.slug, repo: launch.repo };
     if (started && startPending(task, started)) return started.slug ? { slug: started.slug, repo: started.repo } : null;

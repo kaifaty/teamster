@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Implementation, Lesson, Study, StudyMessage } from "../types";
+import type { Implementation, Landing, Lesson, Study, StudyMessage } from "../types";
 import { fixtureSource } from "../fixtures/source";
 import { research } from "./research";
 import { defaultRepo, lessonPlace, lessonWhere } from "./station/place";
@@ -183,7 +183,7 @@ describe("stationCounts", () => {
   it("counts the open questions of every waiting study and the material in the hold", async () => {
     const station = research(await fixtureSource().fetchResearch(), [], [])!;
     expect(stationCounts(station)).toEqual({
-      questions: 1, waiting: 1, proposed: 8, accepted: 8, applied: 2, declined: 1, records: 7, signals: 4,
+      questions: 1, waiting: 1, proposed: 8, accepted: 14, applied: 3, declined: 1, records: 7, signals: 4,
     });
   });
 });
@@ -345,6 +345,39 @@ describe("a lesson's implementation", () => {
     expect(implementationLine(task({ archived: true, result_status: "needs_decision" }))).toMatchObject({ kind: "closed", pr: null });
     // The research carries the task the card started: its own state wins.
     expect(implementationLine(task({ alive: true }), { slug: "lesson-u1", repo: "teamster" })).toMatchObject({ kind: "working" });
+  });
+
+  it("shows the board's own landing of the PR instead of the task's state, its «PR #N» linked", () => {
+    const PR = "https://github.com/o/r/pull/41";
+    const landing = (stage: Landing["stage"], text: string, pr: string | null = PR): Implementation =>
+      task({ archived: true, result_status: "done", pr: PR, landing: { stage, text, pr, version: stage === "landed" ? "1.80.0" : null } });
+    const cases: [Landing["stage"], string, "working" | "done" | "pr" | "stopped"][] = [
+      ["waiting", "Жду CI у PR #41", "working"],
+      ["merging", "Сливаю PR #41", "working"],
+      ["releasing", "PR #41 слит, выпускаю teamster 1.80.0", "working"],
+      ["upgrading", "PR #41 слит, обновляю teamster", "working"],
+      ["landed", "Внедрено: PR #41 слит, teamster 1.80.0", "done"],
+      ["manual", "PR #41 сливает человек: проверь и смёржи", "pr"],
+      ["failed", "Не удалось слить PR #41: конфликт", "stopped"],
+    ];
+    for (const [stage, text, tone] of cases) {
+      const at = text.indexOf("PR #41");
+      expect(implementationLine(landing(stage, text))).toEqual({
+        kind: "landing", stage, tone, text, pr: PR, label: "PR #41", before: text.slice(0, at), after: text.slice(at + 6), answer: false,
+      });
+    }
+    // The landing wins over an agent at work; without a PR the text stays whole; a text without the label gets the link.
+    expect(implementationLine({ ...landing("merging", "Сливаю"), alive: true })).toMatchObject({ kind: "landing", before: "Сливаю · ", after: "" });
+    expect(implementationLine(landing("failed", "Нет PR", null))).toMatchObject({ pr: null, label: null, before: "Нет PR", after: "" });
+    expect(implementationLine(landing("merging", "Сливаю PR #410"))).toMatchObject({ before: "Сливаю PR #410 · ", label: "PR #41" });
+    // No landing — null, or an older server that sends none — reads as before.
+    const pr = { kind: "pr", before: "PR готов: ", after: ". Проверь и смёржи, затем отметь «Внедрено»." };
+    expect(implementationLine(task({ result_status: "done", pr: PR, landing: null }))).toMatchObject(pr);
+    expect(implementationLine(task({ result_status: "done", pr: PR }))).toMatchObject(pr);
+    // «Внедрить» waits while the board lands the PR of a closed task, and after it landed.
+    expect(canImplement({ implementation: landing("merging", "Сливаю PR #41") })).toBe(false);
+    expect(canImplement({ implementation: landing("landed", "Внедрено") })).toBe(false);
+    expect(canImplement({ implementation: landing("failed", "Конфликт") })).toBe(true);
   });
 
   const OUTSIDE = ["~/.codex/checks/home-infra/ci_wait.py"];
