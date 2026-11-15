@@ -29,6 +29,7 @@ import {
 import { createCards } from "./cards";
 import { createFeeds, type FeedFetch } from "./feed";
 import { createImplementation, type ShipOptions } from "./implement";
+import { lessonPlace, lessonWhere } from "./place";
 import { localLaunch, mergeLaunches, pendingKey, settlePending, type PendingStudy } from "./launch";
 
 export { HOLD_MS, type CardBusy, type CardForm, type CardState, type Stage } from "./cards";
@@ -104,7 +105,13 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     return result.ok ? { kind: "ok", result } : { kind: "error", error: result.error };
   }
 
-  const cards = createCards({ research, live, run });
+  /** The lesson's proposal as its card shows it: its own, or the one of the docket that filed it. */
+  const proposalOf = (lesson: Lesson): string | null => lesson.proposal ?? filed.value.get(lesson.entry.trim())?.proposal ?? null;
+  /** Where the lesson's task starts and «Где менять», both by the proposal its card shows. */
+  const placeOf = (lesson: Lesson) => lessonPlace({ ...lesson, proposal: proposalOf(lesson) }, research.value.repos);
+  const whereOf = (lesson: Lesson) => lessonWhere({ proposal: proposalOf(lesson), target: lesson.target }, research.value.repos);
+
+  const cards = createCards({ research, live, run, placeOf });
   const { index, edit, openForm } = cards;
 
   // ---- what «Переписка» shows: a study's channel, a channel just ordered, or a lesson
@@ -292,7 +299,7 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
   const tasks = options.tasks ?? ref({});
   const implementation = createImplementation({
     research, now, live, act: options.act, openShip: options.openShip, run, launches, tasks,
-    cardOf: cards.cardOf, edit, openForm, listOf: cards.listOf, hold: cards.hold,
+    cardOf: cards.cardOf, edit, openForm, listOf: cards.listOf, hold: cards.hold, placeOf,
   });
   const STOPPED = new Set(["decision", "stopped", "outside"]);
   const feeds = createFeeds({
@@ -402,6 +409,9 @@ export function createConsole(research: Ref<Research>, now: Ref<number>, options
     repos: computed(() => research.value.repos),
     reposAccess: computed(() => research.value.reposAccess),
     filed,
+    proposalOf,
+    placeOf,
+    whereOf,
     live,
     launches,
     openKey,
