@@ -41,14 +41,14 @@ class ResumeTests(RotationTestCase):
     def test_resume_work_turn_continues_the_thread_then_the_cycle(self):
         self.configure(language="en")
         self.account(self.home, "A", self.reset, runs=[
-            {"mode": "hold", "write_files": {"pending.txt": "unfinished work\n"}},
+            {"mode": "hold", "write_files": {"pending.txt": "unfinished work\n", "notes.txt": "notes\n"}},
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result(defects=False)}])
         slug = "resume-work"
         # CI after the cycle must not replace the step the signal cut short.
         self.start(slug, "--review", "--fix-rounds", "1", "--ci-command", "true")
         worktree = Path(self.state(slug)["worktree"])
-        self.interrupt(slug, lambda: (worktree / "pending.txt").exists())
+        self.interrupt(slug, lambda: (worktree / "notes.txt").exists())
         status = self.cli("status")
         self.assertIn(slug, status)
         self.assertIn("interrupted", status)
@@ -66,7 +66,7 @@ class ResumeTests(RotationTestCase):
         prompt = resumed["prompt"]
         self.assertIn("cut short by the external signal SIGTERM at ", prompt)
         self.assertIn("through no fault of yours", prompt)
-        self.assertIn("uncommitted files: 1; unpushed commits: 0; no PR.", prompt)
+        self.assertIn("uncommitted files: 2; unpushed commits: 0; no PR.", prompt)
         self.assertNotIn("Сохранить весь исходный бриф", prompt)
         self.assertTrue(review["review"])
         self.assertEqual(state["review_result"]["verdict"], "clean")
@@ -190,6 +190,12 @@ class ResumeTests(RotationTestCase):
         cycle, step = worker.supervisor.resume_step(legacy)
         self.assertEqual((cycle["kind"], step), ("work", "review"))
         self.assertNotIn("review_after", cycle)
+        # A stopped supervisor records a skipped CI even when it was cut short in a fix round's check.
+        legacy = {"slug": "resume-step", "kind": "work", "rounds": [{}], "result": self.work_result(),
+                  "checks": [{"outcome": "interrupted"}], "check_start": 0,
+                  "ci": {"outcome": "skipped", "reason": "stopped", "rounds": 0}}
+        cycle, step = worker.supervisor.resume_step(legacy)
+        self.assertEqual((cycle["ci"], step), (False, "check"))
 
     def test_resume_check_and_ci_rerun_without_an_executor_turn(self):
         self.configure(language="en")
@@ -221,6 +227,28 @@ class ResumeTests(RotationTestCase):
         self.assertEqual((state["ci"]["outcome"], state["ci"]["rounds"], state["outcome"]), ("passed", 0, "completed"))
         self.assertIn(": passed (1/1,", output)
         self.assertEqual(len(self.invocations()), 2)
+
+        # The check of a CI repair that ended partial ends the CI cycle once it runs again.
+        hold.touch()
+        (self.home / "exec-count").unlink()
+        counter = self.root / "ci-check-count"
+        check = (f"n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; "
+                 f"if [ $n -eq 2 ]; then while [ -f {hold} ]; do sleep 0.1; done; fi")
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "write_files": {"tracked.txt": "implemented\n"}, "commit_files": ["tracked.txt"],
+             "push": True, "reply": self.work_result()},
+            {"mode": "complete", "reply": self.work_result("partial")}])
+        before = len(self.invocations())
+        self.start("resume-ci-check", "--check", check, "--ci-command", "false", "--ci-rounds", "2")
+        self.interrupt("resume-ci-check", lambda: self.state("resume-ci-check").get("check_pid")
+                       and counter.exists() and counter.read_text().strip() == "2")
+        hold.unlink()
+        self.assertIn("resumed resume-ci-check from check", self.resume("resume-ci-check"))
+        self.wait("resume-ci-check")
+        state = self.state("resume-ci-check")
+        self.assertEqual([check["outcome"] for check in state["checks"]], ["passed", "interrupted", "passed"])
+        self.assertEqual((state["ci"]["rounds"], state["ci"]["reason"]), (1, "partial"))
+        self.assertEqual(len(self.invocations()) - before, 2)
 
     def test_resume_after_a_kill_that_left_no_result(self):
         self.configure(language="en")
@@ -270,7 +298,7 @@ class ResumeTests(RotationTestCase):
         self.configure(language="en")
         self.account(self.home, "A", self.reset, runs=[{"mode": "hold"}] * 3 + [
             {"mode": "complete", "write_files": {"tracked.txt": "implemented\n"}, "commit_files": ["tracked.txt"],
-             "push": True, "reply": self.work_result()}])
+             "push": True, "delay": 10, "reply": self.work_result()}])
         self.start("resume-legacy", "--ci-command", "true")
         self.interrupt("resume-legacy", lambda: len(self.invocations()) == 1)
         # A state of an earlier version has no cycle record: a turn without a result goes on despite CI.
@@ -287,6 +315,10 @@ class ResumeTests(RotationTestCase):
         self.assertIn("resumed resume-legacy from work", output)
         self.assertIn("resumed resume-other from work", output)
         self.assertNotIn("waiting", output)
+        # Both executors run at the same time: neither turn has finished once both started.
+        self.until(lambda: len(self.invocations()) == 5, timeout=8)
+        for slug in ("resume-legacy", "resume-other"):
+            self.assertNotIn("turn_finished", self.state(slug))
         for slug in ("resume-legacy", "resume-other"):
             self.wait(slug)
             state = self.state(slug)

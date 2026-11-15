@@ -116,10 +116,11 @@ def legacy_cycle(st):
     the cycle continues without a review.
     """
     kind = st.get("kind")
-    cycle = {"kind": "work", "effort": st.get("effort"), "ci": bool(st.get("ci")),
+    ci = st.get("ci") or {}
+    # A stopped supervisor records a skipped CI on its way out; only a wait or a CI repair is inside CI.
+    cycle = {"kind": "work", "effort": st.get("effort"), "ci": bool(ci.get("rounds") or ci.get("outcome") == "pending"),
              "pr": (st.get("publish") or {}).get("pr", "")}
     checks = st.get("checks", [])[st.get("check_start", 0):]
-    ci = st.get("ci") or {}
     if kind == "review":
         cycle.update(kind="work" if st.get("work_completed") else "review", step="review")
     elif st.get("check_pid") or (checks and checks[-1].get("outcome") == "interrupted"):
@@ -505,8 +506,13 @@ def cmd__run(a):
                     if review is not None and st.get("outcome") == "completed" and not stopped():
                         task_state.mark_step(st, "after_review")
                     review_cycle.auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=base_merge)
-        # A resumed CI repair that did not finish done ends the CI cycle, as the repair itself would have.
-        if working and not (in_ci and turn and (st.get("result") or {}).get("status") != "done"):
+        # A resumed CI repair, or its check, that did not finish done ends the CI cycle, as ci_cycle would have.
+        result = st.get("result") or {}
+        if in_ci and step in ("fix", "check") and result.get("status") != "done":
+            if st.get("ci"):
+                st["ci"]["reason"] = "stopped" if stopped() else result.get("status") or st.get("outcome", "unknown")
+                task_state.save(st)
+        elif working:
             ci_runs.ci_cycle(st, cfg, effort, stopped, sleep)
         checks = st.get("checks", [])[st.get("check_start", 0):]
         check = checks[-1] if checks else None
