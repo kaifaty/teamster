@@ -582,8 +582,8 @@ class ResultScoutConfigTests(RotationTestCase):
         today = time.strftime("%Y-%m-%d", time.gmtime())
         name = "batch-%s.md" % today
         first = self.reflect_result(
-            "needs_decision", report="## New lessons\n\nFirst report.",
-            lessons=[self.reflect_lesson("V1", "first cue"),
+            "needs_decision", report="## New lessons\n\n### V1. First\ntarget: repo-a, ~/.codex/AGENTS.md",
+            lessons=[self.reflect_lesson("V1", "first cue", target=["repo-a", "~/.codex/AGENTS.md"]),
                      self.reflect_lesson("V2", "domain cue", "domain", ["repo-a", "repo-b"])],
             questions=["Apply V1 now?", "Where should V2 go?"], options=[["yes", "no"], []])
         second = self.reflect_result(report="Second report.", lessons=[
@@ -617,13 +617,16 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertIn('sandbox_mode="read-only"', invocation["argv"])
         worker = self.worker()
         self.assertEqual(invocation["output_schema"], worker.result_schema.REFLECT_SCHEMA)
+        lesson_schema = invocation["output_schema"]["properties"]["lessons"]["items"]
+        self.assertIn("target", lesson_schema["required"])
+        self.assertEqual(lesson_schema["properties"]["target"]["items"], {"type": "string"})
         self.assertEqual(invocation["prompt"], worker.prompts.reflect_prompt(
             "Focus on the checks.", ["new-task-20260103T000000Z"], "20260103T000000Z",
             worker.config.accounts_config()))
         self.assertTrue(invocation["prompt"].startswith("Focus on the checks.\n\n"))
         self.assertEqual((archive / name).read_text(),
                          "# Batch reflection %s\n\nthrough: 20260103T000000Z\n\ntask: reflect-batch\n\n"
-                         "## New lessons\n\nFirst report.\n" % today)
+                         "## New lessons\n\n### V1. First\ntarget: repo-a, ~/.codex/AGENTS.md\n" % today)
         rows = (archive / "INDEX.md").read_text().splitlines()[4:]
         self.assertEqual(rows, [
             "| 2026-01-02 | batch-2026-01-02.md L1 | invariant | old cue | applied rules (PR #1) |",
@@ -939,11 +942,15 @@ class ResultScoutConfigTests(RotationTestCase):
                 records = ["fix-20260101T000000Z"]
                 for reflect in (worker.prompts.reflect_prompt(None, records, "20260101T000000Z"),
                                 worker.prompts.study_prompt("Take the fix apart.", records)):
+                    self.assertIn(worker.prompts.REFLECT_TARGET[language], reflect)
                     if language == "ru":
                         self.assertIn("Пиши по-русски summary, report", reflect)
-                        self.assertIn("(cue:, lesson:, evidence:, scope:, earlier:, caveats:, proposal:)", reflect)
+                        self.assertIn("(cue:, lesson:, evidence:, scope:, earlier:, caveats:, proposal:, target:)",
+                                      reflect)
                     else:
                         self.assertNotRegex(reflect, "[А-Яа-яЁё]")
+                self.assertIn("target ~/.claude/skills/agent-router/SKILL.md", worker.prompts.REFLECT_TARGET[language])
+                self.assertIn("`target: <", worker.prompts.REFLECT_TARGET[language])
 
     def test_rules_override_replaces_both_languages(self):
         worker = self.worker()
