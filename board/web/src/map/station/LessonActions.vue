@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // A lesson's buttons, under its thread in «Переписка»: a proposed lesson is implemented, accepted, declined or
-// discussed, an accepted one is implemented or marked applied. «Внедрить» asks where, and «Запустить» closes the form
-// and shows the start in the thread at once; the other buttons show their decision at once too, and for a few seconds
-// after them the lesson offers to take the decision back.
+// discussed, an accepted one is implemented or marked applied. When the lesson's place is clear, «Внедрить в <repo>»
+// starts its task at once and «Другой репозиторий или уточнение» opens the form; otherwise «Внедрить» asks where, and
+// «Запустить» closes the form and shows the start in the thread at once; the other buttons show their decision at once
+// too, and for a few seconds after them the lesson offers to take the decision back.
 // For a lesson whose proposal changes files outside the repositories, «Внедрить» lets its agent change them, and
 // «Скопировать задание» copies the change for a session that makes it by hand.
 import { computed, ref } from "vue";
@@ -15,6 +16,8 @@ const props = defineProps<{ lesson: Lesson; stage: "proposed" | "accepted" }>();
 const desk = useConsole();
 const repos = computed(() => desk.repos.value);
 const outside = computed(() => outsideOf(props.lesson));
+/** Where the lesson's task starts: a clear place starts it at once from «Внедрить в <repo>». */
+const place = computed(() => desk.placeOf(props.lesson));
 
 const card = computed(() => desk.cardOf(props.lesson));
 const busy = (what: CardBusy) => card.value.busy === what;
@@ -72,6 +75,9 @@ function submit() {
           <option v-for="item in repos" :key="item.path" :value="item.path" :title="item.path">{{ item.name }}</option>
         </select>
       </label>
+      <p v-if="place.others.length" class="hint">
+        Урок меняет ещё: {{ place.others.join(", ") }}. Их части агент перечислит в отчёте — запусти потом отдельно
+      </p>
       <p class="hint">
         В нём агент заведёт ветку, сделает правку с тестами и откроет PR. Части урока для других репозиториев он
         перечислит в отчёте.
@@ -120,39 +126,49 @@ function submit() {
     </form>
 
     <!-- A proposed lesson whose start goes waits to become accepted. -->
-    <div v-else-if="stage === 'proposed' && !desk.startGoes(lesson)" class="buttons">
-      <button
-        v-if="desk.offersImplement(lesson)"
-        type="button"
-        class="key gold"
-        :title="implementTitle"
-        :disabled="!!card.busy || !!desk.implementOff.value"
-        @click="desk.openForm(lesson, 'implement')"
-      >
-        Внедрить
-      </button>
+    <div v-else-if="stage === 'accepted' || !desk.startGoes(lesson)" class="buttons">
+      <template v-if="desk.offersImplement(lesson)">
+        <template v-if="place.clear">
+          <button
+            type="button"
+            class="key gold"
+            :title="implementTitle"
+            :disabled="!!card.busy || !!desk.implementOff.value"
+            @click="desk.implementHere(lesson, stage)"
+          >
+            Внедрить в {{ place.name }}
+          </button>
+          <button type="button" class="link other" :disabled="!!card.busy || !!desk.implementOff.value" @click="desk.openForm(lesson, 'implement')">
+            Другой репозиторий или уточнение
+          </button>
+        </template>
+        <button
+          v-else
+          type="button"
+          class="key gold"
+          :title="implementTitle"
+          :disabled="!!card.busy || !!desk.implementOff.value"
+          @click="desk.openForm(lesson, 'implement')"
+        >
+          Внедрить
+        </button>
+      </template>
       <button v-if="outside.length" type="button" class="chip" title="Скопировать правку для своей сессии Claude" :disabled="!!card.busy" @click="copyAssignment">
         Скопировать задание
       </button>
-      <button type="button" class="key" title="Принять без запуска" :class="{ busy: busy('accept') }" :disabled="!!card.busy" @click="desk.accept(lesson)">Принять</button>
-      <button type="button" class="chip" :disabled="!!card.busy" @click="desk.openForm(lesson, 'decline')">Отклонить</button>
-      <button type="button" class="chip" :disabled="!!card.busy" @click="desk.discuss(lesson)">Обсудить</button>
-    </div>
-    <div v-else-if="stage === 'accepted'" class="buttons">
+      <template v-if="stage === 'proposed'">
+        <button type="button" class="key" title="Принять без запуска" :class="{ busy: busy('accept') }" :disabled="!!card.busy" @click="desk.accept(lesson)">Принять</button>
+        <button type="button" class="chip" :disabled="!!card.busy" @click="desk.openForm(lesson, 'decline')">Отклонить</button>
+        <button type="button" class="chip" :disabled="!!card.busy" @click="desk.discuss(lesson)">Обсудить</button>
+      </template>
       <button
-        v-if="desk.offersImplement(lesson)"
+        v-else
         type="button"
-        class="key gold"
-        :title="implementTitle"
-        :disabled="!!card.busy || !!desk.implementOff.value"
-        @click="desk.openForm(lesson, 'implement')"
+        class="chip applied"
+        title="Изменение уже сделано: отметить урок внедрённым"
+        :disabled="!!card.busy"
+        @click="desk.openForm(lesson, 'apply')"
       >
-        Внедрить
-      </button>
-      <button v-if="outside.length" type="button" class="chip" title="Скопировать правку для своей сессии Claude" :disabled="!!card.busy" @click="copyAssignment">
-        Скопировать задание
-      </button>
-      <button type="button" class="chip applied" title="Изменение уже сделано: отметить урок внедрённым" :disabled="!!card.busy" @click="desk.openForm(lesson, 'apply')">
         Внедрено
       </button>
     </div>
@@ -235,6 +251,10 @@ function submit() {
   margin-top: 4px;
   font-size: 11.5px;
   resize: vertical;
+}
+
+.link.other {
+  font-size: 12px;
 }
 
 .done-line {
