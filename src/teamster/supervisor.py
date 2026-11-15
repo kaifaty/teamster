@@ -215,7 +215,8 @@ def resume(slug, loaded):
                                                  cfg, source="resume")
             now = clock.CLOCK.time()
             st.setdefault("resumed", []).append({"at": now, "signal": cut["signal"], "signal_at": cut["at"],
-                                                 "step": step, "turn": st.get("turns", 0)})
+                                                 "started": st["turn_started"], "step": step,
+                                                 "turn": st.get("turns", 0)})
             st["cycle"] = dict(cycle, step=step)
             st["pending"] = {"prompt": prompt, "effort": cycle.get("effort"), "current_message": True,
                              "review_after": bool(st.get("review_after")), "resume": step}
@@ -438,6 +439,8 @@ def cmd__run(a):
         in_ci = step is not None and bool(cycle.get("ci"))
         # A review fix round continues inside auto_fix, which records its decisions, check and changes.
         review_fix = step == "fix" and not in_ci
+        # So does the check of a fix round, so that its outcome lands in the round and a failure starts the next.
+        round_check = step == "check" and not in_ci and bool(st.get("rounds"))
         turn = step in (None, "work") or (step == "fix" and in_ci)
         if not turn and not review_fix:
             # The executor turn of the interrupted cycle had completed; the cycle goes on from its result.
@@ -459,20 +462,20 @@ def cmd__run(a):
                 task_state.save(st)
         work_result = st.get("result") if working else None
         review_only = False
-        if (work_result is not None and work_result["status"] != "done"
+        if (work_result is not None and work_result["status"] != "done" and not round_check
                 and review_after and st.get("outcome") == "completed"):
             review_only = (work_result["status"] in ("partial", "blocked")
                            and review_cycle.has_reviewable_commits(st, st["base"]))
             st["auto_fix_stop" if review_only else "review_skipped"] = "result " + work_result["status"]
             task_state.save(st)
-        if (working and (turn or step == "check")
+        if (working and (turn or (step == "check" and not round_check))
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
             task_state.mark_step(st, "check")
             check = checking.saved_check(st, cfg, stopped, review_after and not in_ci)
-        if review_fix:
+        if review_fix or round_check:
             review_cycle.auto_fix(st, cfg, st.get("review_result"), effort, stopped, sleep,
-                                  resume_prompt=pending["prompt"])
+                                  resume_prompt=pending["prompt"], resume_check=round_check)
         elif step == "review" and kind == "review":
             if not stopped():
                 review_cycle.review_turn(st, cfg, prompts.review_prompt(st, cfg), effort, stopped, sleep, new_turn=True)

@@ -117,7 +117,8 @@ recorded; `status` shows such a task as `interrupted`, not `running`.
 cut short and prints `nothing to resume` when there is none. Scouts, reflections, tasks ended by `stop`,
 finished cycles and live supervisors are refused with the reason and a nonzero exit; so is a task whose
 worker or check process from the interrupted cycle is still alive. Like `start`, a task continues alone
-unless it ran in parallel: resume continues every task whose interrupted cycle overlapped another one's in time,
+unless it ran in parallel: resume continues every task whose interrupted cycle overlapped in time an interrupted
+cycle of another task, including one resumed since,
 or else one other task while no supervisor runs, and prints `waiting: teamster resume <slug>` for the rest.
 `start --parallel` alone does not count; the waiting line only notes it. Run that command once the running task
 ends.
@@ -130,13 +131,13 @@ The cycle continues from the step it stopped at, in the same turn and with the t
 | a work turn or a fix round (review or CI) | continues the same thread with a message that names the signal and its time, says the turn was not the worker's fault, and gives the uncommitted file count, the unpushed commit count and the PR; then the usual check, review, fix rounds and CI |
 | a review | runs the review again, then the fix rounds |
 | after a saved review, before its fix round | starts that fix round from the saved review |
-| the saved check or the CI wait | runs it again without a worker turn, then the rest of the cycle |
+| the saved check or the CI wait | runs it again without a worker turn, then the rest of the cycle; a fix round's check is recorded in that round, and its failure starts the next round allowed |
 
 Rounds already started count against `--fix-rounds` and `--ci-rounds`; a resumed fix round records its
 decisions, check and changes like any other, and a failing check starts the next round it allows. The cycle
 reviews only when its `start` or `say` passed `--review`; a task saved by 1.74.0 or earlier has no such record,
 so past the step it was in its cycle continues without a review. Each resume appends
-`{"at", "signal", "signal_at", "step", "turn"}` to `resumed` in `state.json`. The resumed cycle keeps the
+`{"at", "signal", "signal_at", "started", "step", "turn"}` to `resumed` in `state.json`. The resumed cycle keeps the
 turn number, so `report` counts its final outcome, not the interrupted one, and does not count it as a
 follow-up. A manual `say` after an interruption still works and starts a new turn. resume never starts by
 itself.

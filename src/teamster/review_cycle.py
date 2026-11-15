@@ -341,24 +341,28 @@ def fix_round(st, cfg, entry, prompt, before, effort, stopped, sleep):
     return result
 
 
-def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None, resume_prompt=None):
+def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None, resume_prompt=None, resume_check=False):
     """Bounded work/check/review loop under the original supervisor and wait.
 
-    resume_prompt continues the last round of st, which an external signal cut short, in its thread.
+    resume_prompt continues the last round of st, which an external signal cut short, in its thread;
+    resume_check continues that round from its check, after its work turn had finished.
     """
     failed_check = None
-    if resume_prompt is None and budgets.stop_at_weekly_budget(st):
+    resuming = resume_prompt is not None or resume_check
+    if not resuming and budgets.stop_at_weekly_budget(st):
         return
-    if resume_prompt is None and st.get("outcome") == "refused":
+    if not resuming and st.get("outcome") == "refused":
         st["auto_fix_stop"] = "review refused"
         return
-    while resume_prompt is not None or (not stopped() and st.get("outcome") == "completed"):
-        if resume_prompt is not None:
-            # The round's entry is saved; only its work turn and what follows it are left.
-            entry, prompt, resume_prompt = st["rounds"][-1], resume_prompt, None
+    while resuming or (not stopped() and st.get("outcome") == "completed"):
+        if resuming:
+            # The round's entry is saved; only its work turn or check and what follows are left.
+            resuming = False
+            entry = st["rounds"][-1]
             before = (st.get("cycle") or {}).get("fix_head") or procs.sh(
                 config.GIT + ["rev-parse", "HEAD"], cwd=st["worktree"])
-            result = fix_round(st, cfg, entry, prompt, before, effort, stopped, sleep)
+            result = (st.get("result") if resume_check else
+                      fix_round(st, cfg, entry, resume_prompt, before, effort, stopped, sleep))
         else:
             if budgets.stop_at_weekly_budget(st):
                 return

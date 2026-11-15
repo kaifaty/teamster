@@ -88,12 +88,7 @@ class ResumeTests(RotationTestCase):
         self.until(lambda: len(self.invocations()) == 2, timeout=60)
         thread = self.invocations()[-1]["thread"]
         self.interrupt(slug, lambda: any(entry["thread"] == thread for entry in self.state(slug)["reviews"]))
-        # A state without its cycle record still reviews and fixes by the saved --review flag.
-        state = self.state(slug)
-        self.assertTrue(state.pop("review_after"))
-        del state["cycle"]
-        legacy = self.home / "claude-tasks" / slug / "state.json"
-        legacy.write_text(json.dumps(dict(state, review_after=True)))
+        self.assertEqual((self.state(slug)["cycle"]["step"], self.state(slug)["review_after"]), ("review", True))
         self.assertIn(f"resumed {slug} from review", self.resume(slug))
         self.wait(slug)
         state = self.state(slug)
@@ -137,8 +132,11 @@ class ResumeTests(RotationTestCase):
 
         # The check fails once, right after the resumed fix round.
         counter = self.root / "check-count"
+        hold = self.root / "check-hold"
+        hold.touch()
         command = (f"n=$(cat {shlex.quote(str(counter))} 2>/dev/null || echo 0); n=$((n+1)); "
-                   f"echo $n > {shlex.quote(str(counter))}; [ $n -ne 2 ]")
+                   f"echo $n > {shlex.quote(str(counter))}; "
+                   f"if [ $n -eq 2 ]; then while [ -f {shlex.quote(str(hold))} ]; do sleep 0.1; done; fi; [ $n -lt 2 ]")
         decisions = [{"id": "F1", "decision": "fixed", "note": "Empty input is skipped."},
                      {"id": "F2", "decision": "rejected", "note": "The slice is intended."}]
         self.account(self.home, "A", self.reset, runs=[
@@ -146,31 +144,36 @@ class ResumeTests(RotationTestCase):
             {"mode": "complete", "reply": self.review_result()}, {"mode": "hold"},
             {"mode": "complete", "write_files": {"tracked.txt": "fixed\n"}, "commit_files": ["tracked.txt"],
              "reply": self.work_result(findings=decisions)},
-            {"mode": "complete", "reply": self.work_result()},
-            {"mode": "complete", "reply": self.review_result(defects=False)}])
+            {"mode": "complete", "reply": self.work_result()}])
         (self.home / "exec-count").unlink()
         slug = "resume-fix-round"
         before = len(self.invocations())
         self.start(slug, "--review", "--fix-rounds", "2", "--check", command)
         self.interrupt(slug, lambda: len(self.invocations()) == before + 3)
         self.assertIn(f"resumed {slug} from fix", self.resume(slug))
+        # The check of the resumed round is cut short too; it fails when it runs again.
+        self.interrupt(slug, lambda: self.state(slug).get("check_pid") and counter.exists()
+                       and counter.read_text().strip() == "2")
+        hold.unlink()
+        self.assertIn(f"resumed {slug} from check", self.resume(slug))
         self.wait(slug)
         state = self.state(slug)
         invocations = self.invocations()[before:]
-        self.assertEqual(len(invocations), 6)
         self.assert_resumed_same_thread(invocations[2], invocations[3], self.home)
         self.assertIn("cut short by the external signal SIGTERM", invocations[3]["prompt"])
+        # The failed check starts the second round; its failure ends the cycle without a third round.
+        self.assertEqual(len(invocations), 5)
         self.assertFalse(invocations[4]["review"])
-        self.assertTrue(invocations[5]["review"])
-        # The interrupted round counts against --fix-rounds and keeps what the resumed turn did.
+        self.assertEqual([entry["step"] for entry in state["resumed"]], ["fix", "check"])
+        # The interrupted round counts against --fix-rounds and keeps what the resumed turn and check did.
         first, second = state["rounds"]
         self.assertEqual(first["review"]["findings"][0]["id"], "F1")
         self.assertEqual(first["decisions"], decisions)
         self.assertEqual(len(first["commits"]), 1)
         self.assertEqual(first["check"]["outcome"], "failed")
         self.assertIsNone(second["review"])
-        self.assertEqual(second["check"]["outcome"], "passed")
-        self.assertEqual((state["outcome"], state["auto_fix_stop"]), ("completed", "clean"))
+        self.assertEqual(second["check"]["outcome"], "failed")
+        self.assertEqual((state["outcome"], state["auto_fix_stop"]), ("completed", "check failed"))
 
     def test_resume_review_step_does_not_fix_from_the_previous_review(self):
         worker = self.worker()
@@ -181,6 +184,11 @@ class ResumeTests(RotationTestCase):
         with mock.patch.object(worker.task_state, "save"):
             worker.task_state.mark_step(st, "review")
         self.assertEqual(worker.supervisor.resume_step(st)[1], "review")
+        # A state saved before cycles were recorded continues the review it was in.
+        legacy = {"slug": "resume-step", "kind": "review", "work_completed": True, "rounds": [{}], "fix_rounds": 2}
+        cycle, step = worker.supervisor.resume_step(legacy)
+        self.assertEqual((cycle["kind"], step), ("work", "review"))
+        self.assertNotIn("review_after", cycle)
 
     def test_resume_check_and_ci_rerun_without_an_executor_turn(self):
         self.configure(language="en")
@@ -280,8 +288,9 @@ class ResumeTests(RotationTestCase):
         # --parallel alone does not make a task continue beside others: its cycle overlapped none.
         self.start("resume-later", "--parallel")
         self.interrupt("resume-later", lambda: len(self.invocations()) == 3)
+        # A task resumed on its own still counts for those that ran beside it.
+        self.assertIn("resumed resume-alone from work", self.resume("resume-alone"))
         output = self.resume("--all")
-        self.assertIn("resumed resume-alone from work", output)
         self.assertIn("resumed resume-beside from work", output)
         self.assertIn("waiting: teamster resume resume-later  (started with --parallel, "
                       "but its interrupted cycle overlapped no other)", output)
@@ -302,7 +311,7 @@ class ResumeTests(RotationTestCase):
         self.until(lambda: any(event["command"] == "holding" for event in self.claude_trace()), timeout=60)
         cut_at = clock.time()
         self.interrupt(slug, lambda: True, signal.SIGINT)
-        session = self.state(slug)["session_id"]
+        session, started = self.state(slug)["session_id"], self.state(slug)["turn_started"]
         self.assertEqual(self.state(slug)["signal"], {"signum": signal.SIGINT, "name": "SIGINT", "at": cut_at})
         self.advance_fake_clock(600)
         self.assertIn(f"resumed {slug} from work (turn 1, interrupted by SIGINT at ", self.resume(slug))
@@ -310,7 +319,7 @@ class ResumeTests(RotationTestCase):
         state = self.state(slug)
         self.assertEqual(state["outcome"], "completed")
         self.assertEqual(state["resumed"], [{"at": cut_at + 600, "signal": "SIGINT", "signal_at": cut_at,
-                                             "step": "work", "turn": 1}])
+                                             "started": started, "step": "work", "turn": 1}])
         first, resumed = self.claude_invocations()
         self.assertEqual(resumed["argv"][resumed["argv"].index("--resume") + 1], first["session_id"])
         self.assertEqual((state["session_id"], resumed["session_id"]), (session, session))
