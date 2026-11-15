@@ -109,19 +109,45 @@ describe("a machine's row", () => {
     expect(offline).toMatchObject({ line: "нет связи", level: "muted", dim: true });
     expect(offline.title).toBe(["gpu-box", "нет связи", "данные 10 мин назад"].join("\n"));
     expect(machineRow(machine({ status: "unknown", metrics: null, sampled_at: null }), NOW)).toMatchObject({ line: "нет данных", dim: true });
+    // Metrics left over from before say nothing live about a machine whose state is unknown.
+    expect(machineRow(machine({ status: "unknown" }), NOW)).toMatchObject({ line: "нет данных", dim: true });
     expect(machineRow(machine({ status: "offline" }), NOW).label).toBe("gpu-box: нет связи. Открыть карточку машины");
   });
 });
 
 describe("the reflection's note", () => {
-  const marks: ReflectionMarks = { batch: null, proposed: [], waiting: 0, running: false, pending: { signals: 1, records: 4, repos: [], items: [] } };
+  const marks = (overrides: Partial<ReflectionMarks>): ReflectionMarks => ({
+    batch: { name: "b", date: "2026-11-07", through: null, records: 3, repos: {} },
+    proposed: [],
+    waiting: 0,
+    running: false,
+    pending: { records: 9, signals: 4, repos: [], items: [] },
+    ...overrides,
+  });
+  const lessons = (count: number) => Array.from({ length: count }, () => ({})) as ReflectionMarks["proposed"];
 
-  it("tells the most pressing note: a question, a run, lessons to decide, else the last run", () => {
-    expect(reflectionNote({ ...marks, waiting: 2, running: true })).toMatchObject({ note: "ждёт ответа 2", running: false, waiting: true });
-    expect(reflectionNote({ ...marks, running: true })).toMatchObject({ note: "идёт разбор", running: true, waiting: false });
-    const proposed = reflectionNote({ ...marks, proposed: [{}, {}] as unknown as ReflectionMarks["proposed"] });
-    expect(proposed).toMatchObject({ note: "ждут решения 2", waiting: true, label: "Рефлексия: ждут решения 2. Открыть экран рефлексии" });
-    expect(reflectionNote(marks).note).toBe("разборов не было");
+  it("puts a question first, with the rest in the title", () => {
+    expect(reflectionNote(marks({ waiting: 2, running: true, proposed: lessons(3) }))).toMatchObject({
+      note: "ждёт ответа 2",
+      title: "идёт разбор\nждут ответа 2\nждут решения 3\nс сигналом 4 из 9",
+      running: false,
+      waiting: true,
+    });
+  });
+
+  it("then a running reflection, then the lessons that wait for a decision", () => {
+    expect(reflectionNote(marks({ running: true, proposed: lessons(3) }))).toMatchObject({ note: "идёт разбор", running: true, waiting: false });
+    expect(reflectionNote(marks({ proposed: lessons(3) }))).toMatchObject({
+      note: "ждут решения 3",
+      title: "разбор 07.11\nждут решения 3\nс сигналом 4 из 9",
+      waiting: true,
+      label: "Рефлексия: ждут решения 3. Открыть экран рефлексии",
+    });
+  });
+
+  it("else tells when the last reflection was", () => {
+    expect(reflectionNote(marks({}))).toMatchObject({ note: "разбор 07.11", title: "разбор 07.11\nждут решения 0\nс сигналом 4 из 9", waiting: false });
+    expect(reflectionNote(marks({ batch: null })).note).toBe("разборов не было");
   });
 
   it("has nothing to open without data", () => {

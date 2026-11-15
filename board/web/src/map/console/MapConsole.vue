@@ -57,10 +57,21 @@ watch(
     sheetOpen.value = false;
   },
 );
+/**
+ * The centre's height while the narrow window's whole log stands open over the map: the open log leaves the flow, and the
+ * panel's box keeps its size, so that the galaxy is not fitted anew. Read before the log opens.
+ */
+const centre = ref<HTMLElement | null>(null);
+const keptHeight = ref<number | null>(null);
 // The wings and the whole log open over the same part of the map: one closes the other.
-watch(logOpen, (open) => {
-  if (open) sheetOpen.value = false;
-});
+watch(
+  logOpen,
+  (open) => {
+    keptHeight.value = open && props.narrow ? (centre.value?.offsetHeight ?? null) : null;
+    if (open) sheetOpen.value = false;
+  },
+  { flush: "pre" },
+);
 watch(sheetOpen, (open) => {
   if (open) logOpen.value = false;
 });
@@ -106,7 +117,7 @@ function onKey(event: KeyboardEvent) {
         <ConsoleReflection :reflection="reflection" :research-open="researchOpen" @open="emit('openResearch')" />
       </div>
     </div>
-    <div class="console-centre">
+    <div ref="centre" class="console-centre" :style="keptHeight ? { minHeight: `${keptHeight}px` } : undefined">
       <ShipLog
         v-model:open="logOpen"
         :events="logEvents"
