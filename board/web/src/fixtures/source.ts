@@ -11,6 +11,7 @@ import { FIXTURE_EVENTS, FIXTURE_LIVE, demoEvents, demoReport, logEvent } from "
 import type { ActionSender } from "../lib/actions";
 import { fixtureActions, fixtureResearch, type StationRoute } from "./research";
 import { fixtureShips, type ShipRoute } from "./ships";
+import { fixtureLogins, type LoginRoute } from "./logins";
 
 interface FixtureDetail {
   timeline: { at: number; text: string }[];
@@ -88,12 +89,18 @@ export function fixtureSource(): BoardSource {
     (message) => push?.(message),
     (slug) => (details[slug]?.actions?.queue === false ? null : (details[slug]?.queue ?? { waiting: [], dropped: [] })),
   );
+  // A subscription's sign-ins and refreshes, in the board's time.
+  const logins = fixtureLogins(() => Date.now() / 1000, (message) => push?.(message), () => state.accounts);
   const studied = (slug: string | undefined) =>
     research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
   /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
   const act: ActionSender = async (route, body) => {
     const study = route === "say" && studied((body as { slug?: string }).slug);
     if (route === "lesson" || route === "implement" || route === "reflect" || study) return station.act(route as StationRoute, body as never);
+    if (route === "login" || route === "login/input" || route === "login/cancel" || route === "account-refresh") {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return logins.act(route as LoginRoute, body as never);
+    }
     await new Promise((resolve) => setTimeout(resolve, 400));
     return ships.act(route as ShipRoute, body as never);
   };
@@ -103,7 +110,8 @@ export function fixtureSource(): BoardSource {
     connect(onMessage, onState) {
       let index = -1; // -1 = the snapshot, then the stream; the cycle repeats like a reconnect.
       const emit = (original: ServerMessage) => {
-        const patched = ships.patch(original);
+        const shipped = ships.patch(original);
+        const patched = shipped && logins.patch(shipped);
         // The implementing agents stay on the board when the replay starts over.
         const message: ServerMessage | null =
           patched?.type === "snapshot"

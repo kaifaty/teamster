@@ -1,5 +1,5 @@
-// What the viewer opened over the map: the system, a ship's bridge, the science station's screen, the day's summary, the
-// ships' list and the dock with the replay and the log. The list's and the replay's choice outlive the page.
+// What the viewer opened over the map: the system, a ship's bridge, the science station's screen, a subscription's screen,
+// the day's summary, the ships' list and the dock with the replay and the log. The list's and the replay's choice outlive the page.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
 import { loadJson, saveJson } from "../../lib/storage";
@@ -40,6 +40,8 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   const shipOpen = ref(false);
   const hovered = ref<string | null>(null);
   const researchOpen = ref(false);
+  /** The subscription whose screen stands over the map, by its tank's key; null when none is open. */
+  const account = ref<string | null>(null);
   const selectedTask = computed(() => (selected.value ? (sources.source.value.state.value.tasks[selected.value] ?? null) : null));
 
   // Another source has other systems and ships.
@@ -47,6 +49,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     repo.value = null;
     selected.value = null;
     shipOpen.value = false;
+    account.value = null;
   });
   const repoModel = computed({
     get: () => repo.value ?? "",
@@ -84,8 +87,27 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   function openResearch() {
     selected.value = null;
     shipOpen.value = false;
+    account.value = null;
     researchOpen.value = true;
     onPanel();
+  }
+
+  /** A subscription's screen, from its tank; a task's bridge opened from it stands on top, and closing it returns there. */
+  function openAccount(key: string) {
+    selected.value = null;
+    shipOpen.value = false;
+    researchOpen.value = false;
+    account.value = key;
+    onPanel();
+  }
+
+  function closeAccount() {
+    const key = account.value;
+    account.value = null;
+    void nextTick(() => {
+      const label = key ? overlay.value?.querySelector<HTMLElement>(`[data-tank="${CSS.escape(key)}"]`) : null;
+      (label ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus();
+    });
   }
 
   // A machine's card and the map's own panels replace each other, as on the board.
@@ -96,6 +118,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
       selected.value = null;
       shipOpen.value = false;
       researchOpen.value = false;
+      account.value = null;
     },
   );
 
@@ -116,8 +139,9 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     const slug = selected.value;
     selected.value = null;
     shipOpen.value = false;
-    if (researchOpen.value) {
-      void nextTick(() => document.querySelector<HTMLElement>(".station-screen .back")?.focus());
+    if (researchOpen.value || account.value) {
+      const back = researchOpen.value ? ".station-screen .back" : ".account-screen .back";
+      void nextTick(() => document.querySelector<HTMLElement>(back)?.focus());
       return;
     }
     focusShip(slug);
@@ -127,6 +151,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   function showOnMap(name: string) {
     shipOpen.value = false;
     researchOpen.value = false;
+    account.value = null;
     if (model.systemNames.value.has(name)) repo.value = name;
     focusShip(selected.value);
   }
@@ -164,7 +189,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
 
   /** Escape lets go of a ship picked without its bridge, then leaves the system. */
   function onKey(event: KeyboardEvent) {
-    if (event.key !== "Escape" || !props.active || !repo.value || shipOpen.value || researchOpen.value || props.machine) return;
+    if (event.key !== "Escape" || !props.active || !repo.value || shipOpen.value || researchOpen.value || account.value || props.machine) return;
     if (selected.value) selected.value = null;
     else leave();
   }
@@ -262,6 +287,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
       shipOpen.value = false;
       summaryOpen.value = false;
       researchOpen.value = false;
+      account.value = null;
     },
   );
   onMounted(() => {
@@ -276,6 +302,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
 
   return {
     repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openShip, openResearch, closeResearch, close, showOnMap, openMachine,
+    account, openAccount, closeAccount,
     openMachineAt, flying, enter, leave, logEvents, replayTime, goTo, seekTo, summaryOpen, closeSummary, narrow, replayShown,
     compactDock, replayOpen, logOpen, replayVisible, toggleReplay, dockFolded, fleetVisible, toggleFleet, showStation,
   };

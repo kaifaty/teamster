@@ -881,7 +881,8 @@
             "available_count": 0,
             "expires_at": []
           },
-          "status": "available"
+          "status": "available",
+          "email": "personal@example.com"
         },
         {
           "name": "work",
@@ -908,7 +909,8 @@
               "2026-11-11T21:20:00Z"
             ]
           },
-          "status": "available"
+          "status": "available",
+          "email": "work@example.com"
         },
         {
           "name": "work-team-account-number-three@example.com",
@@ -984,7 +986,8 @@
             "resets_at": "2026-11-07T21:20:00Z"
           },
           "limited_until": "2026-11-06T21:53:20Z",
-          "token_unavailable": null
+          "token_unavailable": null,
+          "needs_login": true
         },
         "legacy-entry-without-object-shape"
       ],
@@ -1010,7 +1013,27 @@
           }
         }
       }
-    }
+    },
+    "last_logins": [
+      {
+        "family": "codex",
+        "account": "personal",
+        "at": 1793740800,
+        "status": "available"
+      },
+      {
+        "family": "claude",
+        "account": "claude-pool-3",
+        "at": 1793222400,
+        "status": "ok"
+      },
+      {
+        "family": "codex",
+        "account": "spare",
+        "at": 1793827200,
+        "status": "duplicate"
+      }
+    ]
   },
   "machines": {
     "config_error": null,

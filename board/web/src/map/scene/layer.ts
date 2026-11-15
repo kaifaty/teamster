@@ -51,4 +51,5 @@ export type Hit =
   | { kind: "star"; repo: string }
   | { kind: "research" }
   | { kind: "machine"; id: string }
+  | { kind: "tank"; key: string }
   | { kind: "ship"; slug: string };

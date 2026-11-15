@@ -4,6 +4,7 @@
 // components there draw them.
 import { computed, ref } from "vue";
 import type { Board } from "../store/board";
+import AccountView from "./account/AccountView.vue";
 import frameLight from "./art/frame-light.png";
 import DaySummary from "./DaySummary.vue";
 import FleetPanel from "./FleetPanel.vue";
@@ -55,6 +56,7 @@ const panels = useMapPanels({
   onPanel: () => emit("panel"),
 });
 const { repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip, showOnMap } = panels;
+const { account, openAccount, closeAccount } = panels;
 const { openMachine, flying, enter, leave, logEvents, replayTime, goTo, seekTo, summaryOpen, closeSummary } = panels;
 const { compactDock, logOpen, replayVisible, toggleReplay, fleetVisible, toggleFleet, showStation } = panels;
 
@@ -111,6 +113,7 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
           @enter="enter"
           @open-research="openResearch"
           @open-machine="openMachine"
+          @open-account="openAccount"
         />
         <SystemLabels v-else :plates="plates" @show-station="showStation" />
       </div>
@@ -164,6 +167,20 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
       @close="closeResearch"
       @open="open"
       @ship="openShip"
+    />
+    <AccountView
+      v-if="account && active"
+      :key="account"
+      :account-key="account"
+      :covered="shipOpen || !!machine"
+      :accounts="source.state.value.accounts"
+      :logins="source.state.value.logins"
+      :tasks="source.state.value.tasks"
+      :source="source.source"
+      :now="now"
+      :frame="frameLight"
+      @close="closeAccount"
+      @open="open"
     />
     <ShipView
       v-if="shipOpen && selected && active"

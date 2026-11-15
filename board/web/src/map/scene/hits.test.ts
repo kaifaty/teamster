@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Star } from "../fleet";
-import { RESEARCH_SIZE, starSize, type MachineColumn, type Point } from "../layout";
-import { galaxyAt, hoveredStar, machineAt, researchAt, starAt } from "./hits";
+import { BADGE_RISE, RESEARCH_SIZE, TANK_ASPECT, starSize, tankGear, type FuelColumn, type MachineColumn, type Point } from "../layout";
+import { galaxyAt, hoveredStar, machineAt, researchAt, starAt, tankAt } from "./hits";
 import type { GalaxyModel, ResearchMarks } from "./types";
 
 const world = { width: 1600, height: 1000 };
@@ -29,6 +29,11 @@ function model(patch: Partial<GalaxyModel> & { places?: [string, Point][]; spaci
 function machines(at: Point, size = 200): Pick<GalaxyModel, "machines" | "machineColumn"> {
   const column: MachineColumn = { places: new Map([["m1", at]]), labels: new Map(), status: true, size, labelZoom: 1, right: at.x + size / 2, note: null };
   return { machines: [{ id: "m1", status: "free", rings: { cpu: null, memory: null, gpu: null, disk: null } }], machineColumn: column };
+}
+
+function tanks(at: Point, size = 96): Pick<GalaxyModel, "tanks" | "fuel"> {
+  const fuel: FuelColumn = { places: new Map([["codex:main", at]]), labels: new Map(), anchors: new Map(), row: false, size, labelZoom: 1 };
+  return { tanks: [{ key: "codex:main", executor: "codex", fuel: 50, low: false, bad: false, admiral: false, lamps: 3, soon: false }], fuel };
 }
 
 describe("what is under a point of the galaxy", () => {
@@ -71,5 +76,20 @@ describe("what is under a point of the galaxy", () => {
     expect(hit).toEqual({ kind: "star", repo: "research" });
     expect(hoveredStar(hit)).toBe("research");
     expect(hoveredStar(galaxyAt(galaxy, center))).toBeNull();
+  });
+
+  it("catches a fuel tank with its badge and day lamps, after everything else", () => {
+    const at = { x: 60, y: 400 };
+    const size = 96;
+    const galaxy = model(tanks(at, size));
+    const left = at.x - (size * TANK_ASPECT) / 2;
+    expect(tankAt(galaxy, at)).toBe("codex:main");
+    expect(tankAt(galaxy, { x: left + tankGear(size) - 0.5, y: at.y })).toBe("codex:main");
+    expect(tankAt(galaxy, { x: at.x, y: at.y - size / 2 - size * BADGE_RISE + 0.5 })).toBe("codex:main");
+    expect(tankAt(galaxy, { x: left - 0.5, y: at.y })).toBeNull();
+    expect(tankAt(galaxy, { x: at.x, y: at.y + size / 2 + 0.5 })).toBeNull();
+    expect(tankAt(model(), at)).toBeNull();
+    expect(galaxyAt(galaxy, at)).toEqual({ kind: "tank", key: "codex:main" });
+    expect(galaxyAt(galaxy, at, true, false)).toBeNull();
   });
 });

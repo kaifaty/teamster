@@ -71,6 +71,7 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
         onPick: panels.open,
         onResearch: panels.openResearch,
         onMachine: panels.openMachineAt,
+        onTank: panels.openAccount,
         onHover: (slug) => {
           hovered.value = slug;
         },

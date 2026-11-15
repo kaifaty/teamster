@@ -231,9 +231,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const worldPoint = (screen: Point): Point => camera.worldPoint(screen);
 
   /** What is under a screen point: a ship in a system, in the galaxy what galaxyAt finds. */
-  function hitAt(at: Point, machines: boolean): Hit | null {
+  function hitAt(at: Point, machines: boolean, tanks = !!options.onTank): Hit | null {
     const point = worldPoint(at);
-    if (!repo) return galaxyAt(model, point, machines);
+    if (!repo) return galaxyAt(model, point, machines, tanks);
     const slug = fleet.shipAt(point);
     return slug ? { kind: "ship", slug } : null;
   }
@@ -262,6 +262,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     else if (hit?.kind === "star") options.onEnter(hit.repo);
     else if (hit?.kind === "research") options.onResearch();
     else if (hit?.kind === "machine") options.onMachine?.(hit.id);
+    else if (hit?.kind === "tank") options.onTank?.(hit.key);
   };
 
   const leave = () => {

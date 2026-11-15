@@ -85,6 +85,20 @@ reset, or the end of the limit that ran out. A star badge, «★ резерв»,
 orchestrator and new tasks skip. The label on the right tells the name, the share left and the time to the refill
 («83% · ↻ 5 д»), with a spare cell for every free reset of a Codex account; its title has the five-hour window, the
 reset times and when the free resets expire.
+A click on a tank or its label opens the subscription's own screen (`board/web/src/map/account/`), over the galaxy like a
+ship's bridge. «Сейчас» says the state in plain words — works and how much of the week is left, little left, the week
+spent or a limit until when, no data, or a sign-in needed (a Codex account logged out or signed in to the same ChatGPT
+account as another, a Claude token missing or refused: `needs_login`) — with «Войти заново» as the main button when
+nothing works without it. Under it: «Лимиты» (the week and the five-hour window as bars, with the lines where Codex tasks
+start to prefer another subscription and where they leave it, `thresholds`), «Задачи на подписке» (the open tasks whose
+executor works on it now; a click opens the task's bridge over the screen) and the card «Подписка» (plan and e-mail,
+credits above the floor and free resets for Codex; the share of the pool and the limits' age for Claude; the reserve and
+the last sign-in from `last_logins`). «Обновить» reads the limits again (`POST /api/actions/account-refresh`).
+«Войти заново» runs the sign-in on the board server (`POST /api/actions/login`) and shows it live from the `login`
+messages: its steps, the sign-in page to open and, for Codex, the one-time code to enter there with its countdown; for
+Claude, a field for the code the page shows, sent with `login/input`; «Отменить вход» (`login/cancel`), how it ended, the
+sign-in tool's own lines folded, and the `teamster login` or `claude-login` command to do the same in a terminal. The
+token never reaches the page. The logic lives in `account.ts`; `dev:fixture` plays both sign-ins on its own accounts.
 Every machine of the machines strip stands as a reactor in a column on the right edge of the galaxy
 (`machinePositions`), in three rings, outside in: CPU, memory and the GPU — its video memory where it has its own, else
 its load (`machineRings` in `board/web/src/lib/machines.ts`). A ring's arc is the share in use and its dark rest what is
