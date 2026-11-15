@@ -112,7 +112,7 @@ st[dynamic_key] = 1
         unused = registered - used
         self.assertFalse(missing, "Unregistered state keys: " + ", ".join(sorted(missing)))
         self.assertFalse(unused, "Unused state registry keys: " + ", ".join(sorted(unused)))
-        self.assertEqual(len(registered), 100)
+        self.assertEqual(len(registered), 101)
         for key, field in self.worker.task_state.STATE_FIELDS.items():
             with self.subTest(key=key):
                 self.assertIn(field.lifetime, {"task", "history", "cursor", "turn", "attempt", "runtime"})
@@ -163,8 +163,9 @@ st[dynamic_key] = 1
             "reflect_mode": "batch", "reflect_through": "20260101T000000Z",
             "reflect_records": ["old-20260101T000000Z"], "reflect_file": "batch-2026-01-01.md",
             "reflect_order": "old-order", "reflect_turns": [{"status": "done", "file": "batch-2026-01-01.md"}],
-            "parallel": True, "cycle": {"kind": "work", "review_after": False, "effort": "high", "step": "ci",
-                                        "ci": True, "pr": "https://example.invalid/pull/0"},
+            "parallel": True, "review_after": False,
+            "cycle": {"kind": "work", "effort": "high", "step": "ci", "ci": True,
+                      "pr": "https://example.invalid/pull/0"},
             "resumed": [{"at": 1001, "signal": "SIGTERM", "signal_at": 1000, "step": "work", "turn": 10}],
         }
         self.assertEqual(set(st), set(self.worker.task_state.STATE_FIELDS))
@@ -203,7 +204,8 @@ st[dynamic_key] = 1
             "outcome": "running", "reset_wait_seconds": 0, "capacity_start": 2,
             "fix_rounds": 4, "rounds": [],
             "model": None, "reasoning_effort": None,
-            "cycle": {"kind": "review", "review_after": True, "effort": "medium", "step": "review",
+            "review_after": True,
+            "cycle": {"kind": "review", "effort": "medium", "step": "review",
                       "ci": False, "pr": "https://example.invalid/pull/1"},
             "runtime": {"version": self.worker.config.plugin_version(),
                         "script": str(self.worker.config.SCRIPT_RESOLVED)},

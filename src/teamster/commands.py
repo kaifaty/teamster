@@ -294,10 +294,8 @@ def cmd_review(a):
 
 
 def ran_in_parallel(st, candidates):
-    """Whether resume --all may continue st beside other tasks: started with --parallel, or, for a task
-    saved before that was recorded, its interrupted cycle overlapped that of another candidate."""
-    if "parallel" in st:
-        return bool(st.get("parallel"))
+    """Whether resume --all may continue st beside other tasks: its interrupted cycle overlapped that of another
+    candidate. start --parallel alone does not count; the tasks may never have run at the same time."""
     cut = task_state.interruption(st)
     return any(other["slug"] != st["slug"] and other["turn_started"] < (cut["at"] or 0)
                and st["turn_started"] < (task_state.interruption(other)["at"] or 0) for other in candidates)
@@ -317,12 +315,13 @@ def cmd_resume(a):
         refusals = [reason for reason in map(supervisor.resume_refusal, candidates) if reason is not None]
         if refusals:
             procs.die("cannot resume: " + "; ".join(refusals))
-    # As with start: a task without --parallel runs alone; those that ran in parallel continue together.
+    # As with start: tasks whose interrupted cycles overlapped continue together; any other runs alone, after them.
     parallel = {st["slug"]: ran_in_parallel(st, candidates) for st in candidates}
     running = task_state.running_tasks()
-    for st in sorted(candidates, key=lambda st: (parallel[st["slug"]], st["turn_started"])):
+    for st in sorted(candidates, key=lambda st: (not parallel[st["slug"]], st["turn_started"])):
         if not parallel[st["slug"]] and running:
-            print(f"waiting: {config.COMMAND} resume {st['slug']}")
+            hint = ("  (started with --parallel, but its interrupted cycle overlapped no other)" if st.get("parallel") else "")
+            print(f"waiting: {config.COMMAND} resume {st['slug']}{hint}")
             continue
         move = installs.follow_pin(st, upgrade=True)
         cut = task_state.interruption(st)

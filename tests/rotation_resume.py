@@ -1,10 +1,12 @@
 """teamster resume: continuing cycles that an external signal cut short."""
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 
 # Isolated Python omits the script directory from its import path.
@@ -28,9 +30,9 @@ class ResumeTests(RotationTestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         return result.stderr
 
-    def interrupt(self, slug, ready):
+    def interrupt(self, slug, ready, signum=signal.SIGTERM):
         self.until(ready, timeout=60)
-        os.kill(self.state(slug)["pid"], signal.SIGTERM)
+        os.kill(self.state(slug)["pid"], signum)
         output = self.wait(slug)
         self.assertEqual(self.state(slug)["outcome"], "interrupted")
         self.assertIn("; continue: teamster resume " + slug, output)
@@ -86,6 +88,12 @@ class ResumeTests(RotationTestCase):
         self.until(lambda: len(self.invocations()) == 2, timeout=60)
         thread = self.invocations()[-1]["thread"]
         self.interrupt(slug, lambda: any(entry["thread"] == thread for entry in self.state(slug)["reviews"]))
+        # A state without its cycle record still reviews and fixes by the saved --review flag.
+        state = self.state(slug)
+        self.assertTrue(state.pop("review_after"))
+        del state["cycle"]
+        legacy = self.home / "claude-tasks" / slug / "state.json"
+        legacy.write_text(json.dumps(dict(state, review_after=True)))
         self.assertIn(f"resumed {slug} from review", self.resume(slug))
         self.wait(slug)
         state = self.state(slug)
@@ -127,27 +135,52 @@ class ResumeTests(RotationTestCase):
         self.assertEqual(state["rounds"][0]["review"]["findings"][0]["id"], "F1")
         self.assertEqual((state["outcome"], state["auto_fix_stop"]), ("completed", "clean"))
 
+        # The check fails once, right after the resumed fix round.
+        counter = self.root / "check-count"
+        command = (f"n=$(cat {shlex.quote(str(counter))} 2>/dev/null || echo 0); n=$((n+1)); "
+                   f"echo $n > {shlex.quote(str(counter))}; [ $n -ne 2 ]")
+        decisions = [{"id": "F1", "decision": "fixed", "note": "Empty input is skipped."},
+                     {"id": "F2", "decision": "rejected", "note": "The slice is intended."}]
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result()}, {"mode": "hold"},
+            {"mode": "complete", "write_files": {"tracked.txt": "fixed\n"}, "commit_files": ["tracked.txt"],
+             "reply": self.work_result(findings=decisions)},
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result(defects=False)}])
         (self.home / "exec-count").unlink()
         slug = "resume-fix-round"
         before = len(self.invocations())
-        self.start(slug, "--review", "--fix-rounds", "2")
+        self.start(slug, "--review", "--fix-rounds", "2", "--check", command)
         self.interrupt(slug, lambda: len(self.invocations()) == before + 3)
         self.assertIn(f"resumed {slug} from fix", self.resume(slug))
         self.wait(slug)
         state = self.state(slug)
         invocations = self.invocations()[before:]
-        self.assertEqual(len(invocations), 5)
+        self.assertEqual(len(invocations), 6)
         self.assert_resumed_same_thread(invocations[2], invocations[3], self.home)
         self.assertIn("cut short by the external signal SIGTERM", invocations[3]["prompt"])
-        self.assertTrue(invocations[4]["review"])
-        # The interrupted round counts against --fix-rounds; the clean review stops the cycle.
-        self.assertEqual(len(state["rounds"]), 1)
+        self.assertFalse(invocations[4]["review"])
+        self.assertTrue(invocations[5]["review"])
+        # The interrupted round counts against --fix-rounds and keeps what the resumed turn did.
+        first, second = state["rounds"]
+        self.assertEqual(first["review"]["findings"][0]["id"], "F1")
+        self.assertEqual(first["decisions"], decisions)
+        self.assertEqual(len(first["commits"]), 1)
+        self.assertEqual(first["check"]["outcome"], "failed")
+        self.assertIsNone(second["review"])
+        self.assertEqual(second["check"]["outcome"], "passed")
         self.assertEqual((state["outcome"], state["auto_fix_stop"]), ("completed", "clean"))
+
+    def test_resume_review_step_does_not_fix_from_the_previous_review(self):
+        worker = self.worker()
+        st = {"slug": "resume-step", "review_result": self.review_result(),
+              "cycle": {"kind": "work", "effort": None, "step": "review", "ci": False, "pr": "", "angles": 1}}
+        self.assertEqual(worker.supervisor.resume_step(st)[1], "after_review")
+        # The next review step starts with the base merge check, before review_turn drops the old review.
+        with mock.patch.object(worker.task_state, "save"):
+            worker.task_state.mark_step(st, "review")
+        self.assertEqual(worker.supervisor.resume_step(st)[1], "review")
 
     def test_resume_check_and_ci_rerun_without_an_executor_turn(self):
         self.configure(language="en")
@@ -207,7 +240,7 @@ class ResumeTests(RotationTestCase):
     def test_resume_refuses_stopped_and_running_tasks_and_say_still_continues(self):
         self.configure(language="en")
         self.account(self.home, "A", self.reset, runs=[
-            {"mode": "hold"}, {"mode": "hold"}, {"mode": "complete", "reply": self.work_result()}])
+            {"mode": "hold"}, {"mode": "hold"}, {"mode": "hold"}, {"mode": "complete", "reply": self.work_result()}])
         self.start("resume-stopped")
         self.until(lambda: self.state("resume-stopped").get("codex_pid"), timeout=60)
         self.assertIn("still running", self.refused("resume", "resume-stopped"))
@@ -217,6 +250,16 @@ class ResumeTests(RotationTestCase):
         self.assertIn("nothing to resume", self.resume("--all"))
         self.cli("say", "resume-stopped", "Hold on.")
         self.interrupt("resume-stopped", lambda: len(self.invocations()) == 2)
+        # Beside a live supervisor the task waits, and no new process starts.
+        self.start("resume-live")
+        self.until(lambda: len(self.invocations()) == 3, timeout=60)
+        pid = self.state("resume-stopped")["pid"]
+        self.assertIn("waiting: teamster resume resume-stopped", self.resume("--all"))
+        state = self.state("resume-stopped")
+        self.assertEqual((state["outcome"], state["pid"], len(self.invocations())), ("interrupted", pid, 3))
+        self.assertNotIn("resumed", state)
+        self.cli("stop", "resume-live")
+        self.wait("resume-live")
         self.cli("say", "resume-stopped", "Continue from the worktree.")
         self.wait("resume-stopped")
         state = self.state("resume-stopped")
@@ -224,7 +267,7 @@ class ResumeTests(RotationTestCase):
         self.assertNotIn("resumed", state)
         self.assertIn("Continue from the worktree.", self.invocations()[-1]["prompt"])
 
-    def test_resume_all_continues_parallel_tasks_and_one_other(self):
+    def test_resume_all_continues_overlapping_cycles_and_holds_the_rest(self):
         self.configure(language="en")
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "hold"}, {"mode": "hold"}, {"mode": "hold"},
@@ -234,12 +277,14 @@ class ResumeTests(RotationTestCase):
         self.until(lambda: len(self.invocations()) == 2, timeout=60)
         for slug in ("resume-alone", "resume-beside"):
             self.interrupt(slug, lambda: True)
-        self.start("resume-later")
+        # --parallel alone does not make a task continue beside others: its cycle overlapped none.
+        self.start("resume-later", "--parallel")
         self.interrupt("resume-later", lambda: len(self.invocations()) == 3)
         output = self.resume("--all")
         self.assertIn("resumed resume-alone from work", output)
         self.assertIn("resumed resume-beside from work", output)
-        self.assertIn("waiting: teamster resume resume-later", output)
+        self.assertIn("waiting: teamster resume resume-later  (started with --parallel, "
+                      "but its interrupted cycle overlapped no other)", output)
         for slug in ("resume-alone", "resume-beside"):
             self.wait(slug)
             self.assertEqual(self.state(slug)["outcome"], "completed")
@@ -247,3 +292,51 @@ class ResumeTests(RotationTestCase):
         self.assertIn("resumed resume-later from work", self.resume("--all"))
         self.wait("resume-later")
         self.assertEqual(self.state("resume-later")["outcome"], "completed")
+
+    def test_resume_claude_session_with_exact_times_after_sigint(self):
+        self.fixture_timeout = 120
+        clock = self.enable_fake_clock(auto_advance=False)
+        self.claude_pool_fixture(runs=[{"mode": "hold"}, {"reply": self.work_result()}])
+        slug = "resume-claude"
+        self.start(slug, "--executor", "claude")
+        self.until(lambda: any(event["command"] == "holding" for event in self.claude_trace()), timeout=60)
+        cut_at = clock.time()
+        self.interrupt(slug, lambda: True, signal.SIGINT)
+        session = self.state(slug)["session_id"]
+        self.assertEqual(self.state(slug)["signal"], {"signum": signal.SIGINT, "name": "SIGINT", "at": cut_at})
+        self.advance_fake_clock(600)
+        self.assertIn(f"resumed {slug} from work (turn 1, interrupted by SIGINT at ", self.resume(slug))
+        self.wait(slug)
+        state = self.state(slug)
+        self.assertEqual(state["outcome"], "completed")
+        self.assertEqual(state["resumed"], [{"at": cut_at + 600, "signal": "SIGINT", "signal_at": cut_at,
+                                             "step": "work", "turn": 1}])
+        first, resumed = self.claude_invocations()
+        self.assertEqual(resumed["argv"][resumed["argv"].index("--resume") + 1], first["session_id"])
+        self.assertEqual((state["session_id"], resumed["session_id"]), (session, session))
+        at = self.worker().config.local_time(cut_at)
+        self.assertIn(f"Your turn was cut short by the external signal SIGINT at {at}, through no fault of yours.",
+                      resumed["argv"][1])
+
+    def test_resume_prompt_names_unpushed_commits_and_the_saved_pr(self):
+        self.configure(language="ru")
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "write_files": {"tracked.txt": "implemented\n"}, "commit_files": ["tracked.txt"],
+             "push": True, "reply": self.work_result()},
+            {"mode": "hold", "write_files": {"tracked.txt": "follow-up\n"}, "commit_files": ["tracked.txt"]},
+            {"mode": "complete", "reply": self.work_result()}])
+        slug = "resume-pr"
+        self.start(slug)
+        self.wait(slug)
+        pr = self.state(slug)["publish"]["pr"]
+        self.assertTrue(pr)
+        worktree = self.state(slug)["worktree"]
+        head = self.git("-C", worktree, "rev-parse", "HEAD")
+        self.cli("say", slug, "Продолжи.")
+        self.interrupt(slug, lambda: self.git("-C", worktree, "rev-parse", "HEAD") != head
+                       and self.state(slug).get("codex_pid"), signal.SIGINT)
+        self.resume(slug)
+        self.wait(slug)
+        prompt = self.invocations()[-1]["prompt"]
+        self.assertIn("Твой ход оборвал внешний сигнал SIGINT в ", prompt)
+        self.assertIn(f"незакоммиченных файлов — 0; незапушенных коммитов — 1; PR: {pr}.", prompt)

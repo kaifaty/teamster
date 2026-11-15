@@ -45,6 +45,9 @@ def mark_step(st, step, ci=False):
     cycle = st.get("cycle")
     if cycle is not None:
         cycle["step"] = step
+        if step == "review":
+            # Until review_turn starts, the saved review is the previous one: resume must not fix from it.
+            cycle["angles"] = None
         if ci:
             cycle["ci"] = True
         pr = (st.get("publish") or {}).get("pr")
@@ -192,11 +195,12 @@ STATE_FIELDS = {
     "reflect_order": StateField("task"),
     "reflect_turns": StateField("history"),
     "parallel": StateField("task"),  # start --parallel: resume --all may continue it beside other tasks.
-    # The cycle this supervisor runs: its kind, review_after and effort, the step it is in and the last PR,
+    # Whether start or say asked for --review, kept after the supervisor takes its pending order.
+    "review_after": StateField("turn", spawn_reset=lambda st, turn: bool(turn["pending"]["review_after"])),
+    # The cycle this supervisor runs: its kind and effort, the step it is in and the last PR,
     # so resume continues an interrupted cycle where it stopped.
     "cycle": StateField("turn", spawn_reset=lambda st, turn: {
-        "kind": turn["kind"], "review_after": bool(turn["pending"]["review_after"]),
-        "effort": turn["pending"]["effort"], "step": "review" if turn["kind"] == "review" else "work",
+        "kind": turn["kind"], "effort": turn["pending"]["effort"], "step": "review" if turn["kind"] == "review" else "work",
         "ci": False, "pr": (st.get("publish") or {}).get("pr", "")}),
     # One entry per resume: when, the signal that cut the cycle short and the step it continued from.
     "resumed": StateField("history"),

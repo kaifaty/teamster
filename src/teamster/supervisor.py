@@ -110,10 +110,13 @@ RESUME_CLEARED = ("sleeping", "turn_finished", "error", "turn_stop", "wrapup", "
 
 
 def legacy_cycle(st):
-    """The cycle of a state saved before cycles were recorded, inferred from what its phases left."""
+    """The cycle of a state saved before cycles were recorded, inferred from what its phases left.
+
+    Its --review comes from the saved review_after alone, which such a state lacks: past the step it was in,
+    the cycle continues without a review.
+    """
     kind = st.get("kind")
-    review_after = bool(st.get("work_completed") or st.get("fix_rounds") or st.get("rounds"))
-    cycle = {"kind": "work", "review_after": review_after, "effort": st.get("effort"), "ci": bool(st.get("ci")),
+    cycle = {"kind": "work", "effort": st.get("effort"), "ci": bool(st.get("ci")),
              "pr": (st.get("publish") or {}).get("pr", "")}
     checks = st.get("checks", [])[st.get("check_start", 0):]
     ci = st.get("ci") or {}
@@ -131,7 +134,8 @@ def legacy_cycle(st):
 def review_recorded(st, cycle):
     """Whether the review the cycle was in has every angle's result saved."""
     result = st.get("review_result")
-    if result is None:
+    # mark_step clears angles when the step starts and review_turn sets them once the old review is dropped.
+    if result is None or ("angles" in cycle and cycle["angles"] is None):
         return False
     if "angles" not in result:
         return True
@@ -214,7 +218,7 @@ def resume(slug, loaded):
                                                  "step": step, "turn": st.get("turns", 0)})
             st["cycle"] = dict(cycle, step=step)
             st["pending"] = {"prompt": prompt, "effort": cycle.get("effort"), "current_message": True,
-                             "review_after": cycle["review_after"], "resume": step}
+                             "review_after": bool(st.get("review_after")), "resume": step}
             if step in ("work", "fix", "check", "ci"):
                 st["kind"] = "work"
             # A resumed cycle keeps its turn number, rounds, results and phase windows; it runs in this version.
@@ -432,8 +436,10 @@ def cmd__run(a):
         working = kind not in ("review", "scout", "reflect")
         review_after = pending.get("review_after")
         in_ci = step is not None and bool(cycle.get("ci"))
-        turn = step in (None, "work", "fix")
-        if not turn:
+        # A review fix round continues inside auto_fix, which records its decisions, check and changes.
+        review_fix = step == "fix" and not in_ci
+        turn = step in (None, "work") or (step == "fix" and in_ci)
+        if not turn and not review_fix:
             # The executor turn of the interrupted cycle had completed; the cycle goes on from its result.
             st["outcome"] = "completed"
             task_state.save(st)
@@ -464,7 +470,10 @@ def cmd__run(a):
                 and st.get("check") and not stopped()):
             task_state.mark_step(st, "check")
             check = checking.saved_check(st, cfg, stopped, review_after and not in_ci)
-        if step == "review" and kind == "review":
+        if review_fix:
+            review_cycle.auto_fix(st, cfg, st.get("review_result"), effort, stopped, sleep,
+                                  resume_prompt=pending["prompt"])
+        elif step == "review" and kind == "review":
             if not stopped():
                 review_cycle.review_turn(st, cfg, prompts.review_prompt(st, cfg), effort, stopped, sleep, new_turn=True)
         elif step == "after_review":
@@ -473,7 +482,7 @@ def cmd__run(a):
             if not review_only and st.get("fix_rounds") and not stopped() and not budgets.stop_at_weekly_budget(st):
                 review_cycle.auto_fix(st, cfg, st.get("review_result"), effort, stopped, sleep)
         elif (kind not in ("scout", "reflect") and not in_ci and step != "ci"
-                and st.get("outcome") == "completed" and review_after and not stopped()
+                and st.get("outcome") == "completed" and (review_after or step == "review") and not stopped()
                 and not st.get("review_skipped") and (check is None or check["outcome"] in checking.CHECK_NOT_FAILED)
                 and not budgets.stop_at_weekly_budget(st)):
             st["work_completed"] = True
