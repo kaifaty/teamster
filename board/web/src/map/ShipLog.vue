@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // The ship's log at the bottom of the map: the fleet's completed phases and the lead's verdicts, newest first.
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import type { LogEvent } from "../types";
 import { describeEvent, eventKey } from "../lib/events";
 import { formatFullTime } from "../lib/format";
@@ -17,17 +17,12 @@ const props = defineProps<{
   /** Systems the map can open; a line about any other one, or without a repository, leads nowhere. */
   systems: ReadonlySet<string>;
   emblemOf: (repo: string | null) => string | null;
-  /** The replay's moment: the rows up to it are marked and scrolled to, and every row moves the replay. */
-  at?: number | null;
   /** A narrow window or a star system: folded, the log is one line, and whether it is open is the map's to keep. */
   compact?: boolean;
 }>();
-const emit = defineEmits<{ go: [event: LogEvent]; seek: [event: LogEvent] }>();
+const emit = defineEmits<{ go: [event: LogEvent] }>();
 /** Open while compact; the map folds it again and measures the dock folded. */
 const open = defineModel<boolean>("open", { default: false });
-
-/** In replay, this many rows after the moment stay above it. */
-const AHEAD = 50;
 
 /** The log never draws more rows than this; older ones stay in memory. */
 const SHOWN = 300;
@@ -48,36 +43,22 @@ const sunColour = (repo: string) => SUN_KINDS[hashName(repo) % SUN_KINDS.length]
 
 const rows = computed(() => {
   const list = props.repo ? props.events.filter((event) => event.repo === props.repo) : props.events;
-  const at = props.at ?? null;
-  // In replay the rows shown are those around the moment, not only the newest ones.
-  let top = list.length - 1;
-  if (at !== null) {
-    let past = list.length - 1;
-    while (past >= 0 && list[past]!.at > at) past--;
-    top = Math.min(list.length - 1, past + AHEAD);
-  }
   const rows = [];
-  let current = true;
-  for (let i = top; i >= 0 && rows.length < SHOWN; i--) {
+  for (let i = list.length - 1; i >= 0 && rows.length < SHOWN; i--) {
     const event = list[i]!;
     const line = describeEvent(event);
-    const past = at !== null && event.at <= at;
     rows.push({
-      past,
-      future: at !== null && !past,
-      current: past && current,
       key: eventKey(event),
       event,
       time: clock.format(new Date(event.at * 1000)),
       full: formatFullTime(event.at),
       text: line.text,
       tone: line.tone,
-      go: at !== null || (event.repo !== null && props.systems.has(event.repo)),
+      go: event.repo !== null && props.systems.has(event.repo),
       emblem: props.emblemOf(event.repo),
       colour: event.repo ? sunColour(event.repo) : "#6f6a60",
       title: [formatFullTime(event.at), event.repo, line.text, event.note].filter(Boolean).join("\n"),
     });
-    if (past) current = false;
   }
   return rows;
 });
@@ -88,36 +69,12 @@ const note = computed(() => {
   return null;
 });
 
-/** The folded log's one line: the newest row, or in replay the latest up to the moment, else the next one. */
-const line = computed(() => {
-  const list = rows.value;
-  return list.find((row) => row.current) ?? (props.at != null ? list[list.length - 1] : list[0]) ?? null;
-});
-
-// In replay the latest row up to the moment stays in view, moved only within the log.
-const list = ref<HTMLElement | null>(null);
-function showCurrent() {
-  void nextTick(() => {
-    const box = list.value;
-    const row = box?.querySelector<HTMLElement>(".l-row.current");
-    if (!box || !row) return;
-    const top = row.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
-    if (top < box.scrollTop || top + row.offsetHeight > box.scrollTop + box.clientHeight) {
-      box.scrollTop = Math.max(0, top - box.clientHeight / 2);
-    }
-  });
-}
-watch(
-  () => rows.value.find((row) => row.current)?.key,
-  (key) => key !== undefined && showCurrent(),
-);
-// A folded compact log is hidden and forgets its scroll.
-watch(folded, (value) => !value && showCurrent());
+/** The folded log's one line: the newest row. */
+const line = computed(() => rows.value[0] ?? null);
 
 function pick(row: { go: boolean; event: LogEvent }) {
   if (!row.go) return;
-  if (props.at !== null && props.at !== undefined) emit("seek", row.event);
-  else emit("go", row.event);
+  emit("go", row.event);
 }
 
 const hideImage = (event: Event) => {
@@ -128,7 +85,6 @@ const hideImage = (event: Event) => {
 <template>
   <section class="log" :class="{ open: unfolded, compact, folded }" :style="{ '--frame': `url(${frame})` }" aria-labelledby="log-title">
     <header class="l-head">
-      <slot name="head" />
       <h2 id="log-title" :class="{ 'sr-only': folded }">События<span v-if="repo" class="l-where"> · {{ repo }}</span></h2>
       <!-- Folded, the toggle is the log's one line. -->
       <button
@@ -156,16 +112,15 @@ const hideImage = (event: Event) => {
         <template v-else>{{ unfolded ? "свернуть ▾" : "развернуть ▴" }}</template>
       </button>
     </header>
-    <ol v-show="!folded" id="log-rows" ref="list" class="l-rows" :aria-live="at == null ? 'polite' : 'off'" aria-relevant="additions">
+    <ol v-show="!folded" id="log-rows" class="l-rows" aria-live="polite" aria-relevant="additions">
       <li v-if="note" class="l-note" :class="{ bad: error }" :title="error ?? undefined">{{ note }}</li>
       <li v-for="row in rows" :key="row.key">
         <component
           :is="row.go ? 'button' : 'div'"
           :type="row.go ? 'button' : undefined"
           class="l-row"
-          :class="[row.tone, { go: row.go, past: row.past, future: row.future, current: row.current }]"
+          :class="[row.tone, { go: row.go }]"
           :title="row.title"
-          :aria-current="row.current ? 'time' : undefined"
           @click="pick(row)"
         >
           <time class="num" :datetime="new Date(row.event.at * 1000).toISOString()" :title="row.full">{{ row.time }}</time>
@@ -182,7 +137,7 @@ const hideImage = (event: Event) => {
 /* Stands on the dark sky in both of the board's themes, like the map's other labels. */
 .log {
   --row: 20px;
-  /* Placed by the map, at the bottom under the replay's scale. */
+  /* Placed by the map, at the bottom. */
   position: relative;
   display: flex;
   flex-direction: column;
@@ -321,20 +276,6 @@ const hideImage = (event: Event) => {
 
 .l-row.bad .l-text {
   color: #ffb3a3;
-}
-
-/* Replay: the rows still ahead are dim, the ones behind the moment carry a mark on the left. */
-.l-row.future {
-  opacity: 0.45;
-}
-
-.l-row.past {
-  box-shadow: inset 2px 0 0 rgba(214, 170, 96, 0.45);
-}
-
-.l-row.current {
-  background: rgba(243, 198, 78, 0.16);
-  box-shadow: inset 2px 0 0 #f3c64e;
 }
 
 .l-note {

@@ -321,11 +321,11 @@ const H = 3600;
 const M = 60;
 
 /**
- * The demo systems' last day in the ship's log. For the replay, old-hull-refit goes all the way from the yard
+ * The demo systems' last day in the ship's log. Old-hull-refit goes all the way from the yard
  * into the sun, ci-burns-after-fixes fails at the gate and goes back to the yard, and outpost-migration ends
  * its turn blocked.
  */
-export const SCENARIO_HISTORY: readonly DemoEvent[] = [
+const SCENARIO_HISTORY: readonly DemoEvent[] = [
   { ago: 17 * H, took: 45 * M, kind: "work", slug: "old-hull-refit", repo: R, provider: "codex", account: "codex-team-1", phase: "work", turn: 1, outcome: "completed" },
   { ago: 16.6 * H, took: 15 * M, kind: "work", slug: "old-hull-refit", repo: R, provider: "codex", phase: "check", turn: 1, outcome: "passed" },
   { ago: 16.2 * H, took: 18 * M, kind: "review", slug: "old-hull-refit", repo: R, provider: "claude", reviewer: "claude", phase: "review", turn: 1, outcome: "completed", findings: 0 },

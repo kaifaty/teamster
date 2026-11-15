@@ -3,7 +3,6 @@
 
 import { nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref, type ShallowRef } from "vue";
 import type { Camera, Insets } from "../layout";
-import { replayExits } from "../replay";
 import { createFleetScene, type FleetScene, type ShipEntry } from "../scene";
 import type { GalaxyModel } from "./useGalaxyModel";
 import type { MapPanels } from "./useMapPanels";
@@ -22,7 +21,7 @@ export interface SceneOptions {
 }
 
 export function useFleetScene({ props, host, overlay, sources, model, panels, entries, stars, stage }: SceneOptions) {
-  const { replay, repoArt } = sources;
+  const { repoArt } = sources;
   const { world, systemWorld } = model;
   const { repo, selected, hovered, researchOpen, shipOpen } = panels;
   /** The station's screen and a ship's bridge cover the whole map: the galaxy under them stops drawing until they close. */
@@ -31,21 +30,13 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
   let scene: FleetScene | null = null;
   let unmounted = false;
 
-  /** Whether the scene's ships were last the replay's: going back on air, the ships the live fleet lacks fade. */
-  let replayedShips = false;
-  function setShips(next: ShipEntry[]) {
-    if (!scene) return;
-    scene.setShips(next, replayExits(replay.at, replayedShips, replay.events));
-    replayedShips = replay.at !== null;
-  }
-
   function feed() {
     if (!scene) return;
     stage.measureInsets();
     scene.setGalaxy(model.galaxyModel());
     scene.setArt(repoArt.value);
     scene.setView(repo.value);
-    setShips(entries.value);
+    scene.setShips(entries.value);
     scene.setSelected(selected.value);
     scene.setMachine(props.machine ?? null);
     scene.setHovered(hovered.value);
@@ -116,7 +107,7 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
   watch(repoArt, (art) => scene?.setArt(art));
   watch([researchOpen, shipOpen], () => scene?.setActive(drawing()));
   watch(repo, (name) => scene?.setView(name), { flush: "sync" });
-  watch(entries, setShips);
+  watch(entries, (next) => scene?.setShips(next));
   watch(selected, (slug) => scene?.setSelected(slug));
   watch(hovered, (slug) => scene?.setHovered(slug));
   watch(

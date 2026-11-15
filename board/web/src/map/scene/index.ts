@@ -338,7 +338,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
       leave();
       camera.report();
     },
-    setShips: (entries, departures) => fleet.set(entries, departures),
+    setShips: (entries) => fleet.set(entries),
     setSelected: (slug) => fleet.select(slug),
     setMachine: (id) => reactors.select(id),
     setHovered: (slug) => fleet.hover(slug),

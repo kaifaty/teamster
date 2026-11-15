@@ -188,15 +188,15 @@ export function tabTitle(base: string, alarms: number): string {
 
 /**
  * A ship's line on the map at `now`: its latest activity and how old it is (when `stale`), or why it no longer
- * works. `replayed` marks a record rebuilt by the replay, whose summary stands in for activity it does not have.
+ * works.
  */
-export function shipLine(task: TaskSummary, stale: boolean, now: number, replayed: boolean): string {
+export function shipLine(task: TaskSummary, stale: boolean, now: number): string {
   if (task.column === "review_me") {
     return ["готово", task.pr ? prLabel(task.pr) : null, cargoMark(task)].filter(Boolean).join(" · ");
   }
   if (!task.alive) return `${task.summary ?? problemLabel(task) ?? "надзиратель не запущен"} · ${formatAge(task.updated_at, now)}`;
   const activity = task.activity;
-  if (!activity) return replayed && task.summary ? `${task.summary} · ${formatAge(task.updated_at, now)}` : "нет активности";
+  if (!activity) return "нет активности";
   const age = stale && activity.at !== null ? ` · ${formatAge(activity.at, now)}` : "";
   return `${ACTIVITY[activity.kind].icon} ${activity.text}${age}`;
 }

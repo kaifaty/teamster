@@ -15,7 +15,7 @@ describe("fixture source", () => {
       return result;
     };
     try {
-      // Even while the replay has taken the ship off the board.
+      // Even while the fixture stream has taken the ship off the board.
       await vi.advanceTimersByTimeAsync(16_000);
       expect(removed).toContain("accounts-json-schema");
       expect(await act("say", { slug: "accounts-json-schema", text: "Доработай перед приёмкой" })).toMatchObject({ ok: true });

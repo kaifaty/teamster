@@ -1,5 +1,5 @@
 // What the viewer opened over the map: the system, a ship's bridge, the science station's screen, a subscription's screen,
-// the day's summary, the ships' list and the dock with the replay and the log. The list's and the replay's choice outlive the page.
+// the day's summary, the ships' list and the dock with the log. The list's choice outlives the page.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
 import { loadJson, saveJson } from "../../lib/storage";
@@ -9,8 +9,6 @@ import { FLIGHT_SECONDS } from "../scene";
 import type { GalaxyModel } from "./useGalaxyModel";
 import type { MapSources } from "./useMapSources";
 
-/** On a wide window the replay's scale shows or hides as the viewer last chose. */
-export const REPLAY_KEY = "codex-board.replay-shown.v1";
 /** On a wide window the list stands at the side of a system as the viewer last chose; on a narrow one it opens over it. */
 export const FLEET_KEY = "codex-board.fleet-shown.v1";
 
@@ -31,8 +29,6 @@ export interface PanelOptions {
 }
 
 export function useMapPanels({ props, sources, model, host, overlay, fleetPanel, summaryButton, onMachine, onPanel }: PanelOptions) {
-  const { replay } = sources;
-
   // The open system; null means the whole galaxy is shown.
   const repo = ref<string | null>(null);
   /** The ship picked in its system; its bridge stands over the map while `shipOpen`. */
@@ -196,15 +192,6 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
 
   // Ship's log and the day's summary.
 
-  /** The log's lines: the replayed day's while the map replays, else the live last day. */
-  const logEvents = computed(() => {
-    if (replay.at === null) return sources.events.value;
-    const { since, until } = replay.window;
-    return replay.events.filter((event) => event.at >= since && event.at <= until);
-  });
-  const replayClock = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  const replayTime = computed(() => (replay.at === null ? null : replayClock.format(new Date(replay.at * 1000))));
-
   /** To the event's system, with its ship selected while the ship is still on the map. */
   function goTo(event: LogEvent) {
     if (!event.repo) return;
@@ -215,12 +202,6 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
       selected.value = null;
       shipOpen.value = false;
     }
-  }
-
-  /** A line of the log in replay: the scale moves to its time, and the map to its system. */
-  function seekTo(event: LogEvent) {
-    replay.seek(event.at);
-    if (event.repo && model.systemNames.value.has(event.repo)) repo.value = event.repo;
   }
 
   const summaryOpen = ref(false);
@@ -237,24 +218,15 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   const onNarrow = (event: MediaQueryListEvent) => {
     narrow.value = event.matches;
   };
-  const replayShown = ref(loadJson(REPLAY_KEY, true, isBoolean));
-  watch(replayShown, (value) => saveJson(REPLAY_KEY, value));
   /**
-   * The dock folds to one line on a narrow window, and in a star system, where the map needs the room: the replay's scale
-   * and the whole log then open over the map on demand.
+   * The dock folds to one line on a narrow window, and in a star system, where the map needs the room:
+   * the whole log then opens over the map on demand.
    */
   const compactDock = computed(() => narrow.value || repo.value !== null);
-  const replayOpen = ref(false);
   const logOpen = ref(false);
-  const replayVisible = computed(() => (compactDock.value ? replayOpen.value : replayShown.value));
-  function toggleReplay() {
-    if (compactDock.value) replayOpen.value = !replayOpen.value;
-    else replayShown.value = !replayShown.value;
-  }
-  const dockFolded = computed(() => !compactDock.value || (!replayOpen.value && !logOpen.value));
+  const dockFolded = computed(() => !compactDock.value || !logOpen.value);
   // The dock changes its shape across the breakpoint and between the galaxy and a system: it folds.
   watch(compactDock, () => {
-    replayOpen.value = false;
     logOpen.value = false;
   });
 
@@ -303,8 +275,8 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   return {
     repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openShip, openResearch, closeResearch, close, showOnMap, openMachine,
     account, openAccount, closeAccount,
-    openMachineAt, flying, enter, leave, logEvents, replayTime, goTo, seekTo, summaryOpen, closeSummary, narrow, replayShown,
-    compactDock, replayOpen, logOpen, replayVisible, toggleReplay, dockFolded, fleetVisible, toggleFleet, showStation,
+    openMachineAt, flying, enter, leave, goTo, summaryOpen, closeSummary, narrow,
+    compactDock, logOpen, dockFolded, fleetVisible, toggleFleet, showStation,
   };
 }
 

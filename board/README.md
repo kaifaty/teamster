@@ -107,7 +107,7 @@ outer ring shows the fullest disk while it runs low. The core's glow tells the s
 red overloaded — and it turns faster the busier the CPU; a grey reactor has no connection or no data. The label on its
 left tells the name and what is free, each figure after a dot of its ring's colour («● 22 ядра ● 22 ГБ ● 9,7 ГБ»), the
 status instead when the machine is offline, and the name alone on a phone. A click on the reactor or its label opens the
-same machine card as on «Доска»; like the tanks, the reactors stay live during a replay. The map
+same machine card as on «Доска». The map
 tab has no machines strip: there the machines live in the galaxy, as the accounts do.
 A busy star's label is one line: its name, its tasks and badges for alarms, tasks waiting for you and sleeping ones.
 Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,
@@ -280,17 +280,11 @@ line goes once the ship's column or phase changes later than the order's own eff
 `now.ts`, `done.ts`, `orders.ts` and `desk.ts`; a board that only reads copies the equal command, and `dev:fixture`
 plays the orders on its own tasks.
 
-Like the tanks, the station stays live during a replay.
 The log «События» at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
 live `event` messages) in plain words, newest first; in a system it shows only that system and folds to its newest
-line, as on a phone, opening over the map on demand together with the replay's scale. A line leads to its
+line, as on a phone, opening over the map on demand. A line leads to its
 system and selects the ship while it is still there. «Сводка дня» shows today's `teamster report --by executor` and
-the day's verdicts. The scale over the log replays a day — the last 24 hours, or any of the 31 days before
-today: a slider, play and pause at ×60, ×600 or ×3600, marks at verdicts and CI failures, and «Сейчас» back to the
-live map. `board/web/src/map/replay.ts` rebuilds the fleet at each moment from the log's events alone (with two
-hours before the day for ships already under way), shaped like live tasks, so ships, stars and storms show the past
-while live updates wait; the tanks stay live, since the accounts' past is not recorded. In replay the log
-marks the lines up to the moment, and a click on a line moves the scale to it. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
+the day's verdicts. The map always shows the current fleet. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
 (`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them. Above the commands
 stands the order the task's state calls for, one reason and one command, and the other commands fold under «Все команды».
 A finished task shows its «Груз» above the commands (the saved check, the review and its findings, why the fix loop stopped, CI, the base merge, what is left and the questions), and on the roadstead «вернуть на доработку» puts all of it into one `say` text, while «принять» goes back to the verdict.

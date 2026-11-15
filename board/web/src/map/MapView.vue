@@ -39,7 +39,7 @@ const summaryButton = computed(() => toolbar.value?.summaryButton ?? null);
 
 // The order matters: each part reads the ones made before it, and the scene comes last, after everything it draws.
 const sources = useMapSources(props);
-const { now, demo, sourceKind, source, loaded, replay, emblemOf, events, eventsError, loadResearch } = sources;
+const { now, demo, sourceKind, source, loaded, emblemOf, events, eventsError, loadResearch } = sources;
 
 const model = useGalaxyModel(props, sources);
 const { starList, systemNames, pickerGroups, station, machineNote } = model;
@@ -57,8 +57,8 @@ const panels = useMapPanels({
 });
 const { repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip, showOnMap } = panels;
 const { account, openAccount, closeAccount } = panels;
-const { openMachine, flying, enter, leave, logEvents, replayTime, goTo, seekTo, summaryOpen, closeSummary } = panels;
-const { compactDock, logOpen, replayVisible, toggleReplay, fleetVisible, toggleFleet, showStation } = panels;
+const { openMachine, flying, enter, leave, goTo, summaryOpen, closeSummary } = panels;
+const { compactDock, logOpen, fleetVisible, toggleFleet, showStation } = panels;
 
 const labels = useOverlayLabels(sources, model);
 const { starLabels, constellationLabels, stationLabel, tankLabels, machineLabels, machineNoteStyle } = labels;
@@ -132,25 +132,19 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
       />
       <MapDock
         v-model:logOpen="logOpen"
-        :replay-time="replayTime"
-        :replay-visible="replayVisible"
-        :replay="replay"
         :frame="frameLight"
-        :now="now"
-        :log-events="logEvents"
+        :log-events="events"
         :events-error="eventsError"
         :repo="repo"
         :system-names="systemNames"
         :emblem-of="emblemOf"
         :compact-dock="compactDock"
-        @toggle-replay="toggleReplay"
         @go="goTo"
-        @seek="seekTo"
       />
       <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
       <p v-else-if="!starList.length" class="status">Пока ни одной задачи.</p>
       <p v-else-if="repo && !entries.length" class="status">
-        {{ replay.at === null ? "В этом репозитории сейчас нет задач: все закрыты." : "В этот момент в репозитории нет задач." }}
+        В этом репозитории сейчас нет задач: все закрыты.
       </p>
     </div>
 

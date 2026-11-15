@@ -15,7 +15,6 @@ import {
 } from "../../layout";
 import { FLEET, SPACE } from "../../palette";
 import type { Place } from "../../placement";
-import { departureOf } from "../../replay";
 import type { Kit } from "../kit";
 import type { Clock, SystemLayer } from "../layer";
 import { noise, turn } from "../math";
@@ -29,11 +28,16 @@ const MAX_SPEED = 300;
 const HOVER = 3;
 const HOVER_SPEED = 1.3;
 
+/** A ship leaves for the sun from the roadstead and fades from anywhere else. */
+export function departureOf(place: Place): "dive" | "fade" {
+  return place === "roadstead" ? "dive" : "fade";
+}
+
 export interface Fleet extends SystemLayer {
   /** The ships shown, by slug, leaving ones too. */
   readonly ships: ReadonlyMap<string, Ship>;
   /** See FleetScene.setShips. */
-  set(entries: ShipEntry[], departures?: ReadonlyMap<string, "dive" | "fade">): void;
+  set(entries: ShipEntry[]): void;
   select(slug: string | null): void;
   hover(slug: string | null): void;
   /** Takes every ship away at once, for another system. */
@@ -119,11 +123,11 @@ export function createFleet(kit: Kit, initial: SystemFrame, deps: FleetDeps): Fl
     }
   }
 
-  function setShips(entries: ShipEntry[], departures?: ReadonlyMap<string, "dive" | "fade">) {
+  function setShips(entries: ShipEntry[]) {
     const known = new Set(entries.map((entry) => entry.task.slug));
     for (const item of [...ships.values()]) {
       if (known.has(item.slug) || item.leaving) continue;
-      item.leaving = departureOf(item.slug, item.entry.placement.place, departures);
+      item.leaving = departureOf(item.entry.placement.place);
       // A ship that waited behind the count comes out to leave where it can be seen.
       item.stowed = false;
       if (still) removeShip(item);

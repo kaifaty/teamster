@@ -48,7 +48,7 @@ const H = 3600;
 const M = 60;
 
 /**
- * Events of the fixture board's tasks: every kind of line the log knows, over the last day. For the replay,
+ * Events of the fixture board's tasks: every kind of line the log knows, over the last day.
  * pr-template goes all the way from the yard into the sun, accounts-json-schema fails at the gate and goes back
  * to the yard, and budget-overrun ends its turn in trouble.
  */
