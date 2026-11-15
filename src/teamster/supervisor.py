@@ -321,7 +321,7 @@ def cmd__run(a):
         if (working
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
-            check = checking.saved_check(st, cfg, stopped, pending.get("review_after"))
+            check = checking.saved_check(st, cfg, stopped, sleep, pending.get("review_after"))
         if (st.get("kind") not in ("scout", "reflect") and st.get("outcome") == "completed" and pending.get("review_after") and not stopped()
                 and not st.get("review_skipped") and (check is None or check["outcome"] in checking.CHECK_NOT_FAILED)
                 and not budgets.stop_at_weekly_budget(st)):

@@ -453,6 +453,8 @@ def main():
                                  + ("--since" if a.since is not None else "--repo"))
     else:
         a = p.parse_args()
+    if a.cmd == "say" and a.no_check and a.check_loaded is not None:
+        p.error("argument --check-loaded: not allowed with argument --no-check")
     if a.cmd in ("start", "say") and a.review_angles is not None:
         a.review = True
     if a.cmd in ("start", "say") and a.fix_rounds is not None and not a.review:

@@ -400,7 +400,7 @@ def _run_base_check(st, stopped):
     return result
 
 
-def _rerun_loaded_check(st, cfg, stopped, check):
+def _rerun_loaded_check(st, cfg, stopped, sleep, check):
     threshold = cfg.get("check_load_per_cpu", 30) * (os.cpu_count() or 1)
     if (threshold == 0 or check["outcome"] not in ("failed", "timeout")
             or not any(load > threshold for load in check.get("load", []))):
@@ -412,10 +412,10 @@ def _rerun_loaded_check(st, cfg, stopped, check):
         remaining = deadline - clock.CLOCK.monotonic()
         if remaining <= 0:
             break
-        clock.CLOCK.sleep(min(1, remaining))
+        sleep(min(config.SLEEP_STEP, remaining))
         load = _check_load()
     if stopped():
-        return check
+        return None
     waited = round(clock.CLOCK.monotonic() - started, 3)
     log = config.TASKS / st["slug"] / "check.log"
     check["log"] = f"check-{len(st['checks'])}.log"
@@ -429,14 +429,14 @@ def _rerun_loaded_check(st, cfg, stopped, check):
     return result
 
 
-def saved_check(st, cfg, stopped, review_after=True):
+def saved_check(st, cfg, stopped, sleep, review_after=True):
     check = run_check(st, stopped) if st.get("check") and not stopped() else None
-    if check and not stopped():
-        check = _rerun_loaded_check(st, cfg, stopped, check)
+    if check:
+        check = _rerun_loaded_check(st, cfg, stopped, sleep, check)
     if check and check["outcome"] == "passed" and st.get("base_check") and not stopped():
         check["base_check"] = run_base_check(st, stopped)
         task_state.save(st)
-    if check and check["outcome"] in ("failed", "timeout") and not stopped():
+    if check and check["outcome"] in ("failed", "timeout"):
         if review_after and not st.get("review_skipped"):
             st["review_skipped"] = "check " + check["outcome"]
         task_state.save(st)
