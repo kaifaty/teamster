@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 
 from teamster_board import access, actions as actions_module
+from teamster_board import landing as landing_module
 from teamster_board import app as board_app
 from teamster_board import store as store_module
 from teamster_board import accounts as accounts_module, logins as logins_module
@@ -2464,3 +2465,632 @@ def test_account_refresh_probe_timeout_still_refreshes(account_actions, monkeypa
         assert receive_until(socket, "accounts")["accounts"]["error"] is None
         wait_for_account(lambda: not board.refresh_jobs)
         assert [argv[3:] for argv, _ in calls[before_probe:]] == [["claude-probe", "cl1"], ["accounts", "--json"]]
+
+
+@pytest.fixture
+def landing_task(tmp_path, monkeypatch):
+    """A lesson task with local git and executable fakes for every service write."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    data = home / ".teamster"
+    tasks = data / "tasks"
+    archive = tasks / ".archive"
+    archive.mkdir(parents=True)
+    monkeypatch.setenv("TEAMSTER_HOME", str(data))
+    repo = home / "project"
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                    "https://github.com/kaifaty/project.git"], check=True, capture_output=True)
+    entry, slug = "batch-2026-11-16.md W1", "lesson-w1-1116"
+    (archive / "INDEX.md").write_text(f"| 2026-11-16 | {entry} | invariant | check | accepted |\n")
+    (archive / "batch-2026-11-16.md").write_text("## W1. Keep the check\nproposal: Add the check.\n")
+    directory = tasks / slug
+    directory.mkdir()
+    (directory / "brief.md").write_text(f"Внедрить урок «{entry}»: Keep the check.\n")
+    pr = "https://github.com/kaifaty/project/pull/42"
+    state = {"created": 1, "turns": 1, "turn_finished": 2, "repo": str(repo),
+             "outcome": "completed", "result": {"status": "done", "summary": "Implemented"},
+             "publish": {"pr": pr}, "checks": [{"outcome": "passed"}],
+             "review_result": {"verdict": "clean", "findings": []},
+             "ci": {"outcome": "passed", "sha": "a" * 40}}
+    control, calls = tmp_path / "landing-control.json", tmp_path / "landing-calls.jsonl"
+    control.write_text(json.dumps({"pr": {"state": "OPEN", "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN", "baseRefName": "main", "headRefOid": "a" * 40,
+        "headRefName": "lesson-branch", "mergeCommit": None, "files": [{"path": "app.py"}], "url": pr, "number": 42},
+        "checks": [{"bucket": "pass"}, {"bucket": "skipping"}], "branch_checked_out": True}))
+    monkeypatch.setenv("LANDING_CONTROL", str(control))
+    monkeypatch.setenv("LANDING_CALLS", str(calls))
+    monkeypatch.setenv("LANDING_TASK", str(directory))
+    bin_path = tmp_path / "landing-bin"
+    bin_path.mkdir()
+    script = f"#!{sys.executable}\n" + '''import json, os, sys, time
+from pathlib import Path
+name, args = Path(sys.argv[0]).name, sys.argv[1:]
+control_path = Path(os.environ["LANDING_CONTROL"])
+control = json.loads(control_path.read_text())
+with Path(os.environ["LANDING_CALLS"]).open("a") as stream:
+    stream.write(json.dumps({"command": name, "argv": args}) + "\\n")
+if control.get("sleep_command") == name:
+    Path(str(control_path) + ".ready").touch()
+    while Path(str(control_path) + ".block").exists():
+        time.sleep(0.01)
+if name == "gh":
+    if control.pop("gh_error_once", False):
+        control_path.write_text(json.dumps(control))
+        print("GitHub is temporarily unavailable", file=sys.stderr)
+        sys.exit(1)
+    if args[:2] == ["pr", "view"]:
+        print(json.dumps(control["pr"]))
+    elif args[:2] == ["pr", "checks"]:
+        print(json.dumps(control["checks"]))
+        sys.exit(control.get("checks_exit", 0))
+    elif args[:2] == ["pr", "merge"]:
+        expected = args[args.index("--match-head-commit") + 1]
+        actual = control.get("head_at_merge", control["pr"]["headRefOid"])
+        if expected != actual:
+            print("PR head changed", file=sys.stderr)
+            sys.exit(1)
+        control["pr"]["state"] = "MERGED"
+        control["pr"]["mergeCommit"] = {"oid": "b" * 40}
+        control_path.write_text(json.dumps(control))
+        if "--delete-branch" in args and control["branch_checked_out"]:
+            print("Cannot delete a branch checked out in the task worktree", file=sys.stderr)
+            sys.exit(1)
+    elif args[:3] == ["api", "--method", "DELETE"]:
+        assert args[3] == "repos/kaifaty/project/git/refs/heads/lesson-branch"
+        if control["branch_checked_out"]:
+            raise SystemExit("The task worktree must be cleaned before deleting its branch")
+        status = control.pop("delete_status_once", 0)
+        control_path.write_text(json.dumps(control))
+        if status:
+            print(f"gh: Remote reference deletion failed (HTTP {status})", file=sys.stderr)
+            sys.exit(1)
+    else:
+        raise SystemExit("Unexpected gh command")
+elif name == "teamster":
+    if control.get("fail_once") == args[0]:
+        control.pop("fail_once")
+        control_path.write_text(json.dumps(control))
+        print("command unavailable", file=sys.stderr)
+        sys.exit(1)
+    task = Path(os.environ["LANDING_TASK"])
+    if args[0] == "lesson":
+        index = task.parent / ".archive" / "INDEX.md"
+        index.write_text(index.read_text().replace("accepted", args[2]))
+    elif args[0] == "say":
+        state = json.loads((task / "state.json").read_text())
+        state["outcome"] = "running"
+        (task / "state.json").write_text(json.dumps(state))
+    elif args[0] == "clean":
+        task.rename(task.parent / ".archive" / (task.name + "-20261116T000000Z"))
+        control["branch_checked_out"] = False
+        control_path.write_text(json.dumps(control))
+    elif args[0] != "verdict":
+        raise SystemExit("Unexpected teamster command")
+else:
+    raise SystemExit("Unexpected service command")
+'''
+    for name in ("gh", "teamster", "uv"):
+        command = bin_path / name
+        command.write_text(script)
+        command.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_path) + os.pathsep + os.environ["PATH"])
+
+    def make_actions(**kwargs):
+        research = Research(tasks, seconds=0)
+        store = store_module.Store(tasks)
+        return actions_module.Actions(research, store, bin_path / "teamster", **kwargs)
+
+    def write_state():
+        (directory / "state.json").write_text(json.dumps(state))
+
+    def configure(**values):
+        current = json.loads(control.read_text())
+        current.update(values)
+        control.write_text(json.dumps(current))
+
+    def records(name=None):
+        rows = [json.loads(row) for row in calls.read_text().splitlines()] if calls.exists() else []
+        return [row["argv"] for row in rows if name is None or row["command"] == name]
+
+    def lesson(actions):
+        actions.research.invalidate()
+        return actions.research.view()["lessons"][0]
+
+    write_state()
+    return {"make": make_actions, "state": state, "write": write_state, "configure": configure,
+            "records": records, "lesson": lesson, "repo": repo, "entry": entry, "slug": slug,
+            "pr": pr, "directory": directory, "archive": archive, "control": control}
+
+
+def test_landing_merges_verified_pr_and_finishes_lesson(landing_task):
+    task = landing_task
+    stages = []
+    actions = task["make"](publish_research=lambda: stages.append(
+        task["lesson"](actions)["implementation"]["landing"]["stage"]))
+    actions.landing.run_once()
+    assert [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]] == [
+        ["pr", "merge", task["pr"], "--merge", "--match-head-commit", "a" * 40]]
+    assert task["records"]("teamster") == [
+        ["lesson", task["entry"], "applied", "--note", task["pr"]],
+        ["verdict", task["slug"], "accepted", "--note", "landed by the board"],
+        ["clean", task["slug"]],
+    ]
+    records = task["records"]()
+    deletion = ["api", "--method", "DELETE", "repos/kaifaty/project/git/refs/heads/lesson-branch"]
+    assert records.index(["clean", task["slug"]]) < records.index(deletion)
+    assert "failed" not in stages
+    lesson = task["lesson"](actions)
+    assert lesson["status"] == "applied"
+    assert lesson["implementation"]["landing"] == {
+        "stage": "landed", "text": "Внедрено: PR #42 слит", "pr": task["pr"], "version": None}
+    actions.landing.run_once()
+    assert len(task["records"]("teamster")) == 3
+
+
+@pytest.mark.parametrize("gate", [
+    "running", "outcome", "partial", "blocked", "needs_decision", "check", "review",
+    "no review", "ci", "no ci", "closed", "merge state", "live checks", "pending checks",
+    "empty checks", "ci sha", "head race",
+])
+def test_landing_requires_every_merge_gate(landing_task, gate):
+    task, state = landing_task, landing_task["state"]
+    if gate == "running":
+        state["pid"] = os.getpid()
+    elif gate == "outcome":
+        state["outcome"] = "stopped"
+    elif gate in ("partial", "blocked", "needs_decision"):
+        state["result"]["status"] = gate
+    elif gate == "check":
+        state["checks"][-1]["outcome"] = "failed"
+    elif gate == "review":
+        state["review_result"] = {"verdict": "defects", "findings": [{"severity": "P1"}]}
+    elif gate == "no review":
+        state.pop("review_result")
+    elif gate == "ci":
+        state["ci"] = {"outcome": "failed", "rounds": 2}
+    elif gate == "no ci":
+        state.pop("ci")
+    elif gate in ("closed", "merge state"):
+        control = json.loads(task["control"].read_text())
+        control["pr"]["state" if gate == "closed" else "mergeStateStatus"] = (
+            "CLOSED" if gate == "closed" else "BLOCKED")
+        task["configure"](**control)
+    elif gate in ("live checks", "pending checks", "empty checks"):
+        checks = ([{"bucket": "pass"}, {"bucket": "fail" if gate == "live checks" else "pending"}]
+                  if gate != "empty checks" else [])
+        task["configure"](checks=checks, checks_exit=0)
+    elif gate == "ci sha":
+        state["ci"]["sha"] = "c" * 40
+    elif gate == "head race":
+        task["configure"](head_at_merge="c" * 40)
+    task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    merge_calls = [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]
+    assert len(merge_calls) == (1 if gate == "head race" else 0)
+    assert json.loads(task["control"].read_text())["pr"]["state"] != "MERGED"
+    assert task["records"]("teamster") == []
+    landing = task["lesson"](actions)["implementation"]["landing"]
+    if gate not in ("running",):
+        assert landing["stage"] in (("waiting", "failed") if gate in ("pending checks", "merge state") else ("failed",))
+        assert landing["text"]
+
+
+@pytest.mark.parametrize("stop", ["clean", "only P3"])
+def test_landing_accepts_clean_cycle_stop_and_ignores_previous_turn_check(landing_task, stop):
+    task = landing_task
+    task["state"].pop("review_result")
+    task["state"].update(auto_fix_stop=stop, checks=[{"outcome": "failed"}], check_start=1)
+    task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+
+
+def test_landing_keeps_unanswered_questions_visible(landing_task):
+    task = landing_task
+    task["state"]["result"].update(status="needs_decision", questions=["Which behavior should change?"])
+    task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    implementation = task["lesson"](actions)["implementation"]
+    assert implementation["landing"] is None
+    assert implementation["questions"] == ["Which behavior should change?"]
+    assert task["records"]() == []
+
+
+@pytest.mark.parametrize("origin,text", [
+    ("git@github.com:mytonwallet-org/project.git",
+     "В MyWallet PR сливаешь ты: там свои правила и боты ревью"),
+    ("https://github.com/someone/project.git",
+     "В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях"),
+    ("https://forge.example/kaifaty/project.git",
+     "В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях"),
+    ("https://github.com.evil.example/kaifaty/project.git",
+     "В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях"),
+])
+def test_landing_leaves_other_owners_and_hosts_to_person(landing_task, origin, text):
+    task = landing_task
+    subprocess.run(["git", "-C", str(task["repo"]), "remote", "set-url", "origin", origin],
+                   check=True, capture_output=True)
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"] == {
+        "stage": "manual", "text": text, "pr": task["pr"], "version": None}
+    assert task["records"]("gh") == task["records"]("teamster") == []
+
+
+@pytest.mark.parametrize("conflicting_again,initial_ci", [
+    (False, "passed"), (True, "passed"), ("dispatch-failed", "passed"),
+    (False, "none"), (False, "skipped"),
+])
+def test_landing_repairs_base_conflict_once_then_retries(landing_task, conflicting_again, initial_ci):
+    task = landing_task
+    if initial_ci != "passed":
+        task["state"]["ci"] = {"outcome": initial_ci}
+    task["write"]()
+    control = json.loads(task["control"].read_text())
+    control["pr"].update(mergeable="CONFLICTING", mergeStateStatus="DIRTY")
+    if conflicting_again == "dispatch-failed":
+        control["fail_once"] = "say"
+    task["configure"](**control)
+    actions = task["make"]()
+    actions.landing.run_once()
+    says = task["records"]("teamster")
+    assert len(says) == 1
+    assert says[0][:2] == ["say", task["slug"]]
+    assert "origin/main" in says[0][2]
+    assert says[0][3:] == ["--max-minutes", "30", "--review", "--fix-rounds", "1", "--ci"]
+    if conflicting_again == "dispatch-failed":
+        actions = task["make"]()
+        actions.landing.run_once()
+        assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed"
+        assert task["records"]("teamster") == says
+        return
+    actions.landing.run_once()
+    assert task["records"]("teamster") == says
+    task["state"].update(turns=2, turn_finished=3)
+    task["state"]["ci"] = {"outcome": "passed", "sha": "a" * 40}
+    task["write"]()
+    if not conflicting_again:
+        control["pr"].update(mergeable="MERGEABLE", mergeStateStatus="CLEAN")
+        task["configure"](**control)
+    actions = task["make"]()
+    actions.landing.run_once()
+    landing = task["lesson"](actions)["implementation"]["landing"]
+    assert landing["stage"] == ("failed" if conflicting_again else "landed")
+    assert len([row for row in task["records"]("teamster") if row[0] == "say"]) == 1
+    assert len([row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]) == (
+        0 if conflicting_again else 1)
+
+
+def test_landing_applies_outside_only_change_without_pr(landing_task):
+    task = landing_task
+    task["state"].pop("publish")
+    task["state"].pop("ci")
+    task["state"].pop("review_result")
+    task["write"]()
+    (task["archive"] / "batch-2026-11-16.md").write_text(
+        "## W1. Keep the check\nproposal: Update the check.\ntarget: ~/.config/lesson-check.py\n")
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["records"]("gh") == []
+    records = task["records"]("teamster")
+    assert records[0][:4] == ["lesson", task["entry"], "applied", "--note"]
+    assert "~/.config/lesson-check.py" in records[0][4]
+    assert records[1:] == [["verdict", task["slug"], "accepted", "--note", "landed by the board"],
+                           ["clean", task["slug"]]]
+    assert task["lesson"](actions)["status"] == "applied"
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+
+
+@pytest.mark.parametrize("outside", [False, True])
+@pytest.mark.parametrize("resume", ["restart", "retry"])
+def test_landing_resumes_finalization_without_repeating_finished_steps(landing_task, landing_clock, outside, resume):
+    task = landing_task
+    if outside:
+        task["state"].pop("publish")
+        task["write"]()
+        (task["archive"] / "batch-2026-11-16.md").write_text(
+            "## W1. Keep the check\nproposal: Update the check.\ntarget: ~/.config/lesson-check.py\n")
+    task["configure"](fail_once="clean")
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed"
+    if resume == "restart":
+        actions = task["make"]()
+    else:
+        actions.landing.run_once()
+        assert [row[0] for row in task["records"]("teamster")] == ["lesson", "verdict", "clean"]
+        landing_clock[0] += 31
+    actions.landing.run_once()
+    assert len([row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]) == (0 if outside else 1)
+    records = task["records"]("teamster")
+    assert [row[0] for row in records] == ["lesson", "verdict", "clean", "clean"]
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+
+
+@pytest.mark.parametrize("options", [{"no_land": True}, {"read_only": True}])
+def test_landing_is_disabled_explicitly_or_on_read_only_board(landing_task, options):
+    task = landing_task
+    actions = task["make"](**options)
+    actions.landing.run_once()
+    assert task["records"]() == []
+    assert task["lesson"](actions)["implementation"]["landing"] is None
+
+
+@pytest.mark.parametrize("slug,brief", [
+    ("regular-task", "Внедрить урок «batch-2026-11-16.md W1»: Keep the check.\n"),
+    ("lesson-w1-1116", "Do another task.\n"),
+])
+def test_landing_only_handles_lesson_implementation_briefs(landing_task, slug, brief):
+    task = landing_task
+    directory = task["directory"]
+    (directory / "brief.md").write_text(brief)
+    if slug != directory.name:
+        directory.rename(directory.with_name(slug))
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["records"]() == []
+
+
+def test_landing_runs_in_background_and_publishes_research_contract(landing_task):
+    task = landing_task
+    task["configure"](sleep_command="gh")
+    marker = Path(str(task["control"]) + ".block")
+    ready = Path(str(task["control"]) + ".ready")
+    marker.touch()
+    accounts = task["control"].with_name("landing-accounts.py")
+    accounts.write_text("print('{}')\n")
+    settings = Settings(task["directory"].parent.parent, accounts, layout="new", poll_seconds=0.01,
+                        research_seconds=0, action_teamster=str(task["control"].parent / "landing-bin/teamster"))
+    application = create_app(settings)
+
+    def request(method, route, **kwargs):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(method, route, **kwargs)
+            try:
+                return pending.result(timeout=1)
+            finally:
+                if not pending.done():
+                    marker.unlink(missing_ok=True)
+
+    try:
+        with TestClient(application, base_url="http://localhost:8787") as client:
+            wait_for_account(ready.exists)
+            response = request(client.get, "/api/research")
+            assert response.status_code == 200
+            landing = response.json()["lessons"][0]["implementation"]["landing"]
+            if landing is not None:
+                assert set(landing) == {"stage", "text", "pr", "version"}
+                assert landing["pr"] == task["pr"]
+            response = request(client.post, "/api/actions/lesson",
+                json={"entry": task["entry"], "status": "accepted"},
+                headers={"Origin": "http://localhost:8787", "X-Teamster-Board": "1"})
+            assert response.status_code == 200
+            # Polls while the first command waits must not admit a second landing worker.
+            application.state.board.actions.landing.poll()
+            application.state.board.actions.landing.poll()
+            assert len(task["records"]("gh")) == 1
+            with client.websocket_connect("/ws", headers={"Host": "localhost:8787"}) as socket:
+                socket.receive_json()
+                marker.unlink()
+                messages = []
+                while True:
+                    message = socket.receive_json()
+                    messages.append(message)
+                    if message["type"] == "research":
+                        value = message["research"]["lessons"][0]["implementation"]["landing"]
+                        assert set(value) == {"stage", "text", "pr", "version"}
+                        if value["stage"] == "landed":
+                            break
+                assert messages
+    finally:
+        marker.unlink(missing_ok=True)
+
+
+def test_landing_recovers_merge_completed_before_receipt_was_saved(landing_task):
+    task = landing_task
+    control = json.loads(task["control"].read_text())
+    control["pr"].update(state="MERGED", mergeCommit={"oid": "b" * 40})
+    task["configure"](**control)
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert not [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]
+    assert [row[0] for row in task["records"]("teamster")] == ["lesson", "verdict", "clean"]
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+
+
+def test_landing_polls_after_launch_invalidates_research_without_an_api_request(landing_task):
+    task = landing_task
+    actions = task["make"]()
+    actions.research.view()
+    actions.research.invalidate()
+    actions.landing.poll()
+    assert actions.landing.thread is not None
+    actions.landing.thread.join(5)
+    assert not actions.landing.thread.is_alive()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+
+
+@pytest.fixture
+def landing_clock(monkeypatch):
+    from types import SimpleNamespace
+
+    clock = [100.0]
+    monkeypatch.setattr(landing_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    return clock
+
+
+@pytest.mark.parametrize("transient", ["gh error", "merge state", "pending checks"])
+def test_landing_retries_transient_conditions_without_restarting(landing_task, landing_clock, transient):
+    task = landing_task
+    control = json.loads(task["control"].read_text())
+    if transient == "gh error":
+        control["gh_error_once"] = True
+    elif transient == "merge state":
+        control["pr"]["mergeStateStatus"] = "UNKNOWN"
+    else:
+        control["checks"] = [{"bucket": "pending"}]
+        control["checks_exit"] = 8
+    task["configure"](**control)
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["records"]("teamster") == []
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] in ("waiting", "failed")
+    before = task["records"]("gh")
+    control = json.loads(task["control"].read_text())
+    control["pr"]["mergeStateStatus"] = "CLEAN"
+    control["checks"] = [{"bucket": "pass"}, {"bucket": "skip"}]
+    control["checks_exit"] = 0
+    task["configure"](**control)
+    actions.landing.run_once()
+    assert task["records"]("gh") == before
+    landing_clock[0] += 31
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+    assert len([row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]) == 1
+
+
+@pytest.mark.parametrize("gate", ["check", "review", "failed ci"])
+def test_landing_does_not_dispatch_conflict_repair_when_other_gates_fail(landing_task, gate):
+    task = landing_task
+    control = json.loads(task["control"].read_text())
+    control["pr"].update(mergeable="CONFLICTING", mergeStateStatus="DIRTY")
+    task["configure"](**control)
+    if gate == "check":
+        task["state"]["checks"][-1]["outcome"] = "failed"
+    elif gate == "review":
+        task["state"]["review_result"] = {"verdict": "defects", "findings": [{"severity": "P1"}]}
+    else:
+        task["state"]["ci"]["outcome"] = "failed"
+    task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["records"]("teamster") == []
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed"
+
+
+@pytest.mark.parametrize("failure", ["upgrade", "clean"])
+def test_landing_wires_release_upgrade_and_version_before_finalization(landing_task, landing_clock,
+                                                                      monkeypatch, failure):
+    task = landing_task
+    version = "1.80.0"
+    script = task["repo"] / "scripts/bump_version.py"
+    script.parent.mkdir()
+    script.write_text("# The release helper is replaced in this integration test.\n")
+    stages, releases, upgrades = [], [], []
+
+    def release(repo, sha, files, receipt, save):
+        assert (repo, sha, files) == (task["repo"], "b" * 40, ["app.py"])
+        if not receipt.get("released"):
+            releases.append(sha)
+            receipt.update(released=True, release_version=version)
+            save()
+        return version
+
+    def upgrade():
+        upgrades.append("teamster")
+        if failure == "upgrade" and len(upgrades) == 1:
+            raise ValueError("Upgrade temporarily unavailable")
+
+    monkeypatch.setattr(landing_module.landing_release, "release", release)
+    monkeypatch.setattr(landing_module.landing_release, "upgrade", upgrade)
+    if failure == "clean":
+        task["configure"](fail_once="clean")
+    actions = task["make"](publish_research=lambda: stages.append(
+        task["lesson"](actions)["implementation"]["landing"]["stage"]))
+    actions.landing.run_once()
+    landing = task["lesson"](actions)["implementation"]["landing"]
+    assert landing["stage"] == "failed"
+    assert "releasing" in stages
+    assert landing["version"] == version
+    assert stages.index("releasing") < stages.index("upgrading")
+    assert upgrades == ["teamster"]
+    if failure == "upgrade":
+        assert task["records"]("teamster") == []
+        landing_clock[0] += 31
+    else:
+        actions = task["make"]()
+    actions.landing.run_once()
+    assert releases == ["b" * 40]
+    assert len(upgrades) == (2 if failure == "upgrade" else 1)
+    assert task["lesson"](actions)["implementation"]["landing"] == {
+        "stage": "landed", "text": "Внедрено: PR #42 слит, teamster 1.80.0", "pr": task["pr"], "version": version}
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert releases == ["b" * 40]
+    assert len(upgrades) == (2 if failure == "upgrade" else 1)
+
+
+@pytest.mark.parametrize("condition", ["manual", "review", "ci"])
+def test_landing_does_not_publish_unchanged_terminal_stage_on_retry(landing_task, landing_clock, condition):
+    task = landing_task
+    if condition == "manual":
+        subprocess.run(["git", "-C", str(task["repo"]), "remote", "set-url", "origin",
+                        "https://github.com/mytonwallet-org/project.git"], check=True, capture_output=True)
+    elif condition == "review":
+        task["state"]["review_result"] = {"verdict": "defects", "findings": [{"severity": "P1"}]}
+    else:
+        task["state"]["ci"]["outcome"] = "failed"
+    task["write"]()
+    publications = []
+    actions = task["make"](publish_research=lambda: publications.append(
+        task["lesson"](actions)["implementation"]["landing"]))
+    actions.landing.run_once()
+    before = list(publications)
+    assert before[-1]["stage"] == ("manual" if condition == "manual" else "failed")
+    landing_clock[0] += 31
+    actions.landing.run_once()
+    assert publications == before
+    assert task["records"]("teamster") == []
+
+
+@pytest.mark.parametrize("status", [404, 422, 503])
+def test_landing_deletes_remote_branch_after_clean_and_retries_transient_errors(landing_task, landing_clock, status):
+    task = landing_task
+    task["configure"](delete_status_once=status)
+    actions = task["make"]()
+    actions.landing.run_once()
+    landing = task["lesson"](actions)["implementation"]["landing"]
+    if status == 503:
+        assert landing["stage"] == "failed"
+        landing_clock[0] += 31
+        actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+    assert len([row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]) == 1
+    assert len([row for row in task["records"]("teamster") if row[0] == "clean"]) == 1
+    deletes = [row for row in task["records"]("gh") if row[0] == "api"]
+    assert deletes == [["api", "--method", "DELETE",
+                        "repos/kaifaty/project/git/refs/heads/lesson-branch"]] * (2 if status == 503 else 1)
+
+
+def test_landing_verdict_lookup_preserves_pending_board_events_and_logins(landing_task):
+    task = landing_task
+    actions = task["make"]()
+    journal = task["control"].with_name("landing-journal.jsonl")
+    journal.write_text("")
+    actions.store.telemetry_path = journal
+    actions.store.poll()
+    now = time.time()
+    rows = [
+        {"kind": "work", "at": now, "slug": task["slug"], "repo": "project"},
+        {"kind": "verdict", "at": now + 1, "slug": task["slug"], "repo": "project",
+         "created": 1, "verdict": "accepted"},
+        {"event": "account_login", "at": now + 2, "family": "codex", "account": "test"},
+    ]
+    with journal.open("a") as stream:
+        for row in rows:
+            stream.write(json.dumps(row) + "\n")
+    cursor = actions.store._log_offset
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+    assert [row[0] for row in task["records"]("teamster")] == ["lesson", "clean"]
+    assert actions.store._log_offset == cursor
+    assert actions.store.take_logins() == 0
+    messages = actions.store.poll()
+    assert [(row["event"]["kind"], row["event"]["at"]) for row in messages if row["type"] == "event"] == [
+        ("work", now), ("verdict", now + 1)]
+    assert actions.store.take_logins() == 1

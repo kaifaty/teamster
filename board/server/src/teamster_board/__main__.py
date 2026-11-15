@@ -13,7 +13,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 
 
-def launchd_plist(host, port, teamster=None, read_only=False):
+def launchd_plist(host, port, teamster=None, read_only=False, no_land=False):
     """A launchd job that keeps the board running; printing it never installs or loads anything."""
     task_home, layout = resolve_data_home()
     # launchd starts the job in WorkingDirectory: relative homes must not change meaning there.
@@ -37,6 +37,8 @@ def launchd_plist(host, port, teamster=None, read_only=False):
         options.extend(["--teamster", str(Path(teamster).expanduser().absolute())])
     if read_only:
         options.append("--read-only")
+    if no_land:
+        options.append("--no-land")
     program = [str(command)] + options if command.is_file() else [sys.executable, "-m", "teamster_board"] + options
     log = str(task_home / LAYOUT_FILES[layout]["board_log"])
     return {"Label": LAUNCHD_LABEL, "ProgramArguments": program, "WorkingDirectory": str(REPOSITORY),
@@ -49,6 +51,7 @@ def add_address(parser):
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--teamster", metavar="PATH", help="installed teamster for science station actions")
     parser.add_argument("--read-only", action="store_true", help="disable science station actions")
+    parser.add_argument("--no-land", action="store_true", help="disable automatic lesson landing")
 
 
 def main(argv=None):
@@ -59,7 +62,9 @@ def main(argv=None):
     add_address(plist)
     args = parser.parse_args(argv)
     if args.command == "plist":
-        sys.stdout.write(plistlib.dumps(launchd_plist(args.host, args.port, args.teamster, args.read_only)).decode("utf-8"))
+        sys.stdout.write(plistlib.dumps(launchd_plist(
+            args.host, args.port, args.teamster, args.read_only, args.no_land,
+        )).decode("utf-8"))
         return
     import uvicorn
 
@@ -69,6 +74,7 @@ def main(argv=None):
     if args.teamster is not None:
         settings.action_teamster = str(Path(args.teamster).expanduser())
     settings.read_only = args.read_only
+    settings.no_land = args.no_land
     uvicorn.run(create_app(settings), host=args.host, port=args.port)
 
 

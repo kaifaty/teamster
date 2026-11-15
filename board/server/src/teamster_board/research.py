@@ -494,6 +494,7 @@ class Research:
         self._repos_thread = None
         self._next_repos_scan = 0.0
         self._store = Store(self.tasks_path)
+        self.landing = lambda slug, created: None
 
     def view(self):
         with self.lock:
@@ -658,6 +659,7 @@ class Research:
         )}
         value.update(archived=archived, questions=cargo(state)["questions"],
                      created=summary["created"] if summary["created"] is not None else updated_at)
+        value["landing"] = self.landing(slug, value["created"])
         return match[1].strip(), value
 
     def _schedule(self):
