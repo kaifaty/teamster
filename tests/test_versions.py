@@ -160,6 +160,67 @@ class VersionInstallTests(unittest.TestCase):
                     self.assertEqual(git("diff"), unstaged)
                     self.assertEqual(git("status", "--porcelain"), status)
 
+    def test_bump_version_writes_state_fixtures_of_the_replaced_release(self):
+        paths = ("src/teamster/__init__.py", "plugins/teamster/.claude-plugin/plugin.json")
+        current = re.search(rb'__version__ = "([^"]+)"', (ROOT / paths[0]).read_bytes())[1]
+        # The fake writer records which checkout ran it, and the writer at HEAD always fails,
+        # so the fixture must come from the release's own writer in the release checkout.
+        writer = ("import pathlib, sys\n"
+                  "target = pathlib.Path(sys.argv[1]) / 'work-done'\n"
+                  "target.mkdir(parents=True)\n"
+                  "(target / 'state.json').write_text(open('src/teamster/task_state.py').read())\n"
+                  "sys.exit(%s)\n")
+        fields = 'STATE_FIELDS = {\n    "account": None,\n%s}\n'
+        added = fields % '    "added": None,\n'
+        for case, changed, code, fixture in (("same fields", fields % "" + "# A comment.\n", 0, False),
+                                             ("new field", added, 0, True), ("writer fails", added, 3, False)):
+            with self.subTest(case=case):
+                repo = self.root / case.replace(" ", "-")
+                for name in (*paths, "scripts/bump_version.py"):
+                    target = repo / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes((ROOT / name).read_bytes().replace(current, b"1.2.3"))
+                state_module = repo / "src/teamster/task_state.py"
+                state_module.write_text(fields % "")
+                (repo / "tests").mkdir()
+                (repo / "tests/make_state_fixtures.py").write_text(writer % code)
+
+                def git(*args):
+                    return source_git(repo, self.env, *args).strip()
+
+                git("init", "-q", "-b", "main")
+                git("config", "user.name", "Release Test")
+                git("config", "user.email", "release@example.test")
+                git("add", ".")
+                git("commit", "-q", "-m", "Release 1.2.3")
+                released = state_module.read_text()
+                state_module.write_text(changed)
+                (repo / "tests/make_state_fixtures.py").write_text(writer % 4)
+                git("commit", "-q", "-am", "Change state")
+                result = subprocess.run([PYTHON, "-I", str(repo / "scripts/bump_version.py"), "minor", "--commit"],
+                                        cwd=self.root, env=self.env, text=True, capture_output=True, timeout=60)
+                fixtures = repo / "tests/fixtures/state-1.2.3"
+                self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)
+                if code:
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn("make_state_fixtures.py failed on 1.2.3", result.stderr)
+                    self.assertFalse(fixtures.exists())
+                    self.assertEqual(git("rev-list", "--count", "HEAD"), "2")
+                    self.assertIn(b"1.2.3", (repo / paths[0]).read_bytes())
+                    continue
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(git("show", "-s", "--format=%s"), "Release 1.3.0")
+                committed = set(git("show", "--format=", "--name-only").splitlines())
+                if fixture:
+                    self.assertEqual(result.stdout, "1.3.0\nstate fixtures: tests/fixtures/state-1.2.3\n")
+                    self.assertEqual((fixtures / "work-done/state.json").read_text(), released)
+                    self.assertEqual(committed, {*paths, "tests/fixtures/state-1.2.3/work-done/state.json"})
+                else:
+                    self.assertEqual(result.stdout, "1.3.0\n")
+                    self.assertFalse(fixtures.exists())
+                    self.assertEqual(committed, set(paths))
+                self.assertEqual(git("status", "--porcelain"), "")
+
     def test_upgrade_installs_versions_side_by_side(self):
         self.release("9.0.0")
         preview = self.upgrade()

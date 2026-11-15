@@ -20,7 +20,7 @@ Worker prompts and `src/teamster/docs/lead-guide.md` do not name the lead Claude
 
 - The full suite is `python3 -I tests/test_rotation.py`, 90 s on an idle machine and up to about 12 minutes under load. Run it at most twice per task; during the work run the focused test files instead. The supervisor runs the full suite after every turn, so reaching this limit is not a reason for `partial` or `blocked`: commit, finish with `done` if the "Done when" items are met, and report the last full run as `not_run` or `failed` with the failing test names.
 - Do not set `CODEX_TEST_JOBS=1` and do not time the suite: other agents' tasks load this machine.
-- A release that changes the fields of `state.json` adds `tests/fixtures/state-<previous version>/`, written with `tests/make_state_fixtures.py` on the previous release, and never deletes existing fixture directories. The previous version is the version currently in `main`.
+- A PR that changes the fields of `state.json` updates `STATE_FIELDS` in `src/teamster/task_state.py` and adds no `tests/fixtures/state-*/` directory: the fixture belongs to the release, not to the PR, and `tests/test_state_fields.py` rejects fixtures of the current version or later. `scripts/bump_version.py` compares `STATE_FIELDS` with the release it replaces and, when they differ, writes `tests/fixtures/state-<that version>/` with `tests/make_state_fixtures.py` in a temporary worktree of that release commit; `--commit` includes it in the `Release X.Y.Z` commit. Never delete existing fixture directories.
 - For a behavior-preserving refactor, prove that tests are unchanged with `/usr/bin/python3 -I tests/compare_rotation_assertions.py --base origin/main`, and list every reported change in the PR.
 
 ## Safety
@@ -30,4 +30,4 @@ Worker prompts and `src/teamster/docs/lead-guide.md` do not name the lead Claude
 ## Releases
 
 - Task PRs must not change `__version__` in `src/teamster/__init__.py` or `plugins/teamster/.claude-plugin/plugin.json`.
-- After merging a PR into `main`, the lead runs `scripts/bump_version.py minor --commit` for new behavior or `scripts/bump_version.py patch --commit` for fixes and documentation, then pushes `main`. The script updates both versions in one `Release X.Y.Z` commit. `pyproject.toml` reads the package version dynamically.
+- After merging a PR into `main`, the lead runs `scripts/bump_version.py minor --commit` for new behavior or `scripts/bump_version.py patch --commit` for fixes and documentation, then pushes `main`. The script updates both versions, and writes the state fixtures of the replaced release when `STATE_FIELDS` changed, in one `Release X.Y.Z` commit. `pyproject.toml` reads the package version dynamically.
