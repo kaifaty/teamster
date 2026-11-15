@@ -25,11 +25,15 @@ command, found on `PATH` at startup; `--teamster PATH` selects its executable ex
 `Content-Type: application/json` and `X-Teamster-Board: 1`. Ordinary task stop, clean, verdict and
 merge operations remain unavailable. The server never sends CORS headers.
 
-With actions enabled, the server also finishes lesson implementation tasks in the background, one at a time.
-It merges ready PRs only when `origin` is on github.com under `kaifaty`; MyWallet and other repositories
-show that a person must merge the PR. A completed change confined to a lesson's allowed files outside
+With actions enabled, the server also finishes lesson implementation tasks in the background.
+It merges ready PRs under `kaifaty` on GitHub and on the personal Forgejo (`192.168.1.150` or
+`kaifaty.ru`, SSH port 2222); MyWallet and other repositories show that a person must merge the PR.
+Forgejo uses `~/.codex/checks/<repository directory>/land.py` when available, otherwise `tea api`
+and the local `ci_wait.py` or `pr_ci.py`. Its CI runs independently for up to two hours, so other
+lessons can continue, and resumes after a board restart. Without a CI waiter, only a branch without
+`.forgejo/workflows/` can merge. A completed change confined to a lesson's allowed files outside
 the repository needs no PR. After landing, the board marks the lesson applied, accepts the task and
-cleans it. Repositories with `scripts/bump_version.py` also get a Release commit on fresh `origin/main`
+cleans it. The teamster repository also gets a Release commit on fresh `origin/main`
 and `uv tool upgrade teamster`: documentation-only PRs (`*.md`) use patch, other PRs use minor.
 Progress and errors appear in `lesson.implementation.landing` and resume after a server restart.
 `--no-land` disables this automatic completion while leaving the other actions enabled; `--read-only`
@@ -206,8 +210,9 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
     summary, or the task is closed) with, while the agent works, its phase in plain words (Работа, Проверка, Ревью, CI)
     and its last action, live from the board's `activity` messages, then your replies to the agent. Changes are
     announced politely to screen readers.
-  - «Внедрить» goes all the way: the board server merges the lesson's PR itself, marks the lesson applied and releases
-    teamster. While it does, `implementation.landing` of `GET /api/research` (`{stage, text, pr, version}`) says where
+  - «Внедрить» goes all the way: in supported personal GitHub and Forgejo repositories the board server merges the
+    lesson's PR itself, marks the lesson applied and, for teamster, releases it. While it does,
+    `implementation.landing` of `GET /api/research` (`{stage, text, pr, version}`) says where
     it stands, and the lesson shows its `text` in place of the task's state, with «PR #N» in it linking to the PR:
     `waiting`, `merging`, `releasing` and `upgrading` show it at work, as an agent at work, with «Посмотреть» while the
     ship is on the map and without «Внедрено»; `landed` shows only the text, with no buttons; `manual` — a PR the human

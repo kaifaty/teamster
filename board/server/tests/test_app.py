@@ -2510,7 +2510,7 @@ name, args = Path(sys.argv[0]).name, sys.argv[1:]
 control_path = Path(os.environ["LANDING_CONTROL"])
 control = json.loads(control_path.read_text())
 with Path(os.environ["LANDING_CALLS"]).open("a") as stream:
-    stream.write(json.dumps({"command": name, "argv": args}) + "\\n")
+    stream.write(json.dumps({"command": name, "argv": args, "cwd": os.getcwd()}) + "\\n")
 if control.get("sleep_command") == name:
     Path(str(control_path) + ".ready").touch()
     while Path(str(control_path) + ".block").exists():
@@ -2538,7 +2538,7 @@ if name == "gh":
             print("Cannot delete a branch checked out in the task worktree", file=sys.stderr)
             sys.exit(1)
     elif args[:3] == ["api", "--method", "DELETE"]:
-        assert args[3] == "repos/kaifaty/project/git/refs/heads/lesson-branch"
+        assert args[3] == f"repos/kaifaty/{control.get('github_repo', 'project')}/git/refs/heads/lesson-branch"
         if control["branch_checked_out"]:
             raise SystemExit("The task worktree must be cleaned before deleting its branch")
         status = control.pop("delete_status_once", 0)
@@ -2548,6 +2548,54 @@ if name == "gh":
             sys.exit(1)
     else:
         raise SystemExit("Unexpected gh command")
+elif name == "tea":
+    assert args[:3] == ["api", "--login", "forgejo"]
+    path = next(arg for arg in args if arg.startswith("/repos/"))
+    method = args[args.index("-X") + 1] if "-X" in args else "GET"
+    body = None
+    if "-d" in args:
+        value = args[args.index("-d") + 1]
+        body = json.loads(sys.stdin.read() if value == "@-" else value)
+        method = "POST" if "-X" not in args else method
+    pull = control["forgejo_pr"]
+    assert path.startswith("/repos/kaifaty/infra/pulls")
+    if method == "GET" and path.split("?")[0].endswith("/pulls"):
+        print(json.dumps([pull] if control.get("forgejo_exists") else []))
+    elif method == "GET" and path.endswith("/42"):
+        print(json.dumps(pull))
+    elif method == "POST" and path.endswith("/pulls"):
+        assert body == {"head": "lesson-branch", "base": "main", "title": control["title"],
+                        "body": control["body"]}
+        control["forgejo_exists"] = True
+        print(json.dumps(pull))
+    elif method == "POST" and path.endswith("/42/merge"):
+        assert body["Do"] == "merge" and body["delete_branch_after_merge"] is True
+        pull.update(merged=True, state="closed", merge_commit_sha="b" * 40)
+        print(json.dumps({"merged": True}))
+    else:
+        raise SystemExit("Unexpected tea command")
+    if method == "POST":
+        control_path.write_text(json.dumps(control))
+elif name in ("land.py", "ci_wait.py", "pr_ci.py"):
+    result = control.get("script_results", [{"code": 0, "output": "CI passed"}])[0]
+    if name == "land.py":
+        assert args == [control["title"], control["body"]]
+        control["forgejo_exists"] = True
+        control_path.write_text(json.dumps(control))
+        print("pull request #42: " + control["forgejo_pr"]["html_url"], flush=True)
+    if control.get("block_script"):
+        Path(str(control_path) + ".ready").touch()
+        while Path(str(control_path) + ".block").exists():
+            time.sleep(0.01)
+        control = json.loads(control_path.read_text())
+    if control.get("script_results"):
+        control["script_results"].pop(0)
+    if name == "land.py" and result["code"] == 0:
+        control["forgejo_exists"] = True
+        control["forgejo_pr"].update(merged=True, state="closed", merge_commit_sha="b" * 40)
+    control_path.write_text(json.dumps(control))
+    print(result["output"], flush=True)
+    sys.exit(result["code"])
 elif name == "teamster":
     if control.get("fail_once") == args[0]:
         control.pop("fail_once")
@@ -2557,12 +2605,14 @@ elif name == "teamster":
     task = Path(os.environ["LANDING_TASK"])
     if args[0] == "lesson":
         index = task.parent / ".archive" / "INDEX.md"
-        index.write_text(index.read_text().replace("accepted", args[2]))
+        index.write_text("\\n".join(line.replace("accepted", args[2]) if args[1] in line else line
+                                   for line in index.read_text().split("\\n")))
     elif args[0] == "say":
         state = json.loads((task / "state.json").read_text())
         state["outcome"] = "running"
         (task / "state.json").write_text(json.dumps(state))
     elif args[0] == "clean":
+        task = task.parent / args[1]
         task.rename(task.parent / ".archive" / (task.name + "-20261116T000000Z"))
         control["branch_checked_out"] = False
         control_path.write_text(json.dumps(control))
@@ -2571,7 +2621,7 @@ elif name == "teamster":
 else:
     raise SystemExit("Unexpected service command")
 '''
-    for name in ("gh", "teamster", "uv"):
+    for name in ("gh", "tea", "teamster", "uv"):
         command = bin_path / name
         command.write_text(script)
         command.chmod(0o755)
@@ -2676,6 +2726,10 @@ def test_landing_requires_every_merge_gate(landing_task, gate):
     if gate not in ("running",):
         assert landing["stage"] in (("waiting", "failed") if gate in ("pending checks", "merge state") else ("failed",))
         assert landing["text"]
+    reasons = {"partial": "Агент не закончил: итог partial", "blocked": "Агент остановился: итог blocked",
+               "check": "Проверка не прошла", "review": "Ревью нашло замечания P1", "ci": "CI не прошёл"}
+    if gate in reasons:
+        assert reasons[gate] in landing["text"]
 
 
 @pytest.mark.parametrize("stop", ["clean", "only P3"])
@@ -2709,6 +2763,8 @@ def test_landing_keeps_unanswered_questions_visible(landing_task):
     ("https://forge.example/kaifaty/project.git",
      "В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях"),
     ("https://github.com.evil.example/kaifaty/project.git",
+     "В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях"),
+    ("ssh://git@192.168.1.150:2222/someone/project.git",
      "В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях"),
 ])
 def test_landing_leaves_other_owners_and_hosts_to_person(landing_task, origin, text):
@@ -2766,9 +2822,11 @@ def test_landing_repairs_base_conflict_once_then_retries(landing_task, conflicti
         0 if conflicting_again else 1)
 
 
-def test_landing_applies_outside_only_change_without_pr(landing_task):
+@pytest.mark.parametrize("pr", [None, "\n", '""'])
+def test_landing_applies_outside_only_change_without_pr(landing_task, pr):
     task = landing_task
     task["state"].pop("publish")
+    task["state"]["result"]["pr"] = pr
     task["state"].pop("ci")
     task["state"].pop("review_result")
     task["write"]()
@@ -2920,7 +2978,8 @@ def landing_clock(monkeypatch):
     from types import SimpleNamespace
 
     clock = [100.0]
-    monkeypatch.setattr(landing_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(landing_module, "time", SimpleNamespace(monotonic=lambda: clock[0],
+                                                              time=time.time, sleep=time.sleep))
     return clock
 
 
@@ -2977,6 +3036,12 @@ def test_landing_does_not_dispatch_conflict_repair_when_other_gates_fail(landing
 def test_landing_wires_release_upgrade_and_version_before_finalization(landing_task, landing_clock,
                                                                       monkeypatch, failure):
     task = landing_task
+    subprocess.run(["git", "-C", str(task["repo"]), "remote", "set-url", "origin",
+                    "https://github.com/kaifaty/teamster.git"], check=True, capture_output=True)
+    task["pr"] = "https://github.com/kaifaty/teamster/pull/42"
+    task["state"]["publish"]["pr"] = task["pr"]
+    task["write"]()
+    task["configure"](github_repo="teamster")
     version = "1.80.0"
     script = task["repo"] / "scripts/bump_version.py"
     script.parent.mkdir()
@@ -3094,3 +3159,234 @@ def test_landing_verdict_lookup_preserves_pending_board_events_and_logins(landin
     assert [(row["event"]["kind"], row["event"]["at"]) for row in messages if row["type"] == "event"] == [
         ("work", now), ("verdict", now + 1)]
     assert actions.store.take_logins() == 1
+
+
+@pytest.mark.parametrize("gate", ["partial", "blocked", "check", "review", "ci"])
+def test_landing_waits_for_state_change_after_state_only_failure(landing_task, landing_clock, gate):
+    task, state = landing_task, landing_task["state"]
+    if gate in ("partial", "blocked"):
+        state["result"]["status"] = gate
+    elif gate == "check":
+        state["checks"][-1]["outcome"] = "failed"
+    elif gate == "review":
+        state["review_result"] = {"verdict": "defects", "findings": [{"severity": "P1"}]}
+    else:
+        state["ci"]["outcome"] = "failed"
+    task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    before = task["records"]("gh")
+    landing_clock[0] += 31
+    actions.landing.run_once()
+    assert task["records"]("gh") == before
+    assert task["records"]("tea") == []
+    # The same receipt resumes as soon as the saved task result is repaired.
+    state["result"]["status"] = "done"
+    state["checks"][-1]["outcome"] = "passed"
+    state["review_result"] = {"verdict": "clean", "findings": []}
+    state["ci"]["outcome"] = "passed"
+    task["write"]()
+    landing_clock[0] += 31
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+
+
+@pytest.fixture
+def forgejo_landing(landing_task, landing_clock):
+    task = landing_task
+    repo = task["repo"].with_name("chromvoid-infra")
+    task["repo"].rename(repo)
+    task["repo"] = repo
+    origin = "ssh://git@192.168.1.150:2222/kaifaty/infra.git"
+    subprocess.run(["git", "-C", str(repo), "remote", "set-url", "origin", origin],
+                   check=True, capture_output=True)
+    worktree = repo.with_name("lesson-worktree")
+    subprocess.run(["git", "init", "--quiet", str(worktree)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(worktree), "remote", "add", "origin", origin],
+                   check=True, capture_output=True)
+    task["pr"] = "https://kaifaty.ru/kaifaty/infra/pulls/42"
+    task["state"].update(repo=str(repo), worktree=str(worktree), branch="lesson-branch", base="origin/main",
+                         publish={}, ci={"outcome": "none"})
+    title, body = "Merge the lesson", "Keep the saved check."
+    task["state"]["result"].update(pr_title=title, pr_body=body)
+    task["write"]()
+    task["configure"](forgejo_pr={"number": 42, "html_url": task["pr"], "state": "open", "merged": False,
+                                  "head": {"ref": "lesson-branch", "sha": "a" * 40},
+                                  "base": {"ref": "main"}, "merge_commit_sha": None},
+                       forgejo_exists=False, title=title, body=body)
+    checks = repo.parent / ".codex/checks" / repo.name
+    checks.mkdir(parents=True)
+    template = task["control"].parent / "landing-bin/tea"
+
+    def script(name):
+        path = checks / name
+        path.write_text(template.read_text())
+        return path
+
+    def drive(actions, predicate):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            landing_clock[0] += 31
+            actions.landing.run_once()
+            if predicate():
+                return
+            time.sleep(0.02)
+        pytest.fail("Forgejo landing did not reach its expected state")
+
+    task.update(worktree=worktree, checks=checks, script=script, drive=drive)
+    return task
+
+
+@pytest.mark.parametrize("explicit_title", [True, False])
+def test_landing_forgejo_land_script_merges_and_finishes_in_task_worktree(forgejo_landing, explicit_title):
+    task = forgejo_landing
+    task["script"]("land.py")
+    if not explicit_title:
+        task["state"]["result"].pop("pr_title")
+        task["configure"](title=f"Merge {task['slug']}")
+        task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed")
+    rows = [json.loads(row) for row in task["control"].with_name("landing-calls.jsonl").read_text().splitlines()]
+    scripts = [row for row in rows if row["command"] == "land.py"]
+    assert len(scripts) == 1
+    assert scripts[0]["cwd"] == str(task["worktree"])
+    assert scripts[0]["argv"] == [task["state"]["result"].get("pr_title", f"Merge {task['slug']}"),
+                                  task["state"]["result"]["pr_body"]]
+    assert task["records"]("gh") == []
+    assert [row[0] for row in task["records"]("teamster")] == ["lesson", "verdict", "clean"]
+    assert task["records"]("teamster")[0][-1] == task["pr"]
+    assert task["lesson"](actions)["implementation"]["landing"]["pr"] == task["pr"]
+
+
+@pytest.mark.parametrize("failure,second_failure", [("conflict", False), ("ci", False), ("ci", True)])
+def test_landing_forgejo_land_script_repairs_once_and_retries(forgejo_landing, failure, second_failure):
+    task = forgejo_landing
+    task["script"]("land.py")
+    output = ("land.py: main moved while CI ran: merge it in, rerun the checks and land again (#42)"
+              if failure == "conflict" else "job lint failed\nland.py: CI did not pass (exit 1), #42 is left open")
+    task["configure"](script_results=[{"code": 1, "output": output},
+                                      {"code": int(second_failure), "output": output if second_failure else "merged #42"}])
+    actions = task["make"]()
+    actions.landing.run_once()
+    task["drive"](actions, lambda: bool(task["records"]("teamster")))
+    says = task["records"]("teamster")
+    assert len(says) == 1 and says[0][:2] == ["say", task["slug"]]
+    assert ("origin/main" if failure == "conflict" else "CI") in says[0][2]
+    if failure == "ci":
+        assert "job lint failed" in says[0][2]
+    assert len(task["records"]("land.py")) == 1
+    task["state"].update(turns=2, turn_finished=3)
+    task["write"]()
+    actions = task["make"]()
+    expected = "failed" if second_failure else "landed"
+    task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == expected)
+    assert len(task["records"]("land.py")) == 2
+    assert len([row for row in task["records"]("teamster") if row[0] == "say"]) == 1
+    if second_failure:
+        assert "CI did not pass" in task["lesson"](actions)["implementation"]["landing"]["text"]
+
+
+def test_landing_forgejo_land_script_reports_other_errors(forgejo_landing):
+    task = forgejo_landing
+    task["script"]("land.py")
+    task["configure"](script_results=[{"code": 1, "output": "fatal: push was rejected"}])
+    actions = task["make"]()
+    task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed")
+    assert "push was rejected" in task["lesson"](actions)["implementation"]["landing"]["text"]
+    assert task["records"]("teamster") == []
+
+
+@pytest.mark.parametrize("waiter,code,existing", [("ci_wait.py", 0, False), ("pr_ci.py", 0, True),
+                                                ("ci_wait.py", 1, False), ("pr_ci.py", 75, False)])
+def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, waiter, code, existing):
+    task = forgejo_landing
+    task["script"](waiter)
+    task["configure"](forgejo_exists=existing,
+                       script_results=[{"code": code, "output": "CI unavailable" if code == 75 else "job lint failed"},
+                                       {"code": 0, "output": "CI passed"}])
+    actions = task["make"]()
+    actions.landing.run_once()
+    if code == 1:
+        task["drive"](actions, lambda: bool(task["records"]("teamster")))
+        assert task["records"]("teamster")[0][:2] == ["say", task["slug"]]
+        assert "job lint failed" in task["records"]("teamster")[0][2]
+        task["state"].update(turns=2, turn_finished=3)
+        task["write"]()
+        actions = task["make"]()
+    expected = "failed" if code == 75 else "landed"
+    task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == expected)
+    calls = task["records"]("tea")
+    creates = [row for row in calls if "/repos/kaifaty/infra/pulls" in row and "-d" in row]
+    assert len(creates) == (0 if existing else 1)
+    merges = [row for row in calls if "/repos/kaifaty/infra/pulls/42/merge" in row]
+    assert len(merges) == (0 if code == 75 else 1)
+    assert len(task["records"](waiter)) == (2 if code == 1 else 1)
+    assert task["records"]("gh") == []
+    if code == 75:
+        assert "CI не читается:" in task["lesson"](actions)["implementation"]["landing"]["text"]
+        assert task["records"]("teamster") == []
+
+
+@pytest.mark.parametrize("workflows", [False, True])
+def test_landing_forgejo_without_waiter_only_merges_without_workflows(forgejo_landing, workflows):
+    task = forgejo_landing
+    if workflows:
+        directory = task["worktree"] / ".forgejo/workflows"
+        directory.mkdir(parents=True)
+        (directory / "checks.yml").write_text("name: Checks\n")
+    actions = task["make"]()
+    actions.landing.run_once()
+    expected = "failed" if workflows else "landed"
+    task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == expected)
+    merges = [row for row in task["records"]("tea") if "/repos/kaifaty/infra/pulls/42/merge" in row]
+    assert len(merges) == (0 if workflows else 1)
+    if workflows:
+        assert "Нет скрипта ожидания CI в ~/.codex/checks/chromvoid-infra/" in (
+            task["lesson"](actions)["implementation"]["landing"]["text"])
+
+
+@pytest.mark.parametrize("script", ["land.py", "ci_wait.py"])
+def test_landing_forgejo_resumes_running_process_without_blocking_other_lessons(forgejo_landing, script):
+    task = forgejo_landing
+    task["script"](script)
+    task["configure"](block_script=True)
+    marker = Path(str(task["control"]) + ".block")
+    ready = Path(str(task["control"]) + ".ready")
+    marker.touch()
+    actions = task["make"]()
+    try:
+        actions.landing.run_once()
+        wait_for_account(ready.exists)
+        # Reconstruct Landing while the subprocess is still waiting on CI.
+        actions = task["make"]()
+        actions.landing.run_once()
+        task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["text"] ==
+                      "Жду CI PR #42 на Forgejo")
+        job = next(row["forgejo_job"] for row in actions.landing.receipts.values() if row.get("forgejo_job"))
+        result_path = Path(job["result"])
+        assert len(task["records"](script)) == 1
+        entry, slug = "batch-2026-11-16.md W2", "lesson-w2-1116"
+        index = task["archive"] / "INDEX.md"
+        index.write_text(index.read_text() + f"| 2026-11-16 | {entry} | invariant | check | accepted |\n")
+        batch = task["archive"] / "batch-2026-11-16.md"
+        batch.write_text(batch.read_text() + "\n## W2. Save outside\nproposal: Update check.\ntarget: ~/.config/check.py\n")
+        directory = task["directory"].parent / slug
+        directory.mkdir()
+        (directory / "brief.md").write_text(f"Внедрить урок «{entry}»: Save outside.\n")
+        state = dict(task["state"], created=2, result={"status": "done"})
+        (directory / "state.json").write_text(json.dumps(state))
+        actions.landing.run_once()
+        actions.research.invalidate()
+        lesson = next(row for row in actions.research.view()["lessons"] if row["entry"] == entry)
+        assert lesson["implementation"]["landing"]["stage"] == "landed"
+        assert len(task["records"](script)) == 1
+    finally:
+        marker.unlink(missing_ok=True)
+    # The completed result is recovered by another server instance as well.
+    wait_for_account(result_path.exists)
+    actions = task["make"]()
+    task["drive"](actions, lambda: next(row for row in actions.research.view()["lessons"]
+                                      if row["entry"] == task["entry"])["implementation"]["landing"]["stage"] == "landed")
+    assert len(task["records"](script)) == 1

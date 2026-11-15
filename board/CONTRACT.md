@@ -1015,21 +1015,28 @@ There is no merge endpoint for ordinary tasks.
 ### Automatic lesson landing
 
 With actions enabled and without `--no-land`, the server finishes only lesson tasks identified by the
-`lesson-` slug and implementation brief described above. Landing runs in a background thread, one task
-at a time under its own lock, without holding the actions API lock. Other tasks are never landed.
+`lesson-` slug and implementation brief described above. Landing scans tasks in a background thread
+under its own lock, without holding the actions API lock. Forgejo CI waits run as separate processes
+so other lessons can continue. Other tasks are never landed.
 
 A PR is eligible only after its supervisor exits with `outcome: "completed"`, its last result is
 `done`, the current turn's saved check passed or is absent, its latest review is clean (or the fix
-cycle stopped at `clean` or `only P3`), and its task CI passed. Questions keep `landing: null` so the
+cycle stopped at `clean` or `only P3`). GitHub additionally requires its task CI to have passed;
+Forgejo waits for CI during landing. Questions keep `landing: null` so the
 card can ask for the answer. An unsuccessful result, saved check, review, CI or cycle produces `failed`
-with a Russian explanation. Immediately before merging, `gh pr view` must show an open PR with
+with a specific Russian explanation, such as «Агент не закончил: итог partial»,
+«Агент остановился: итог blocked», «Проверка не прошла», «Ревью нашло замечания P1» or
+«CI не прошёл». Failures depending only on the task's `state.json` are retried only after that file
+changes. Temporary errors and unfinished steps after merging are retried after 30 seconds.
+Immediately before a GitHub merge, `gh pr view` must show an open PR with
 `mergeStateStatus: "CLEAN"`, and `gh pr checks` must show every check as `pass`, `skip` or `skipping`. A temporary
-non-CLEAN state or pending checks keeps landing at `waiting`. Waiting or unsuccessful steps are
-checked again after 30 seconds, even when the task's state file has not changed.
+non-CLEAN state or pending checks keeps landing at `waiting` and is checked again after 30 seconds.
 
-The server merges only when `origin` points at github.com with owner `kaifaty`, using
+For GitHub, the server merges only when `origin` points at github.com with owner `kaifaty`, using
 `gh pr merge <url> --merge --match-head-commit <sha>`. The PR head must match the
-task's saved CI SHA; the merge also requires that head to remain unchanged. Other origins produce
+task's saved CI SHA; the merge also requires that head to remain unchanged. The personal Forgejo is
+also supported when `origin` is SSH on `192.168.1.150` or `kaifaty.ru`, port 2222, under owner `kaifaty`.
+Other origins produce
 `manual` with exactly:
 
 - For owner `mytonwallet-org`: «В MyWallet PR сливаешь ты: там свои правила и боты ревью».
@@ -1041,14 +1048,44 @@ or `mergeStateStatus: "DIRTY"`, the server sends one
 merge `origin/<base>`, resolve conflicts, run checks and push. When that cycle finishes, landing is
 checked again. A conflicting PR with task CI `none` or `skipped` also gets this one repair attempt;
 failed CI still blocks repair. The repaired PR must pass task CI before merging. A second conflict
-ends as `failed`. With no PR, a `done` implementation whose lesson
-lists `outside` files can be applied directly.
+ends as `failed`.
+
+For Forgejo, the repository name in API requests comes from `origin`, while local scripts are found
+under `~/.codex/checks/<repository directory>/`: for example, `chromvoid-infra` uses API repository
+`kaifaty/infra`. When `land.py` exists, landing runs
+`python3 <checks directory>/land.py <title> <body>` in the task worktree from `state.json`.
+The title is `result.pr_title`, falling back to `Merge <slug>`, and the body is `result.pr_body`.
+The script pushes the branch, opens or reuses its PR, waits for CI and merges; exit 0 confirms success.
+If it reports that main advanced or that there is a conflict, the board sends one repair `say` to
+merge `origin/main`, run checks and push. A CI failure sends one repair `say` with the output tail,
+asking the task to fix CI, run checks and push. Landing retries after the repair cycle; a second
+failure or any other error produces `failed` with the output tail.
+
+Without `land.py`, the board reuses an open PR for the task branch or creates one through
+`tea api --login forgejo /repos/kaifaty/<origin repository>/pulls`, using the task branch and base and
+the result's title and body. It then runs `ci_wait.py`, or `pr_ci.py` when that is the available waiter,
+in the task worktree. Exit 0 permits merging, exit 1 gets the same single CI repair and retry, and
+exit 75 produces `failed` with «CI не читается: …». With no waiter, a branch without
+`.forgejo/workflows/` may merge directly; otherwise landing fails with
+«Нет скрипта ожидания CI в ~/.codex/checks/<repository directory>/».
+The merge uses `tea api --login forgejo -X POST /repos/kaifaty/<origin repository>/pulls/<n>/merge`
+with `Do: merge` and remote branch deletion enabled.
+
+`land.py` and CI waiters have a two-hour timeout and run outside the scan. While a process runs,
+landing reports `waiting` with «Жду CI PR #N на Forgejo». The board records its process and result;
+after a restart it waits for a still-running process instead of starting another and picks up the
+result of a finished process.
+
+A PR value that does not begin with `http://` or `https://` means no PR. With no PR, a `done`
+implementation whose lesson lists `outside` files can be applied directly; a Forgejo implementation
+can have its PR opened during landing as described above.
 
 After a merge or an outside-only change, the board runs `teamster lesson <entry> applied --note <PR URL
 or outside files>`, `teamster verdict <slug> accepted --note "landed by the board"`, and
 `teamster clean <slug>`. After cleanup removes the task worktree and local branch, the board deletes
 the remote branch with `gh api --method DELETE repos/<owner>/<repo>/git/refs/heads/<branch>`;
-HTTP 404 and 422 count as already removed. A repository containing `scripts/bump_version.py` also gets a release in a
+HTTP 404 and 422 count as already removed. Forgejo deletes the branch as part of its merge request.
+The teamster repository also gets a release in a
 temporary git worktree from fresh `origin/main`: `python3 -I scripts/bump_version.py <minor|patch>
 --commit`, then `git push origin HEAD:main`. Changes confined to `*.md` select patch; all others select
 minor. A push rejected because main advanced is retried once after fetching and bumping from the new
