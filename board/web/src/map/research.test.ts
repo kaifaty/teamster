@@ -54,7 +54,7 @@ const session = (slug: string, patch: Partial<TaskSummary> = {}): TaskSummary =>
   updated_at: 1,
   activity: null,
   scheduled: null,
-  check: null, review: null, findings_left: 0, stop: null, left: 0,
+  check: null, review: null, findings_left: 0, stop: null, left: 0, lead_verdict: null, lead_verdict_at: null,
   ...patch,
 });
 

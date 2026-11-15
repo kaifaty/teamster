@@ -1,9 +1,10 @@
 // The board server's task orders on the fixture data, so that `dev:fixture` clicks through a ship's bridge without a
 // server: `say` adds the lead's message, or puts it in the queue of a busy ship whose teamster queues, `stop` puts the
-// ship out of work and drops its queue, `clean` takes it off the board, and `verdict` and `review` answer with success. The orders outlive the fixture's loop: every message passes `patch`.
+// ship out of work and drops its queue, `clean` takes it off the board, `verdict` records the verdict on a ship waiting for
+// acceptance, and `review` answers with success. The orders outlive the fixture's loop: every message passes `patch`.
 import type { ActionBodies, ActionResult } from "../lib/actions";
 import { commandSlug } from "../lib/commands";
-import type { ServerMessage, TaskMessage, TaskQueue, TaskSummary } from "../types";
+import type { LeadVerdict, ServerMessage, TaskMessage, TaskQueue, TaskSummary } from "../types";
 
 export type ShipRoute = "say" | "verdict" | "review" | "stop" | "clean";
 
@@ -30,12 +31,16 @@ export function fixtureShips(
   queues: (slug: string) => TaskQueue | null = () => null,
 ): FixtureShips {
   const stopped = new Map<string, number>();
+  const verdicts = new Map<string, { verdict: LeadVerdict; at: number }>();
   const removed = new Set<string>();
   const messages = new Map<string, TaskMessage[]>();
   const queued = new Map<string, TaskQueue>();
   const queueOf = (slug: string) => queued.get(slug) ?? { waiting: [], dropped: [] };
 
-  const stop = (task: TaskSummary): TaskSummary => {
+  const stop = (original: TaskSummary): TaskSummary => {
+    // A verdict stays on its ship while it waits for acceptance.
+    const judged = verdicts.get(original.slug);
+    const task = judged && original.column === "review_me" ? { ...original, lead_verdict: judged.verdict, lead_verdict_at: judged.at } : original;
     const at = stopped.get(task.slug);
     if (at === undefined) return task;
     return { ...task, alive: false, column: "attention", outcome: "stopped", result_status: null, activity: null, sleeping_until: null, updated_at: Math.max(task.updated_at, at) };
@@ -89,7 +94,10 @@ export function fixtureShips(
       const task = find(slug);
       if (!isTask(task)) return task;
       if (!judged(task)) return fail("Вердикт ставится только задаче work или review");
-      return ok(`verdict ${verdict} recorded for ${commandSlug(slug)}`);
+      verdicts.set(slug, { verdict, at: clock() });
+      const changed = stop(task);
+      emit({ type: "task", task: changed });
+      return { ok: true, output: `verdict ${verdict} recorded for ${commandSlug(slug)}`, task: changed };
     },
     review({ slug }) {
       const task = find(slug);

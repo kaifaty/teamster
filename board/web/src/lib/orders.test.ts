@@ -7,7 +7,7 @@ const task = (extra: Partial<TaskSummary>): TaskSummary => ({
   slug: "fix-login", kind: "work", title: null, link: null, repo: "r", branch: null, task_type: null, executor: "codex", account: null,
   reviewer: null, model: null, effort: null, column: "attention", phase: "idle", phase_started_at: null,
   alive: false, turn: 1, fix_round: 0, outcome: null, result_status: null, summary: null, pr: null,
-  ci: null, sleeping_until: null, created: null, updated_at: 0, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0, ...extra,
+  ci: null, sleeping_until: null, created: null, updated_at: 0, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0, lead_verdict: null, lead_verdict_at: null, ...extra,
 });
 
 const NOW = 1_800_000_000;

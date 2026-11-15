@@ -262,7 +262,10 @@ with the ship's stop, the message that set off its turn, the agent's full report
 the first line) or, while it works, its latest actions, and on the right what is needed from you, with one main
 button by state (`needOf` in `orders.ts`): the agent's questions, each with «Да», «Нет» or «Своё…», which make one
 reply shown before it goes; your reply with the state's suggestion; «Принять» or «Вернуть на доработку» on the
-roadstead; «Вернуть на исправление» when the check, CI or the base failed; or nothing to do while the ship works,
+roadstead; once a verdict is written since the last turn (`TaskSummary.lead_verdict`), «Принято» with what is left:
+«Открыть PR #N ↗» to merge it first, then «Убрать задачу» with the same confirmation and «оставить ветку» as in «Другие
+действия», and «Изменить вердикт» (the route then passes «Приёмка» for «В main» when the work is accepted); «Вернуть на
+исправление» when the check, CI or the base failed; or nothing to do while the ship works,
 where a teamster of 1.60 or later (`actions.queue`) takes an order into the ship's queue (`say --queue`): it goes out
 as one turn when the cycle completes, and any other end, a stop included, drops it. With an older teamster the field
 stays off while the ship works. Every reply goes with the refit's changed fields. Under «Сейчас», «Что сделано» lists

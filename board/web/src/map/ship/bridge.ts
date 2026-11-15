@@ -3,8 +3,8 @@
 // done.ts. The decks only draw it.
 
 import { formatAge, formatClock } from "../../lib/format";
-import { EXECUTORS, KINDS, PHASES, problemLabel } from "../../lib/labels";
-import type { Cargo, TaskLimits, TaskSummary } from "../../types";
+import { EXECUTORS, KINDS, PHASES, problemLabel, prLabel } from "../../lib/labels";
+import type { Cargo, LeadVerdict, TaskLimits, TaskSummary } from "../../types";
 import type { ArtName } from "../art";
 import { MAX_PATCHES, hullOf, patchSpots, type Hull } from "../fleet";
 import { placeOf } from "../placement";
@@ -26,6 +26,28 @@ export function bridgeView(task: Pick<TaskSummary, "kind">): BridgeView {
   return { route: true, loops: !scout, gauges: true, repairGauges: !scout, hull: true, docs: true, commands: true };
 }
 
+// The lead's verdict.
+
+/** The verdict recorded on a ship waiting for acceptance since its last turn; null without one. */
+export function verdictOf(task: Pick<TaskSummary, "kind" | "column" | "lead_verdict">): LeadVerdict | null {
+  if (task.kind === "session" || task.column !== "review_me") return null;
+  return task.lead_verdict ?? null;
+}
+
+/** Accepted, as is or with your edits: what is left is to merge its PR and clean the task up. */
+export const mergedVerdict = (verdict: LeadVerdict | null) => verdict === "accepted" || verdict === "revised";
+
+/** What is left once the verdict is written, in words; null without a verdict. */
+export function verdictTitle(task: Pick<TaskSummary, "kind" | "column" | "lead_verdict" | "pr">): string | null {
+  const verdict = verdictOf(task);
+  if (verdict === "redone") return "Переделано в другом месте: осталось убрать задачу";
+  if (verdict === "dropped") return "Не берём: осталось убрать задачу";
+  if (!verdict) return null;
+  return task.pr ? `Принято: слей ${prLabel(task.pr)} и убери задачу` : "Принято: осталось убрать задачу";
+}
+
+const VERDICT_STATES: Record<LeadVerdict, string> = { accepted: "принято", revised: "принято", redone: "переделано", dropped: "не берём" };
+
 // Header.
 
 export type StateTone = "work" | "wait" | "ready" | "sleep" | "bad" | "dim";
@@ -35,7 +57,10 @@ export function stateOf(task: TaskSummary): { text: string; tone: StateTone } {
   if (task.column === "closed") return { text: "закрыта", tone: "dim" };
   if (task.kind === "session") return task.alive ? { text: "идёт ход", tone: "work" } : { text: "ждёт тебя", tone: "ready" };
   if (task.column === "sleeping") return { text: "спит", tone: "sleep" };
-  if (task.column === "review_me") return { text: "готово к приёмке", tone: "ready" };
+  if (task.column === "review_me") {
+    const verdict = verdictOf(task);
+    return { text: verdict ? VERDICT_STATES[verdict] : "готово к приёмке", tone: "ready" };
+  }
   if (task.column === "attention") {
     if (task.result_status === "needs_decision") return { text: "ждёт решения", tone: "wait" };
     const tone: StateTone = task.result_status === "partial" || task.outcome === "stopped" ? "wait" : "bad";
@@ -251,16 +276,21 @@ export function routeOf(task: TaskSummary, now: number): Route {
   const ended = task.column === "closed";
   const sleeping = place === "cryo";
   const waiting = !task.alive && !ended && task.kind !== "session";
-  const here = STOPS.findIndex((stop) => stop.id === place);
+  // After the verdict: accepted, the ship heads for main; redone or dropped, it stays to be cleaned up.
+  const verdict = verdictOf(task);
+  const merged = mergedVerdict(verdict);
+  const here = STOPS.findIndex((stop) => stop.id === (merged ? "sun" : place));
+  const note = !verdict ? "ждёт тебя" : merged && task.pr ? "слей PR" : "убери задачу";
   const stops = STOPS.map((stop, index) => {
     const state = index === here ? ("here" as const) : here >= 0 && index < here ? ("past" as const) : ("ahead" as const);
-    return { ...stop, note: state === "here" && waiting ? "ждёт тебя" : stop.note, state };
+    return { ...stop, note: state === "here" && waiting ? note : stop.note, state };
   });
   const wakes = task.sleeping_until !== null ? formatClock(task.sleeping_until, now) : null;
   let line: string;
   if (ended) line = "Задача закрыта";
   else if (sleeping) line = `Спит до сброса лимита${wakes ? `, проснётся в ${wakes}` : ""}`;
   else if (here >= 0 && task.alive) line = `Сейчас: ${STOPS[here]!.name} · ${PHASES[task.phase]}`;
+  else if (verdict) line = verdictTitle(task)!;
   else if (here >= 0 && place === "roadstead") line = "Готово: ждёт твоей приёмки";
   else if (here >= 0) line = `Стоит на этапе «${STOPS[here]!.name}»: ход кончился, дальше — по твоему слову`;
   else line = "Этап неизвестен";

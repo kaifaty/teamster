@@ -5,7 +5,7 @@ import { coarseSpan, formatClock } from "../../lib/format";
 import { findingsLabel, problemLabel, prLabel } from "../../lib/labels";
 import type { Cargo, TaskChanges, TaskLimits, TaskSummary } from "../../types";
 import { plural } from "../research";
-import { roundsOf, type StateTone } from "./bridge";
+import { roundsOf, verdictTitle, type StateTone } from "./bridge";
 
 export interface NowLine {
   tone: StateTone;
@@ -44,6 +44,9 @@ function headlineOf(task: TaskSummary, cargo: Cargo | null | undefined, limits: 
     }
   }
   if (task.column === "review_me") {
+    // Once the verdict is written, «Сейчас» says what is left, as the block of what is needed from you.
+    const accepted = verdictTitle(task);
+    if (accepted) return { tone: "ready", headline: accepted };
     if (task.stop === "base conflict") return { tone: "bad", headline: "Готово, но конфликт с базовой веткой" };
     if (failedOutcome(task.check)) return { tone: "bad", headline: "Готово, но проверка упала" };
     if (failedOutcome(task.ci)) {

@@ -186,6 +186,7 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
       :emblem="emblemOf(selectedTask?.repo ?? null)"
       @close="close"
       @show="showOnMap"
+      @task="board.put"
     />
     <DaySummary v-if="summaryOpen && active" :source="source.source" :events="events" :frame="frameLight" @close="closeSummary" />
   </section>

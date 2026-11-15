@@ -223,7 +223,7 @@ function agentTask(task: Implementation, at: number): TaskSummary {
     executor: "codex", account: "demo-codex", reviewer: "claude", model: null, effort: null, column: "running", phase: "turn",
     phase_started_at: at, alive: true, turn: 1, fix_round: 0, outcome: null, result_status: null, summary: null, pr: null, ci: null,
     sleeping_until: null, created: task.created, updated_at: at, activity: null, scheduled: null, check: null, review: null,
-    findings_left: 0, stop: null, left: 0,
+    findings_left: 0, stop: null, left: 0, lead_verdict: null, lead_verdict_at: null,
   };
 }
 

@@ -84,7 +84,12 @@ export interface TaskSummary {
   findings_left: number; // findings in the saved review
   stop: string | null; // why the automatic fix loop stopped: "clean", "only P3", "base conflict", … ; one line
   left: number; // remaining items plus questions in the last result
+  // The lead's verdict on the last turn, from `teamster verdict`; null without one, after a new turn and for sessions.
+  lead_verdict: LeadVerdict | null;
+  lead_verdict_at: number | null; // when the verdict was written
 }
+
+export type LeadVerdict = "accepted" | "revised" | "redone" | "dropped";
 
 export type TaskFile = "brief" | "last" | "review" | "check";
 

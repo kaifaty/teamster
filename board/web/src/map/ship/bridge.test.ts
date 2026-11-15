@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Cargo, TaskChanges, TaskLimits, TaskSummary } from "../../types";
-import { HULL_SHARE, bridgeView, hullFrame, hullMarks, loopsOf, metersOf, papersOf, routeOf } from "./bridge";
+import { HULL_SHARE, bridgeView, hullFrame, hullMarks, loopsOf, metersOf, papersOf, routeOf, stateOf } from "./bridge";
 import { doneRows } from "./done";
 import { changesLine, nowOf, reportParagraphs } from "./now";
 
@@ -40,6 +40,8 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
     findings_left: 0,
     stop: null,
     left: 0,
+    lead_verdict: null,
+    lead_verdict_at: null,
     ...overrides,
   };
 }
@@ -93,6 +95,23 @@ describe("routeOf", () => {
     expect(working.line).toBe("Сейчас: Работа · ход");
     expect(working.stops.map((stop) => stop.name)).toEqual(["Работа", "Проверка", "Ревью", "CI", "Приёмка", "В main"]);
     expect(working.stops.every((stop) => stop.note === "")).toBe(true);
+  });
+
+  it("passes the acceptance once the ship is accepted and heads for main; a ship redone or dropped stays to be cleaned up", () => {
+    const PR = "https://github.com/o/r/pull/7";
+    const after = (verdict: TaskSummary["lead_verdict"], pr: string | null) => {
+      const ship = task({ column: "review_me", phase: "idle", alive: false, pr, lead_verdict: verdict, lead_verdict_at: NOW - 60 });
+      const route = routeOf(ship, NOW);
+      const here = route.stops.find((stop) => stop.state === "here")!;
+      return [route.stops.find((stop) => stop.id === "roadstead")!.state, here.id, here.note, stateOf(ship).text, nowOf(ship, null, null, null, NOW).headline];
+    };
+    expect(after("accepted", PR)).toEqual(["past", "sun", "слей PR", "принято", "Принято: слей PR #7 и убери задачу"]);
+    expect(after("revised", PR)).toEqual(["past", "sun", "слей PR", "принято", "Принято: слей PR #7 и убери задачу"]);
+    expect(after("accepted", null)).toEqual(["past", "sun", "убери задачу", "принято", "Принято: осталось убрать задачу"]);
+    expect(after("revised", null)).toEqual(["past", "sun", "убери задачу", "принято", "Принято: осталось убрать задачу"]);
+    expect(after("redone", PR)).toEqual(["here", "roadstead", "убери задачу", "переделано", "Переделано в другом месте: осталось убрать задачу"]);
+    expect(after("dropped", null)).toEqual(["here", "roadstead", "убери задачу", "не берём", "Не берём: осталось убрать задачу"]);
+    expect(after(null, PR)).toEqual(["here", "roadstead", "ждёт тебя", "готово к приёмке", "Готово: можно принимать"]);
   });
 
   it("puts a sleeping ship into the cryo field with its waking time, and gives a closed one no stop", () => {

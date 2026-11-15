@@ -14,7 +14,7 @@ function task(overrides: Partial<TaskSummary>): TaskSummary {
     slug: "t", kind: "work", title: null, link: null, repo: "repo", branch: null, task_type: null, executor: "codex",
     account: null, reviewer: "claude", model: null, effort: null, column: "running", phase: "ci",
     phase_started_at: NOW - 125, alive: true, turn: 1, fix_round: 0, outcome: "running", result_status: null, summary: null,
-    pr: null, ci: null, sleeping_until: null, created: NOW, updated_at: NOW, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0,
+    pr: null, ci: null, sleeping_until: null, created: NOW, updated_at: NOW, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0, lead_verdict: null, lead_verdict_at: null,
     ...overrides,
   };
 }

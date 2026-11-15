@@ -14,6 +14,7 @@ import {
   causeOf,
   needOf,
   orderOutcome,
+  verdictLine,
   reflectOrder,
   refitLine,
   refitOf,
@@ -30,7 +31,7 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
     slug: "t", kind: "work", title: null, link: null, repo: "repo", branch: null, task_type: null, executor: "codex", account: null,
     reviewer: "claude", model: "gpt-6", effort: "high", column: "running", phase: "turn", phase_started_at: NOW - 600, alive: true, turn: 1,
     fix_round: 0, outcome: "running", result_status: null, summary: null, pr: null, ci: null, sleeping_until: null, created: NOW - 9000,
-    updated_at: NOW - 50, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0, ...overrides,
+    updated_at: NOW - 50, activity: null, check: null, review: null, findings_left: 0, stop: null, left: 0, lead_verdict: null, lead_verdict_at: null, ...overrides,
   };
 }
 
@@ -187,6 +188,42 @@ describe("order groups", () => {
     expect(need({ alive: false, column: "closed" })).toMatchObject({ kind: "none", title: "Задача закрыта: действий не нужно" });
     expect(need({ kind: "session", alive: false, column: "review_me" }).kind).toBe("none");
   });
+
+  it("leads a ship with a written verdict to merging its PR and cleaning it up, before acceptance and return", () => {
+    const PR = "https://github.com/o/r/pull/118";
+    const judged = (verdict: TaskSummary["lead_verdict"], overrides: Partial<TaskSummary> = {}) => {
+      const ship = task({ alive: false, column: "review_me", phase: "idle", lead_verdict: verdict, lead_verdict_at: verdict ? NOW - 60 : null, ...overrides });
+      return needOf(ship, cargo([]), deskOf(ship), NOW);
+    };
+    const titles = (pr: string | null) => (["accepted", "revised", "redone", "dropped"] as const).map((verdict) => judged(verdict, { pr }));
+    expect(titles(PR).map((need) => [need.kind, need.title, need.tone])).toEqual([
+      ["accepted", "Принято: слей PR #118 и убери задачу", "ok"],
+      ["accepted", "Принято: слей PR #118 и убери задачу", "ok"],
+      ["accepted", "Переделано в другом месте: осталось убрать задачу", "ok"],
+      ["accepted", "Не берём: осталось убрать задачу", "ok"],
+    ]);
+    expect(titles(null).map((need) => need.title)).toEqual([
+      "Принято: осталось убрать задачу",
+      "Принято: осталось убрать задачу",
+      "Переделано в другом месте: осталось убрать задачу",
+      "Не берём: осталось убрать задачу",
+    ]);
+    // It outranks the return for a fix; a new turn after the verdict clears it, and the acceptance comes back.
+    expect(judged("accepted", { ci: "failed" }).kind).toBe("accepted");
+    expect(judged(null, { pr: PR })).toMatchObject({ kind: "accept" });
+    // A board that only reads leads the same way: its buttons copy the commands.
+    const ship = task({ alive: false, column: "review_me", phase: "idle", lead_verdict: "dropped", lead_verdict_at: NOW - 60 });
+    const detail = ref({ ...ship, timeline: [], files: [], cargo: null, actions: { enabled: false, reason: "read_only", queue: false } } as TaskDetail);
+    const desk = createShipDesk({ slug: ref("t"), task: ref(ship), detail, act: (async () => ({ ok: true, output: "" })) as never });
+    expect(desk.live.value).toBe(false);
+    expect(needOf(ship, cargo([]), deskOf(ship, desk.queue.value), NOW)).toMatchObject({ kind: "accepted", title: "Не берём: осталось убрать задачу" });
+    expect(fallbackCommand({ route: "clean", body: { slug: "t", keep_branch: desk.keepBranch.value } })).toBe("teamster clean t --keep-branch");
+    // The line under the buttons: the verdict in words and when it was written.
+    const clock = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date((NOW - 60) * 1000));
+    expect(verdictLine(ship, NOW)).toBe(`Вердикт «не берём» записан в ${clock}`);
+    expect(verdictLine({ ...ship, lead_verdict: "revised" }, NOW)).toBe(`Вердикт «принят с моими правками» записан в ${clock}`);
+    expect(verdictLine({ ...ship, lead_verdict: null }, NOW)).toBeNull();
+  });
 });
 
 describe("«Сейчас»", () => {
@@ -270,10 +307,8 @@ describe("order outcomes", () => {
     expect(orderOutcome(say, "queued for t: 2 waiting; sent when the current cycle ends", { queued: true })).toBe(
       "Указание в очереди: уйдёт одним ходом, когда агент закончит цикл",
     );
-    expect(orderOutcome({ route: "verdict", body: { slug: "t", verdict: "accepted" } }, "verdict accepted recorded for t (repo)")).toBe(
-      "Вердикт «принято» записан — это оценка для статистики; PR этим не сливается",
-    );
-    expect(orderOutcome({ route: "verdict", body: { slug: "t", verdict: "dropped" } }, "")).toMatch(/^Вердикт «не берём» записан/);
+    expect(orderOutcome({ route: "verdict", body: { slug: "t", verdict: "accepted" } }, "verdict accepted recorded for t (repo)")).toBe("Вердикт «принято» записан");
+    expect(orderOutcome({ route: "verdict", body: { slug: "t", verdict: "dropped" } }, "")).toBe("Вердикт «не берём» записан");
     expect(orderOutcome({ route: "review", body: { slug: "t" } }, "reviewing t, pid 3")).toBe("Внеочередное ревью запущено");
     expect(orderOutcome(reflectOrder("t"), "said", { slug: "reflect-1110-120000" })).toBe("Задача отправлена на рефлексию: reflect-1110-120000");
     expect(orderOutcome({ route: "stop", body: { slug: "t" } }, "stopped t")).toBe("Агент остановлен");

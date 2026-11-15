@@ -187,6 +187,8 @@ function build(index: number, stageIndex: number, changedAt: number, start: numb
     findings_left: stage.findings_left ?? 0,
     stop: null,
     left: 0,
+    lead_verdict: null,
+    lead_verdict_at: null,
   };
 }
 
@@ -253,6 +255,8 @@ export function scenarioFleet(start: number, now: number = start): TaskSummary[]
       findings_left: 0,
       stop: null,
       left: 0,
+      lead_verdict: null,
+      lead_verdict_at: null,
       ...ship,
       updated_at: start - 300 - index * 40,
       activity: alive && ship.activity ? { ...ship.activity, at: now - 2 } : null,

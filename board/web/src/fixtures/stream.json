@@ -68,7 +68,9 @@
       "review": null,
       "findings_left": 0,
       "stop": null,
-      "left": 0
+      "left": 0,
+      "lead_verdict": null,
+      "lead_verdict_at": null
     }
   },
   {
@@ -127,7 +129,9 @@
       "review": null,
       "findings_left": 0,
       "stop": null,
-      "left": 0
+      "left": 0,
+      "lead_verdict": null,
+      "lead_verdict_at": null
     }
   },
   {
@@ -3466,7 +3470,9 @@
       "review": "clean",
       "findings_left": 0,
       "stop": "clean",
-      "left": 0
+      "left": 0,
+      "lead_verdict": null,
+      "lead_verdict_at": null
     }
   },
   {
@@ -3503,7 +3509,9 @@
       "review": null,
       "findings_left": 0,
       "stop": null,
-      "left": 0
+      "left": 0,
+      "lead_verdict": null,
+      "lead_verdict_at": null
     }
   },
   {
@@ -6704,7 +6712,9 @@
       "review": "defects",
       "findings_left": 2,
       "stop": "only P3",
-      "left": 2
+      "left": 2,
+      "lead_verdict": null,
+      "lead_verdict_at": null
     }
   },
   {
@@ -6745,7 +6755,9 @@
       "review": "defects",
       "findings_left": 3,
       "stop": null,
-      "left": 0
+      "left": 0,
+      "lead_verdict": null,
+      "lead_verdict_at": null
     }
   },
   {
