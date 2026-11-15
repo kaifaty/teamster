@@ -161,6 +161,7 @@ caveats: This belongs to W4.
 cue: a changed module
 lesson: Run the module's checks.
 evidence: task gothic, check.log line 12
+target: gothic, `~/.claude/skills/agent-router/SKILL.md`
 caveats: One repository.
 proposal:
 """)
@@ -191,7 +192,8 @@ lesson: Never read this for W3.
         "evidence": "task gothic, check.log line 12", "caveats": "One repository.", "proposal": None,
     }
     assert fields(lessons[2]) == dict.fromkeys(research_module.LESSON_FIELDS)
-    assert [row["target"] for row in lessons] == [["teamster", "~/.codex/AGENTS.md"], None, None]
+    assert [row["target"] for row in lessons] == [
+        ["teamster", "~/.codex/AGENTS.md"], ["gothic", "~/.claude/skills/agent-router/SKILL.md"], None]
     assert research.view()["lessons"] == lessons
     assert opened == [batch, study]
     with original(study, "w") as stream:
@@ -266,12 +268,13 @@ def test_lesson_outside_from_proposal_only(tmp_path, monkeypatch, proposal, expe
      "gothic, ~/.claude/skills/agent-router/SKILL.md, ~/new/rule.md, ~/repository/check.py, ~/.codex/AGENTS.md",
      ["~/.claude/skills/agent-router/SKILL.md", "~/new/rule.md", "~/.codex/AGENTS.md"]),
     (None, "reviewer, empty-skill", ["~/.codex/skills/reviewer/SKILL.md"]),
+    ("Name the rule in shared.", None, ["~/.claude/skills/shared/SKILL.md", "~/.codex/skills/shared/SKILL.md"]),
 ])
 def test_lesson_outside_from_target_and_skill_names(tmp_path, monkeypatch, proposal, target, expected):
     home = tmp_path / "home"
     monkeypatch.setattr(research_module.Path, "home", classmethod(lambda cls: home))
     for name in (".claude/skills/agent-router/SKILL.md", ".codex/skills/reviewer/SKILL.md",
-                 ".claude/skills/tracked/SKILL.md"):
+                 ".claude/skills/tracked/SKILL.md", ".claude/skills/shared/SKILL.md", ".codex/skills/shared/SKILL.md"):
         (home / name).parent.mkdir(parents=True)
         (home / name).write_text("# Skill\n")
     (home / ".claude" / "skills" / "empty-skill").mkdir()
@@ -298,6 +301,10 @@ def test_lesson_outside_never_probes_paths_outside_home(tmp_path, monkeypatch):
     checks = home / ".codex" / "checks"
     checks.mkdir(parents=True)
     (checks / "repo").symlink_to(elsewhere, target_is_directory=True)
+    (elsewhere / "SKILL.md").write_text("# Skill\n")
+    skills = home / ".claude" / "skills"
+    skills.mkdir(parents=True)
+    (skills / "escape").symlink_to(elsewhere, target_is_directory=True)
     monkeypatch.setattr(research_module.Path, "home", classmethod(lambda cls: home))
     original_stat, original_lstat = research_module.Path.stat, research_module.Path.lstat
 
@@ -312,6 +319,8 @@ def test_lesson_outside_never_probes_paths_outside_home(tmp_path, monkeypatch):
     assert research_module.outside_paths(str(home), []) == []
     assert research_module.outside_paths(
         f"{elsewhere}/file.py ~/escape/file.py ~/../elsewhere/file.py file.py", ["repo"]) == []
+    assert research_module.outside_paths(None, [], [
+        "~/escape/file.py", "~/../elsewhere/file.py", "~/.claude/skills/escape/SKILL.md", "escape"]) == []
 
 
 def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp_path):
@@ -383,10 +392,11 @@ def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp
     (no_origin / ".git" / "config").symlink_to(alpha / ".git" / "config")
     assert view_repos() == expected
     (no_origin / ".git" / "config").unlink()
-    (no_origin / ".git" / "config").write_text(origin + "#" * research_module.GIT_LIMIT)
-    assert view_repos() == [*expected, {"name": "no-origin", "path": str(no_origin)}]
-    (no_origin / ".git" / "config").write_text(origin + "#" * research_module.CONFIG_LIMIT)
-    assert view_repos() == expected
+    # gothic's config is 74 KiB, past the 64 KiB limit of the other git files; a config is read up to 1 MiB.
+    for size, listed in ((74 * 1024, True), (1024 * 1024, True), (1024 * 1024 + 1, False)):
+        (no_origin / ".git" / "config").write_text(origin + "#" * (size - len(origin)))
+        assert (no_origin / ".git" / "config").stat().st_size == size
+        assert view_repos() == ([*expected, {"name": "no-origin", "path": str(no_origin)}] if listed else expected)
     for index in range(101):
         repo = tmp_path / f"repo-{index:03}"
         (repo / ".git").mkdir(parents=True)

@@ -582,8 +582,10 @@ class ResultScoutConfigTests(RotationTestCase):
         today = time.strftime("%Y-%m-%d", time.gmtime())
         name = "batch-%s.md" % today
         first = self.reflect_result(
-            "needs_decision", report="## New lessons\n\n### V1. First\ntarget: repo-a, ~/.codex/AGENTS.md",
-            lessons=[self.reflect_lesson("V1", "first cue", target=["repo-a", "~/.codex/AGENTS.md"]),
+            "needs_decision", report="## New lessons\n\n### V1. First\n"
+                                     "target: repo-a, ~/.codex/AGENTS.md, ~/.claude/skills/router/SKILL.md",
+            lessons=[self.reflect_lesson("V1", "first cue",
+                                         target=["repo-a", "~/.codex/AGENTS.md", "~/.claude/skills/router/SKILL.md"]),
                      self.reflect_lesson("V2", "domain cue", "domain", ["repo-a", "repo-b"])],
             questions=["Apply V1 now?", "Where should V2 go?"], options=[["yes", "no"], []])
         second = self.reflect_result(report="Second report.", lessons=[
@@ -620,13 +622,16 @@ class ResultScoutConfigTests(RotationTestCase):
         lesson_schema = invocation["output_schema"]["properties"]["lessons"]["items"]
         self.assertIn("target", lesson_schema["required"])
         self.assertEqual(lesson_schema["properties"]["target"]["items"], {"type": "string"})
+        self.assertEqual([len(lesson["target"]) for lesson in first["lessons"]], [3, 0])
+        self.assertTrue(worker.result_schema.matches_schema(first, invocation["output_schema"]))
         self.assertEqual(invocation["prompt"], worker.prompts.reflect_prompt(
             "Focus on the checks.", ["new-task-20260103T000000Z"], "20260103T000000Z",
             worker.config.accounts_config()))
         self.assertTrue(invocation["prompt"].startswith("Focus on the checks.\n\n"))
         self.assertEqual((archive / name).read_text(),
                          "# Batch reflection %s\n\nthrough: 20260103T000000Z\n\ntask: reflect-batch\n\n"
-                         "## New lessons\n\n### V1. First\ntarget: repo-a, ~/.codex/AGENTS.md\n" % today)
+                         "## New lessons\n\n### V1. First\n"
+                         "target: repo-a, ~/.codex/AGENTS.md, ~/.claude/skills/router/SKILL.md\n" % today)
         rows = (archive / "INDEX.md").read_text().splitlines()[4:]
         self.assertEqual(rows, [
             "| 2026-01-02 | batch-2026-01-02.md L1 | invariant | old cue | applied rules (PR #1) |",
@@ -749,8 +754,11 @@ class ResultScoutConfigTests(RotationTestCase):
         pending = worker.reflection.pending_records(archive)
         today = time.strftime("%Y-%m-%d", time.gmtime())
         name = "study-%s-reflect-study.md" % today
-        long_lesson = dict(self.reflect_lesson("V1", "study cue"), proposal="P" * 700)
-        first = self.reflect_result("needs_decision", report="First study.", lessons=[long_lesson],
+        long_lesson = dict(self.reflect_lesson("V1", "study cue", target=["repo-a", "~/.codex/AGENTS.md"]),
+                           proposal="P" * 700)
+        first = self.reflect_result("needs_decision",
+                                    report="First study.\n\n### V1. Study\ntarget: repo-a, ~/.codex/AGENTS.md",
+                                    lessons=[long_lesson],
                                     questions=["Apply V1?"], options=[["yes", "no"]])
         second = self.reflect_result(report="Second study.", lessons=[self.reflect_lesson("V1", "study cue")])
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": first}, {"mode": "failed"},
@@ -766,7 +774,8 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertEqual(self.invocations()[-1]["prompt"], worker.prompts.study_prompt(
             "Why did new-task stall?", ["new-task-20260105T000000Z"], worker.config.accounts_config()))
         self.assertEqual((archive / name).read_text(),
-                         "# Study %s\n\ntask: reflect-study\n\nrecords: 1\n\nFirst study.\n" % today)
+                         "# Study %s\n\ntask: reflect-study\n\nrecords: 1\n\nFirst study.\n\n"
+                         "### V1. Study\ntarget: repo-a, ~/.codex/AGENTS.md\n" % today)
         self.assertEqual((archive / "INDEX.md").read_text().splitlines()[-1],
                          "| %s | %s V1 | invariant | study cue | proposed |" % (today, name))
         turn, = state["reflect_turns"]
@@ -943,6 +952,8 @@ class ResultScoutConfigTests(RotationTestCase):
                 for reflect in (worker.prompts.reflect_prompt(None, records, "20260101T000000Z"),
                                 worker.prompts.study_prompt("Take the fix apart.", records)):
                     self.assertIn(worker.prompts.REFLECT_TARGET[language], reflect)
+                    main_first = {"en": "the main place first", "ru": "главное первым"}[language]
+                    self.assertIn(main_first, reflect)
                     if language == "ru":
                         self.assertIn("Пиши по-русски summary, report", reflect)
                         self.assertIn("(cue:, lesson:, evidence:, scope:, earlier:, caveats:, proposal:, target:)",
