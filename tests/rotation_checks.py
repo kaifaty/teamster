@@ -39,7 +39,8 @@ class CheckGuardTests(RotationTestCase):
         script = "/home/u/.checks/repo/ios-check.sh"
         spellings = (f"CHECK_LANE=b {script}", "CHECK_LANE=d sh ~/.checks/repo/ios-check.sh",
                      'sh -c "CHECK_LANE=c $HOME/.checks/repo/ios-check.sh"', f"CHECK_LANE=c bash {script}",
-                     'CHECK_LANE="a b" bash -c \'${HOME}/.checks/repo/ios-check.sh\'')
+                     'CHECK_LANE="a b" bash -c \'${HOME}/.checks/repo/ios-check.sh\'',
+                     "zsh ~/.checks/repo/ios-check.sh", f"zsh -c 'CHECK_LANE=e {script}'")
         compound = f"make && {script} --fast; true"
         with mock.patch.dict(worker.checking.os.environ, {"HOME": "/home/u"}):
             key = worker.checking.check_key
@@ -60,8 +61,9 @@ class CheckGuardTests(RotationTestCase):
             task = worker.config.TASKS / "spellings"
             task.mkdir(parents=True)
             (task / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
-                {"cmd": spelling, "seconds": 1500, "outcome": "passed"} for spelling in spellings[:3]]}))
-            self.assertEqual(worker.checking.long_check_median(self.repo, spellings[3], 60), 25)
+                {"cmd": spelling, "seconds": seconds, "outcome": outcome} for spelling, seconds, outcome in zip(
+                    spellings, (60, 1230, 1500), ("passed", "timeout", "failed"))]}))
+            self.assertEqual(worker.checking.long_check_median(self.repo, spellings[3], 60), 20.5)
 
     def test_start_and_base_merge_defer_long_checks_in_both_languages(self):
         worker = self.worker()
