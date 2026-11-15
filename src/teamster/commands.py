@@ -790,6 +790,9 @@ def cmd_reset_credit(a):
     print_accounts([action["info"]], cfg)
 
 
+CLAUDE_LOGIN_ENTER_DELAY = 0.5
+
+
 class LoginEvents:
     """The newline-delimited sign-in protocol; credentials stay only in memory."""
 
@@ -809,6 +812,8 @@ class LoginEvents:
         print(json.dumps(dict(event=event, **fields), ensure_ascii=False), flush=True)
 
     def clean(self, text):
+        text = re.sub(r"(?:\x1b\[|\x9b)([0-9]*)C",
+                      lambda match: " " * min(int(match[1] or 1), 1000), text)
         # OSC/DCS strings, CSI sequences and the remaining terminal escapes.
         text = re.sub(r"(?:\x1b\]|\x9d)[^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)"
                       r"|(?:\x1b[PX^_]|[\x90\x98\x9e\x9f]).*?(?:\x1b\\|\x9c)"
@@ -922,11 +927,15 @@ def claude_login_events(environment, events):
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         input_decoder = codecs.getincrementaldecoder("utf-8")("replace")
         pending, incoming, oversized, prompt_count = "", "", False, 0
+        queued, enter_pending, input_deadline = [], False, 0.0
         with selectors.DefaultSelector() as selector:
             selector.register(master, selectors.EVENT_READ)
             selector.register(sys.stdin, selectors.EVENT_READ)
             while True:
-                for key, _ in selector.select(0.2):
+                timeout = 0.2
+                if (enter_pending or queued) and proc.poll() is None:
+                    timeout = min(timeout, max(0, input_deadline - time.monotonic()))
+                for key, _ in selector.select(timeout):
                     if key.fileobj == master:
                         try:
                             chunk = os.read(master, 65536)
@@ -958,13 +967,22 @@ def claude_login_events(environment, events):
                                 line = incoming.removesuffix("\r")
                                 if not oversized and len(line) <= 512 and all(
                                         not unicodedata.category(c).startswith("C") for c in line):
-                                    os.write(master, line.encode("utf-8") + b"\r")
-                                    events.prompted = False
+                                    queued.append(line)
                                 incoming, oversized = "", False
                             elif not oversized:
                                 incoming += char
                                 if len(incoming) > 513:
                                     incoming, oversized = "", True
+                if (enter_pending or queued) and time.monotonic() >= input_deadline and proc.poll() is None:
+                    if enter_pending:
+                        os.write(master, b"\r")
+                        enter_pending = False
+                    else:
+                        os.write(master, queued.pop(0).encode("utf-8"))
+                        enter_pending = True
+                        events.prompted = False
+                    # Keep Return separate from both the pasted text and the next queued line.
+                    input_deadline = time.monotonic() + CLAUDE_LOGIN_ENTER_DELAY
     finally:
         if proc is not None:
             terminate_login(proc, events)

@@ -35,7 +35,8 @@ match the ordinary commands; `result.ok` is true exactly when the command exits 
 The event protocol is:
 
 - `{"event":"output","text":"…"}`: each nonempty tool output line, with ANSI and other control
-  sequences removed, truncated to 500 characters. Each cleaned line is emitted at most once per sign-in.
+  sequences removed (cursor-forward escapes become spaces), truncated to 500 characters.
+  Each cleaned line is emitted at most once per sign-in.
   Claude tokens are replaced with `[token hidden]` before output.
 - `{"event":"open","url":"https://…"}`: the first HTTPS link in the output, once.
 - `{"event":"code","code":"ABCD-EFGHI","expires_at":1900000900}`: Codex's device code;
@@ -45,8 +46,9 @@ The event protocol is:
   is also passed; its stdin is `/dev/null`, and both output streams are captured.
 - `{"event":"prompt"}`: Claude printed `Paste code here`. Send a newline-terminated code (or an
   empty line for Enter) to teamster's stdin. Lines up to 512 characters with no control characters
-  are forwarded to the pseudo-terminal with `\r`; other lines are silently ignored. A new prompt
-  after input emits another event.
+  are forwarded as text, followed 0.5 seconds later by a separate `\r` write; other lines are
+  silently ignored. Further lines are queued in order, with each Enter kept separate from adjacent
+  text. Tool output continues to be read during the pauses. A new prompt after input emits another event.
 - `{"event":"stage","stage":"saving"}`: Claude obtained its token and is saving it to Keychain.
 - `{"event":"stage","stage":"checking"}`: sign-in completed; teamster is checking the account.
 - `{"event":"result","ok":true,"status":"available","message":""}`: always the last event.

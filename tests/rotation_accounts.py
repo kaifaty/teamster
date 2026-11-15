@@ -125,26 +125,31 @@ elif sys.argv[1:] == ['setup-token']:
             trace(child=True)
         while True: time.sleep(0.1)
     tty.setraw(0)
+    def read_code():
+        code = b''
+        while True:
+            chunk = os.read(0, 4096)
+            if chunk == b'\r':
+                trace(input=(code + chunk).decode())
+                return
+            code += chunk.replace(b'\r', b'').replace(b'\n', b'')
     if fixture.get('redraw'):
         for frame in range(50):
             spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[frame % 10]
             print('\x1b[H\x1b[2J' + spinner + ' Opening browser to sign in…\n'
                   'https://login.example.test/claude\nWaiting for sign-in…', flush=True)
-    print('\x1b]0;hidden title\x07https://login.example.test/claude\nPaste code here: ', end='', flush=True)
-    for attempt in range(2):
-        code = b''
-        while not code.endswith(b'\r'):
-            code += os.read(0, 1)
-        trace(input=code.decode())
-        if attempt == 0:
+    prompt = ('Paste\x1b[1Ccode\x1b[1Chere\x1b[1Cif\x1b[1Cprompted\x1b[1C>'
+              if fixture.get('cursor_forward') else 'Paste code here: ')
+    print('\x1b]0;hidden title\x07https://login.example.test/claude\n' + prompt, end='', flush=True)
+    attempts = 1 if fixture.get('cursor_forward') else 2
+    for attempt in range(attempts):
+        read_code()
+        if attempt + 1 < attempts:
             print('\r\nPaste code here: ', end='', flush=True)
     if not fixture.get('no_token'):
         if fixture.get('split_token'):
             print('\r\nPaste code here: ' + token[:20], end='', flush=True)
-            code = b''
-            while not code.endswith(b'\r'):
-                code += os.read(0, 1)
-            trace(input=code.decode())
+            read_code()
             print(token[20:], flush=True)
         else:
             print('\r\nToken: \x1b[32m' + token + '\x1b[0m', flush=True)
@@ -170,11 +175,13 @@ else:
                 server.shutdown()
                 thread.join(timeout=5)
 
-    def run_claude_event_login(self, *arguments, cancel_saving=False):
+    def run_claude_event_login(self, *arguments, cancel_saving=False, codes=None):
         proc = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "claude-login", "events", "--events", *arguments],
                                 env=self.env, cwd=self.root, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         output = []
+        watchdog = threading.Timer(20, proc.kill)
+        watchdog.start()
         try:
             for line in proc.stdout:
                 output.append(line)
@@ -183,12 +190,19 @@ else:
                     proc.terminate()
                     (self.root / "save-gate").touch()
                 if event["event"] == "prompt":
-                    proc.stdin.write("x" * 513 + "\ninvalid\x1bcode\n" + ("page-code" if len(
-                        [e for e in output if json.loads(e)["event"] == "prompt"]) == 1 else "") + "\n")
+                    first_prompt = sum(json.loads(e)["event"] == "prompt" for e in output) == 1
+                    if codes is not None:
+                        if not first_prompt:
+                            continue
+                        proc.stdin.write(codes)
+                    else:
+                        proc.stdin.write("x" * 513 + "\ninvalid\x1bcode\n" +
+                                         ("page-code" if first_prompt else "") + "\n")
                     proc.stdin.flush()
             _, errors = proc.communicate(timeout=20)
             return subprocess.CompletedProcess(proc.args, proc.returncode, "".join(output), errors)
         finally:
+            watchdog.cancel()
             if proc.poll() is None:
                 proc.kill()
                 proc.communicate()
@@ -219,6 +233,38 @@ else:
                 if path.is_file():
                     self.assertNotIn(token.encode(), path.read_bytes(), str(path))
             self.assertEqual(self.telemetry_journal()[-1]["status"], "ok")
+
+    def test_claude_login_events_submit_queued_codes_with_separate_return(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            result = self.run_claude_event_login(codes="page-code\nsecond-code\n")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(events[-1]["status"], "ok")
+            self.assertTrue(events[-1]["ok"])
+            self.assertEqual(len(values), 1)
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual([row["input"] for row in rows if "input" in row],
+                             ["page-code\r", "second-code\r"])
+
+    def test_claude_login_events_cursor_forward_spaces_emit_one_prompt(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"cursor_forward": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertIn({"event": "output", "text": "Paste code here if prompted >"}, events)
+            self.assertEqual(sum(event["event"] == "prompt" for event in events), 1)
+            self.assertEqual(events[-1]["status"], "ok")
+
+    def test_login_events_clean_preserves_cursor_forward_spaces(self):
+        events = self.worker().commands.LoginEvents()
+        for prefix in ("\x1b[", "\x9b"):
+            with self.subTest(prefix=repr(prefix)):
+                self.assertEqual(events.clean("left" + prefix + "Cright"), "left right")
+                self.assertEqual(events.clean("left" + prefix + "3Cright"), "left   right")
+                self.assertEqual(events.clean("left" + prefix + "999999999Cright"),
+                                 "left" + " " * 1000 + "right")
+                self.assertEqual(events.clean(prefix + "2J" + prefix + "31mtext" + prefix + "0m"), "text")
 
     def test_claude_login_events_deduplicate_redrawn_frames(self):
         with self.claude_event_fixture() as (fixture, trace, values):
