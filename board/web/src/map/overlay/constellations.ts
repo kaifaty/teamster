@@ -1,31 +1,8 @@
 // The constellations' names in the galaxy, each on the first free side of its stars.
 
 import type { Constellation } from "../constellations";
-import {
-  fuelColumnRect,
-  machineColumnRect,
-  RESEARCH_LABEL_DROP,
-  RESEARCH_SIZE,
-  type FuelColumn,
-  type Galaxy,
-  type MachineColumn,
-  type Point,
-  type Rect,
-  type Size,
-} from "../layout";
+import type { Galaxy, Rect, Size } from "../layout";
 import { at } from "./style";
-
-/**
- * What a constellation's name must not cover: the science station standing at `station` with its label, the panels and
- * the columns.
- */
-export function constellationKeepOuts(station: Point, machines: MachineColumn | null, fuel: FuelColumn | null, covered: readonly Rect[]): Rect[] {
-  return [
-    { x0: station.x - RESEARCH_SIZE / 2 - 20, y0: station.y - RESEARCH_SIZE / 2 - 20, x1: station.x + RESEARCH_SIZE / 2 + 20, y1: station.y + RESEARCH_SIZE / 2 + RESEARCH_LABEL_DROP + 50 },
-    ...covered,
-    ...[machines ? machineColumnRect(machines) : null, fuel ? fuelColumnRect(fuel) : null].filter((rect): rect is Rect => !!rect),
-  ];
-}
 
 /**
  * A constellation's name beside its stars, centred on them: above them, or else below, left or right of them, on the

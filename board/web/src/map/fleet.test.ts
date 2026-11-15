@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../types";
-import { DAY_LAMPS, MAX_PATCHES, daysLeft, hullOf, patchSpots, stars, tankEmpty, tanks, untilText } from "./fleet";
+import { MAX_PATCHES, hullOf, patchSpots, stars, tanks, untilText } from "./fleet";
 
 const NOW = 1_800_000_000;
 
@@ -52,7 +52,6 @@ describe("tanks", () => {
       ["claude:pool-1", 42, false],
       ["claude:pool-2", 10, true],
     ]);
-    expect(list.map(tankEmpty)).toEqual([false, true, true, false, true]);
   });
 
   it("refills at the end of the limit that ran out, at the weekly reset otherwise, and never without a login or a token", () => {
@@ -88,6 +87,8 @@ describe("tanks", () => {
     expect(pool!.resets).toBeNull();
     expect(pool!.burst).toEqual({ percent: 12.5, resetsAt: NOW + 600 });
     expect(pool!.admiral).toBe(true);
+    expect(pool!.duty).toEqual({ reason: null, since: null });
+    expect(main!.duty).toBeNull();
   });
 
   it("tells how long until a refill in minutes, hours or days", () => {
@@ -98,14 +99,6 @@ describe("tanks", () => {
     expect(untilText(NOW + 4 * 86400 + 3600, NOW)).toBe("4 д");
     expect(untilText(NOW - 10, NOW)).toBeNull();
     expect(untilText(null, NOW)).toBeNull();
-  });
-
-  it("lights a lamp for every day left until the refill, up to a week", () => {
-    expect(daysLeft(NOW + 3600, NOW)).toBe(1);
-    expect(daysLeft(NOW + 86400 + 1, NOW)).toBe(2);
-    expect(daysLeft(NOW + 30 * 86400, NOW)).toBe(DAY_LAMPS);
-    expect(daysLeft(NOW - 1, NOW)).toBe(0);
-    expect(daysLeft(null, NOW)).toBe(0);
   });
 
   it("is empty without account data", () => {

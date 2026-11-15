@@ -22,8 +22,7 @@ export {
 } from "./system";
 export type { Parking } from "./parking";
 export { plateRoom, COUNT_ROOM, parkingOf, CHECKPOINT, inCheckpoint, lanesOf, parkingOrder } from "./parking";
-export { toolbarBand, defaultCovered, columnSpan, logCorner } from "./chrome";
-export { RESEARCH_LABEL_DROP, researchPosition, RESEARCH_SIZE } from "./research";
+export { toolbarBand, defaultCovered } from "./chrome";
 export type { StarShape, Galaxy, Groups, Lattice, LabelledLattice } from "./galaxy";
 export {
   constellationKey,
@@ -36,35 +35,4 @@ export {
   starFootprint,
   starRadius,
 } from "./galaxy";
-export { galaxyKeepOuts, centreChoices, galaxyLayout } from "./stars";
-export type { MachineShape, MachineColumn } from "./machines";
-export {
-  MACHINE_SIZE,
-  MACHINE_MIN_SIZE,
-  MACHINE_LABEL_WIDTH_PX,
-  MACHINE_NOTE_PX,
-  machineLabelSize,
-  machineSpan,
-  machinePositions,
-  machineLabelAnchor,
-  machineRoom,
-  machineColumnRect,
-  machineNoteRoom,
-  machineRooms,
-} from "./machines";
-export type { TankShape, FuelColumn } from "./fuel";
-export {
-  TANK_ASPECT,
-  TANK_GLASS,
-  TANK_SIZE,
-  TANK_MIN_SIZE,
-  BADGE_RISE,
-  LAMP_GAP,
-  LAMP_WIDTH,
-  FUEL_LABEL_WIDTH_PX,
-  tankLabelSize,
-  tankGear,
-  fuelPositions,
-  fuelRoom,
-  fuelColumnRect,
-} from "./fuel";
+export { centreChoices, galaxyLayout } from "./stars";

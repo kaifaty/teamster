@@ -5,11 +5,7 @@
 
 /* A label stands at its point in the world, --x and --y, through the overlay's camera: --tx, --ty and --zoom. */
 .star,
-.station,
 .constellation,
-.tank,
-.machine,
-.machine-note,
 .plate-st,
 .count {
   position: absolute;

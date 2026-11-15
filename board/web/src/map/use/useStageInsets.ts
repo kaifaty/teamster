@@ -1,97 +1,80 @@
-// The parts of the stage the map's own panels cover, measured whenever the window, the toolbar or the panels change: a
-// system is laid out in the rest, and no star stands under the log.
+// The parts of the stage the map's own panels cover, measured whenever the window, the toolbar or the panels change: the
+// galaxy is fitted above the control panel at the bottom, a system is laid out in what the toolbar, the list at the side
+// and the control panel leave free, and no star stands under the toolbar.
 
 import { nextTick, onBeforeUnmount, onMounted, shallowRef, watch, type Ref } from "vue";
-import { fitCamera, type Insets, type Rect } from "../layout";
+import { fitCamera, freeView, NO_INSETS, type Insets, type Rect } from "../layout";
 import type { GalaxyModel } from "./useGalaxyModel";
 import type { MapPanels } from "./useMapPanels";
 
 export function useStageInsets(host: Readonly<Ref<HTMLElement | null>>, model: GalaxyModel, panels: MapPanels, scheduleLabels: () => void) {
   const { world } = model;
-  const { repo, narrow, dockFolded, fleetVisible } = panels;
+  const { repo, narrow, fleetVisible } = panels;
 
   /**
-   * Measures the parts of the window the panels cover, for the scene to lay a system out in the rest: the toolbar, the
-   * list at the side and the folded dock. What opens over the map does not move the system. Each measure in a system
-   * sets `insets` anew.
+   * The parts of the window the panels cover: the toolbar, the list at the side and the control panel. The scene fits
+   * the galaxy above the control panel and lays a system out in the rest. What opens over the map from the control panel
+   * does not count: its own box keeps its size.
    */
-  const insets = shallowRef<Insets>({ top: 0, right: 0, bottom: 0, left: 0 });
+  const insets = shallowRef<Insets>(NO_INSETS);
   function measureInsets() {
     const stage = host.value?.getBoundingClientRect();
     const root = host.value?.closest(".map");
     if (!stage || !root || !stage.width || !stage.height) return;
     const toolbar = root.querySelector<HTMLElement>(".toolbar")?.getBoundingClientRect();
     const top = toolbar ? Math.max(0, Math.round(toolbar.bottom - stage.top + 6)) : 0;
+    const panel = host.value?.querySelector<HTMLElement>(".console")?.getBoundingClientRect();
+    const bottom = panel ? Math.max(0, Math.round(stage.bottom - panel.top)) : 0;
     host.value!.style.setProperty("--below-toolbar", `${top}px`);
-    if (!repo.value) return;
-    const panel = fleetVisible.value && !narrow.value ? root.querySelector<HTMLElement>(".fleet")?.getBoundingClientRect() : null;
-    const dock = dockFolded.value ? root.querySelector<HTMLElement>(".dock")?.getBoundingClientRect() : null;
-    insets.value = {
-      top,
-      right: panel ? Math.max(0, Math.round(stage.right - panel.left + 6)) : 0,
-      bottom: dock ? Math.max(0, Math.round(stage.bottom - dock.top + 6)) : insets.value.bottom,
-      left: 0,
-    };
+    host.value!.style.setProperty("--console-room", `${bottom}px`);
+    host.value!.style.setProperty("--stage-height", `${Math.round(stage.height)}px`);
+    const list = repo.value && fleetVisible.value && !narrow.value ? root.querySelector<HTMLElement>(".fleet")?.getBoundingClientRect() : null;
+    const next = { top, right: list ? Math.max(0, Math.round(stage.right - list.left + 6)) : 0, bottom, left: 0 };
+    const now = insets.value;
+    if (next.top !== now.top || next.right !== now.right || next.bottom !== now.bottom) insets.value = next;
+    measureCovered(stage, toolbar ?? null, bottom);
   }
 
   /**
-   * Measures, for the window, the part of the world under the ship's log, where no star stands, and the full view's zoom.
-   * A narrow dock is measured folded: what opens over the map does not move the stars. The galaxy's dock is measured
-   * only while the galaxy shows: a system folds it.
+   * Measures, for the window, the part of the galaxy's world under the toolbar, where no star stands, and the full view's
+   * zoom. Only while the galaxy shows: a system's toolbar has other buttons.
    */
   let coveredFor = "";
-  function measureCovered() {
-    if (!dockFolded.value || repo.value) return;
-    const stage = host.value?.getBoundingClientRect();
-    const dock = host.value?.querySelector<HTMLElement>(".dock")?.getBoundingClientRect();
-    const toolbar = host.value?.closest(".map")?.querySelector<HTMLElement>(".toolbar")?.getBoundingClientRect();
-    if (!stage || !dock || !stage.width || !stage.height) return;
-    const key = `${Math.round(stage.width)}x${Math.round(stage.height)}/${world.value.width}/${Math.round(toolbar?.bottom ?? 0)}`;
+  function measureCovered(stage: DOMRect, toolbar: DOMRect | null, bottom: number) {
+    if (repo.value) return;
+    const key = `${Math.round(stage.width)}x${Math.round(stage.height)}/${bottom}/${world.value.width}/${Math.round(toolbar?.bottom ?? 0)}`;
     if (key === coveredFor) return;
     coveredFor = key;
-    const fit = fitCamera(world.value, { width: stage.width, height: stage.height });
+    const fit = fitCamera(world.value, freeView({ width: stage.width, height: stage.height }, { ...NO_INSETS, bottom }));
     const margin = 12;
-    const toWorld = (x: number, y: number) => ({ x: (x - stage.left - fit.tx) / fit.zoom, y: (y - stage.top - fit.ty) / fit.zoom });
-    const from = toWorld(dock.left - margin, dock.top - margin);
-    const to = toWorld(dock.right + margin, dock.bottom + margin);
-    const parts: Rect[] = [{ x0: from.x, y0: from.y, x1: to.x, y1: Math.max(to.y, world.value.height) }];
-    // The toolbar runs along the top: the columns at the edges start under it.
-    if (toolbar) parts.push({ x0: 0, y0: 0, x1: world.value.width, y1: Math.max(0, toWorld(0, toolbar.bottom + margin).y) });
+    const parts: Rect[] = [];
+    // The toolbar runs along the top: no star stands under it.
+    if (toolbar) parts.push({ x0: 0, y0: 0, x1: world.value.width, y1: Math.max(0, (toolbar.bottom + margin - stage.top - fit.ty) / fit.zoom) });
     model.covered.value = parts;
     model.fullZoom.value = fit.zoom;
   }
 
-  // The dock changes its shape across the breakpoint and between the galaxy and a system: it is measured again.
+  // The control panel changes its shape across the breakpoint, and the toolbar between the galaxy and a system.
   watch([narrow, repo], () => {
     coveredFor = "";
     void nextTick(() => {
-      measureCovered();
-      measureInsets();
-    });
-  });
-  // The open dock covers the map. Once it folds, a resize made meanwhile is measured and the star labels come back.
-  watch(dockFolded, (folded) => {
-    if (!folded) return;
-    void nextTick(() => {
-      measureCovered();
       measureInsets();
       scheduleLabels();
     });
   });
   watch(fleetVisible, () => void nextTick(measureInsets));
-  watch(world, () => void nextTick(measureCovered));
+  watch(world, () => void nextTick(measureInsets));
 
   let stageObserver: ResizeObserver | null = null;
   onMounted(() => {
     if (!host.value) return;
-    stageObserver = new ResizeObserver(() => {
-      measureCovered();
-      measureInsets();
-    });
+    stageObserver = new ResizeObserver(() => measureInsets());
     stageObserver.observe(host.value);
-    // The toolbar wraps on a narrower window: the list and a system start below it.
+    // The toolbar wraps on a narrower window, and the control panel changes its height with its rows.
     const toolbar = host.value.closest(".map")?.querySelector(".toolbar");
     if (toolbar) stageObserver.observe(toolbar);
+    const panel = host.value.querySelector(".console");
+    if (panel) stageObserver.observe(panel);
   });
   onBeforeUnmount(() => stageObserver?.disconnect());
 

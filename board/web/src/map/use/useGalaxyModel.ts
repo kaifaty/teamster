@@ -1,31 +1,13 @@
-// The galaxy the scene draws: one star per repository, one fuel tank per subscription, a reactor per machine, the
-// science station and the constellations, laid out for the world the scene reports and the panels that cover it.
+// The galaxy the scene draws, one star per repository and the constellations, laid out for the world the scene reports
+// and the toolbar over it; and what the control panel under the map shows: the subscriptions, the machines and the
+// reflection.
 
 import { computed, ref, shallowRef, watch } from "vue";
 import type { Board } from "../../store/board";
-import { machineRings } from "../../lib/machines";
 import { constellationsOf } from "../constellations";
-import { daysLeft, stars, tankEmpty, tanks } from "../fleet";
-import {
-  defaultCovered,
-  fuelColumnRect,
-  fuelPositions,
-  galaxyKeepOuts,
-  galaxyLayout,
-  machinePositions,
-  researchPosition,
-  systemWorldSize,
-  worldSize,
-  type Galaxy,
-  type MachineShape,
-  type Rect,
-  type Size,
-  type TankShape,
-} from "../layout";
+import { stars, tanks } from "../fleet";
+import { defaultCovered, galaxyLayout, systemWorldSize, worldSize, type Galaxy, type Rect, type Size } from "../layout";
 import { research } from "../research";
-import type { MachineMark, TankMark } from "../scene";
-import { machineShape } from "../overlay/machines";
-import { tankCells, tankInfo } from "../overlay/tanks";
 import type { MapSources } from "./useMapSources";
 
 /** The same value while it does not change, so that the galaxy is not redrawn at every tick of the clock. */
@@ -45,24 +27,12 @@ export function steady<T>(read: () => T): () => T {
 export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSources) {
   const { now, tasks } = sources;
 
-  // Galaxy: one star per repository, one fuel tank per subscription.
+  // Galaxy: one star per repository.
   const starList = computed(steady(() => stars(tasks.value)));
   const systemNames = computed(() => new Set(starList.value.map((star) => star.repo)));
 
+  /** The subscriptions, for the control panel. */
   const tankList = computed(steady(() => tanks(sources.source.value.state.value.accounts?.data ?? null, now.value)));
-  const tankShapes = computed(
-    steady<TankShape[]>(() =>
-      tankList.value.map((tank) => ({ key: tank.key, executor: tank.executor, name: tank.name, info: tankInfo(tank, now.value), resets: tankCells(tank) })),
-    ),
-  );
-  const tankMarks = computed(
-    steady<TankMark[]>(() =>
-      tankList.value.map((tank) => {
-        const lamps = daysLeft(tank.refillAt, now.value);
-        return { key: tank.key, executor: tank.executor, fuel: tank.fuel, low: tankEmpty(tank), bad: tank.bad, admiral: tank.admiral, lamps, soon: lamps === 1 };
-      }),
-    ),
-  );
 
   const constellationList = computed(steady(() => constellationsOf(sources.constellationData.value, starList.value.map((star) => star.repo))));
   /** Which constellation each repository is in. */
@@ -75,18 +45,8 @@ export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSo
     return { grouped, rest };
   });
 
+  /** The reflection, for the control panel; null when the server tells nothing about research. */
   const station = computed(() => research(sources.researchView.value, sources.allTasks.value, starList.value.map((star) => star.repo)));
-  const researchMarks = computed(() =>
-    station.value
-      ? {
-          running: station.value.running,
-          proposed: station.value.proposed.length,
-          waiting: station.value.waiting,
-          probes: station.value.probes,
-          at: stationPoint.value,
-        }
-      : null,
-  );
   // A finished run has written its report: read it at once rather than at the next refresh.
   watch(() => station.value?.running ?? false, (running, was) => {
     if (was && !running) void sources.loadResearch();
@@ -96,65 +56,32 @@ export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSo
   const world = ref<Size>(worldSize({ width: 1600, height: 1000 }));
   const systemWorld = ref<Size>(systemWorldSize({ width: 1600, height: 1000 }));
 
-  // Machines stand as reactors along the right edge. They are the board's own, including in a scenario.
+  // The machines are the board's own, including in a scenario.
   const machinesData = computed(() => props.board.state.value.machines ?? null);
-  const machineMarks = computed(
-    steady<MachineMark[]>(() => (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, status: machine.status, rings: machineRings(machine.metrics) }))),
-  );
-  const machineNote = computed(() => machinesData.value?.config_error || null);
-  // What the labels show, so that the column knows their sizes; the same list while it does not change.
-  let lastShapes: MachineShape[] = [];
-  const machineShapes = computed(() => {
-    const next = (machinesData.value?.items ?? []).map(machineShape);
-    if (JSON.stringify(next) === JSON.stringify(lastShapes)) return lastShapes;
-    lastShapes = next;
-    return next;
-  });
 
-  /** The parts of the world under the map's own panels, measured for the window; the log's corner until then. */
+  /** The parts of the world under the map's toolbar, measured for the window; a band along the top until then. */
   const covered = shallowRef<Rect[] | null>(null);
   /** The zoom of the full view in this window, at which the labels' room is reserved. */
   const fullZoom = ref<number | undefined>(undefined);
   const coveredNow = computed(() => covered.value ?? defaultCovered(world.value));
-  /** The subscriptions' tanks: a column on the left, a row on top of a phone's galaxy; null without subscriptions. */
-  const fuelColumn = computed(() => (tankShapes.value.length ? fuelPositions(tankShapes.value, world.value, fullZoom.value, coveredNow.value) : null));
-  /** The machines' column; null without machines and without a broken config, and then it takes no room. */
-  const machineColumn = computed(() => {
-    if (!machineShapes.value.length && !machineNote.value) return null;
-    // On a phone the tanks' row runs along the top, under the toolbar: the column starts below it, as below the toolbar.
-    const fuel = fuelColumn.value?.row ? fuelColumnRect(fuelColumn.value) : null;
-    return machinePositions(machineShapes.value, world.value, fullZoom.value, !!machineNote.value, fuel ? [...coveredNow.value, { ...fuel, y0: 0 }] : coveredNow.value);
-  });
-  /** Where the science station stands: in the galaxy's lower right corner, see researchPosition. */
-  const stationPoint = computed(() => researchPosition(world.value, coveredNow.value, machineColumn.value, fuelColumn.value));
   let previousGalaxy: Galaxy | null = null;
   const galaxy = computed(() => {
-    const blocked = galaxyKeepOuts(world.value, coveredNow.value, machineColumn.value, fuelColumn.value);
     // The stars keep their places from the last layout while they fit there.
-    const next = galaxyLayout(starList.value, world.value, blocked, previousGalaxy, fullZoom.value, memberOf.value);
+    const next = galaxyLayout(starList.value, world.value, coveredNow.value, previousGalaxy, fullZoom.value, memberOf.value);
     previousGalaxy = next;
     return next;
   });
 
   /** What the scene's galaxy draws: see FleetScene.setGalaxy. */
   function galaxyModel() {
-    return {
-      stars: starList.value,
-      layout: galaxy.value,
-      tanks: tankMarks.value,
-      fuel: fuelColumn.value,
-      constellations: constellationList.value,
-      research: researchMarks.value,
-      machines: machineMarks.value,
-      machineColumn: machineColumn.value,
-    };
+    return { stars: starList.value, layout: galaxy.value, constellations: constellationList.value };
   }
   /** The sources galaxyModel reads: a change of any of them redraws the galaxy. */
-  const galaxySources = [starList, galaxy, tankMarks, fuelColumn, constellationList, researchMarks, machineMarks, machineColumn] as const;
+  const galaxySources = [starList, galaxy, constellationList] as const;
 
   return {
-    starList, systemNames, tankList, constellationList, pickerGroups, station, world, systemWorld, machinesData, machineNote,
-    covered, fullZoom, coveredNow, fuelColumn, machineColumn, stationPoint, galaxy, galaxyModel, galaxySources,
+    starList, systemNames, tankList, constellationList, pickerGroups, station, world, systemWorld, machinesData,
+    covered, fullZoom, coveredNow, galaxy, galaxyModel, galaxySources,
   };
 }
 

@@ -38,7 +38,6 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
     scene.setView(repo.value);
     scene.setShips(entries.value);
     scene.setSelected(selected.value);
-    scene.setMachine(props.machine ?? null);
     scene.setHovered(hovered.value);
     scene.setActive(drawing());
   }
@@ -60,9 +59,6 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
         onEnter: panels.enter,
         onLeave: panels.leave,
         onPick: panels.open,
-        onResearch: panels.openResearch,
-        onMachine: panels.openMachineAt,
-        onTank: panels.openAccount,
         onHover: (slug) => {
           hovered.value = slug;
         },
@@ -103,7 +99,6 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
   // Every measure of the stage in a system tells the scene, as it is made.
   watch(stage.insets, (insets) => scene?.setInsets(insets), { flush: "sync" });
   watch(model.galaxySources, () => scene?.setGalaxy(model.galaxyModel()));
-  watch(() => props.machine, (id) => scene?.setMachine(id ?? null));
   watch(repoArt, (art) => scene?.setArt(art));
   watch([researchOpen, shipOpen], () => scene?.setActive(drawing()));
   watch(repo, (name) => scene?.setView(name), { flush: "sync" });

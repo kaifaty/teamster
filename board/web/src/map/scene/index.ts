@@ -8,11 +8,8 @@ import { NO_INSETS, systemFrame, worldSize, type Camera, type Insets, type Point
 import { SPACE } from "../palette";
 import { createCamera } from "./camera";
 import { createClouds } from "./galaxy/clouds";
-import { createReactors } from "./galaxy/reactors";
-import { createResearch } from "./galaxy/research";
 import { createStars } from "./galaxy/stars";
 import { createStorms } from "./galaxy/storms";
-import { createTanks } from "./galaxy/tanks";
 import { galaxyAt, hoveredStar, starAt } from "./hits";
 import { createInput, listen } from "./input";
 import { createKit } from "./kit";
@@ -70,12 +67,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   let model: GalaxyModel = {
     stars: [],
     layout: { places: new Map(), spacing: 200, scale: 1, labelZoom: 0.75, world: worldSize(viewport), crowded: 0, groups: "" },
-    tanks: [],
-    fuel: null,
     constellations: [],
-    research: null,
-    machines: [],
-    machineColumn: null,
   };
   let stars = new Map<string, Point>();
   let repo: string | null = null;
@@ -94,23 +86,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   systemBackdrop.anchor.set(0.5);
   const dust = new Graphics();
 
-  const research = createResearch(kit);
   const storms = createStorms(kit);
   const starLayers = createStars(kit);
-  const reactors = createReactors(kit);
   /** The galaxy's layers, the bottom one first. */
-  const galaxyLayers: GalaxyLayer[] = [
-    createClouds(kit),
-    research.waves,
-    createTanks(kit),
-    reactors,
-    research.station,
-    starLayers.bodies,
-    storms.clouds,
-    research.probes,
-    storms.lightning,
-    starLayers.dots,
-  ];
+  const galaxyLayers: GalaxyLayer[] = [createClouds(kit), starLayers.bodies, storms.clouds, storms.lightning, starLayers.dots];
   const galaxy = new Container();
   galaxy.addChild(...galaxyLayers.map((layer) => layer.root));
 
@@ -138,7 +117,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   }
 
   function layoutAll() {
-    camera.layoutGalaxy(viewport);
+    camera.layoutGalaxy(viewport, insets.bottom);
     fitBackdrop(backdrop);
     fitBackdrop(systemBackdrop);
     drawGalaxy();
@@ -230,10 +209,10 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
 
   const worldPoint = (screen: Point): Point => camera.worldPoint(screen);
 
-  /** What is under a screen point: a ship in a system, in the galaxy what galaxyAt finds. */
-  function hitAt(at: Point, machines: boolean, tanks = !!options.onTank): Hit | null {
+  /** What is under a screen point: a ship in a system, a star in the galaxy. */
+  function hitAt(at: Point): Hit | null {
     const point = worldPoint(at);
-    if (!repo) return galaxyAt(model, point, machines, tanks);
+    if (!repo) return galaxyAt(model, point);
     const slug = fleet.shipAt(point);
     return slug ? { kind: "ship", slug } : null;
   }
@@ -242,7 +221,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   let lastStar: string | null = null;
   /** The pointer over the map without a press: the cursor, and the ship or star under it. */
   const hover = (at: Point) => {
-    const hit = hitAt(at, !!options.onMachine);
+    const hit = hitAt(at);
     canvas.style.cursor = hit ? "pointer" : camera.view().zoom > camera.fitOf().zoom * 1.001 ? "grab" : "";
     const slug = hit?.kind === "ship" ? hit.slug : null;
     if (slug !== lastHover) {
@@ -257,12 +236,9 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   };
 
   const click = (at: Point) => {
-    const hit = hitAt(at, true);
+    const hit = hitAt(at);
     if (hit?.kind === "ship") options.onPick(hit.slug);
     else if (hit?.kind === "star") options.onEnter(hit.repo);
-    else if (hit?.kind === "research") options.onResearch();
-    else if (hit?.kind === "machine") options.onMachine?.(hit.id);
-    else if (hit?.kind === "tank") options.onTank?.(hit.key);
   };
 
   const leave = () => {
@@ -340,12 +316,14 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     },
     setShips: (entries) => fleet.set(entries),
     setSelected: (slug) => fleet.select(slug),
-    setMachine: (id) => reactors.select(id),
     setHovered: (slug) => fleet.hover(slug),
     setInsets(next) {
       if (next.top === insets.top && next.right === insets.right && next.bottom === insets.bottom && next.left === insets.left) return;
+      const galaxyMoved = next.bottom !== insets.bottom;
       insets = next;
-      layoutSystem();
+      // The control panel's height fits the galaxy anew; the rest moves only the system.
+      if (galaxyMoved) layoutAll();
+      else layoutSystem();
     },
     setActive(active) {
       if (active) app.start();

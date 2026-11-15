@@ -1,5 +1,5 @@
 // What the viewer opened over the map: the system, a ship's bridge, the science station's screen, a subscription's screen,
-// the day's summary, the ships' list and the dock with the log. The list's choice outlives the page.
+// the day's summary, the ships' list and the control panel's log. The list's choice outlives the page.
 
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
 import { loadJson, saveJson } from "../../lib/storage";
@@ -19,16 +19,15 @@ export interface PanelOptions {
   sources: MapSources;
   model: GalaxyModel;
   host: Readonly<Ref<HTMLElement | null>>;
-  overlay: Readonly<Ref<HTMLElement | null>>;
   fleetPanel: Readonly<Ref<{ reveal(place: Place): void } | null>>;
   summaryButton: Readonly<Ref<HTMLButtonElement | null>>;
-  /** A machine's reactor was clicked, with the label to give the focus back to. */
+  /** A machine was clicked in the control panel, with the button to give the focus back to. */
   onMachine: (id: string, opener: HTMLElement | null) => void;
   /** The map opened a ship's bridge or the science station's screen, which replace the machine's card. */
   onPanel: () => void;
 }
 
-export function useMapPanels({ props, sources, model, host, overlay, fleetPanel, summaryButton, onMachine, onPanel }: PanelOptions) {
+export function useMapPanels({ props, sources, model, host, fleetPanel, summaryButton, onMachine, onPanel }: PanelOptions) {
   // The open system; null means the whole galaxy is shown.
   const repo = ref<string | null>(null);
   /** The ship picked in its system; its bridge stands over the map while `shipOpen`. */
@@ -36,9 +35,12 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   const shipOpen = ref(false);
   const hovered = ref<string | null>(null);
   const researchOpen = ref(false);
-  /** The subscription whose screen stands over the map, by its tank's key; null when none is open. */
+  /** The subscription whose screen stands over the map, by its key; null when none is open. */
   const account = ref<string | null>(null);
   const selectedTask = computed(() => (selected.value ? (sources.source.value.state.value.tasks[selected.value] ?? null) : null));
+  /** The first element of the map's stage that matches `selector` and shows, to give the focus back to. */
+  const visibleIn = (selector: string) =>
+    [...(host.value?.querySelectorAll<HTMLElement>(selector) ?? [])].find((el) => el.offsetParent !== null) ?? null;
 
   // Another source has other systems and ships.
   watch(sources.sourceKind, () => {
@@ -88,7 +90,10 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     onPanel();
   }
 
-  /** A subscription's screen, from its tank; a task's bridge opened from it stands on top, and closing it returns there. */
+  /**
+   * A subscription's screen, from the control panel; a task's bridge opened from it stands on top, and closing it returns
+   * there.
+   */
   function openAccount(key: string) {
     selected.value = null;
     shipOpen.value = false;
@@ -101,8 +106,8 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     const key = account.value;
     account.value = null;
     void nextTick(() => {
-      const label = key ? overlay.value?.querySelector<HTMLElement>(`[data-tank="${CSS.escape(key)}"]`) : null;
-      (label ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus();
+      const row = key ? visibleIn(`[data-account="${CSS.escape(key)}"]`) : null;
+      (row ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus();
     });
   }
 
@@ -120,7 +125,7 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
 
   function closeResearch() {
     researchOpen.value = false;
-    void nextTick(() => overlay.value?.querySelector<HTMLElement>(".station")?.focus());
+    void nextTick(() => (visibleIn(".console-reflection button") ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus());
   }
 
   /** The focus goes back to the ship's row in the list, or to the map. */
@@ -154,11 +159,6 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
 
   function openMachine(id: string, opener: HTMLElement | null) {
     onMachine(id, opener);
-  }
-
-  function openMachineAt(id: string) {
-    const label = overlay.value?.querySelector<HTMLElement>(`[data-machine="${CSS.escape(id)}"] button`) ?? null;
-    openMachine(id, label);
   }
 
   // The labels of the place the map flies to wait for it to arrive.
@@ -210,23 +210,18 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
     void nextTick(() => summaryButton.value?.focus());
   }
 
-  // The dock.
+  // The control panel.
 
-  /** A phone-sized window, as the `@media (max-width: 760px)` rules see it: the dock folds there to one line. */
+  /** A phone-sized window, as the `@media (max-width: 760px)` rules see it: the control panel folds there to a strip. */
   const narrowQuery = matchMedia("(max-width: 760px)");
   const narrow = ref(narrowQuery.matches);
   const onNarrow = (event: MediaQueryListEvent) => {
     narrow.value = event.matches;
   };
-  /**
-   * The dock folds to one line on a narrow window, and in a star system, where the map needs the room:
-   * the whole log then opens over the map on demand.
-   */
-  const compactDock = computed(() => narrow.value || repo.value !== null);
+  /** On a narrow window the log folds to one line, and the whole log opens over the map on demand. */
   const logOpen = ref(false);
-  const dockFolded = computed(() => !compactDock.value || !logOpen.value);
-  // The dock changes its shape across the breakpoint and between the galaxy and a system: it folds.
-  watch(compactDock, () => {
+  // The control panel changes its shape across the breakpoint: the log folds.
+  watch(narrow, () => {
     logOpen.value = false;
   });
 
@@ -275,8 +270,8 @@ export function useMapPanels({ props, sources, model, host, overlay, fleetPanel,
   return {
     repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openShip, openResearch, closeResearch, close, showOnMap, openMachine,
     account, openAccount, closeAccount,
-    openMachineAt, flying, enter, leave, goTo, summaryOpen, closeSummary, narrow,
-    compactDock, logOpen, dockFolded, fleetVisible, toggleFleet, showStation,
+    flying, enter, leave, goTo, summaryOpen, closeSummary, narrow,
+    logOpen, fleetVisible, toggleFleet, showStation,
   };
 }
 

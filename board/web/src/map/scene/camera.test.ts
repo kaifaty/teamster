@@ -109,6 +109,15 @@ describe("the scene's camera", () => {
     expect(camera.view()).toEqual(camera.fit);
   });
 
+  it("fits the galaxy above the control panel and keeps it there", () => {
+    const { camera } = setup();
+    camera.layoutGalaxy({ width: 1920, height: 900 }, 200);
+    expect(camera.galaxyFree).toEqual({ x: 0, y: 0, width: 1920, height: 700 });
+    expect(camera.fit.ty + camera.world.height * camera.fit.zoom).toBeCloseTo(700, 6);
+    camera.panBy(0, -5000);
+    expect(camera.view()).toEqual(camera.fit);
+  });
+
   it("goes back to the fitted view and drops a glide on its way", () => {
     const { camera, middle } = setup();
     camera.zoomBy(2, middle, false);
