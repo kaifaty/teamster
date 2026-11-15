@@ -149,7 +149,7 @@ def wait_check_lines(st):
                 reason = "timeout, " if item["outcome"] == "timeout" else ""
                 yield f"== {name}: {label} ({reason}exit {item['exit']}, {item['seconds']:.0f} s){load}"
             if name != "base tests" and item["outcome"] in ("failed", "timeout", "unavailable"):
-                yield item.get("tail", checking.check_tail(st))
+                yield item.get("tail", checking.check_tail(st, item.get("log", "check.log")))
             elif name == "base tests" and item.get("tail"):
                 yield item["tail"]
 

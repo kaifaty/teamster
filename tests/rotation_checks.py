@@ -205,11 +205,18 @@ class CheckGuardTests(RotationTestCase):
                 self.assertEqual(self.state(st["slug"])["checks"], st["checks"])
                 lines = list(worker.wait_view.wait_check_lines(st))
                 self.assertEqual(sum(line.startswith("== check `") for line in lines), 2)
+                self.assertEqual(lines[1], "first-run")
                 self.assertIn("load rerun", lines[-1])
                 self.assertNotIn("review_skipped", st)
                 notify.assert_not_called()
                 prompt = worker.prompts.review_prompt(st, {"language": "en"})
                 self.assertIn("The saved check already passed: `" + second["cmd"], prompt)
+                without_tails = [{key: value for key, value in item.items() if key != "tail"}
+                                 for item in st["checks"]]
+                without_tails[1].update(outcome="failed", exit=1)
+                lines = list(worker.wait_view.wait_check_lines(dict(st, checks=without_tails)))
+                self.assertEqual(lines[1], "first-run")
+                self.assertEqual(lines[3], "second-run")
 
     def test_loaded_timeout_reruns_once_after_wait_limit(self):
         self.enable_fake_clock()
