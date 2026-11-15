@@ -206,7 +206,9 @@ def review_prompt(st, cfg=None, *, with_angles=False):
                      "or is obsolete, and explain why. A deleted test whose contract still applies "
                      "without a replacement is a P2 finding.\n"))
     checks = st.get("checks", [])
-    if (checks and st.get("check") == checks[-1]["cmd"] and checks[-1]["outcome"] == "passed"):
+    if (checks and checks[-1]["outcome"] == "passed"
+            and (st.get("check") == checks[-1]["cmd"]
+                 or (checks[-1].get("rerun") == "load" and st.get("check_loaded") == checks[-1]["cmd"]))):
         check = checks[-1]
         evidence = f"`{check['cmd']}`: passed (exit {check['exit']}, {check['seconds']:.0f} s).\n"
         context += (("Сохранённая проверка уже прошла: " + evidence +

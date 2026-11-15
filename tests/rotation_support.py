@@ -882,6 +882,8 @@ class RotationTestCase(unittest.TestCase):
                   use_reset_credits=None, reset_credit_min_hours=None, **settings):
         config = {
             "switch_at": 99, "credits": credits, "language": language,
+            # Load-sensitive tests opt in with deterministic load and CPU samples.
+            "check_load_per_cpu": 0,
             "accounts": [{"name": "main", "home": str(self.home)},
                          {"name": "second", "home": str(self.other)}]}
         if wait_for_reset is not None:

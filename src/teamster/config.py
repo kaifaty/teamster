@@ -236,6 +236,8 @@ def accounts_config():
     cfg.setdefault("ci", False)
     cfg.setdefault("ci_timeout_minutes", 30)
     cfg.setdefault("ci_queued_minutes", 20)
+    cfg.setdefault("check_load_per_cpu", 30)
+    cfg.setdefault("check_load_wait_minutes", 15)
     cfg.setdefault("review_angles_min_lines", 400)
     cfg.setdefault("repeat_limit", 3)
     cfg.setdefault("capacity_retry_minutes", [1, 5, 15, 30])
@@ -314,6 +316,9 @@ def accounts_config():
             continue
         if not result_schema.is_finite_number(value) or value <= 0:
             procs.die(key + " must be a positive finite number")
+    for key in ("check_load_per_cpu", "check_load_wait_minutes"):
+        if not result_schema.is_finite_number(cfg[key]) or cfg[key] < 0:
+            procs.die(key + " must be a finite nonnegative number")
     if type(cfg["repeat_limit"]) is not int or cfg["repeat_limit"] < 1:
         procs.die("repeat_limit must be a positive integer")
     pauses = cfg["capacity_retry_minutes"]
