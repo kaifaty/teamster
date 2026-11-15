@@ -432,7 +432,9 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
     const lesson = agents[0]!;
     const landing = landingOf(lesson.implementation);
     const text = landing ? `Урок ${lessonId(lesson.entry)}: ${landing.text}` : `Агент внедряет урок ${lessonId(lesson.entry)}`;
-    return { text, action: { kind: "watch", label: "Посмотреть", lesson }, tone: "live" };
+    // A closed task has no ship on the map to watch.
+    const action = lesson.implementation?.archived ? null : ({ kind: "watch", label: "Посмотреть", lesson } as const);
+    return { text, action, tone: "live" };
   }
   const ready = research.accepted.find((lesson) => {
     const line = lineOf(lesson);

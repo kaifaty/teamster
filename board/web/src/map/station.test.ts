@@ -488,6 +488,12 @@ describe("nextStep", () => {
     expect(nextStep(agents, 1000, clock)).toEqual({ text: "Агент внедряет урок U4", action: { kind: "watch", label: "Посмотреть", lesson: live }, tone: "live" });
     const many = { ...agents, accepted: [...agents.accepted, lesson("accepted", task({ alive: true }), "U5")] };
     expect(nextStep(many, 1000, clock).text).toBe("Агенты внедряют уроки: 2");
+    // The board landing the PR of a closed task works too, with no ship to watch.
+    const merge = { stage: "merging", text: "Сливаю PR #9", pr: "https://github.com/o/r/pull/9", version: null } as const;
+    const landing = lesson("accepted", task({ archived: true, result_status: "done", landing: merge }), "U6");
+    expect(nextStep({ ...agents, accepted: [landing] }, 1000, clock)).toEqual({ text: "Урок U6: Сливаю PR #9", action: null, tone: "live" });
+    const manual = lesson("accepted", task({ archived: true, result_status: "done", landing: { ...merge, stage: "manual" } }), "U7");
+    expect(nextStep({ ...agents, accepted: [manual] }, 1000, clock).text).toBe("PR готов по уроку U7");
     const done = { ...agents, accepted: [ready, lesson("accepted")] };
     expect(nextStep(done, 1000, clock)).toMatchObject({ text: "PR готов по уроку U3", action: { kind: "pr", label: "Показать", lesson: ready } });
     // A change outside the repository has no PR: it comes after the ready PRs.

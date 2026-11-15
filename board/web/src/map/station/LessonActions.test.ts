@@ -76,9 +76,10 @@ describe("an accepted lesson whose PR the board lands itself", () => {
   };
 
   it("offers no buttons once it landed, and «Внедрено» again when the human merges", () => {
-    expect(setup(U5, landing("landed"), "accepted").wrapper.findAll("button")).toHaveLength(0);
+    expect(setup(U5, landing("landed"), "accepted").wrapper.find(".buttons").exists()).toBe(false);
     expect(setup(U5, landing("merging"), "accepted").button("Внедрено")).toBeUndefined();
     expect(setup(U5, landing("manual"), "accepted").button("Внедрено")).toBeDefined();
+    expect(setup(U5, landing("failed"), "accepted").button("Внедрено")).toBeDefined();
     expect(setup(U5, {}, "accepted").button("Внедрено")).toBeDefined();
   });
 });
