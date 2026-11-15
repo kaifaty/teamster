@@ -30,6 +30,7 @@ import rotation_notifications
 import rotation_reviews
 import test_claude_review
 import rotation_lifecycle
+import rotation_resume
 import rotation_reset_credits
 import rotation_accounts
 import rotation_capacity
@@ -84,6 +85,7 @@ class RotationTests(
         rotation_reviews.ReviewFixTests,
         test_claude_review.ClaudeReviewTests,
         rotation_lifecycle.LifecycleTests,
+        rotation_resume.ResumeTests,
         rotation_reset_credits.ResetCreditTests,
         rotation_accounts.AccountAuthTests,
         rotation_capacity.CapacityRetryTests,
