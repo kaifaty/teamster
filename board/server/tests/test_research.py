@@ -122,7 +122,7 @@ def test_index_rows_scopes_statuses_and_extra_cells(tmp_path):
                           "scope_text": "domain a, b", "repos": ["a", "b"], "cue": "a flaky check",
                           "status": "applied", "status_text": "applied AGENTS.md in a",
                           "title": None, "lesson": None, "proposal": None, "evidence": None, "caveats": None,
-                          "outside": [], "implementation": None}
+                          "target": None, "outside": [], "implementation": None}
 
 
 def test_lesson_sections_batch_study_and_signature_cache(tmp_path, monkeypatch):
@@ -150,6 +150,7 @@ evidence:
 - task two, finding R1
 scope: invariant
 earlier: no earlier lesson
+target: `teamster`, ~/.codex/AGENTS.md,
 proposal: Change the CI waiter.
 ### W4. A different lesson
 caveats: This belongs to W4.
@@ -190,11 +191,13 @@ lesson: Never read this for W3.
         "evidence": "task gothic, check.log line 12", "caveats": "One repository.", "proposal": None,
     }
     assert fields(lessons[2]) == dict.fromkeys(research_module.LESSON_FIELDS)
+    assert [row["target"] for row in lessons] == [["teamster", "~/.codex/AGENTS.md"], None, None]
     assert research.view()["lessons"] == lessons
     assert opened == [batch, study]
     with original(study, "w") as stream:
-        stream.write("## T4 Keep checks\nlesson: " + "x" * 2100 + "\nscope: domain\n")
+        stream.write("## T4 Keep checks\nlesson: " + "x" * 2100 + "\ntarget:\nscope: domain\n")
     assert research.view()["lessons"][1]["lesson"] == "x" * 2000
+    assert research.view()["lessons"][1]["target"] == []
     assert opened == [batch, study, study]
     study.unlink()
     study.symlink_to(batch)
@@ -250,6 +253,38 @@ def test_lesson_outside_from_proposal_only(tmp_path, monkeypatch, proposal, expe
     (archive / "batch-2026-11-10.md").write_text(
         "## X4. ~/title.py\nlesson: ~/lesson.py\nevidence: ~/evidence.py\ncaveats: ~/caveats.py\n" +
         ("proposal: " + proposal.replace("{home}", str(home)) + "\n" if proposal is not None else ""))
+    lesson = Research(archive.parent).view()["lessons"][0]
+    assert lesson["outside"] == expected
+
+
+@pytest.mark.parametrize("proposal,target,expected", [
+    ("agent-router, «Brief rules by repository», gothic: name the rule.", None,
+     ["~/.claude/skills/agent-router/SKILL.md"]),
+    ("scripts/agent-router, agent-router.md, tools/agent-router/run.sh, ~/.claude/skills/agent-router", None, []),
+    ("reviewer and empty-skill and tracked", None, ["~/.codex/skills/reviewer/SKILL.md"]),
+    ("Update ~/.codex/AGENTS.md and agent-router.",
+     "gothic, ~/.claude/skills/agent-router/SKILL.md, ~/new/rule.md, ~/repository/check.py, ~/.codex/AGENTS.md",
+     ["~/.claude/skills/agent-router/SKILL.md", "~/new/rule.md", "~/.codex/AGENTS.md"]),
+    (None, "reviewer, empty-skill", ["~/.codex/skills/reviewer/SKILL.md"]),
+])
+def test_lesson_outside_from_target_and_skill_names(tmp_path, monkeypatch, proposal, target, expected):
+    home = tmp_path / "home"
+    monkeypatch.setattr(research_module.Path, "home", classmethod(lambda cls: home))
+    for name in (".claude/skills/agent-router/SKILL.md", ".codex/skills/reviewer/SKILL.md",
+                 ".claude/skills/tracked/SKILL.md"):
+        (home / name).parent.mkdir(parents=True)
+        (home / name).write_text("# Skill\n")
+    (home / ".claude" / "skills" / "empty-skill").mkdir()
+    (home / ".claude" / "skills" / "tracked" / ".git").mkdir()
+    (home / "repository" / ".git").mkdir(parents=True)
+    archive = tmp_path / "tasks" / ".archive"
+    archive.mkdir(parents=True)
+    (archive / "INDEX.md").write_text(
+        "| 2026-11-10 | batch-2026-11-10.md G1 | domain gothic | reviewer | proposed |\n")
+    (archive / "batch-2026-11-10.md").write_text(
+        "## G1. agent-router\nlesson: reviewer\n" +
+        ("proposal: " + proposal + "\n" if proposal is not None else "") +
+        ("target: " + target + "\n" if target is not None else ""))
     lesson = Research(archive.parent).view()["lessons"][0]
     assert lesson["outside"] == expected
 
@@ -349,6 +384,8 @@ def test_repositories_from_all_tasks_are_resolved_filtered_sorted_and_capped(tmp
     assert view_repos() == expected
     (no_origin / ".git" / "config").unlink()
     (no_origin / ".git" / "config").write_text(origin + "#" * research_module.GIT_LIMIT)
+    assert view_repos() == [*expected, {"name": "no-origin", "path": str(no_origin)}]
+    (no_origin / ".git" / "config").write_text(origin + "#" * research_module.CONFIG_LIMIT)
     assert view_repos() == expected
     for index in range(101):
         repo = tmp_path / f"repo-{index:03}"

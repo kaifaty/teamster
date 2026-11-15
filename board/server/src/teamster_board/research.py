@@ -5,6 +5,7 @@ src/teamster/task_state.py, review_cycle.py, supervisor.py and result_schema.py.
 """
 
 import configparser
+import itertools
 import json
 import os
 import re
@@ -34,15 +35,19 @@ STUDY_LIMIT = 20
 STUDY_SECONDS = 30 * 24 * 3600
 SCHEDULE_LIMIT = 1024 * 1024
 GIT_LIMIT = 64 * 1024
+# A repository's config grows with its branch and remote sections; gothic's is 74 KiB.
+CONFIG_LIMIT = 1024 * 1024
+SKILL_ROOTS = (".claude", ".codex")
+SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]*")
 
 
-def git_file(directory, name):
+def git_file(directory, name, limit=GIT_LIMIT):
     path = Store._file(directory, name)
-    if path is None or path.stat().st_size > GIT_LIMIT:
+    if path is None or path.stat().st_size > limit:
         return None
     with path.open("rb") as stream:
-        content = stream.read(GIT_LIMIT + 1)
-    return content.decode("utf-8") if len(content) <= GIT_LIMIT else None
+        content = stream.read(limit + 1)
+    return content.decode("utf-8") if len(content) <= limit else None
 
 
 def repository(repo):
@@ -77,7 +82,7 @@ def repository(repo):
             else:
                 return None
             path = git.parent
-        content = git_file(git, "config")
+        content = git_file(git, "config", CONFIG_LIMIT)
         if content is None:
             return None
         config = configparser.ConfigParser(interpolation=None, strict=False, allow_no_value=True,
@@ -233,6 +238,7 @@ def batch_through(content):
 
 def lesson_section(content, lesson_id):
     result = dict.fromkeys(LESSON_FIELDS)
+    result["target"] = None
     level = None
     field = None
     values = {}
@@ -247,14 +253,20 @@ def lesson_section(content, lesson_id):
             continue
         if heading is not None and len(heading[1]) <= level:
             break
-        marker = re.match(r"^(cue|lesson|evidence|scope|earlier|caveats|proposal):(.*)$", line)
+        marker = re.match(r"^(cue|lesson|evidence|scope|earlier|caveats|proposal|target):(.*)$", line)
         if marker is not None:
             field = marker[1]
             values[field] = [marker[2]]
+            if field == "target":
+                # The places fit on their own line; the next lines belong to no field.
+                field = None
         elif field is not None:
             values[field].append(line)
     for name in LESSON_FIELDS[1:]:
         result[name] = "\n".join(values.get(name, [])).strip()[:2000] or None
+    if "target" in values:
+        places = (place.strip().strip("`").strip() for place in values["target"][0][:2000].split(","))
+        result["target"] = [place for place in places if place]
     return result
 
 
@@ -286,24 +298,55 @@ def home_path(path, home):
         return None
 
 
-def outside_paths(proposal, repos):
-    if proposal is None:
-        return []
-    home = Path.home()
-    outside = []
+def skill_paths(name, home, skills):
+    """SKILL.md files of the skill directories named `name` under ~/.claude/skills and ~/.codex/skills."""
+    found = []
+    for root in SKILL_ROOTS:
+        if root not in skills:
+            directory = home_path(home / root / "skills", home)
+            try:
+                skills[root] = ({entry.name for entry in directory.iterdir()}
+                                if directory is not None and directory.is_dir() else set())
+            except OSError:
+                skills[root] = set()
+        if name in skills[root]:
+            path = home / root / "skills" / name / "SKILL.md"
+            parent = home_path(path.parent, home)
+            if parent is not None:
+                candidate = parent / path.name
+                try:
+                    if not candidate.is_symlink() and candidate.is_file():
+                        found.append((path, candidate))
+                except OSError:
+                    continue
+    return found
+
+
+def target_candidates(target, home, skills):
+    for place in target:
+        if place.startswith("~/"):
+            path = home / place[2:]
+            candidate = home_path(path, home)
+            if candidate is not None:
+                yield path, candidate
+        elif SKILL_NAME.fullmatch(place):
+            yield from skill_paths(place, home, skills)
+
+
+def proposal_candidates(proposal, repos, home, skills):
     tokens = re.finditer(r"(?<![A-Za-z0-9._@+/$~{}-])(?:" + re.escape(str(home)) +
                          r"/|~/|\$HOME/|\$\{HOME\}/)?[A-Za-z0-9._@+/-]+", proposal)
     for match in tokens:
         token = match.group().rstrip(".,:;/")
-        candidates = []
         prefix = next((prefix for prefix in ("~/", "$HOME/", "${HOME}/")
                        if token.startswith(prefix)), None)
         if prefix is not None or token.startswith("/"):
             path = home / token[len(prefix):].lstrip("/") if prefix else Path(token)
             candidate = home_path(path, home)
             if candidate is not None:
-                candidates.append((path, candidate))
-        elif CHECK_TOKEN.fullmatch(token):
+                yield path, candidate
+            continue
+        if CHECK_TOKEN.fullmatch(token):
             checks = home / ".codex" / "checks"
             paths = [checks / repo / token for repo in repos]
             if "/" in token:
@@ -314,28 +357,40 @@ def outside_paths(proposal, repos):
                     candidate = parent / path.name
                     try:
                         if not candidate.is_symlink() and candidate.is_file():
-                            candidates.append((path, candidate))
+                            yield path, candidate
                     except OSError:
                         continue
-        for path, candidate in candidates:
-            try:
-                if candidate == home or candidate.is_dir():
-                    continue
-                directory = candidate.parent
-                for ancestor in (directory, *directory.parents):
-                    try:
-                        (ancestor / ".git").lstat()
-                        break
-                    except (FileNotFoundError, NotADirectoryError):
-                        continue
-                else:
-                    display = "~/" + Path(os.path.normpath(path)).relative_to(home).as_posix()
-                    if display not in outside:
-                        outside.append(display)
-                        if len(outside) == 10:
-                            return outside
-            except (OSError, ValueError):
+        if "/" not in token and SKILL_NAME.fullmatch(token):
+            yield from skill_paths(token, home, skills)
+
+
+def outside_paths(proposal, repos, target=None):
+    """Paths outside every git repository from the lesson's target, then from its proposal."""
+    home = Path.home()
+    outside = []
+    skills = {}
+    candidates = target_candidates(target or [], home, skills)
+    if proposal is not None:
+        candidates = itertools.chain(candidates, proposal_candidates(proposal, repos, home, skills))
+    for path, candidate in candidates:
+        try:
+            if candidate == home or candidate.is_dir():
                 continue
+            directory = candidate.parent
+            for ancestor in (directory, *directory.parents):
+                try:
+                    (ancestor / ".git").lstat()
+                    break
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+            else:
+                display = "~/" + Path(os.path.normpath(path)).relative_to(home).as_posix()
+                if display not in outside:
+                    outside.append(display)
+                    if len(outside) == 10:
+                        return outside
+        except (OSError, ValueError):
+            continue
     return outside
 
 
@@ -657,13 +712,13 @@ class Research:
         lessons = []
         for row in self._index[1]:
             parts = row["entry"].split()
-            fields = dict.fromkeys(LESSON_FIELDS)
+            fields = {**dict.fromkeys(LESSON_FIELDS), "target": None}
             if len(parts) == 2 and ARCHIVE_FILE.fullmatch(parts[0]):
                 content = self._archive_file(archive, parts[0])
                 if content is not None:
                     fields = lesson_section(content, parts[1])
             lessons.append({**row, **fields,
-                            "outside": outside_paths(fields["proposal"], row["repos"])})
+                            "outside": outside_paths(fields["proposal"], row["repos"], fields["target"])})
         return lessons
 
     def _archive_file(self, archive, name):
