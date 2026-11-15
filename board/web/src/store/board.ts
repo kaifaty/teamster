@@ -2,7 +2,7 @@ import { computed, onBeforeUnmount, ref, shallowRef } from "vue";
 import type { BoardSource } from "../lib/source";
 import type { ConnectionState } from "../lib/socket";
 import { LOG_WINDOW_SECONDS, mergeEvents } from "../lib/events";
-import type { LogEvent } from "../types";
+import type { LogEvent, TaskSummary } from "../types";
 import { emptyState, reduce, type BoardState } from "./reduce";
 
 export function createBoard(source: BoardSource) {
@@ -50,9 +50,20 @@ export function createBoard(source: BoardSource) {
     );
   };
 
+  /**
+   * A task an action's answer carried, applied at once rather than on the next poll. A newer state of the task already
+   * on the board stays; an equal one changes nothing.
+   */
+  function put(task: TaskSummary) {
+    const current = state.value.tasks[task.slug];
+    if (current && (current.updated_at > task.updated_at || JSON.stringify(current) === JSON.stringify(task))) return;
+    state.value = reduce(state.value, { type: "task", task }, Date.now());
+  }
+
   return {
     source,
     state,
+    put,
     connection,
     retryInMs,
     tasks: computed(() => Object.values(state.value.tasks)),

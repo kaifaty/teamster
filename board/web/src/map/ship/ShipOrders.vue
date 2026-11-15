@@ -2,14 +2,16 @@
 // The deck «Другие действия»: what «Сейчас» does not lead with — a verdict, the refit, an extra review, a flight review
 // at the science station and the recall. The forms stay folded until opened. A group shows only where the board server
 // takes its order; every button acts at once, and a board that only reads copies the equal command. Stopping and
-// writing off ask on the screen itself first.
+// writing off ask on the screen itself first (ShipRecall, shared with the block of a ship with a verdict).
 import { computed, ref, watch } from "vue";
 import { REVIEWERS, type Reviewer } from "../../lib/actions";
 import { EXECUTORS } from "../../lib/labels";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
 import CopiedNote from "../station/CopiedNote.vue";
+import { verdictOf } from "./bridge";
 import type { GroupId, ShipDesk } from "./desk";
-import { ANGLE_CHIPS, NOTE_MAX, OTHER_VERDICTS, anglesOf, deskOf, effortsFor, refitLine, stopConfirm, toggleAngle } from "./orders";
+import { ANGLE_CHIPS, NOTE_MAX, OTHER_VERDICTS, anglesOf, deskOf, effortsFor, refitLine, toggleAngle } from "./orders";
+import ShipRecall from "./ShipRecall.vue";
 
 const props = defineProps<{ task: TaskSummary; desk: ShipDesk; limits: TaskLimits | null | undefined; cargo: Cargo | null }>();
 
@@ -22,7 +24,13 @@ const refit = props.desk.refit;
 const asIs = (value: string | number | null | undefined) => (value === null || value === undefined || value === "" ? "как сейчас" : String(value));
 const savedAngles = computed(() => props.limits?.review_angles ?? []);
 
-// Acceptance.
+// Acceptance. Once a verdict is written, «Принять» stands here too, to change the verdict back.
+const judged = computed(() => verdictOf(props.task) !== null);
+const acceptHere = computed(() => !view.value.acceptFirst || judged.value);
+const verdictGroup = ref<HTMLDetailsElement | null>(null);
+function onVerdictToggle() {
+  if (verdictGroup.value) props.desk.verdictOpen.value = verdictGroup.value.open;
+}
 const note = ref("");
 const other = ref("");
 async function accept(verdict: Parameters<ShipDesk["verdict"]>[0]) {
@@ -36,23 +44,6 @@ async function accept(verdict: Parameters<ShipDesk["verdict"]>[0]) {
 const reviewAngles = ref<string[]>([]);
 const reviewer = ref<Reviewer | "">("");
 
-// The recall.
-const confirming = ref<"stop" | "clean" | null>(null);
-const keepBranch = ref(true);
-const CONFIRM = computed(() => ({
-  stop: stopConfirm(props.desk.queued.value?.waiting.length ?? 0),
-  clean: "Списать: удалить worktree и запись задачи.",
-}));
-async function recall() {
-  const what = confirming.value;
-  if (!what) return;
-  const asked = props.task.slug;
-  if (what === "stop") await props.desk.stop();
-  else await props.desk.clean(keepBranch.value);
-  // Another ship opened meanwhile keeps its own confirmation.
-  if (props.task.slug === asked) confirming.value = null;
-}
-
 watch(
   () => props.task.slug,
   () => {
@@ -60,8 +51,6 @@ watch(
     other.value = "";
     reviewAngles.value = [];
     reviewer.value = "";
-    confirming.value = null;
-    keepBranch.value = true;
   },
 );
 </script>
@@ -145,11 +134,19 @@ watch(
         </div>
       </details>
 
-      <details v-if="view.accept" class="group fold" :open="!!groups.accept.done || !!groups.accept.error || undefined" :aria-busy="busy('accept')">
-        <summary>{{ view.acceptFirst ? "Другой вердикт" : "Записать вердикт" }} <small>{{ view.acceptFirst ? "с правками, переделан, не берём" : "принят, с правками, не берём" }}</small></summary>
+      <details
+        v-if="view.accept"
+        id="ship-verdict"
+        ref="verdictGroup"
+        class="group fold"
+        :open="desk.verdictOpen.value || !!groups.accept.done || !!groups.accept.error || undefined"
+        :aria-busy="busy('accept')"
+        @toggle="onVerdictToggle"
+      >
+        <summary>{{ acceptHere ? "Записать вердикт" : "Другой вердикт" }} <small>{{ acceptHere ? "принят, с правками, не берём" : "с правками, переделан, не берём" }}</small></summary>
         <div class="body">
           <div class="row">
-            <button v-if="!view.acceptFirst" type="button" class="key" :disabled="busy('accept')" @click="accept('accepted')">{{ groups.accept.busy === "accepted" ? "Принимаю…" : "Принять" }}</button>
+            <button v-if="acceptHere" type="button" class="key" :disabled="busy('accept')" @click="accept('accepted')">{{ groups.accept.busy === "accepted" ? "Принимаю…" : "Принять" }}</button>
             <select v-model="other" class="field" aria-label="Другой вердикт" :disabled="busy('accept')">
               <option value="">другой вердикт…</option>
               <option v-for="item in OTHER_VERDICTS" :key="item.verdict" :value="item.verdict">{{ item.label }}</option>
@@ -177,19 +174,7 @@ watch(
       </div>
 
       <div v-if="view.stop || view.clean" class="group" :aria-busy="busy('recall')">
-        <div class="row">
-          <button v-if="view.stop" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'stop'">Остановить ход</button>
-          <button v-if="view.clean" type="button" class="key danger" :disabled="busy('recall')" @click="confirming = 'clean'">Убрать задачу</button>
-          <label v-if="view.clean" class="check"><input v-model="keepBranch" type="checkbox" /> оставить ветку</label>
-        </div>
-        <div v-if="confirming" class="confirm" role="alertdialog" aria-label="Подтверждение" @keydown.esc.stop="confirming = null">
-          <span>{{ CONFIRM[confirming] }}</span>
-          <button type="button" class="key danger" :disabled="busy('recall')" @click="recall">{{ groups.recall.busy ? "Выполняю…" : "Да" }}</button>
-          <button type="button" class="key" :disabled="busy('recall')" @click="confirming = null">Отмена</button>
-        </div>
-        <p v-if="groups.recall.done" class="result ok" role="status" :title="groups.recall.output">{{ groups.recall.done }}</p>
-        <p v-if="groups.recall.error" class="result bad" role="alert">{{ groups.recall.error }}</p>
-        <CopiedNote v-if="groups.recall.copied" :copied="groups.recall.copied" />
+        <ShipRecall :task="task" :desk="desk" :stop="view.stop" :clean="view.clean" />
       </div>
 
     </div>
@@ -312,27 +297,4 @@ watch(
   color: var(--sh-red);
 }
 
-.check {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--sh-dim);
-  font-size: 12px;
-}
-
-.confirm {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border: 1px solid rgba(255, 141, 122, 0.45);
-  border-radius: 8px;
-  background: rgba(255, 141, 122, 0.07);
-  font-size: 12px;
-}
-
-.confirm span {
-  flex: 1 1 180px;
-}
 </style>

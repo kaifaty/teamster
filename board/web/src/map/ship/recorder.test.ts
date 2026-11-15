@@ -41,6 +41,8 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
     findings_left: 0,
     stop: null,
     left: 0,
+    lead_verdict: null,
+    lead_verdict_at: null,
     ...overrides,
   };
 }

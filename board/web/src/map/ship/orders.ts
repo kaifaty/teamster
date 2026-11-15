@@ -3,9 +3,11 @@
 
 import { ANGLES, EFFORTS, REVIEWERS, type ActionBodies, type Angle, type Effort, type SayOptions } from "../../lib/actions";
 import { cleanCommand, commandSlug, optionFlags, reflectCommand, reflectSlug, reviewCommand, sayCommand, stopCommand, verdictCommand, type Verdict } from "../../lib/commands";
+import { formatClock } from "../../lib/format";
 import { recommendedOrder, type OrderTone } from "../../lib/orders";
 import type { Cargo, TaskLimits, TaskMessage, TaskQueue, TaskSummary } from "../../types";
 import { plural } from "../research";
+import { verdictOf, verdictTitle } from "./bridge";
 
 /** An archived record's folder ends in its archive time: the server takes no order but a verdict or a reflection. */
 export const archived = (slug: string) => commandSlug(slug) !== slug;
@@ -360,12 +362,13 @@ export function answerText(questions: readonly string[], answers: readonly (Answ
  * - `questions`: the agent asked; each question takes a quick answer;
  * - `reply`: the ship waits for your words, with the text the state suggests;
  * - `accept`: ready on the roadstead: read the diff and accept, or return it;
+ * - `accepted`: your verdict is written: merge the PR and clean the task up, or change the verdict;
  * - `return`: back for a fix first: the check, CI or the base failed;
  * - `calm`: at work, nothing to do (an order can wait in the queue);
  * - `sleep`: asleep until the limit resets, wakes by itself;
  * - `none`: nothing the board can do here: a session, a closed or archived ship, or one the server takes no words from.
  */
-export type NeedKind = "questions" | "reply" | "accept" | "return" | "calm" | "sleep" | "none";
+export type NeedKind = "questions" | "reply" | "accept" | "accepted" | "return" | "calm" | "sleep" | "none";
 
 export interface Need {
   kind: NeedKind;
@@ -386,6 +389,8 @@ export function needOf(task: TaskSummary, cargo: Cargo | null | undefined, desk:
   if (task.column === "sleeping") return { kind: "sleep", title: order.reason, tone: "muted", text: "" };
   if (task.alive) return { kind: "calm", title: "Вмешиваться не нужно", tone: "muted", text: "" };
   if (task.column === "review_me") {
+    const accepted = verdictTitle(task);
+    if (accepted) return { kind: "accepted", title: accepted, tone: "ok", text: "" };
     if (order.action === "say" && desk.send) return { kind: "return", title: order.reason, tone: order.tone, text: order.text ?? "" };
     if (desk.accept) return { kind: "accept", title: order.reason, tone: order.tone, text: "" };
   }
@@ -397,7 +402,15 @@ export function needOf(task: TaskSummary, cargo: Cargo | null | undefined, desk:
   return { kind: "none", title: order.reason, tone: order.tone, text: "" };
 }
 
-const VERDICT_WORDS: Record<Verdict, string> = { accepted: "принято", revised: "принят с моими правками", redone: "переделан в другом месте", dropped: "не берём" };
+export const VERDICT_WORDS: Record<Verdict, string> = { accepted: "принято", revised: "принят с моими правками", redone: "переделан в другом месте", dropped: "не берём" };
+
+/** «Вердикт «принято» записан в 14:05» under the block of a ship with a verdict; null without one. */
+export function verdictLine(task: Pick<TaskSummary, "kind" | "column" | "lead_verdict" | "lead_verdict_at">, now: number): string | null {
+  const verdict = verdictOf(task);
+  if (!verdict) return null;
+  const at = task.lead_verdict_at;
+  return `Вердикт «${VERDICT_WORDS[verdict]}» записан${at !== null ? ` в ${formatClock(at, now)}` : ""}`;
+}
 
 /**
  * The line under a group once the server carried its order out: what changed, in the human's words. teamster's own
@@ -411,7 +424,7 @@ export function orderOutcome(order: ShipOrder, output: string, { queued = false,
       return turn ? `Указание передано: агент начал ход ${turn}` : "Указание передано";
     }
     case "verdict":
-      return `Вердикт «${VERDICT_WORDS[order.body.verdict]}» записан — это оценка для статистики; PR этим не сливается`;
+      return `Вердикт «${VERDICT_WORDS[order.body.verdict]}» записан`;
     case "review":
       return "Внеочередное ревью запущено";
     case "reflect":

@@ -66,12 +66,18 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
   const refitNow = computed(() => (task.value ? refitOf(refit, task.value, detail.value?.limits) : { options: {}, errors: [] }));
   const echo = ref<Echo[]>([]);
   const groups = reactive<Record<GroupId, GroupState>>({ reply: blank(), accept: blank(), review: blank(), reflect: blank(), recall: blank() });
+  /** «оставить ветку» of «Убрать задачу», wherever the button stands. */
+  const keepBranch = ref(true);
+  /** The verdict group of «Другие действия» stands open: «Изменить вердикт» opened it. */
+  const verdictOpen = ref(false);
 
   // Another ship: a clean console.
   watch(slug, () => {
     reply.value = "";
     Object.assign(refit, blankRefit());
     echo.value = [];
+    keepBranch.value = true;
+    verdictOpen.value = false;
     for (const id of Object.keys(groups) as GroupId[]) groups[id] = blank();
   });
 
@@ -164,7 +170,7 @@ export function createShipDesk({ slug, task, detail, act, copy = clipboard }: De
   const stop = () => run("recall", "stop", { route: "stop", body: { slug: slug.value } });
   const clean = (keepBranch: boolean) => run("recall", "clean", { route: "clean", body: { slug: slug.value, keep_branch: keepBranch } });
 
-  return { live, offReason, queue, queued, reply, field, refit, refitNow, echo, groups, fill, send, verdict, review, reflect, stop, clean };
+  return { live, offReason, queue, queued, reply, field, refit, refitNow, echo, groups, keepBranch, verdictOpen, fill, send, verdict, review, reflect, stop, clean };
 }
 
 export type ShipDesk = ReturnType<typeof createShipDesk>;

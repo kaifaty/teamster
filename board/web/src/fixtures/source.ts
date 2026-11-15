@@ -43,7 +43,7 @@ const EVENT_MS = 9000;
 const TIME_KEYS = new Set([
   "generated_at", "phase_started_at", "sleeping_until", "created", "updated_at", "at", "fetched_at",
   "resets_at", "limited_until", "expires_at", "since", "checked_at", "sampled_at",
-  "last_run_at", "last_scheduled_for", "next_at", "queued_at", "dropped_at", "started_at",
+  "last_run_at", "last_scheduled_for", "next_at", "queued_at", "dropped_at", "started_at", "lead_verdict_at",
 ]);
 
 function shiftValue(value: unknown, delta: number): unknown {

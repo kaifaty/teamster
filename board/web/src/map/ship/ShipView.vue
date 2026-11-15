@@ -31,8 +31,11 @@ const props = defineProps<{
   /** The system's emblem; null draws the repository's first letter. */
   emblem: string | null;
 }>();
-/** `show`: «Показать на карте», the screen gives way to the ship's system with the ship picked. */
-const emit = defineEmits<{ close: []; show: [repo: string] }>();
+/**
+ * `show`: «Показать на карте», the screen gives way to the ship's system with the ship picked. `task`: an order's answer
+ * carried the ship as it is now, for the board to show at once.
+ */
+const emit = defineEmits<{ close: []; show: [repo: string]; task: [task: TaskSummary] }>();
 
 const detail = ref<TaskDetail | null>(null);
 const detailError = ref<string | null>(null);
@@ -83,12 +86,17 @@ const state = computed(() => (shown.value ? stateOf(shown.value) : null));
 const link = computed(() => (shown.value ? claudeLink(shown.value) : null));
 const letter = computed(() => (shown.value?.repo.replace(/[^\p{L}\p{N}]/gu, "").charAt(0) || "·").toUpperCase());
 
-// The comms room and the order desk; after an order the task loads again at once.
+// The comms room and the order desk; after an order the task loads again at once, and a verdict's answer brings the
+// ship with its verdict without waiting for the next poll.
 const desk = createShipDesk({
   slug: toRef(props, "slug"),
   task: shown,
   detail: own,
-  act: (route, body) => postAction(route, body, { send: props.source.act, refresh: loadDetail }),
+  act: async (route, body) => {
+    const result = await postAction(route, body, { send: props.source.act, refresh: loadDetail });
+    if (result.ok && result.task?.slug === props.slug) emit("task", result.task);
+    return result;
+  },
 });
 
 // The documents' viewer.

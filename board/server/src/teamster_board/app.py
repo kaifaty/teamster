@@ -379,7 +379,15 @@ def create_app(settings=None):
         data = await action_body(request)
         if not isinstance(data, dict):
             return data
-        return await asyncio.to_thread(board.actions.run, request.url.path.rsplit("/", 1)[-1], data)
+        route = request.url.path.rsplit("/", 1)[-1]
+        result = await asyncio.to_thread(board.actions.run, route, data)
+        if route == "verdict" and isinstance(result, dict) and result.get("ok"):
+            # The journal row is read at once: the answer and the socket carry the task with its verdict.
+            await board.poll()
+            task = await asyncio.to_thread(board.store.summary, data["slug"])
+            if task is not None:
+                result = {**result, "task": task}
+        return result
 
     @app.post("/api/actions/login")
     @app.post("/api/actions/login/input")

@@ -3,7 +3,7 @@
 // on a ship's bridge; and it signs in to a subscription and refreshes its data, for the subscription's screen. The board
 // tab's task card only copies commands.
 
-import type { ActionsOff, Launch, Login } from "../types";
+import type { ActionsOff, Launch, Login, TaskSummary } from "../types";
 import type { Verdict } from "./commands";
 
 export type ActionRoute =
@@ -130,9 +130,10 @@ export interface ActionBodies {
 
 /**
  * `launch`: a newer server answers `implement` and `reflect` at once and runs the start in the background, whose steps
- * then come as `launch` messages; an older one answers once the task has started, without it.
+ * then come as `launch` messages; an older one answers once the task has started, without it. `task`: a verdict's answer
+ * carries the task with the verdict recorded.
  */
-export type ActionResult = { ok: true; output: string; slug?: string; launch?: Launch; login?: Login } | { ok: false; error: string };
+export type ActionResult = { ok: true; output: string; slug?: string; launch?: Launch; login?: Login; task?: TaskSummary } | { ok: false; error: string };
 
 export type ActionSender = <R extends ActionRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
 
@@ -149,6 +150,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 /** A start as the contract has it: a slug, a stage and its steps. */
 export const isLaunch = (value: unknown): value is Launch =>
   isRecord(value) && typeof value.slug === "string" && !!value.slug && typeof value.stage === "string" && Array.isArray(value.steps);
+
+/** A task summary, as far as the board can tell: a slug, a column and its time. */
+const isTask = (value: unknown): value is TaskSummary =>
+  isRecord(value) && typeof value.slug === "string" && !!value.slug && typeof value.column === "string" && typeof value.updated_at === "number";
 
 /** A sign-in as the contract has it: an id, a family, an account and a stage. */
 export const isLogin = (value: unknown): value is Login =>
@@ -188,6 +193,7 @@ export async function requestAction<R extends ActionRoute>(
     if (typeof data.slug === "string" && data.slug) result.slug = data.slug;
     if (isLaunch(data.launch)) result.launch = data.launch;
     if (isLogin(data.login)) result.login = data.login;
+    if (isTask(data.task)) result.task = data.task;
     return result;
   }
   if (isRecord(data) && typeof data.error === "string" && data.error.trim()) {

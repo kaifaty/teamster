@@ -1,23 +1,26 @@
 <script setup lang="ts">
 // What «Сейчас» asks of you, on its right: the agent's questions with quick answers and the reply they make, your own
-// reply with the state's suggestion, the acceptance with the way back, the return for a fix, or nothing to do while the
-// ship works or sleeps. One main button per state. Every order runs through the board server; a board that only reads
-// copies the equal command.
-import { computed, reactive, ref, watch } from "vue";
+// reply with the state's suggestion, the acceptance with the way back, what is left once the verdict is written, the
+// return for a fix, or nothing to do while the ship works or sleeps. One main button per state. Every order runs through
+// the board server; a board that only reads copies the equal command.
+import { computed, nextTick, reactive, ref, watch } from "vue";
+import { cleanCommand } from "../../lib/commands";
 import { prLabel } from "../../lib/labels";
 import { CONTINUE, MERGE, returnText } from "../../lib/orders";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
 import CopiedNote from "../station/CopiedNote.vue";
 import { isSendKey } from "../station";
+import { mergedVerdict, verdictOf } from "./bridge";
 import type { ShipDesk } from "./desk";
-import { NOTE_MAX, answerText, deskOf, replyHint, type Answer, type Need } from "./orders";
+import { NOTE_MAX, answerText, deskOf, replyHint, verdictLine, type Answer, type Need } from "./orders";
+import ShipRecall from "./ShipRecall.vue";
 
 const props = defineProps<{ task: TaskSummary; cargo: Cargo | null; desk: ShipDesk; need: Need; limits: TaskLimits | null | undefined; now: number }>();
 
 const view = computed(() => deskOf(props.task, props.desk.queue.value));
 const reply = computed(() => props.desk.groups.reply);
 const accept = computed(() => props.desk.groups.accept);
-const busy = computed(() => !!reply.value.busy || !!accept.value.busy);
+const busy = computed(() => !!reply.value.busy || !!accept.value.busy || !!props.desk.groups.recall.busy);
 const hint = computed(() => replyHint(view.value, props.desk.live.value ? null : props.desk.offReason.value));
 
 // The agent's questions: a quick answer each, and the extra words.
@@ -48,6 +51,19 @@ async function accepted() {
 function back() {
   returning.value = true;
   void props.desk.fill(returnText(props.cargo));
+}
+
+// The verdict is written: merge the PR first when there is one to merge, then clean the task up.
+const mergeFirst = computed(() => !!props.task.pr && mergedVerdict(verdictOf(props.task)));
+const written = computed(() => verdictLine(props.task, props.now));
+const cleanLine = computed(() => cleanCommand(props.task.slug, props.desk.keepBranch.value));
+/** «Изменить вердикт» opens the verdict group of «Другие действия». */
+async function changeVerdict() {
+  props.desk.verdictOpen.value = true;
+  await nextTick();
+  const group = document.getElementById("ship-verdict");
+  group?.scrollIntoView?.({ block: "nearest" });
+  group?.querySelector<HTMLElement>("button, select")?.focus();
 }
 
 const quick = computed(() => {
@@ -166,7 +182,7 @@ watch(
         <button type="button" class="key main ok" :disabled="busy" @click="accepted">{{ accept.busy === "accepted" ? "Принимаю…" : "Принять" }}</button>
         <button v-if="view.send && !returning" type="button" class="key" :disabled="busy" @click="back">Вернуть на доработку</button>
       </div>
-      <p class="dim hint">Принять — записать вердикт для статистики; PR этим не сливается.</p>
+      <p class="dim hint">Принять — записать оценку. PR этим не сливается: следующий шаг появится здесь.</p>
       <form v-if="returning" class="reply" @submit.prevent="desk.send()">
         <textarea id="ship-say" :ref="setField" v-model="desk.reply.value" rows="4" aria-label="Что доработать" :disabled="busy" @keydown="onKey"></textarea>
         <div class="row">
@@ -174,6 +190,19 @@ watch(
           <button type="button" class="key" :disabled="busy" @click="returning = false">Отмена</button>
         </div>
       </form>
+    </template>
+
+    <!-- The verdict is written: what is left is to merge the PR and clean the task up. -->
+    <template v-else-if="need.kind === 'accepted'">
+      <ShipRecall :task="task" :desk="desk" clean :look="mergeFirst ? 'plain' : 'main'">
+        <a v-if="mergeFirst && task.pr" class="key main pr" :href="task.pr" target="_blank" rel="noopener">Открыть {{ prLabel(task.pr) }} ↗</a>
+      </ShipRecall>
+      <p v-if="mergeFirst" class="dim hint">Сначала слей PR: доска его не сливает.</p>
+      <pre v-if="!desk.live.value" class="preview" aria-label="Команда для терминала">{{ cleanLine }}</pre>
+      <div class="row">
+        <span class="dim hint">{{ written }}</span>
+        <button type="button" class="key" @click="changeVerdict">Изменить вердикт</button>
+      </div>
     </template>
 
     <!-- At work: nothing to do, an order can wait in the queue. -->
@@ -196,8 +225,9 @@ watch(
     <p v-if="reply.done" class="result ok" role="status" :title="reply.output">{{ reply.done }}</p>
     <p v-if="reply.error" class="result bad" role="alert">{{ reply.error }}</p>
     <CopiedNote v-if="reply.copied" :copied="reply.copied" />
-    <template v-if="need.kind === 'accept' || need.kind === 'return'">
-      <p v-if="accept.done" class="result ok" role="status" :title="accept.output">{{ accept.done }}</p>
+    <!-- Once the verdict is written, the line under the buttons says so; a failed change of it shows here. -->
+    <template v-if="need.kind === 'accept' || need.kind === 'return' || need.kind === 'accepted'">
+      <p v-if="accept.done && need.kind !== 'accepted'" class="result ok" role="status" :title="accept.output">{{ accept.done }}</p>
       <p v-if="accept.error" class="result bad" role="alert">{{ accept.error }}</p>
       <CopiedNote v-if="accept.copied" :copied="accept.copied" />
     </template>
@@ -347,7 +377,7 @@ h4 {
   font-size: 12.5px;
 }
 
-.needs .key.main {
+.needs :deep(.key.main) {
   border-color: var(--sh-wait);
   background: rgba(243, 198, 78, 0.22);
   color: #fff3cf;
