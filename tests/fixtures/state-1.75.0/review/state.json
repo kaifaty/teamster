@@ -10,21 +10,21 @@
   "task_model": null,
   "review_model": null,
   "account": "main",
-  "thread": "8e9cf325-a457-4737-b4f7-d6a3c14a3c0e",
+  "thread": "c6714e5e-68b2-4248-8085-9ad85b6a07a2",
   "threads": [
     {
       "account": "main",
-      "thread": "8e9cf325-a457-4737-b4f7-d6a3c14a3c0e",
-      "started": 1794750194.649875
+      "thread": "c6714e5e-68b2-4248-8085-9ad85b6a07a2",
+      "started": 1794753935.154994
     }
   ],
   "rotations": [],
   "reviews": [
     {
       "account": "main",
-      "thread": "8e887e4d-2491-4714-8882-e34d65582638",
-      "started": 1794750196.64552,
-      "finished": 1794750196.96633,
+      "thread": "7213a891-c379-4c0f-a984-951cb40d9f7e",
+      "started": 1794753935.9571872,
+      "finished": 1794753936.086805,
       "result": {
         "verdict": "defects",
         "findings": [
@@ -71,13 +71,13 @@
   "ci_timeout_minutes": 30,
   "max_task_weekly_percent": null,
   "weekly_used_percent": 0,
-  "created": 1794750191.861845,
+  "created": 1794753934.365275,
   "turns": 1,
-  "plugin_version": "1.74.0",
+  "plugin_version": "1.75.0",
   "kind": "review",
   "work_completed": true,
   "review_start": 0,
-  "turn_started": 1794750191.862883,
+  "turn_started": 1794753934.366324,
   "check_start": 0,
   "rotation_start": 0,
   "event_start": 0,
@@ -90,8 +90,8 @@
   "model": "fake-model",
   "reasoning_effort": null,
   "runtime": {
-    "version": "1.74.0",
-    "script": "/Volumes/DevSSD/Dev/worktrees/codex/claude-lesson-b3-1114/teamster/.state-fixtures-source-ie4ilkkq/src/teamster/__main__.py"
+    "version": "1.75.0",
+    "script": "/private/tmp/claude-501/-Users-kaifat-Library-Application-Support-Claude-scratch-workspaces-b6693797-cfee-4bc2-8ec8-d7c7e95f620f-2f8ca71f-66c8-41b7-b78d-107b0d8f2476-scratch-2026-10-16-989526/7b1d3dbd-19d7-4d23-88ff-4b08a8e114c7/scratchpad/wt-175/src/teamster/__main__.py"
   },
   "result": {
     "status": "done",
@@ -125,13 +125,13 @@
   },
   "weekly_marks": {
     "main": {
-      "reset": 1794757374,
+      "reset": 1794761124,
       "used": 10
     }
   },
   "exec_event_start": 4,
   "publish": {
-    "at": 1794750194.712797,
+    "at": 1794753935.2205389,
     "sha": "",
     "pushed": false,
     "pr": "",
@@ -170,5 +170,5 @@
     ],
     "summary": "Found two defects."
   },
-  "turn_finished": 1794750197.5520582
+  "turn_finished": 1794753936.418095
 }

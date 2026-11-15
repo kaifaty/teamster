@@ -10,12 +10,12 @@
   "task_model": null,
   "review_model": null,
   "account": "main",
-  "thread": "74ff6a48-e480-4249-90a3-195b2b410c0c",
+  "thread": "f1861197-7b47-4cad-b42b-7136a599c5a1",
   "threads": [
     {
       "account": "main",
-      "thread": "74ff6a48-e480-4249-90a3-195b2b410c0c",
-      "started": 1794750180.2502651
+      "thread": "f1861197-7b47-4cad-b42b-7136a599c5a1",
+      "started": 1794753930.907135
     }
   ],
   "rotations": [],
@@ -37,13 +37,13 @@
   "ci_timeout_minutes": 30,
   "max_task_weekly_percent": null,
   "weekly_used_percent": 0,
-  "created": 1794750177.8550951,
+  "created": 1794753929.787366,
   "turns": 1,
-  "plugin_version": "1.74.0",
+  "plugin_version": "1.75.0",
   "kind": "work",
   "work_completed": false,
   "review_start": 0,
-  "turn_started": 1794750177.856886,
+  "turn_started": 1794753929.788445,
   "check_start": 0,
   "rotation_start": 0,
   "event_start": 0,
@@ -56,8 +56,8 @@
   "model": "fake-model",
   "reasoning_effort": null,
   "runtime": {
-    "version": "1.74.0",
-    "script": "/Volumes/DevSSD/Dev/worktrees/codex/claude-lesson-b3-1114/teamster/.state-fixtures-source-ie4ilkkq/src/teamster/__main__.py"
+    "version": "1.75.0",
+    "script": "/private/tmp/claude-501/-Users-kaifat-Library-Application-Support-Claude-scratch-workspaces-b6693797-cfee-4bc2-8ec8-d7c7e95f620f-2f8ca71f-66c8-41b7-b78d-107b0d8f2476-scratch-2026-10-16-989526/7b1d3dbd-19d7-4d23-88ff-4b08a8e114c7/scratchpad/wt-175/src/teamster/__main__.py"
   },
   "result": {
     "status": "done",
@@ -91,13 +91,13 @@
   },
   "weekly_marks": {
     "main": {
-      "reset": 1794757374,
+      "reset": 1794761124,
       "used": 10
     }
   },
   "exec_event_start": 0,
   "publish": {
-    "at": 1794750180.315018,
+    "at": 1794753931.1703172,
     "sha": "",
     "pushed": false,
     "pr": "",
@@ -105,5 +105,5 @@
     "error": "not pushed"
   },
   "check_paths": [],
-  "turn_finished": 1794750180.847421
+  "turn_finished": 1794753931.508372
 }

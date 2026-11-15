@@ -14,10 +14,10 @@
   "threads": [],
   "rotations": [
     {
-      "until": 1794858198.1,
+      "until": 1794861936.1,
       "account": "main",
       "reason": "all accounts unavailable",
-      "at": 1794750206.023173,
+      "at": 1794753938.627149,
       "event": "sleep"
     }
   ],
@@ -39,27 +39,27 @@
   "ci_timeout_minutes": 30,
   "max_task_weekly_percent": null,
   "weekly_used_percent": 0,
-  "created": 1794750202.424286,
+  "created": 1794753937.958617,
   "turns": 1,
-  "plugin_version": "1.74.0",
+  "plugin_version": "1.75.0",
   "kind": "work",
   "work_completed": false,
   "review_start": 0,
-  "turn_started": 1794750202.42568,
+  "turn_started": 1794753937.959913,
   "check_start": 0,
   "rotation_start": 0,
   "event_start": 0,
   "exhausted": null,
   "outcome": "sleeping",
-  "reset_wait_seconds": 2.4080276489257812e-05,
+  "reset_wait_seconds": 1.9073486328125e-05,
   "capacity_start": 0,
   "fix_rounds": 0,
   "rounds": [],
   "model": null,
   "reasoning_effort": null,
   "runtime": {
-    "version": "1.74.0",
-    "script": "/Volumes/DevSSD/Dev/worktrees/codex/claude-lesson-b3-1114/teamster/.state-fixtures-source-ie4ilkkq/src/teamster/__main__.py"
+    "version": "1.75.0",
+    "script": "/private/tmp/claude-501/-Users-kaifat-Library-Application-Support-Claude-scratch-workspaces-b6693797-cfee-4bc2-8ec8-d7c7e95f620f-2f8ca71f-66c8-41b7-b78d-107b0d8f2476-scratch-2026-10-16-989526/7b1d3dbd-19d7-4d23-88ff-4b08a8e114c7/scratchpad/wt-175/src/teamster/__main__.py"
   },
   "result": null,
   "pid": 2147483647,
@@ -73,7 +73,7 @@
     "second": "B"
   },
   "sleeping": {
-    "until": 1794858198.1,
+    "until": 1794861936.1,
     "account": "main",
     "reason": "all accounts unavailable"
   }
