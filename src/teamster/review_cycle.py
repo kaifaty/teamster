@@ -146,6 +146,9 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
     st.pop("review_result", None)
     task_state.save(st)
     angles = selected_review_angles(st, cfg) if angles is None else angles
+    if st.get("cycle") is not None:
+        # resume continues from a saved review only when every angle of it has a result.
+        st["cycle"]["angles"] = len(angles) or 1
     try:
         if angles:
             prompt = prompts.review_prompt(st, cfg, with_angles=True)
@@ -369,7 +372,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
         st.pop("review_skipped", None)
         st.pop("publish", None)
         prompt = threads.followup_prompt(st, message, cfg, source="review")
-        task_state.save(st)
+        task_state.mark_step(st, "fix")
         work_paths = checking.check_paths(st)
         before = procs.sh(config.GIT + ["rev-parse", "HEAD"], cwd=st["worktree"])
         turns.work_turn(st, cfg, prompt, effort, True, stopped, sleep, new_turn=False, work_paths=work_paths)
@@ -379,6 +382,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
         entry["decisions"] = result["findings"] if result is not None else []
         task_state.save(st)
         if not stopped() and st.get("outcome") in ("budget_exhausted", "stuck"):
+            task_state.mark_step(st, "check")
             entry["check"] = checking.saved_check(st, cfg, stopped, review_after=False)
             if budgets.budget_stop(st) == "weekly":
                 st["auto_fix_stop"] = "budget"
@@ -393,6 +397,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
                     or not has_reviewable_commits(st, before)):
                 st["review_skipped"] = st["auto_fix_stop"]
                 return
+        task_state.mark_step(st, "check")
         check = checking.saved_check(st, cfg, stopped)
         entry["check"] = check
         task_state.save(st)
@@ -407,6 +412,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
         st["work_completed"] = True
         if budgets.stop_at_weekly_budget(st):
             return
+        task_state.mark_step(st, "review")
         base_merge = check_base_merge(st, stopped)
         if stopped():
             return
@@ -422,6 +428,8 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None):
         review = review_turn(st, cfg, prompts.review_prompt(st, cfg), effort, stopped, sleep, angles=next_angles)
         if review_only:
             return
+        if review is not None and st.get("outcome") == "completed" and not stopped():
+            task_state.mark_step(st, "after_review")
         if st.get("outcome") == "refused":
             st["auto_fix_stop"] = "review refused"
             return

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from . import budgets, checking, ci_runs, clock, config, executors, installs, notifications, procs, prompts, reflection, review_cycle, task_state, telemetry_log, threads, turns, wait_view
+from . import budgets, checking, ci_runs, clock, config, executors, installs, notifications, procs, prompts, reflection, review_cycle, sandboxing, task_state, telemetry_log, threads, turns, wait_view
 
 
 def require_startable():
@@ -45,14 +45,18 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
                 busy = task_state.busy_message(latest, queue_hint=current_message)
                 if busy is not None:
                     procs.die(busy)
-                # A supervisor that died before its cycle ended neither sent nor dropped its queue.
-                queue = task_state.read_queue(st["slug"])
-                if queue["waiting"]:
-                    task_state.write_queue(st["slug"], {"waiting": [], "dropped": queue["dropped"] + [
-                        dict(order, dropped_at=clock.CLOCK.time(), outcome="interrupted") for order in queue["waiting"]]})
-                    print(f"{len(queue['waiting'])} queued orders of the previous cycle were not sent; "
-                          f"see {task_state.queue_path(st['slug'])}")
+                drop_dead_queue(st["slug"])
             return launch(st, prompt, effort, current_message, kind, review_after, fix_rounds)
+
+
+def drop_dead_queue(slug):
+    """Drop the orders a supervisor that died before its cycle ended neither sent nor dropped; the caller holds the state lock."""
+    queue = task_state.read_queue(slug)
+    if queue["waiting"]:
+        task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"] + [
+            dict(order, dropped_at=clock.CLOCK.time(), outcome="interrupted") for order in queue["waiting"]]})
+        print(f"{len(queue['waiting'])} queued orders of the previous cycle were not sent; "
+              f"see {task_state.queue_path(slug)}")
 
 
 def launch(st, prompt, effort, current_message, kind, review_after, fix_rounds):
@@ -75,6 +79,12 @@ def launch(st, prompt, effort, current_message, kind, review_after, fix_rounds):
         # Standalone review preserves the last work result and publication receipt.
         st.pop("publish", None)
         st["result"] = None
+    return start_process(st)
+
+
+def start_process(st):
+    """Start the supervisor of st and save its pid; the caller holds spawn_lock and the state lock."""
+    d = config.TASKS / st["slug"]
     # The supervisor runs in the worktree: pass the resolved homes, not relative variables.
     environment = dict(os.environ)
     if config.HOME_VARIABLES["TEAMSTER_HOME"]:
@@ -90,6 +100,130 @@ def launch(st, prompt, effort, current_message, kind, review_after, fix_rounds):
     st["pid"] = proc.pid
     task_state.write_state(st)
     return proc
+
+
+# Steps resume can continue a cycle from. work and fix continue the executor's thread.
+RESUME_STEPS = ("work", "fix", "check", "review", "after_review", "ci")
+# Fields of the interrupted run that the resumed one must not inherit; the rest of the cycle is kept.
+RESUME_CLEARED = ("sleeping", "turn_finished", "error", "turn_stop", "wrapup", "refusal", "review_angle",
+                  "stop_request", "signal", "exec_event_start", "auto_fix_stop")
+
+
+def legacy_cycle(st):
+    """The cycle of a state saved before cycles were recorded, inferred from what its phases left."""
+    kind = st.get("kind")
+    review_after = bool(st.get("work_completed") or st.get("fix_rounds") or st.get("rounds"))
+    cycle = {"kind": "work", "review_after": review_after, "effort": st.get("effort"), "ci": bool(st.get("ci")),
+             "pr": (st.get("publish") or {}).get("pr", "")}
+    checks = st.get("checks", [])[st.get("check_start", 0):]
+    ci = st.get("ci") or {}
+    if kind == "review":
+        cycle.update(kind="work" if st.get("work_completed") else "review", step="review")
+    elif st.get("check_pid") or (checks and checks[-1].get("outcome") == "interrupted"):
+        cycle["step"] = "check"
+    elif ci and (ci.get("outcome") == "pending" or ci.get("reason") == "stopped"):
+        cycle["step"] = "ci"
+    else:
+        cycle["step"] = "fix" if ci or st.get("rounds") else "work"
+    return cycle
+
+
+def review_recorded(st, cycle):
+    """Whether the review the cycle was in has every angle's result saved."""
+    result = st.get("review_result")
+    if result is None:
+        return False
+    if "angles" not in result:
+        return True
+    return (cycle.get("angles") == len(result["angles"])
+            and all(entry.get("result") is not None for entry in result["angles"]))
+
+
+def resume_step(st):
+    """The cycle of st and the step resume continues it from."""
+    cycle = st.get("cycle") or legacy_cycle(st)
+    step = cycle["step"]
+    if step == "review" and cycle["kind"] != "review" and review_recorded(st, cycle):
+        step = "after_review"
+    return cycle, step
+
+
+def resume_refusal(st):
+    """Why resume cannot continue st, or None when an external signal cut its cycle short."""
+    slug = st["slug"]
+    if st.get("kind") in ("scout", "reflect"):
+        return f"{slug} is a {st['kind']}; resume continues only work tasks"
+    busy = task_state.busy_message(st)
+    if busy is not None:
+        return busy
+    if task_state.interruption(st) is None:
+        if not st.get("turn_started"):
+            return f"{slug} has not run a turn yet"
+        if st.get("outcome") == "stopped":
+            return f"{slug} was stopped with stop, not cut short by a signal; continue it with say"
+        return f"{slug}: its last cycle ended {st.get('outcome')}, not cut short by a signal; continue it with say"
+    for key in ("codex_pid", "claude_pid", "check_pid"):
+        if procs.alive(st.get(key)):
+            return (f"{slug}: process {st[key]} of the interrupted cycle is still alive; "
+                    "end it, then run resume again")
+    return None
+
+
+def worktree_state(st):
+    """The counts of uncommitted files and unpushed commits in the worktree of st, and its PR."""
+    worktree = st["worktree"]
+    uncommitted = "unknown"
+    if sandboxing.workspace_filter_driver(st) is None:
+        status = subprocess.run(config.GIT + ["status", "--porcelain", "--untracked-files=all"], cwd=worktree,
+                                text=True, capture_output=True, errors="replace")
+        if status.returncode == 0:
+            uncommitted = len(status.stdout.splitlines())
+    remote = "refs/remotes/origin/" + st["branch"]
+    known = subprocess.run(config.GIT + ["rev-parse", "--verify", "--quiet", remote], cwd=worktree,
+                           capture_output=True).returncode == 0
+    count = procs.sh(config.GIT + ["rev-list", "--count", f"{remote if known else st['base']}..HEAD"],
+                     cwd=worktree, check=False)
+    pr = (st.get("publish") or {}).get("pr") or (st.get("cycle") or {}).get("pr") or ""
+    return {"uncommitted": uncommitted, "unpushed": int(count) if count.isdigit() else "unknown", "pr": pr}
+
+
+def resume(slug, loaded):
+    """Continue the cycle of slug that an external signal cut short, from the step it stopped at.
+
+    loaded is the state the command checked; returns the resumed state and the step.
+    """
+    with installs.spawn_lock():
+        require_startable()
+        with task_state.state_lock(slug):
+            st = task_state.load(slug)
+            if (st.get("turns", 0), st.get("turn_started")) != (loaded.get("turns", 0), loaded.get("turn_started")):
+                procs.die(f"{slug}: another command started a turn while this command ran; nothing was resumed")
+            reason = resume_refusal(st)
+            if reason is not None:
+                procs.die(reason)
+            drop_dead_queue(slug)
+            cut = task_state.interruption(st)
+            cycle, step = resume_step(st)
+            cfg = config.accounts_config()
+            prompt = None
+            if step in ("work", "fix"):
+                prompt = threads.followup_prompt(st, prompts.interrupted_prompt(cut, worktree_state(st), cfg),
+                                                 cfg, source="resume")
+            now = clock.CLOCK.time()
+            st.setdefault("resumed", []).append({"at": now, "signal": cut["signal"], "signal_at": cut["at"],
+                                                 "step": step, "turn": st.get("turns", 0)})
+            st["cycle"] = dict(cycle, step=step)
+            st["pending"] = {"prompt": prompt, "effort": cycle.get("effort"), "current_message": True,
+                             "review_after": cycle["review_after"], "resume": step}
+            if step in ("work", "fix", "check", "ci"):
+                st["kind"] = "work"
+            # A resumed cycle keeps its turn number, rounds, results and phase windows; it runs in this version.
+            st.update(outcome="running", turn_started=now, exhausted=None, reset_wait_seconds=0,
+                      runtime=task_state.STATE_FIELDS["runtime"].spawn_reset(st, None))
+            for key in RESUME_CLEARED:
+                st.pop(key, None)
+            start_process(st)
+            return st, step
 
 
 def apply_say(st, options, cfg):
@@ -291,10 +425,21 @@ def cmd__run(a):
         cfg = config.accounts_config()
         pending = st.pop("pending")
         effort = pending["effort"]
-        working = st.get("kind") not in ("review", "scout", "reflect")
-        if st.get("kind") == "review":
+        # resume names the step an interrupted cycle continues from; a new cycle starts at its turn.
+        step = pending.get("resume")
+        cycle = st.get("cycle") or {}
+        kind = cycle.get("kind", st.get("kind"))
+        working = kind not in ("review", "scout", "reflect")
+        review_after = pending.get("review_after")
+        in_ci = step is not None and bool(cycle.get("ci"))
+        turn = step in (None, "work", "fix")
+        if not turn:
+            # The executor turn of the interrupted cycle had completed; the cycle goes on from its result.
+            st["outcome"] = "completed"
+            task_state.save(st)
+        if turn and kind == "review":
             review_cycle.review_turn(st, cfg, pending["prompt"], effort, stopped, sleep, new_turn=True)
-        else:
+        elif turn:
             turns.work_turn(st, cfg, pending["prompt"], effort, pending.get("current_message", False),
                       stopped, sleep)
             if working:
@@ -309,27 +454,41 @@ def cmd__run(a):
         work_result = st.get("result") if working else None
         review_only = False
         if (work_result is not None and work_result["status"] != "done"
-                and pending.get("review_after") and st.get("outcome") == "completed"):
+                and review_after and st.get("outcome") == "completed"):
             review_only = (work_result["status"] in ("partial", "blocked")
                            and review_cycle.has_reviewable_commits(st, st["base"]))
             st["auto_fix_stop" if review_only else "review_skipped"] = "result " + work_result["status"]
             task_state.save(st)
-        if (working
+        if (working and (turn or step == "check")
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
-            check = checking.saved_check(st, cfg, stopped, pending.get("review_after"))
-        if (st.get("kind") not in ("scout", "reflect") and st.get("outcome") == "completed" and pending.get("review_after") and not stopped()
+            task_state.mark_step(st, "check")
+            check = checking.saved_check(st, cfg, stopped, review_after and not in_ci)
+        if step == "review" and kind == "review":
+            if not stopped():
+                review_cycle.review_turn(st, cfg, prompts.review_prompt(st, cfg), effort, stopped, sleep, new_turn=True)
+        elif step == "after_review":
+            # The saved review of the interrupted cycle stands; its fix round had not started.
+            st["work_completed"] = True
+            if not review_only and st.get("fix_rounds") and not stopped() and not budgets.stop_at_weekly_budget(st):
+                review_cycle.auto_fix(st, cfg, st.get("review_result"), effort, stopped, sleep)
+        elif (kind not in ("scout", "reflect") and not in_ci and step != "ci"
+                and st.get("outcome") == "completed" and review_after and not stopped()
                 and not st.get("review_skipped") and (check is None or check["outcome"] in checking.CHECK_NOT_FAILED)
                 and not budgets.stop_at_weekly_budget(st)):
             st["work_completed"] = True
+            task_state.mark_step(st, "review")
             base_merge = review_cycle.check_base_merge(st, stopped)
             if not stopped() and not budgets.stop_at_weekly_budget(st):
                 conflict = base_merge["outcome"] == "conflict"
                 review = (None if conflict and not review_only else
                           review_cycle.review_turn(st, cfg, prompts.review_prompt(st, cfg), effort, stopped, sleep))
                 if not review_only and (st.get("fix_rounds") or conflict):
+                    if review is not None and st.get("outcome") == "completed" and not stopped():
+                        task_state.mark_step(st, "after_review")
                     review_cycle.auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=base_merge)
-        if working:
+        # A resumed CI repair that did not finish done ends the CI cycle, as the repair itself would have.
+        if working and not (in_ci and turn and (st.get("result") or {}).get("status") != "done"):
             ci_runs.ci_cycle(st, cfg, effort, stopped, sleep)
         checks = st.get("checks", [])[st.get("check_start", 0):]
         check = checks[-1] if checks else None

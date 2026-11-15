@@ -382,6 +382,31 @@ def capacity_resume_prompt(cfg=None):
     return "The turn was interrupted because the model was at capacity. Continue from where you stopped."
 
 
+def interrupted_prompt(cut, tree, cfg=None):
+    """The message that continues a turn an external signal cut short: the signal, its time and the worktree state.
+
+    cut is task_state.interruption; tree holds the supervisor's counts of uncommitted files and unpushed
+    commits and the PR URL, or "" without one.
+    """
+    cfg = config.accounts_config() if cfg is None else cfg
+    at = config.local_time(cut["at"])
+    if cfg.get("language", "en") == "ru":
+        signal = (f"внешний сигнал {cut['signal']}" if cut["signal"] else
+                  "внешний сигнал (неизвестный: надзиратель не успел записать итог)")
+        pr = f"PR: {tree['pr']}" if tree["pr"] else "PR нет"
+        return (f"Твой ход оборвал {signal} в {at} — не по твоей вине. "
+                f"Состояние worktree по данным надзирателя: незакоммиченных файлов — {tree['uncommitted']}; "
+                f"незапушенных коммитов — {tree['unpushed']}; {pr}. "
+                "Продолжи задачу с этого состояния.")
+    signal = (f"the external signal {cut['signal']}" if cut["signal"] else
+              "an external signal (unknown: the supervisor left no result)")
+    pr = f"PR: {tree['pr']}" if tree["pr"] else "no PR"
+    return (f"Your turn was cut short by {signal} at {at}, through no fault of yours. "
+            f"Worktree state collected by the supervisor: uncommitted files: {tree['uncommitted']}; "
+            f"unpushed commits: {tree['unpushed']}; {pr}. "
+            "Continue the task from this state.")
+
+
 def wrapup_prompt(st, reason, cfg):
     ru = cfg.get("language", "en") == "ru"
     reviewing = st.get("kind") == "review"

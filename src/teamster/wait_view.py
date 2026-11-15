@@ -26,7 +26,7 @@ def wait_rotation_lines(st):
             s = st["sleeping"]
             label = "account status unknown; retry at" if s.get("probe") else "all accounts at limit; auto-continue at"
             yield f"== {label} {config.local_time(s['until'])} ({s['account'] or 'unknown'}); run wait again to follow"
-        else:
+        elif task_state.interruption(st) is None:
             yield "== paused, supervisor gone; continue with say"
     if st.get("exhausted"):
         e = st["exhausted"]
@@ -69,8 +69,9 @@ def wait_turn_lines(st, slug):
         yield f"== retried: model at capacity ×{st['capacity_retries']}"
     if st.get("turn_stop"):
         yield "== turn stopped: " + turn_monitor.turn_stop_message(st["turn_stop"])
-    if st.get("outcome") == "interrupted":
-        yield "== " + task_state.interruption_message(st)
+    cut = task_state.interruption(st)
+    if st.get("outcome") == "interrupted" or cut is not None:
+        yield "== " + task_state.interruption_message(st, cut)
     if st.get("outcome") == "refused" and st.get("kind") != "review":
         yield "== refused by the model: " + st.get("refusal", "")[:200]
     if (st.get("kind") != "review" or st.get("work_completed")) and not (

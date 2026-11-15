@@ -106,7 +106,8 @@ def cmd_start(a):
           "ci_timeout_minutes": cfg["ci_timeout_minutes"],
           "max_task_weekly_percent": a.max_weekly if a.max_weekly is not None else cfg.get("max_task_weekly_percent"),
           "weekly_used_percent": 0,
-          "created": clock.CLOCK.time(), "turns": 0, "plugin_version": config.plugin_version()}
+          "created": clock.CLOCK.time(), "turns": 0, "plugin_version": config.plugin_version(),
+          "parallel": bool(a.parallel)}
     task_state.save(st)
     proc = supervisor.spawn(st, prompt, a.effort, review_after=a.review, fix_rounds=a.fix_rounds or 0)
     for _ in range(300):
@@ -292,9 +293,54 @@ def cmd_review(a):
     print(f"reviewing {a.slug}, pid {st['pid']}")
 
 
+def ran_in_parallel(st, candidates):
+    """Whether resume --all may continue st beside other tasks: started with --parallel, or, for a task
+    saved before that was recorded, its interrupted cycle overlapped that of another candidate."""
+    if "parallel" in st:
+        return bool(st.get("parallel"))
+    cut = task_state.interruption(st)
+    return any(other["slug"] != st["slug"] and other["turn_started"] < (cut["at"] or 0)
+               and st["turn_started"] < (task_state.interruption(other)["at"] or 0) for other in candidates)
+
+
+def cmd_resume(a):
+    if bool(a.slugs) == bool(a.all):
+        procs.die("resume takes task slugs or --all")
+    if a.all:
+        states = [task_state.load(p.parent.name) for p in sorted(config.TASKS.glob("*/state.json"))]
+        candidates = [st for st in states if supervisor.resume_refusal(st) is None]
+        if not candidates:
+            print("nothing to resume")
+            return
+    else:
+        candidates = [task_state.load(slug) for slug in dict.fromkeys(a.slugs)]
+        refusals = [reason for reason in map(supervisor.resume_refusal, candidates) if reason is not None]
+        if refusals:
+            procs.die("cannot resume: " + "; ".join(refusals))
+    # As with start: a task without --parallel runs alone; those that ran in parallel continue together.
+    parallel = {st["slug"]: ran_in_parallel(st, candidates) for st in candidates}
+    running = task_state.running_tasks()
+    for st in sorted(candidates, key=lambda st: (parallel[st["slug"]], st["turn_started"])):
+        if not parallel[st["slug"]] and running:
+            print(f"waiting: {config.COMMAND} resume {st['slug']}")
+            continue
+        move = installs.follow_pin(st, upgrade=True)
+        cut = task_state.interruption(st)
+        resumed, step = supervisor.resume(st["slug"], st)
+        running.append(st["slug"])
+        if move:
+            print(move)
+        print(f"resumed {st['slug']} from {step} (turn {resumed.get('turns', 0)}, interrupted by "
+              f"{cut['signal'] or 'an unknown signal'} at {config.local_time(cut['at'])}), pid {resumed['pid']}")
+        print(f"  wait: {config.COMMAND} wait {st['slug']}   (run it as a background command)")
+
+
 def describe(st, detail):
     supervisor_alive = procs.alive(st.get("pid"))
-    if st.get("outcome") == "sleeping":
+    cut = task_state.interruption(st)
+    if cut is not None:
+        state = "interrupted"
+    elif st.get("outcome") == "sleeping":
         state = (f"sleeping until {config.local_time(st['sleeping']['until'])}" if supervisor_alive
                  else "paused, supervisor gone; continue with say")
     else:
@@ -325,6 +371,8 @@ def describe(st, detail):
     if st.get("weekly_budget_warning"):
         line += "\n" + st["weekly_budget_warning"]
     line += executor.status_error(st)
+    if cut is not None:
+        line += "\n" + task_state.interruption_message(st, cut)
     switch = st.get("base_switch")
     if switch:
         line += f"\nbase {switch['from']} is gone; checked against {switch['to']}"

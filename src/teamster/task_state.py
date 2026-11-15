@@ -9,11 +9,49 @@ from typing import Callable, Literal, NamedTuple, Optional
 from . import clock, config, procs, reviewers, threads
 
 
-def interruption_message(st):
-    received = st.get("signal") or {}
-    return (f"interrupted externally by {received.get('name', 'unknown signal')} "
-            f"at {config.local_time(received.get('at'))}; "
-            "the worktree is kept — check git status and continue with say")
+def interruption(st):
+    """How an external signal cut the last cycle of st short, as {"signal": name or None, "at": time}, or None.
+
+    A work or review cycle is cut short when its supervisor is gone and it either ended interrupted or
+    published no result at all, as when the supervisor was killed outright. A stop is not an interruption.
+    """
+    if st.get("kind") in ("scout", "reflect") or not st.get("turn_started") or procs.alive(st.get("pid")):
+        return None
+    if "turn_finished" in st:
+        if st.get("outcome") != "interrupted":
+            return None
+        received = st.get("signal") or {}
+        return {"signal": received.get("name"), "at": received.get("at", st["turn_finished"])}
+    try:
+        # Without a result, the last save is the latest moment the supervisor is known to have run.
+        at = state_path(st["slug"]).stat().st_mtime
+    except OSError:
+        at = None
+    return {"signal": None, "at": at}
+
+
+def interruption_message(st, cut=None):
+    """The line wait, status and the interrupted notification print for a cycle an external signal cut short."""
+    if cut is None:
+        received = st.get("signal") or {}
+        cut = {"signal": received.get("name", "unknown signal"), "at": received.get("at")}
+    name = cut["signal"] or "an unknown signal (the supervisor left no result)"
+    return (f"interrupted externally by {name} at {config.local_time(cut['at'])}; "
+            f"continue: {config.COMMAND} resume {st['slug']}")
+
+
+def mark_step(st, step, ci=False):
+    """Save the cycle step that starts now, so resume can continue the cycle there."""
+    cycle = st.get("cycle")
+    if cycle is not None:
+        cycle["step"] = step
+        if ci:
+            cycle["ci"] = True
+        pr = (st.get("publish") or {}).get("pr")
+        if pr:
+            # Fix rounds drop the publication receipt; the resume prompt still names the PR.
+            cycle["pr"] = pr
+    save(st)
 
 
 def state_path(slug):
@@ -153,6 +191,15 @@ STATE_FIELDS = {
     "reflect_file": StateField("task"),
     "reflect_order": StateField("task"),
     "reflect_turns": StateField("history"),
+    "parallel": StateField("task"),  # start --parallel: resume --all may continue it beside other tasks.
+    # The cycle this supervisor runs: its kind, review_after and effort, the step it is in and the last PR,
+    # so resume continues an interrupted cycle where it stopped.
+    "cycle": StateField("turn", spawn_reset=lambda st, turn: {
+        "kind": turn["kind"], "review_after": bool(turn["pending"]["review_after"]),
+        "effort": turn["pending"]["effort"], "step": "review" if turn["kind"] == "review" else "work",
+        "ci": False, "pr": (st.get("publish") or {}).get("pr", "")}),
+    # One entry per resume: when, the signal that cut the cycle short and the step it continued from.
+    "resumed": StateField("history"),
 }
 
 
