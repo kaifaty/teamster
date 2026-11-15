@@ -1022,7 +1022,13 @@ so other lessons can continue. Other tasks are never landed.
 A PR is eligible only after its supervisor exits with `outcome: "completed"`, its last result is
 `done`, the current turn's saved check passed or is absent, its latest review is clean (or the fix
 cycle stopped at `clean` or `only P3`). GitHub additionally requires its task CI to have passed;
-Forgejo waits for CI during landing. Questions keep `landing: null` so the
+Forgejo waits for CI during landing. A task with `no_push` never publishes or merges a PR; an
+outside-only change can still be finalized. On both hosts, a PR belongs to the task only when its
+head SHA matches the task worktree's HEAD and the nonempty `publish.sha`, if present. An older
+merged PR with another SHA is not completion of this task. An open PR with a different head or
+`publish.pushed: false` produces `failed` with
+«Ветка задачи не запушена: PR #N отстаёт от проверенного коммита».
+Questions keep `landing: null` so the
 card can ask for the answer. An unsuccessful result, saved check, review, CI or cycle produces `failed`
 with a specific Russian explanation, such as «Агент не закончил: итог partial»,
 «Агент остановился: итог blocked», «Проверка не прошла», «Ревью нашло замечания P1» or

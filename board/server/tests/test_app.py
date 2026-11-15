@@ -2482,6 +2482,18 @@ def landing_task(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "--quiet", str(repo)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
                     "https://github.com/kaifaty/project.git"], check=True, capture_output=True)
+    worktree = home / "lesson-worktree"
+    subprocess.run(["git", "init", "--quiet", "-b", "lesson-branch", str(worktree)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(worktree), "remote", "add", "origin",
+                    "https://github.com/kaifaty/project.git"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(worktree), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "Baseline"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(worktree), "update-ref", "refs/remotes/origin/main", "HEAD"],
+                   check=True, capture_output=True)
+    sha = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"], check=True,
+                         capture_output=True, text=True).stdout.strip()
     entry, slug = "batch-2026-11-16.md W1", "lesson-w1-1116"
     (archive / "INDEX.md").write_text(f"| 2026-11-16 | {entry} | invariant | check | accepted |\n")
     (archive / "batch-2026-11-16.md").write_text("## W1. Keep the check\nproposal: Add the check.\n")
@@ -2490,13 +2502,14 @@ def landing_task(tmp_path, monkeypatch):
     (directory / "brief.md").write_text(f"Внедрить урок «{entry}»: Keep the check.\n")
     pr = "https://github.com/kaifaty/project/pull/42"
     state = {"created": 1, "turns": 1, "turn_finished": 2, "repo": str(repo),
+             "worktree": str(worktree), "branch": "lesson-branch", "base": "origin/main",
              "outcome": "completed", "result": {"status": "done", "summary": "Implemented"},
-             "publish": {"pr": pr}, "checks": [{"outcome": "passed"}],
+             "publish": {"pr": pr, "sha": sha, "pushed": True}, "checks": [{"outcome": "passed"}],
              "review_result": {"verdict": "clean", "findings": []},
-             "ci": {"outcome": "passed", "sha": "a" * 40}}
+             "ci": {"outcome": "passed", "sha": sha}}
     control, calls = tmp_path / "landing-control.json", tmp_path / "landing-calls.jsonl"
     control.write_text(json.dumps({"pr": {"state": "OPEN", "mergeable": "MERGEABLE",
-        "mergeStateStatus": "CLEAN", "baseRefName": "main", "headRefOid": "a" * 40,
+        "mergeStateStatus": "CLEAN", "baseRefName": "main", "headRefOid": sha,
         "headRefName": "lesson-branch", "mergeCommit": None, "files": [{"path": "app.py"}], "url": pr, "number": 42},
         "checks": [{"bucket": "pass"}, {"bucket": "skipping"}], "branch_checked_out": True}))
     monkeypatch.setenv("LANDING_CONTROL", str(control))
@@ -2560,7 +2573,8 @@ elif name == "tea":
     pull = control["forgejo_pr"]
     assert path.startswith("/repos/kaifaty/infra/pulls")
     if method == "GET" and path.split("?")[0].endswith("/pulls"):
-        print(json.dumps([pull] if control.get("forgejo_exists") else []))
+        pulls = [control["forgejo_old_pr"]] if control.get("forgejo_old_pr") else []
+        print(json.dumps(pulls + ([pull] if control.get("forgejo_exists") else [])))
     elif method == "GET" and path.endswith("/42"):
         print(json.dumps(pull))
     elif method == "POST" and path.endswith("/pulls"):
@@ -2652,7 +2666,8 @@ else:
     write_state()
     return {"make": make_actions, "state": state, "write": write_state, "configure": configure,
             "records": records, "lesson": lesson, "repo": repo, "entry": entry, "slug": slug,
-            "pr": pr, "directory": directory, "archive": archive, "control": control}
+            "pr": pr, "directory": directory, "archive": archive, "control": control,
+            "worktree": worktree, "sha": sha}
 
 
 def test_landing_merges_verified_pr_and_finishes_lesson(landing_task):
@@ -2662,7 +2677,7 @@ def test_landing_merges_verified_pr_and_finishes_lesson(landing_task):
         task["lesson"](actions)["implementation"]["landing"]["stage"]))
     actions.landing.run_once()
     assert [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]] == [
-        ["pr", "merge", task["pr"], "--merge", "--match-head-commit", "a" * 40]]
+        ["pr", "merge", task["pr"], "--merge", "--match-head-commit", task["sha"]]]
     assert task["records"]("teamster") == [
         ["lesson", task["entry"], "applied", "--note", task["pr"]],
         ["verdict", task["slug"], "accepted", "--note", "landed by the board"],
@@ -2814,7 +2829,7 @@ def test_landing_repairs_base_conflict_once_then_retries(landing_task, conflicti
     actions.landing.run_once()
     assert task["records"]("teamster") == says
     task["state"].update(turns=2, turn_finished=3)
-    task["state"]["ci"] = {"outcome": "passed", "sha": "a" * 40}
+    task["state"]["ci"] = {"outcome": "passed", "sha": task["sha"]}
     task["write"]()
     if not conflicting_again:
         control["pr"].update(mergeable="MERGEABLE", mergeStateStatus="CLEAN")
@@ -2831,6 +2846,7 @@ def test_landing_repairs_base_conflict_once_then_retries(landing_task, conflicti
 @pytest.mark.parametrize("pr", [None, "\n", '""'])
 def test_landing_applies_outside_only_change_without_pr(landing_task, pr):
     task = landing_task
+    task["state"]["no_push"] = True
     task["state"].pop("publish")
     task["state"]["result"]["pr"] = pr
     task["state"].pop("ci")
@@ -3194,6 +3210,59 @@ def test_landing_waits_for_state_change_after_state_only_failure(landing_task, l
     assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
 
 
+@pytest.mark.parametrize("host", ["github", "forgejo-land", "forgejo-api"])
+def test_landing_does_not_publish_no_push_tasks(request, host):
+    task = request.getfixturevalue("landing_task" if host == "github" else "forgejo_landing")
+    if host == "forgejo-land":
+        task["script"]("land.py")
+    task["state"]["no_push"] = True
+    task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] in ("failed", "manual")
+    assert not [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]
+    assert not [row for row in task["records"]("tea") if "-X" in row or "-d" in row]
+    assert task["records"]("land.py") == task["records"]("teamster") == []
+    assert not any(row.get("forgejo_job") or row.get("merged") for row in actions.landing.receipts.values())
+
+
+@pytest.mark.parametrize("host", ["github", "forgejo"])
+@pytest.mark.parametrize("publication", ["head behind", "publish sha", "not pushed", "old merged"])
+def test_landing_refuses_unpublished_or_stale_pr(request, host, publication):
+    task = request.getfixturevalue("landing_task" if host == "github" else "forgejo_landing")
+    task["state"]["publish"]["pr"] = task["pr"]
+    control = json.loads(task["control"].read_text())
+    if publication in ("head behind", "old merged"):
+        if host == "github":
+            control["pr"]["headRefOid"] = "c" * 40
+        else:
+            control["forgejo_pr"]["head"]["sha"] = "c" * 40
+        if publication == "head behind":
+            task["state"]["publish"]["sha"] = "c" * 40
+            task["state"]["ci"]["sha"] = "c" * 40
+    elif publication == "publish sha":
+        task["state"]["publish"]["sha"] = "c" * 40
+    else:
+        task["state"]["publish"]["pushed"] = False
+    if publication == "old merged":
+        if host == "github":
+            control["pr"].update(state="MERGED", mergeCommit={"oid": "b" * 40})
+        else:
+            control["forgejo_pr"].update(state="closed", merged=True, merge_commit_sha="b" * 40)
+    task["configure"](**control)
+    task["write"]()
+    actions = task["make"]()
+    actions.landing.run_once()
+    value = task["lesson"](actions)["implementation"]["landing"]
+    assert value["stage"] == "failed"
+    if publication == "head behind":
+        assert value["text"] == "Ветка задачи не запушена: PR #42 отстаёт от проверенного коммита"
+    assert not [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]
+    assert not [row for row in task["records"]("tea") if "-X" in row or "-d" in row]
+    assert task["records"]("teamster") == []
+    assert not any(row.get("merged") for row in actions.landing.receipts.values())
+
+
 @pytest.fixture
 def forgejo_landing(landing_task, landing_clock):
     task = landing_task
@@ -3203,24 +3272,17 @@ def forgejo_landing(landing_task, landing_clock):
     origin = "ssh://git@192.168.1.150:2222/kaifaty/infra.git"
     subprocess.run(["git", "-C", str(repo), "remote", "set-url", "origin", origin],
                    check=True, capture_output=True)
-    worktree = repo.with_name("lesson-worktree")
-    subprocess.run(["git", "init", "--quiet", "-b", "lesson-branch", str(worktree)],
-                   check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(worktree), "remote", "add", "origin", origin],
-                   check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(worktree), "-c", "user.name=Test", "-c", "user.email=test@example.com",
-                    "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "Baseline"],
-                   check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(worktree), "update-ref", "refs/remotes/origin/main", "HEAD"],
+    worktree = task["worktree"]
+    subprocess.run(["git", "-C", str(worktree), "remote", "set-url", "origin", origin],
                    check=True, capture_output=True)
     task["pr"] = "https://kaifaty.ru/kaifaty/infra/pulls/42"
     task["state"].update(repo=str(repo), worktree=str(worktree), branch="lesson-branch", base="origin/main",
-                         publish={}, ci={"outcome": "none"})
+                         publish={"sha": task["sha"], "pushed": True}, ci={"outcome": "none"})
     title, body = "Merge the lesson", "Keep the saved check."
     task["state"]["result"].update(pr_title=title, pr_body=body)
     task["write"]()
     task["configure"](forgejo_pr={"number": 42, "html_url": task["pr"], "state": "open", "merged": False,
-                                  "head": {"ref": "lesson-branch", "sha": "a" * 40},
+                                  "head": {"ref": "lesson-branch", "sha": task["sha"]},
                                   "base": {"ref": "main"}, "merge_commit_sha": None},
                        forgejo_exists=False, title=title, body=body)
     checks = repo.parent / ".codex/checks" / repo.name
@@ -3265,6 +3327,13 @@ def test_landing_forgejo_land_script_merges_and_finishes_in_task_worktree(forgej
         subprocess.run(["git", "-C", str(task["worktree"]), "-c", "user.name=Test",
                         "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit",
                         "--quiet", "--allow-empty", "-m", "Implement lesson"], check=True, capture_output=True)
+        task["sha"] = subprocess.run(["git", "-C", str(task["worktree"]), "rev-parse", "HEAD"], check=True,
+                                     capture_output=True, text=True).stdout.strip()
+        task["state"]["publish"]["sha"] = task["sha"]
+        control = json.loads(task["control"].read_text())
+        control["forgejo_pr"]["head"]["sha"] = task["sha"]
+        task["configure"](**control)
+        task["write"]()
     actions = task["make"]()
     actions.landing.run_once()
     task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed")
@@ -3330,6 +3399,11 @@ def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, waiter, code
                        script_results=[{"code": code, "output": "CI unavailable" if code == 75 else "job lint failed"},
                                        {"code": int(second_failure),
                                         "output": "job lint failed again" if second_failure else "CI passed"}])
+    if code == 0:
+        old = dict(json.loads(task["control"].read_text())["forgejo_pr"])
+        old.update(number=41, html_url=task["pr"].replace("/42", "/41"), state="closed", merged=True,
+                   merge_commit_sha="b" * 40, head={"ref": "lesson-branch", "sha": "c" * 40})
+        task["configure"](forgejo_old_pr=old)
     actions = task["make"]()
     actions.landing.run_once()
     if code == 1:
@@ -3347,6 +3421,8 @@ def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, waiter, code
     merges = [row for row in calls if "/repos/kaifaty/infra/pulls/42/merge" in row]
     assert len(merges) == (0 if expected == "failed" else 1)
     assert len(task["records"](waiter)) == (2 if code == 1 else 1)
+    rows = [json.loads(row) for row in task["control"].with_name("landing-calls.jsonl").read_text().splitlines()]
+    assert all(row["cwd"] == str(task["worktree"]) for row in rows if row["command"] == waiter)
     assert len([row for row in task["records"]("teamster") if row[0] == "say"]) == (1 if code == 1 else 0)
     assert task["records"]("gh") == []
     if existing:
@@ -3448,7 +3524,7 @@ def test_landing_forgejo_resumes_running_process_without_blocking_other_lessons(
         directory = task["directory"].parent / slug
         directory.mkdir()
         (directory / "brief.md").write_text(f"Внедрить урок «{entry}»: Save outside.\n")
-        state = dict(task["state"], created=2, result={"status": "done"})
+        state = dict(task["state"], created=2, result={"status": "done"}, no_push=True)
         (directory / "state.json").write_text(json.dumps(state))
         actions.landing.run_once()
         actions.research.invalidate()

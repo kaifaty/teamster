@@ -243,6 +243,10 @@ class Landing:
         receipt["pr"] = pr
         number = pr.rstrip("/").rsplit("/", 1)[-1] if isinstance(pr, str) else ""
         label = f"PR #{number}"
+        if state.get("no_push") and (pr or not lesson["outside"] or receipt.get("forgejo")
+                                     or receipt.get("merged")):
+            self._state_failed(receipt, state, "Публикация запрещена: задача запущена с --no-push")
+            return
         if not receipt.get("merged") and not receipt.get("outside"):
             if alive(state.get("pid")):
                 self._stage(receipt, "waiting", "Жду завершения задачи")
@@ -270,13 +274,16 @@ class Landing:
                 origin = self._run(["git", "remote", "get-url", "origin"], Path(state["repo"]))
                 forgejo = own_forgejo(origin)
                 outside_only = bool(lesson["outside"]) and not receipt.get("forgejo")
-                if forgejo and outside_only:
+                if (forgejo or state.get("no_push")) and outside_only:
                     outside_only = int(self._run(["git", "rev-list", "--count", f"{state['base']}..HEAD"],
                                                  Path(state["worktree"]))) == 0
                 if outside_only:
                     receipt["outside"] = True
                     self._save()
                 else:
+                    if state.get("no_push"):
+                        self._state_failed(receipt, state, "Публикация запрещена: задача запущена с --no-push")
+                        return
                     if forgejo:
                         self._forgejo(slug, state, receipt, origin)
                     else:
@@ -354,6 +361,9 @@ class Landing:
         branch = view.get("headRefName")
         if not isinstance(branch, str) or not branch:
             raise ValueError("Missing PR head branch")
+        if not self._matching_head(state, receipt, view.get("headRefOid"), label,
+                                   merged=view.get("state") == "MERGED"):
+            return
         receipt["remote_ref"] = f"repos/{owner}/{name}/git/refs/heads/{quote(branch, safe='/')}"
         if view.get("state") == "MERGED":
             self._merged(receipt, view)
@@ -411,7 +421,21 @@ class Landing:
         view = json.loads(self._run(["gh", "pr", "view", pr, "--json", fields], repo))
         if view.get("state") != "MERGED":
             raise ValueError("GitHub did not confirm the merge")
+        if not self._matching_head(state, receipt, view.get("headRefOid"), label, merged=True):
+            return
         self._merged(receipt, view)
+
+    def _matching_head(self, state, receipt, head, label, merged=False):
+        checked = self._run(["git", "rev-parse", "HEAD"], Path(state["worktree"]))
+        publication = mapping(state.get("publish"))
+        reason = f"Ветка задачи не запушена: {label} отстаёт от проверенного коммита"
+        if (head != checked or (publication.get("sha") and publication["sha"] != checked)):
+            self._stage(receipt, "failed", reason)
+            return False
+        if not merged and publication.get("pushed") is False:
+            self._state_failed(receipt, state, reason)
+            return False
+        return True
 
     def _ready(self, state, receipt):
         check = turn_check(state)
@@ -533,6 +557,7 @@ class Landing:
                 else:
                     self._stage(receipt, "failed", f"Не удалось довести внедрение: {output[-1000:] or f'exit {code}'}")
                 return
+        checked = self._run(["git", "rev-parse", "HEAD"], worktree)
         if number:
             parsed = urlsplit(receipt["pr"])
             if (parsed.hostname not in ("192.168.1.150", "kaifaty.ru")
@@ -541,9 +566,12 @@ class Landing:
             pull = self._tea(f"{endpoint}/{number}", repo)
         else:
             pulls = self._tea(f"{endpoint}?state=all&limit=50", repo)
-            pull = next((row for row in pulls if mapping(row.get("head")).get("ref") == branch
-                         and mapping(row.get("base")).get("ref") == base
-                         and (row.get("state") == "open" or row.get("merged"))), None)
+            candidates = [row for row in pulls if mapping(row.get("head")).get("ref") == branch
+                          and mapping(row.get("base")).get("ref") == base]
+            pull = next((row for row in candidates if row.get("state") == "open"), None)
+            if pull is None:
+                pull = next((row for row in candidates if row.get("merged")
+                             and mapping(row.get("head")).get("sha") == checked), None)
         if pull:
             if (mapping(pull.get("head")).get("ref") != branch
                     or mapping(pull.get("base")).get("ref") != base):
@@ -551,6 +579,9 @@ class Landing:
             receipt["pr"] = pull["html_url"]
             number, label = pull["number"], f"PR #{pull['number']}"
             self._save()
+            if not self._matching_head(state, receipt, mapping(pull.get("head")).get("sha"), label,
+                                       merged=bool(pull.get("merged"))):
+                return
             if pull.get("merged"):
                 receipt.update(merged=True, remote_deleted=True)
                 self._save()
@@ -559,6 +590,8 @@ class Landing:
                 self._stage(receipt, "failed", f"{label} закрыт без слияния")
                 return
         if not job and land.is_file():
+            if not pull and not self._matching_head(state, receipt, checked, label):
+                return
             if not title.startswith("Merge "):
                 title = f"Merge {title}"
             self._start_job(slug, state, receipt, ["python3", str(land), title, body], "land")
@@ -572,10 +605,14 @@ class Landing:
             self._save()
             return
         if not pull:
+            if not self._matching_head(state, receipt, checked, label):
+                return
             pull = self._tea(endpoint, repo, {"head": branch, "base": base, "title": title, "body": body})
             number, label = pull["number"], f"PR #{pull['number']}"
             receipt["pr"] = pull["html_url"]
             self._save()
+            if not self._matching_head(state, receipt, mapping(pull.get("head")).get("sha"), label):
+                return
         if not job:
             waiter = next((scripts / name for name in ("pr_ci.py", "ci_wait.py")
                            if (scripts / name).is_file()), None)
@@ -596,6 +633,8 @@ class Landing:
         pull = self._tea(f"{endpoint}/{number}", repo)
         if not pull.get("merged"):
             raise ValueError("Forgejo did not confirm the merge")
+        if not self._matching_head(state, receipt, mapping(pull.get("head")).get("sha"), label, merged=True):
+            return
         receipt.update(merged=True, remote_deleted=True)
         self._save()
 
