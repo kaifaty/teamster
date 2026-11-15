@@ -4,6 +4,7 @@
 import type { ImplementBody, ReflectBody } from "../lib/actions";
 import { answerText, lessonCommand, reflectCommand, reflectSlug } from "../lib/commands";
 import type { Implementation, Lesson, PendingRecord, Signal, Study, StudyMessage, StudyQuestion } from "../types";
+import { landingHolds, landingLine, landingOf, type LandingLine } from "./landing";
 import type { Research } from "./research";
 import type { Clock } from "./schedule";
 
@@ -255,8 +256,12 @@ export function implementBody(entry: string, repo: string, note: string): Implem
   return body;
 }
 
-/** «Внедрить» is offered while the lesson has no implementation, or only a closed one. */
-export const canImplement = (lesson: Pick<Lesson, "implementation">) => !lesson.implementation || lesson.implementation.archived;
+/**
+ * «Внедрить» is offered while the lesson has no implementation, or only a closed one whose PR the board does not land
+ * or has not landed.
+ */
+export const canImplement = (lesson: Pick<Lesson, "implementation">) =>
+  !lesson.implementation || (lesson.implementation.archived && !landingHolds(lesson.implementation));
 
 /** The files outside every repository that the lesson's proposal names: «Внедрить» lets its agent change them. */
 export const outsideOf = (lesson: Pick<Lesson, "outside">): string[] => lesson.outside ?? [];
@@ -335,14 +340,16 @@ export type ImplementationLine =
   | { kind: "pr"; pr: string; label: string; before: "PR готов: "; after: ". Проверь и смёржи, затем отметь «Внедрено»."; answer: false }
   | { kind: "outside"; text: typeof OUTSIDE_DONE; summary: string | null; answer: true }
   | { kind: "stopped"; text: string; summary: string | null; answer: true }
-  | { kind: "closed"; text: "Задача закрыта"; pr: string | null; label: string | null; answer: false };
+  | { kind: "closed"; text: "Задача закрыта"; pr: string | null; label: string | null; answer: false }
+  | LandingLine;
 
 /** A lesson's change outside the repositories is done: it has no PR, so the human checks it by the agent's report. */
 export const OUTSIDE_DONE = "Правка вне репозитория готова: проверь её по отчёту агента и отметь «Внедрено»";
 
 /**
- * How the implementation goes, by the first state that fits: the agent works, needs a decision, opened a PR, changed
- * the files outside the repository (`outside`, the lesson's) without a PR, stopped, or the task is closed.
+ * How the implementation goes, by the first state that fits: the board lands its PR (`landing`, which wins over the
+ * task's own state), the agent works, needs a decision, opened a PR for the human to merge, changed the files outside
+ * the repository (`outside`, the lesson's) without a PR, stopped, or the task is closed.
  * `started`: the task the card just started, shown until the research carries it.
  */
 export function implementationLine(
@@ -355,6 +362,8 @@ export function implementationLine(
     return { kind: "started", text: started.slug ? `Внедряется: ${started.slug} · ${started.repo}` : `Внедряется: ${started.repo}`, answer: false };
   }
   if (!task) return null;
+  const landing = landingOf(task);
+  if (landing) return landingLine(landing);
   if (task.alive) return { kind: "working", text: `Агент работает · ${task.repo}`, answer: false };
   // A closed task takes no reply: its questions stay unanswered.
   if (task.result_status === "needs_decision" && !task.archived) {
@@ -413,13 +422,24 @@ export function nextStep(research: Research, now: number, clock: Pick<Clock, "st
     const minutes = since !== null ? ` · ${Math.max(0, Math.floor((now - since) / 60))} мин` : "";
     return { text: `Аналитик работает: ${live ? studyTitle(live) : "Плановый разбор"}${minutes}`, action: null, tone: "live" };
   }
-  const agents = research.accepted.filter((lesson) => lineOf(lesson)?.kind === "working");
+  // The board landing a PR works for the human as an agent does.
+  const agents = research.accepted.filter((lesson) => {
+    const line = lineOf(lesson);
+    return line?.kind === "working" || (line?.kind === "landing" && line.tone === "working");
+  });
   if (agents.length) {
     if (agents.length > 1) return { text: `Агенты внедряют уроки: ${agents.length}`, action: null, tone: "live" };
     const lesson = agents[0]!;
-    return { text: `Агент внедряет урок ${lessonId(lesson.entry)}`, action: { kind: "watch", label: "Посмотреть", lesson }, tone: "live" };
+    const landing = landingOf(lesson.implementation);
+    const text = landing ? `Урок ${lessonId(lesson.entry)}: ${landing.text}` : `Агент внедряет урок ${lessonId(lesson.entry)}`;
+    // A closed task has no ship on the map to watch.
+    const action = lesson.implementation?.archived ? null : ({ kind: "watch", label: "Посмотреть", lesson } as const);
+    return { text, action, tone: "live" };
   }
-  const ready = research.accepted.find((lesson) => lineOf(lesson)?.kind === "pr");
+  const ready = research.accepted.find((lesson) => {
+    const line = lineOf(lesson);
+    return line?.kind === "pr" || (line?.kind === "landing" && line.tone === "pr");
+  });
   if (ready) {
     return { text: `PR готов по уроку ${lessonId(ready.entry)}`, action: { kind: "pr", label: "Показать", lesson: ready }, tone: "teal" };
   }

@@ -98,11 +98,12 @@ export function lessonLaunch(launches: readonly Launch[], entry: string): Launch
 
 // ---- the row of a lesson
 
-export type Badge = "запускается" | "агент работает" | "нужен ответ" | "PR готов" | "правка готова" | "остановился" | "не запустился";
+export type Badge = "запускается" | "агент работает" | "внедряется" | "нужен ответ" | "PR готов" | "правка готова" | "остановился" | "не запустился";
 
 export const BADGE_TONE: Record<Badge, "teal" | "wait" | "green" | "red"> = {
   запускается: "teal",
   "агент работает": "teal",
+  внедряется: "teal",
   "нужен ответ": "wait",
   "PR готов": "green",
   "правка готова": "green",
@@ -145,6 +146,9 @@ export function lessonBadge(lesson: Lesson, start: LessonStart): Badge | null {
       return "правка готова";
     case "stopped":
       return "остановился";
+    // The board lands the PR: it works, waits for the human to merge, or failed.
+    case "landing":
+      return line.tone === "working" ? "внедряется" : line.tone === "pr" ? "PR готов" : line.tone === "stopped" ? "остановился" : null;
     default:
       return null;
   }

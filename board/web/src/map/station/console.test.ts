@@ -3,7 +3,7 @@ import { nextTick, ref } from "vue";
 import type { ActionResult } from "../../lib/actions";
 import { FAILING_ENTRY, IMPLEMENT_MS, STAGE_MS, TURN_MS, fixtureResearch } from "../../fixtures/research";
 import { fixtureSource } from "../../fixtures/source";
-import type { Implementation, Launch, Lesson, ResearchActions, ResearchView, ServerMessage, TaskSummary } from "../../types";
+import type { Implementation, Landing, Launch, Lesson, ResearchActions, ResearchView, ServerMessage, TaskSummary } from "../../types";
 import { research } from "../research";
 import { discussOrder, docketParts, implementationLine, isSendKey } from "../station";
 import { createConsole, HOLD_MS, type Deck } from "./console";
@@ -766,6 +766,9 @@ describe("a lesson's row", () => {
     expect(lessonBadge(base({ outside: ["~/.codex/x"], implementation: task({ result_status: "done" }) }), start())).toBe("правка готова");
     expect(lessonBadge(base({ implementation: task({ result_status: "blocked" }) }), start())).toBe("остановился");
     expect(lessonBadge(base({ implementation: task({ archived: true, result_status: "partial" }) }), start())).toBeNull();
+    // The board lands the PR: at work, left to the human, failed, landed.
+    const landed = (stage: Landing["stage"]) => base({ implementation: task({ archived: true, result_status: "done", landing: { stage, text: "PR #3", pr: null, version: null } }) });
+    expect(["merging", "manual", "failed", "landed"].map((stage) => lessonBadge(landed(stage as Landing["stage"]), start()))).toEqual(["внедряется", "PR готов", "остановился", null]);
     // A new start over the lesson's earlier, stopped task follows the start, not the old task.
     const stopped = base({ implementation: task({ slug: "lesson-u9-old", result_status: "blocked" }) });
     expect(lessonBadge(stopped, start({ launch: going }))).toBe("запускается");

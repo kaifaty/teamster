@@ -163,7 +163,11 @@ export interface Implementation {
   summary: string | null;
   created: number;
   updated_at: number;
+  landing?: Landing | null; // how the board lands the PR by itself; an older server sends none
 }
+
+/** The board landing a lesson's PR itself; `text`: the server's phrase («Сливаю PR #12»), `pr`: URL, `version`: released. */
+export type Landing = { stage: "waiting" | "merging" | "releasing" | "upgrading" | "landed" | "manual" | "failed"; text: string; pr: string | null; version: string | null };
 
 /** «scanning» until the first search ends; «denied» when it skipped a repository it could not read. */
 export type ReposAccess = "ok" | "scanning" | "denied";

@@ -6,8 +6,11 @@
 // too, and for a few seconds after them the lesson offers to take the decision back.
 // For a lesson whose proposal changes files outside the repositories, «Внедрить» lets its agent change them, and
 // «Скопировать задание» copies the change for a session that makes it by hand.
+// While the board lands the lesson's PR by itself, «Внедрено» is not offered, and once it has landed the lesson offers
+// no buttons; a landing left to the human or failed keeps them.
 import { computed, ref } from "vue";
 import type { Lesson } from "../../types";
+import { landingOf } from "../landing";
 import { manualAssignment, outsideOf } from "../station";
 import { useConsole, type CardBusy } from "./console";
 import CopiedNote from "./CopiedNote.vue";
@@ -20,6 +23,11 @@ const outside = computed(() => outsideOf(props.lesson));
 const place = computed(() => desk.placeOf(props.lesson));
 
 const card = computed(() => desk.cardOf(props.lesson));
+/** The board's landing of the lesson's PR: it goes, or has landed. */
+const landing = computed(() => {
+  const stage = landingOf(props.lesson.implementation)?.stage;
+  return stage === "landed" ? "landed" : stage && stage !== "manual" && stage !== "failed" ? "goes" : null;
+});
 const busy = (what: CardBusy) => card.value.busy === what;
 const DONE = { accepted: "Принято", declined: "Отклонено", applied: "Внедрено" } as const;
 
@@ -126,7 +134,7 @@ function submit() {
     </form>
 
     <!-- A proposed lesson whose start goes waits to become accepted. -->
-    <div v-else-if="stage === 'accepted' || !desk.startGoes(lesson)" class="buttons">
+    <div v-else-if="landing !== 'landed' && (stage === 'accepted' || !desk.startGoes(lesson))" class="buttons">
       <template v-if="desk.offersImplement(lesson)">
         <template v-if="place.clear">
           <button
@@ -162,7 +170,7 @@ function submit() {
         <button type="button" class="chip" :disabled="!!card.busy" @click="desk.discuss(lesson)">Обсудить</button>
       </template>
       <button
-        v-else
+        v-else-if="!landing"
         type="button"
         class="chip applied"
         title="Изменение уже сделано: отметить урок внедрённым"
