@@ -57,7 +57,7 @@ describe("a system's labels", () => {
     expect(phaseText(task({}), NOW)).toBe(`${PHASES.ci} · 2 мин 05 с`);
     expect(phaseText(task({ phase: "fix", findings_left: 2, alive: false }), NOW)).toBe(`${PHASES.fix} · 2 замеч.`);
     expect(phaseText(task({ column: "review_me" }), NOW)).toBe("ждёт тебя");
-    const [group] = fleetGroups([ship("a", "gate", 0)], NOW, false);
+    const [group] = fleetGroups([ship("a", "gate", 0)], NOW);
     expect(group).toMatchObject({ place: "gate", ...STATION_TEXT.gate, ships: [{ slug: "a", name: "a", beacon: false }] });
     expect(group!.ships[0]!.title.split("\n").slice(0, 3)).toEqual(["a", `${PHASES.ci} · 2 мин 05 с`, "Codex"]);
     expect(hiddenShips([task({ slug: "x" }), task({ slug: "y" })])).toEqual({ count: 2, title: "x\ny" });

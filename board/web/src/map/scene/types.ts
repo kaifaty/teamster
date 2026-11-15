@@ -93,10 +93,9 @@ export interface FleetScene {
   /** Shows system `repo`, or the galaxy for null, flying there unless motion is reduced. */
   setView(repo: string | null): void;
   /**
-   * The ships to show. A ship missing from `entries` leaves: by `departures` when given (a slug it lacks fades),
-   * otherwise into the sun from the roadstead and fading from anywhere else.
+   * The ships to show. A ship missing from `entries` leaves for the sun from the roadstead and fades from anywhere else.
    */
-  setShips(entries: ShipEntry[], departures?: ReadonlyMap<string, "dive" | "fade">): void;
+  setShips(entries: ShipEntry[]): void;
   setSelected(slug: string | null): void;
   /** The machine whose card is open: its station is marked like a selected ship. */
   setMachine(id: string | null): void;

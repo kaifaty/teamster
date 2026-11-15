@@ -8,7 +8,7 @@ import type { MapPanels } from "./useMapPanels";
 
 export function useStageInsets(host: Readonly<Ref<HTMLElement | null>>, model: GalaxyModel, panels: MapPanels, scheduleLabels: () => void) {
   const { world } = model;
-  const { repo, narrow, dockFolded, fleetVisible, compactDock } = panels;
+  const { repo, narrow, dockFolded, fleetVisible } = panels;
 
   /**
    * Measures the parts of the window the panels cover, for the scene to lay a system out in the rest: the toolbar, the
@@ -61,15 +61,6 @@ export function useStageInsets(host: Readonly<Ref<HTMLElement | null>>, model: G
     model.fullZoom.value = fit.zoom;
   }
 
-  // On a wide window the scale is part of the dock's shape: hidden, it leaves its corner to the stars.
-  watch(panels.replayShown, () => {
-    if (compactDock.value) return;
-    coveredFor = "";
-    void nextTick(() => {
-      measureCovered();
-      scheduleLabels();
-    });
-  });
   // The dock changes its shape across the breakpoint and between the galaxy and a system: it is measured again.
   watch([narrow, repo], () => {
     coveredFor = "";

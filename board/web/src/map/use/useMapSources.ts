@@ -1,12 +1,10 @@
-// What the map shows: the board or, in the demo mode, a scenario; its replay; and what the server keeps beside the tasks —
+// What the map shows: the board or, in the demo mode, a scenario; and what the server keeps beside the tasks —
 // the research, the repositories' art and the constellations — looked up again whenever the map comes back.
 
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { createBoard, useNow, type Board } from "../../store/board";
 import type { ArtIndex, Constellations, ResearchView, TaskSummary } from "../../types";
-import { replayFleet } from "../replay";
 import { isReflection } from "../research";
-import { useReplay } from "../useReplay";
 
 /** The reflection writes rarely; a visible map asks again every minute. */
 export const RESEARCH_REFRESH_MS = 60_000;
@@ -43,17 +41,8 @@ export function useMapSources(props: Readonly<{ board: Board; active: boolean }>
   }
   const allTasks = computed(() => source.value.tasks.value);
   const notReflection = (task: TaskSummary) => !isReflection(task, researchView.value);
-  const liveTasks = computed(() => allTasks.value.filter(notReflection));
+  const tasks = computed(() => allTasks.value.filter(notReflection));
   const loaded = computed(() => source.value.state.value.loaded);
-
-  // Replay: the fleet of a past moment, rebuilt from the ship's log. Live updates keep coming into the board
-  // meanwhile; they reach the map again when it goes back on air.
-  const replay = useReplay(source, now);
-  /** The moment the map shows: the replay's, or now. */
-  const mapNow = computed(() => replay.at ?? now.value);
-  const tasks = computed(() =>
-    replay.at !== null ? replayFleet(replay.events, replay.at, liveTasks.value).filter(notReflection) : liveTasks.value,
-  );
 
   // Each repository may have its own pictures. They are looked up again whenever the map comes back, so new
   // art shows up without a reload. Without them the map keeps its shared art.
@@ -98,7 +87,7 @@ export function useMapSources(props: Readonly<{ board: Board; active: boolean }>
         void loadArt();
         void loadConstellations();
         void loadResearch();
-      } else replay.pause();
+      }
     },
   );
   let researchTimer: ReturnType<typeof setInterval> | undefined;
@@ -113,7 +102,7 @@ export function useMapSources(props: Readonly<{ board: Board; active: boolean }>
   });
 
   return {
-    now, demo, sourceKind, source, researchView, loadResearch, allTasks, liveTasks, loaded, replay, mapNow, tasks,
+    now, demo, sourceKind, source, researchView, loadResearch, allTasks, loaded, tasks,
     repoArt, constellationData, emblemOf, events, eventsError,
   };
 }

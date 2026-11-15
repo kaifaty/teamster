@@ -41,8 +41,8 @@ export function phaseText(task: TaskSummary, now: number): string {
 
 const shipKey = (entry: ShipEntry) => ({ slug: entry.task.slug, ...entry.placement });
 
-/** The open system's ships by station, in the order they park: for the list at the side. `replaying`: the map replays. */
-export function fleetGroups(entries: readonly ShipEntry[], now: number, replaying: boolean): FleetGroup[] {
+/** The open system's ships by station, in the order they park: for the list at the side. */
+export function fleetGroups(entries: readonly ShipEntry[], now: number): FleetGroup[] {
   return PLACES.map((place) => {
     const here = entries.filter((entry) => entry.placement.place === place);
     const ships = parkingOrder(here, shipKey, place, null).map(({ task, placement: where }) => ({
@@ -52,7 +52,7 @@ export function fleetGroups(entries: readonly ShipEntry[], now: number, replayin
       phase: phaseText(task, now),
       beacon: where.beacon,
       // The ship's line: its latest activity and how old it is, or why it no longer works.
-      title: [taskTitle(task), phaseText(task, now), `${EXECUTORS[task.executor]}${task.account ? ` · ${task.account}` : ""}`, shipLine(task, where.stale, now, replaying)].join("\n"),
+      title: [taskTitle(task), phaseText(task, now), `${EXECUTORS[task.executor]}${task.account ? ` · ${task.account}` : ""}`, shipLine(task, where.stale, now)].join("\n"),
     }));
     return { place, ...STATION_TEXT[place], ships };
   }).filter((group) => group.ships.length);

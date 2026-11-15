@@ -72,7 +72,7 @@ export function fixtureSource(): BoardSource {
   let delta = 0;
   // The history is anchored once, so that a reload returns the same events rather than shifted copies.
   const origin = Date.now() / 1000;
-  // The station's actions change this copy; its times stay in the snapshot's, moved to now once: the replay's loop
+  // The station's actions change this copy; its times stay in the snapshot's, moved to now once: the fixture's loop
   // moves the board's times again on every round, and a start or a study would jump with it.
   const research = fixtureResearch(BASE);
   const anchor = origin - BASE;
@@ -80,7 +80,7 @@ export function fixtureSource(): BoardSource {
   let push: ((message: ServerMessage) => void) | null = null;
   // The station's starts and agents tell the board in the snapshot's time, which the board sees shifted to now.
   const station = fixtureActions(research, () => Date.now() / 1000 - anchor, (message) => push?.(shiftTimes(message, anchor)));
-  // A ship the replay has just taken off the board still takes orders, as in the snapshot.
+  // A ship the fixture stream has just taken off the board still takes orders, as in the snapshot.
   const fixtureTasks = Object.fromEntries(snapshot.tasks.map((task) => [task.slug, task]));
   // A fixture ship's teamster queues orders unless its detail says otherwise.
   const ships = fixtureShips(
@@ -112,7 +112,7 @@ export function fixtureSource(): BoardSource {
       const emit = (original: ServerMessage) => {
         const shipped = ships.patch(original);
         const patched = shipped && logins.patch(shipped);
-        // The implementing agents stay on the board when the replay starts over.
+        // The implementing agents stay on the board when the fixture loop starts over.
         const message: ServerMessage | null =
           patched?.type === "snapshot"
             ? { ...patched, snapshot: { ...patched.snapshot, tasks: [...patched.snapshot.tasks, ...station.tasks().map((task) => shiftTimes(task, anchor))] } }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../types";
 import { MAX_SHIPS, placement, placeOf, systemTasks } from "./placement";
+import { departureOf } from "./scene/system/ships";
 
 const NOW = 1_800_000_000;
 
@@ -65,6 +66,13 @@ describe("placeOf", () => {
       expect(placeOf(task({ kind: "session", column }))).toBe("command");
     }
     expect(placeOf(task({ kind: "session", column: "closed" }))).toBeNull();
+  });
+});
+
+describe("departureOf", () => {
+  it("sends a missing ship into the sun from the roadstead and fades it elsewhere", () => {
+    expect(departureOf("roadstead")).toBe("dive");
+    expect(departureOf("yard")).toBe("fade");
   });
 });
 

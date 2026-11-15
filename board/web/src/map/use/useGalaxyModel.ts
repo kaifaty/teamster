@@ -5,7 +5,7 @@ import { computed, ref, shallowRef, watch } from "vue";
 import type { Board } from "../../store/board";
 import { machineRings } from "../../lib/machines";
 import { constellationsOf } from "../constellations";
-import { daysLeft, stars, tankEmpty, tanks, type Star } from "../fleet";
+import { daysLeft, stars, tankEmpty, tanks } from "../fleet";
 import {
   defaultCovered,
   fuelColumnRect,
@@ -43,32 +43,12 @@ export function steady<T>(read: () => T): () => T {
 }
 
 export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSources) {
-  const { now, replay, tasks, liveTasks } = sources;
+  const { now, tasks } = sources;
 
   // Galaxy: one star per repository, one fuel tank per subscription.
-  // The same list while nothing changes, so that a playing replay does not redraw the galaxy at every step.
-  let lastStars: Star[] = [];
-  const starList = computed(() => {
-    const next = galaxyStars();
-    if (JSON.stringify(next) === JSON.stringify(lastStars)) return lastStars;
-    lastStars = next;
-    return next;
-  });
-  function galaxyStars(): Star[] {
-    if (replay.at === null) return stars(tasks.value);
-    // Every system of the board and of the day keeps its star, so that the galaxy does not rearrange as it plays.
-    const list = stars([...tasks.value, ...liveTasks.value.map((task) => ({ ...task, column: "closed" as const }))]);
-    const known = new Set(list.map((star) => star.repo));
-    for (const event of replay.events) {
-      if (!event.repo || !event.slug || known.has(event.repo)) continue;
-      known.add(event.repo);
-      list.push({ repo: event.repo, live: 0, attention: 0, ready: 0, sleeping: 0, dots: [] });
-    }
-    return list.sort((a, b) => a.repo.localeCompare(b.repo));
-  }
+  const starList = computed(steady(() => stars(tasks.value)));
   const systemNames = computed(() => new Set(starList.value.map((star) => star.repo)));
 
-  // The tanks stay live in a replay: the accounts' past is not recorded.
   const tankList = computed(steady(() => tanks(sources.source.value.state.value.accounts?.data ?? null, now.value)));
   const tankShapes = computed(
     steady<TankShape[]>(() =>
@@ -116,8 +96,7 @@ export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSo
   const world = ref<Size>(worldSize({ width: 1600, height: 1000 }));
   const systemWorld = ref<Size>(systemWorldSize({ width: 1600, height: 1000 }));
 
-  // Machines stand as reactors along the right edge. They are the board's own and stay live in a replay and a
-  // scenario: the machines' past is not recorded.
+  // Machines stand as reactors along the right edge. They are the board's own, including in a scenario.
   const machinesData = computed(() => props.board.state.value.machines ?? null);
   const machineMarks = computed(
     steady<MachineMark[]>(() => (machinesData.value?.items ?? []).map((machine) => ({ id: machine.id, status: machine.status, rings: machineRings(machine.metrics) }))),

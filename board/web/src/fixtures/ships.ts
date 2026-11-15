@@ -1,6 +1,6 @@
 // The board server's task orders on the fixture data, so that `dev:fixture` clicks through a ship's bridge without a
 // server: `say` adds the lead's message, or puts it in the queue of a busy ship whose teamster queues, `stop` puts the
-// ship out of work and drops its queue, `clean` takes it off the board, and `verdict` and `review` answer with success. The orders outlive the replay's loop: every message passes `patch`.
+// ship out of work and drops its queue, `clean` takes it off the board, and `verdict` and `review` answer with success. The orders outlive the fixture's loop: every message passes `patch`.
 import type { ActionBodies, ActionResult } from "../lib/actions";
 import { commandSlug } from "../lib/commands";
 import type { ServerMessage, TaskMessage, TaskQueue, TaskSummary } from "../types";

@@ -85,17 +85,15 @@ describe("tabTitle", () => {
 });
 
 describe("shipLine", () => {
-  it("says a live task has no activity, and gives a replayed record its summary and age", () => {
+  it("says a live task has no activity", () => {
     const quiet = task({ column: "running", alive: true, summary: "Прошёл полигон", updated_at: 1000 });
-    expect(shipLine(quiet, true, 1300, false)).toBe("нет активности");
-    expect(shipLine(quiet, true, 1300, true)).toBe("Прошёл полигон · 5 мин назад");
-    expect(shipLine({ ...quiet, summary: null }, true, 1300, true)).toBe("нет активности");
+    expect(shipLine(quiet, true, 1300)).toBe("нет активности");
   });
 
   it("marks a ship on the roadstead with the first sign of its cargo", () => {
-    const done = (extra: Partial<TaskSummary>) => shipLine(task({ column: "review_me", pr: "https://github.com/o/r/pull/7", ...extra }), false, 0, false);
+    const done = (extra: Partial<TaskSummary>) => shipLine(task({ column: "review_me", pr: "https://github.com/o/r/pull/7", ...extra }), false, 0);
     expect(done({})).toBe("готово · PR #7");
-    expect(shipLine(task({ column: "review_me", review: "clean" }), false, 0, false)).toBe("готово · чисто");
+    expect(shipLine(task({ column: "review_me", review: "clean" }), false, 0)).toBe("готово · чисто");
     const all = { stop: "base conflict", check: "failed", ci: "failed", findings_left: 2, left: 1, review: "defects" } as const;
     expect(done(all)).toBe("готово · PR #7 · конфликт с базой");
     expect(done({ ...all, stop: "clean" })).toBe("готово · PR #7 · проверка упала");
