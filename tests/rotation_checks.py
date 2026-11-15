@@ -23,16 +23,41 @@ class CheckGuardTests(RotationTestCase):
             {"cmd": command, "seconds": 900, "outcome": "failed"},
             {"cmd": command, "outcome": "passed"},
             *({"cmd": command, "seconds": 9000, "outcome": outcome}
-              for outcome in ("timeout", "unavailable", "stopped")),
+              for outcome in ("unavailable", "stopped")),
             {"cmd": "another check", "seconds": 9000, "outcome": "passed"}]}))
         (other / "state.json").write_text(json.dumps({"repo": str(self.root / "other"), "checks": [
             {"cmd": command, "seconds": 9000, "outcome": "passed"}]}))
         self.assertIsNone(worker.checking.long_check_median(self.repo, command, 30))
         (archive / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
-            {"cmd": command, "seconds": 1200, "outcome": "passed"}]}))
+            {"cmd": command, "seconds": 1200, "outcome": "timeout"}]}))
         for limit, expected in ((None, None), (60, None), (45, None), (30, 15)):
             with self.subTest(limit=limit):
                 self.assertEqual(worker.checking.long_check_median(self.repo, command, limit), expected)
+
+    def test_long_check_median_matches_differently_written_commands(self):
+        worker = self.worker()
+        script = "/home/u/.checks/repo/ios-check.sh"
+        spellings = (f"CHECK_LANE=b {script}", "CHECK_LANE=d sh ~/.checks/repo/ios-check.sh",
+                     'sh -c "CHECK_LANE=c $HOME/.checks/repo/ios-check.sh"', f"CHECK_LANE=c bash {script}",
+                     'CHECK_LANE="a b" bash -c \'${HOME}/.checks/repo/ios-check.sh\'')
+        compound = f"make && {script} --fast; true"
+        with mock.patch.dict(worker.checking.os.environ, {"HOME": "/home/u"}):
+            key = worker.checking.check_key
+            for spelling in spellings:
+                with self.subTest(spelling=spelling):
+                    self.assertEqual(key(spelling), key(script))
+            self.assertEqual(key(compound), key("A=1 make && sh -c '~/.checks/repo/ios-check.sh --fast' ; true"))
+            for first, second in ((script, "~/.checks/repo/android-check.sh"), (script, f"{script} --fast"),
+                                  (f"make && {script}", f"{script} && make"),
+                                  (f"make && {script}", f"make | {script}")):
+                with self.subTest(first=first, second=second):
+                    self.assertNotEqual(key(first), key(second))
+            self.assertEqual(key("echo 'unterminated"), "echo 'unterminated")
+            task = worker.config.TASKS / "spellings"
+            task.mkdir(parents=True)
+            (task / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
+                {"cmd": spelling, "seconds": 1500, "outcome": "passed"} for spelling in spellings[:3]]}))
+            self.assertEqual(worker.checking.long_check_median(self.repo, spellings[3], 60), 25)
 
     def test_start_and_base_merge_defer_long_checks_in_both_languages(self):
         worker = self.worker()

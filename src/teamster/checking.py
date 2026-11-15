@@ -14,10 +14,61 @@ from pathlib import Path
 from . import accounts, clock, config, notifications, procs, reflection, sandboxing, task_state, telemetry_log
 
 
+CHECK_SEPARATORS = {"&&", "||", ";", "|", "&"}
+CHECK_INTERPRETERS = {"sh", "bash", "zsh"}
+
+
+def check_key(command):
+    """Comparison key of a check command, ignoring how the same check is written.
+
+    Leading NAME=value assignments, a single-string ``sh|bash|zsh -c`` wrapper
+    and an interpreter before a script path are dropped, and ``~``, ``$HOME``
+    and ``${HOME}`` at the start of a word become the home directory. Parts of
+    a compound command keep their order. Unparsable strings compare verbatim.
+    """
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return command
+    parts = [[]]
+    for token in tokens:
+        if token in CHECK_SEPARATORS:
+            parts.append([token])
+            parts.append([])
+        else:
+            parts[-1].append(token)
+    key = []
+    for part in parts:
+        if part and part[0] in CHECK_SEPARATORS:
+            key.extend(part)
+            continue
+        while part and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", part[0]):
+            part = part[1:]
+        if part and os.path.basename(part[0]) in CHECK_INTERPRETERS:
+            if len(part) == 3 and part[1] == "-c":
+                inner = check_key(part[2])
+                key.extend(inner if isinstance(inner, tuple) else (inner,))
+                continue
+            if len(part) > 1 and not part[1].startswith("-"):
+                part = part[1:]
+        home = os.path.expanduser("~")
+        for word in part:
+            for prefix in ("${HOME}", "$HOME", "~"):
+                if word == prefix or word.startswith(prefix + "/"):
+                    word = home + word[len(prefix):]
+                    break
+            key.append(word)
+    return tuple(key)
+
+
 def long_check_median(repo, command, max_minutes):
     """Minutes of a saved check whose past median exceeds a third of the turn."""
     if max_minutes is None:
         return None
+    key = check_key(command)
     seconds = []
     for root in (config.TASKS, config.TASKS / ".archive"):
         for path in root.glob("*/state.json"):
@@ -25,8 +76,8 @@ def long_check_median(repo, command, max_minutes):
             if state.get("repo") != str(repo):
                 continue
             seconds.extend(check["seconds"] for check in state.get("checks", [])
-                           if check.get("cmd") == command and "seconds" in check
-                           and check.get("outcome") in ("passed", "failed"))
+                           if "seconds" in check and check.get("outcome") in ("passed", "failed", "timeout")
+                           and "cmd" in check and check_key(check["cmd"]) == key)
     if len(seconds) >= 3:
         minutes = statistics.median(seconds) / 60
         if minutes > max_minutes / 3:
