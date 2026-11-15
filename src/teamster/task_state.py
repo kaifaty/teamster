@@ -150,6 +150,7 @@ STATE_FIELDS = {
     "reasoning_effort": StateField("cursor", spawn_reset=lambda st, turn: None),
     "thread": StateField("cursor"),
     "check": StateField("task"),
+    "check_loaded": StateField("task"),
     "check_timeout": StateField("task"),
     "ci_enabled": StateField("task"),
     "no_push": StateField("task"),

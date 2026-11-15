@@ -65,6 +65,10 @@ REFLECT_SCHEMA = object_schema({
         "earlier": {"type": "array", "items": {"type": "string"}},
         "caveats": {"type": "string"},
         "proposal": {"type": "string"},
+        "target": {"type": "array", "items": {"type": "string"},
+                   "description": "Where the proposal's change is made, the main place first: a repository by its "
+                                  "directory name in the records' repo, or a ~/ path outside every git repository. "
+                                  "Empty when the lesson goes nowhere."},
     })},
     "questions": {"type": "array", "items": {"type": "string"}},
     "options": {"type": "array", "description": "options[i] holds 2-4 short answers to questions[i], or is empty for a free answer.",

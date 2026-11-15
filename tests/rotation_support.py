@@ -882,6 +882,8 @@ class RotationTestCase(unittest.TestCase):
                   use_reset_credits=None, reset_credit_min_hours=None, **settings):
         config = {
             "switch_at": 99, "credits": credits, "language": language,
+            # Load-sensitive tests opt in with deterministic load and CPU samples.
+            "check_load_per_cpu": 0,
             "accounts": [{"name": "main", "home": str(self.home)},
                          {"name": "second", "home": str(self.other)}]}
         if wait_for_reset is not None:
@@ -1126,9 +1128,10 @@ class RotationTestCase(unittest.TestCase):
         archive = self.home / "claude-tasks" / ".archive"
         return {path.relative_to(archive): path.read_bytes() for path in archive.rglob("*") if path.is_file()}
 
-    def reflect_lesson(self, lesson_id, cue, scope="invariant", repos=()):
+    def reflect_lesson(self, lesson_id, cue, scope="invariant", repos=(), target=()):
         return {"id": lesson_id, "cue": cue, "lesson": "Do it differently.", "evidence": "new-task round 1 F1",
-                "scope": scope, "repos": list(repos), "earlier": [], "caveats": "", "proposal": "A check."}
+                "scope": scope, "repos": list(repos), "earlier": [], "caveats": "", "proposal": "A check.",
+                "target": list(target)}
 
     def reflect_result(self, status="done", lessons=(), questions=(), options=None, report="Records: 1."):
         return {"status": status, "summary": "Reflected on one record.", "report": report,

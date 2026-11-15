@@ -36,10 +36,12 @@ A task that finished `done` with a passing check and at most P3 findings needs n
    evidence: <the concrete moment: round, finding id, say, check line>
    scope: invariant | domain
    earlier: <an earlier lesson this task tested>: helped | hurt | no observed effect | confounded
+   target: <where the change is made, the main place first, separated by commas>
    ```
 
    Write one `earlier` line for each earlier lesson the task tested, and add a `caveats` line for
-   anything that weakens the evidence.
+   anything that weakens the evidence. The `target` line names the places from
+   [Where a lesson goes](#where-a-lesson-goes), with nothing after the colon when the lesson goes nowhere.
 
    If the record names no concrete moment, write `NO_ENTRY` and stop. A merged result is not evidence that
    a rule helped. When several changes could explain a difference, the verdict is `confounded`.
@@ -52,6 +54,14 @@ A task that finished `done` with a passing check and at most P3 findings needs n
   (`src/teamster/rules*.md`) when the supervisor's contract changes.
 - `domain`, one repository: its `AGENTS.md`, a skill, a script or a check there.
 - A lesson about one brief only goes nowhere.
+
+A lesson's `target` names where its change is made, the main place first: a repository by its
+directory name, as in the `repo` of task records (`teamster`, `gothic`, `home-infra`), or a path outside
+every git repository starting with `~/` (`~/.claude/skills/agent-router/SKILL.md`,
+`~/.codex/checks/home-infra/ci_wait.py`, `~/.codex/AGENTS.md`). An empty `target` means the lesson goes
+nowhere. It is the place of the edit, not the repository of the tasks the lesson is about: a `domain gothic`
+lesson that changes a rule in the agent-router skill has the target `~/.claude/skills/agent-router/SKILL.md`,
+not `gothic`.
 
 Prefer a form that enforces over text that asks: a check, a guard or a supervisor stop before a skill, a
 skill before always-on text. Every line of `AGENTS.md` is read on every turn.
@@ -107,17 +117,18 @@ The executor's steps:
    `EXPERIENCE.md` covers yet. A cue that matches a lesson in the index adds an `earlier` verdict, not a
    new lesson. A single cue held by an earlier batch becomes a lesson when it recurs.
 4. Answer by the reflect schema: `summary`; `report`, the batch review body (the source records by
-   repository, then each lesson with the fields from [How](#how), its records as evidence, and the change
-   it proposes and where; single cues held and noise separately); `lessons` with `id`, `cue`, `lesson`,
-   `evidence`, `scope`, `repos`, `earlier`, `caveats` and `proposal`; and `questions` for the lead with
-   `options`, 2-4 short answers per question or none for a free answer. Questions end the turn
-   `needs_decision`; answer them with `say`.
+   repository, then each lesson with the fields from [How](#how), its records as evidence, the change
+   it proposes and the line `target: <places separated by commas>`; single cues held and noise
+   separately); `lessons` with `id`, `cue`, `lesson`, `evidence`, `scope`, `repos`, `earlier`, `caveats`,
+   `proposal` and `target`, the places from [Where a lesson goes](#where-a-lesson-goes); and `questions`
+   for the lead with `options`, 2-4 short answers per question or none for a free answer. Questions end
+   the turn `needs_decision`; answer them with `say`.
 5. Change nothing: not `AGENTS.md`, skills, checks, repositories or the task records.
 
 With `"language": "ru"` in the settings, the prompt asks for the summary, the report, the lessons, the
 questions and their options in Russian, whatever the language of the records. It keeps as written what
 teamster and the board read: the JSON keys, the field markers that start a lesson's lines in `report`
-(`cue:`, `lesson:`, `evidence:`, `scope:`, `earlier:`, `caveats:`, `proposal:`), the lesson headings
+(`cue:`, `lesson:`, `evidence:`, `scope:`, `earlier:`, `caveats:`, `proposal:`, `target:`), the lesson headings
 `### <id>. <title>`, and `invariant` or `domain` in `scope`.
 
 teamster, not the executor, records every completed turn with a valid answer. The first writes

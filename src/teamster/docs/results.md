@@ -135,7 +135,7 @@ The cycle continues from the step it stopped at, in the same turn and with the t
 
 Rounds already started count against `--fix-rounds` and `--ci-rounds`; a resumed fix round records its
 decisions, check and changes like any other, and a failing check starts the next round it allows. The cycle
-reviews only when its `start` or `say` passed `--review`; a task saved by 1.74.0 or earlier has no such record,
+reviews only when its `start` or `say` passed `--review`; a task saved by 1.76.0 or earlier has no such record,
 so past the step it was in its cycle continues without a review. Each resume appends
 `{"at", "signal", "signal_at", "started", "step", "turn"}` to `resumed` in `state.json`. The resumed cycle keeps the
 turn number, so `report` counts its final outcome, not the interrupted one, and does not count it as a

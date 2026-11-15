@@ -10,12 +10,12 @@
   "task_model": null,
   "review_model": null,
   "account": "main",
-  "thread": "f694d030-dce4-4323-914f-d2a30f0c6b6e",
+  "thread": "53229d66-91ed-4a43-81c4-987760eaac44",
   "threads": [
     {
       "account": "main",
-      "thread": "f694d030-dce4-4323-914f-d2a30f0c6b6e",
-      "started": 1794753374.0354261
+      "thread": "53229d66-91ed-4a43-81c4-987760eaac44",
+      "started": 1794754978.026487
     }
   ],
   "rotations": [],
@@ -23,6 +23,7 @@
   "checks": [],
   "check": null,
   "check_timeout": 1800,
+  "check_loaded": null,
   "guards": [],
   "base_check": false,
   "sandbox": "off",
@@ -37,13 +38,13 @@
   "ci_timeout_minutes": 30,
   "max_task_weekly_percent": null,
   "weekly_used_percent": 0,
-  "created": 1794753373.272665,
+  "created": 1794754977.633887,
   "turns": 1,
-  "plugin_version": "1.74.0",
+  "plugin_version": "1.76.0",
   "kind": "work",
   "work_completed": false,
   "review_start": 0,
-  "turn_started": 1794753373.273898,
+  "turn_started": 1794754977.634918,
   "check_start": 0,
   "rotation_start": 0,
   "event_start": 0,
@@ -56,8 +57,8 @@
   "model": "fake-model",
   "reasoning_effort": null,
   "runtime": {
-    "version": "1.74.0",
-    "script": "/private/tmp/teamster-main-nDgR/wt/src/teamster/__main__.py"
+    "version": "1.76.0",
+    "script": "/private/tmp/teamster-main-rS2Z/wt/src/teamster/__main__.py"
   },
   "result": {
     "status": "done",
@@ -91,13 +92,13 @@
   },
   "weekly_marks": {
     "main": {
-      "reset": 1794760571,
+      "reset": 1794762173,
       "used": 10
     }
   },
   "exec_event_start": 0,
   "publish": {
-    "at": 1794753374.09955,
+    "at": 1794754978.0863261,
     "sha": "",
     "pushed": false,
     "pr": "",
@@ -105,5 +106,5 @@
     "error": "not pushed"
   },
   "check_paths": [],
-  "turn_finished": 1794753374.54689
+  "turn_finished": 1794754978.3474271
 }

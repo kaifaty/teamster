@@ -272,9 +272,13 @@ def apply_say(st, options, cfg):
         st["reviewer"] = options["reviewer"]
     if options.get("no_check"):
         st["check"] = None
+        st["check_loaded"] = None
         st["check_paths"] = []
-    elif options.get("check") is not None:
-        st["check"] = options["check"]
+    else:
+        if options.get("check") is not None:
+            st["check"] = options["check"]
+        if options.get("check_loaded") is not None:
+            st["check_loaded"] = options["check_loaded"]
     if options.get("no_base_check"):
         st["base_check"] = False
     if options.get("check_timeout") is not None:
@@ -472,7 +476,7 @@ def cmd__run(a):
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
             task_state.mark_step(st, "check")
-            check = checking.saved_check(st, cfg, stopped, review_after and not in_ci)
+            check = checking.saved_check(st, cfg, stopped, sleep, review_after and not in_ci)
         if review_fix or round_check:
             review_cycle.auto_fix(st, cfg, st.get("review_result"), effort, stopped, sleep,
                                   resume_prompt=pending["prompt"], resume_check=round_check)

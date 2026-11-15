@@ -10,21 +10,21 @@
   "task_model": null,
   "review_model": null,
   "account": "main",
-  "thread": "fb7513ab-f581-444d-9c42-69b08f886e10",
+  "thread": "49b62b0d-2608-49dc-842f-5c885ec03741",
   "threads": [
     {
       "account": "main",
-      "thread": "fb7513ab-f581-444d-9c42-69b08f886e10",
-      "started": 1794753377.245922
+      "thread": "49b62b0d-2608-49dc-842f-5c885ec03741",
+      "started": 1794754980.152322
     }
   ],
   "rotations": [],
   "reviews": [
     {
       "account": "main",
-      "thread": "62522198-e73c-4e36-9714-0fc0277c0923",
-      "started": 1794753378.275649,
-      "finished": 1794753378.4044092,
+      "thread": "d0d191b5-a1b0-4c3b-aff1-26c322b079ed",
+      "started": 1794754980.870511,
+      "finished": 1794754980.984334,
       "result": {
         "verdict": "defects",
         "findings": [
@@ -57,6 +57,7 @@
   "checks": [],
   "check": null,
   "check_timeout": 1800,
+  "check_loaded": null,
   "guards": [],
   "base_check": false,
   "sandbox": "off",
@@ -71,13 +72,13 @@
   "ci_timeout_minutes": 30,
   "max_task_weekly_percent": null,
   "weekly_used_percent": 0,
-  "created": 1794753376.729939,
+  "created": 1794754979.786342,
   "turns": 1,
-  "plugin_version": "1.74.0",
+  "plugin_version": "1.76.0",
   "kind": "review",
   "work_completed": true,
   "review_start": 0,
-  "turn_started": 1794753376.732836,
+  "turn_started": 1794754979.787107,
   "check_start": 0,
   "rotation_start": 0,
   "event_start": 0,
@@ -90,8 +91,8 @@
   "model": "fake-model",
   "reasoning_effort": null,
   "runtime": {
-    "version": "1.74.0",
-    "script": "/private/tmp/teamster-main-nDgR/wt/src/teamster/__main__.py"
+    "version": "1.76.0",
+    "script": "/private/tmp/teamster-main-rS2Z/wt/src/teamster/__main__.py"
   },
   "result": {
     "status": "done",
@@ -125,13 +126,13 @@
   },
   "weekly_marks": {
     "main": {
-      "reset": 1794760571,
+      "reset": 1794762173,
       "used": 10
     }
   },
   "exec_event_start": 4,
   "publish": {
-    "at": 1794753377.319343,
+    "at": 1794754980.212064,
     "sha": "",
     "pushed": false,
     "pr": "",
@@ -170,5 +171,5 @@
     ],
     "summary": "Found two defects."
   },
-  "turn_finished": 1794753378.8386052
+  "turn_finished": 1794754981.2032828
 }

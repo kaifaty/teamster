@@ -35,8 +35,27 @@ REFLECT_RUSSIAN = ("- Пиши по-русски summary, report, текст у�
                    "вопросы и варианты ответов, даже если записи и прежние разборы написаны по-английски. "
                    "Не переводи код, пути, имена файлов, slug, команды, id находок и цитаты из записей. "
                    "Оставь как есть ключи JSON, метки полей в начале строки report (cue:, lesson:, evidence:, "
-                   "scope:, earlier:, caveats:, proposal:), заголовки уроков «### <id>. …» с неизменным id "
+                   "scope:, earlier:, caveats:, proposal:, target:), заголовки уроков «### <id>. …» с неизменным id "
                    "и слова invariant и domain в scope.\n")
+
+# The board reads target: from each lesson's section of the report to find where the change goes.
+REFLECT_TARGET = {
+    "en": ("- target lists where the proposal's change is made, the main place first: a repository by its directory "
+           "name as in the records' repo (teamster, gothic, home-infra), or a path outside every git repository "
+           "starting with ~/ (~/.claude/skills/agent-router/SKILL.md, ~/.codex/checks/home-infra/ci_wait.py, "
+           "~/.codex/AGENTS.md); an empty array when the lesson goes nowhere. It names the place of the edit, not "
+           "the repository of the tasks the lesson is about: a domain gothic lesson that changes a rule in the "
+           "agent-router skill gets target ~/.claude/skills/agent-router/SKILL.md, not gothic. In report, give "
+           "each lesson the line `target: <places separated by commas>`, with nothing after the colon when target is "
+           "empty.\n"),
+    "ru": ("- target — места, где делается изменение из proposal, главное первым: репозиторий по имени его каталога, "
+           "как в repo записей (teamster, gothic, home-infra), или путь вне любого git-репозитория, начинающийся "
+           "с ~/ (~/.claude/skills/agent-router/SKILL.md, ~/.codex/checks/home-infra/ci_wait.py, ~/.codex/AGENTS.md); "
+           "пустой массив — урок никуда не идёт. Это место правки, а не репозиторий задач, о которых урок: урок "
+           "domain gothic, который меняет правило в навыке agent-router, получает target "
+           "~/.claude/skills/agent-router/SKILL.md, а не gothic. В report у каждого урока — строка "
+           "`target: <места через запятую>`, а при пустом target после двоеточия ничего нет.\n"),
+}
 
 
 def scout_prompt(question, cfg=None):
@@ -76,11 +95,11 @@ def reflect_prompt(order, records, through, cfg=None):
                   "- Вопрос ведущему — только о решении, которого записи не решают. Если ответ — выбор, "
                   "дай для этого вопроса 2–4 коротких варианта в options, иначе пустой массив.\n"
                   "- Если есть вопросы, status needs_decision, иначе done.\n"
-                  + REFLECT_RUSSIAN +
+                  + REFLECT_TARGET["ru"] + REFLECT_RUSSIAN +
                   "Ответь JSON по схеме рефлексии: summary — короткий итог; report — markdown-тело разбора "
                   "в том виде, как пишутся batch-*.md, без заголовка и строки through:; в lessons — каждый новый "
                   "урок с id (например V1), cue, lesson, evidence, scope invariant или domain, repos для domain, "
-                  "вердиктами earlier, caveats и proposal; в options — по одному элементу на каждый вопрос.")
+                  "вердиктами earlier, caveats, proposal и target; в options — по одному элементу на каждый вопрос.")
     else:
         prompt = (f"Run a batch reflection over teamster task records: carry out the How and Batch sections "
                   f"of the reflection guide (read it with `{config.COMMAND} docs reflection`).\n"
@@ -97,10 +116,12 @@ def reflect_prompt(order, records, through, cfg=None):
                   "- Ask the lead only about a decision the records do not settle. When the answer is a choice, "
                   "give 2-4 short answers for that question in options, otherwise an empty array.\n"
                   "- With questions, use status needs_decision, otherwise done.\n"
+                  + REFLECT_TARGET["en"] +
                   "Return JSON matching the reflect schema: summary is a short recap; report is the markdown body "
                   "of the batch review as batch-*.md files are written, without the heading and the through: line; "
                   "lessons lists each new lesson with id (such as V1), cue, lesson, evidence, scope invariant or "
-                  "domain, repos for domain, earlier verdicts, caveats and proposal; options has one entry per question.")
+                  "domain, repos for domain, earlier verdicts, caveats, proposal and target; options has one entry "
+                  "per question.")
     return (order.strip() + "\n\n" if order and order.strip() else "") + prompt
 
 
@@ -123,11 +144,11 @@ def study_prompt(order, records, cfg=None):
                   "- Вопрос ведущему — только о решении, которого записи не решают. Если ответ — выбор, "
                   "дай для этого вопроса 2–4 коротких варианта в options, иначе пустой массив.\n"
                   "- Если есть вопросы, status needs_decision, иначе done.\n"
-                  + REFLECT_RUSSIAN +
+                  + REFLECT_TARGET["ru"] + REFLECT_RUSSIAN +
                   "Ответь JSON по схеме рефлексии: summary — короткий итог; report — markdown-тело разбора "
                   "без заголовка: ответ на приказ по записям; в lessons — каждый новый "
                   "урок с id (например V1), cue, lesson, evidence, scope invariant или domain, repos для domain, "
-                  "вердиктами earlier, caveats и proposal; в options — по одному элементу на каждый вопрос.")
+                  "вердиктами earlier, caveats, proposal и target; в options — по одному элементу на каждый вопрос.")
     else:
         prompt = (f"Run a study of teamster task records by the lead's order: this is not a batch reflection but an "
                   f"answer to the order above over the records the lead chose. Carry out the How and Study sections "
@@ -144,10 +165,12 @@ def study_prompt(order, records, cfg=None):
                   "- Ask the lead only about a decision the records do not settle. When the answer is a choice, "
                   "give 2-4 short answers for that question in options, otherwise an empty array.\n"
                   "- With questions, use status needs_decision, otherwise done.\n"
+                  + REFLECT_TARGET["en"] +
                   "Return JSON matching the reflect schema: summary is a short recap; report is the markdown body "
                   "of the study without a heading, the answer to the order from the records; "
                   "lessons lists each new lesson with id (such as V1), cue, lesson, evidence, scope invariant or "
-                  "domain, repos for domain, earlier verdicts, caveats and proposal; options has one entry per question.")
+                  "domain, repos for domain, earlier verdicts, caveats, proposal and target; options has one entry "
+                  "per question.")
     return (order.strip() + "\n\n" if order and order.strip() else "") + prompt
 
 
@@ -206,7 +229,9 @@ def review_prompt(st, cfg=None, *, with_angles=False):
                      "or is obsolete, and explain why. A deleted test whose contract still applies "
                      "without a replacement is a P2 finding.\n"))
     checks = st.get("checks", [])
-    if (checks and st.get("check") == checks[-1]["cmd"] and checks[-1]["outcome"] == "passed"):
+    if (checks and checks[-1]["outcome"] == "passed"
+            and (st.get("check") == checks[-1]["cmd"]
+                 or (checks[-1].get("rerun") == "load" and st.get("check_loaded") == checks[-1]["cmd"]))):
         check = checks[-1]
         evidence = f"`{check['cmd']}`: passed (exit {check['exit']}, {check['seconds']:.0f} s).\n"
         context += (("Сохранённая проверка уже прошла: " + evidence +

@@ -16,8 +16,18 @@ or timeout skips the review, and `wait` shows the last 40 lines of `check.log`.
 Each saved check record in `state.json` includes `load: [start, end]`: the machine's one-minute
 load average from `os.getloadavg()` at the start and end of the check, rounded to one decimal
 place. If either sample is unavailable, the field is omitted. `wait` appends it to the check's
-result line, for example `load 12.3 → 45.6`. These samples do not change the check's outcome or
-timeout and do not trigger a retry.
+result line, for example `load 12.3 → 45.6`.
+
+When a saved check fails or times out and either load sample exceeds `check_load_per_cpu`
+(default 30) times the CPU count, the supervisor waits for load to fall below that threshold,
+for at most `check_load_wait_minutes` (default 15), then reruns it once even if load remains high.
+Set `check_load_per_cpu` to 0 to disable this. `start --check-loaded CMD` saves an alternative
+command for this rerun; `say` inherits it, `say --check-loaded CMD` replaces it, and
+`say --no-check` removes both commands. Both runs remain in `checks`, with the rerun's threshold,
+wait seconds and load before rerunning; `wait` marks the second line as a load rerun. The first
+log is preserved as `check-N.log` beside `check.log` (N is its entry number in `checks`). Only the
+second result controls reviews, fixes and failure notifications. Base checks and checks that pass,
+exit 75 or are stopped are not rerun.
 
 With `start --check`, the brief normally asks the executor to run the saved check in full before
 reporting `done`. Teamster reads `checks[]` from active tasks' `state.json` files in
@@ -56,8 +66,8 @@ The supervisor guards:
 - test directories: `tests/`, `test/`, `__tests__/`, `spec/`;
 - test filenames: `test_*`, `*_test.*`, `*.test.*`, `*.spec.*`;
 - CI paths: `.github/workflows/`, `.gitlab-ci.yml`, `.forgejo/workflows/`;
-- existing relative repository paths among the check's top-level tokens, including `NAME=path` and
-  `--opt=path`;
+- existing relative repository paths among the top-level tokens of `--check` and `--check-loaded`,
+  including `NAME=path` and `--opt=path`;
 - patterns passed with repeatable `start --guard "GLOB"`.
 
 Discovered paths and patterns persist in task state, even after the files are deleted. Commands nested

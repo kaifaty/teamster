@@ -20,19 +20,50 @@ class CheckGuardTests(RotationTestCase):
             directory.mkdir(parents=True)
         (task / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
             {"cmd": command, "seconds": 60, "outcome": "passed"},
-            {"cmd": command, "seconds": 900, "outcome": "failed"},
+            {"cmd": command, "seconds": 1500, "outcome": "failed"},
             {"cmd": command, "outcome": "passed"},
             *({"cmd": command, "seconds": 9000, "outcome": outcome}
-              for outcome in ("timeout", "unavailable", "stopped")),
+              for outcome in ("unavailable", "stopped")),
             {"cmd": "another check", "seconds": 9000, "outcome": "passed"}]}))
         (other / "state.json").write_text(json.dumps({"repo": str(self.root / "other"), "checks": [
             {"cmd": command, "seconds": 9000, "outcome": "passed"}]}))
         self.assertIsNone(worker.checking.long_check_median(self.repo, command, 30))
         (archive / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
-            {"cmd": command, "seconds": 1200, "outcome": "passed"}]}))
+            {"cmd": command, "seconds": 900, "outcome": "timeout"}]}))
         for limit, expected in ((None, None), (60, None), (45, None), (30, 15)):
             with self.subTest(limit=limit):
                 self.assertEqual(worker.checking.long_check_median(self.repo, command, limit), expected)
+
+    def test_long_check_median_matches_differently_written_commands(self):
+        worker = self.worker()
+        script = "/home/u/.checks/repo/ios-check.sh"
+        spellings = (f"CHECK_LANE=b {script}", "CHECK_LANE=d sh ~/.checks/repo/ios-check.sh",
+                     'sh -c "CHECK_LANE=c $HOME/.checks/repo/ios-check.sh"', f"CHECK_LANE=c bash {script}",
+                     'CHECK_LANE="a b" bash -c \'${HOME}/.checks/repo/ios-check.sh\'',
+                     "zsh ~/.checks/repo/ios-check.sh", f"zsh -c 'CHECK_LANE=e {script}'")
+        compound = f"make && {script} --fast; true"
+        with mock.patch.dict(worker.checking.os.environ, {"HOME": "/home/u"}):
+            key = worker.checking.check_key
+            for spelling in spellings:
+                with self.subTest(spelling=spelling):
+                    self.assertEqual(key(spelling), key(script))
+            self.assertEqual(key(compound), key("A=1 make && sh -c '~/.checks/repo/ios-check.sh --fast' ; true"))
+            for first, second in ((script, "~/.checks/repo/android-check.sh"), (script, f"{script} --fast"),
+                                  (f"make && {script}", f"{script} && make"),
+                                  (f"make && {script}", f"make | {script}"),
+                                  (f"{script} --lane b", f"{script} --lane d")):
+                with self.subTest(first=first, second=second):
+                    self.assertNotEqual(key(first), key(second))
+            self.assertEqual(key('sh -c "CHECK_LANE=c $HOME/.checks/repo/ios-check.sh" > /tmp/check.log 2>&1'),
+                             key(f"CHECK_LANE=c {script} > /tmp/check.log 2>&1"))
+            self.assertNotEqual(key(f"sh -c {script} > /tmp/check.log"), key(script))
+            self.assertEqual(key("echo 'unterminated"), "echo 'unterminated")
+            task = worker.config.TASKS / "spellings"
+            task.mkdir(parents=True)
+            (task / "state.json").write_text(json.dumps({"repo": str(self.repo), "checks": [
+                {"cmd": spelling, "seconds": seconds, "outcome": outcome} for spelling, seconds, outcome in zip(
+                    spellings, (60, 1230, 1500), ("passed", "timeout", "failed"))]}))
+            self.assertEqual(worker.checking.long_check_median(self.repo, spellings[3], 60), 20.5)
 
     def test_start_and_base_merge_defer_long_checks_in_both_languages(self):
         worker = self.worker()
@@ -82,11 +113,23 @@ class CheckGuardTests(RotationTestCase):
                     cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=5)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("positive finite", result.stderr)
-        result = subprocess.run(
-            [PYTHON, "-I", str(SCRIPT), "say", "invalid-check", "Continue", "--check", "true", "--no-check"],
-            cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=5)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not allowed with argument", result.stderr)
+        for command_flag in ("--check", "--check-loaded"):
+            for flags in ((command_flag, "true", "--no-check"), ("--no-check", command_flag, "true")):
+                with self.subTest(flags=flags):
+                    result = subprocess.run(
+                        [PYTHON, "-I", str(SCRIPT), "say", "invalid-check", "Continue", *flags],
+                        cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("not allowed with argument", result.stderr)
+        worker = self.worker()
+        say = mock.Mock()
+        with mock.patch.object(worker.cli.sys, "argv", [
+                "teamster", "say", "valid-check", "Continue", "--check", "true", "--check-loaded", "true loaded"]), \
+                mock.patch.object(worker.config, "resolve_codex", return_value="fixture-codex"), \
+                mock.patch.dict(worker.cli.COMMAND_HANDLERS, {"say": say}):
+            worker.cli.main()
+        options = say.call_args.args[0]
+        self.assertEqual((options.check, options.check_loaded), ("true", "true loaded"))
         self.assertFalse(self.invocations(), "invalid options must not launch Codex")
 
     def test_check_passes_after_completed_work_before_automatic_review(self):
@@ -161,6 +204,164 @@ class CheckGuardTests(RotationTestCase):
                 saved = self.state(st["slug"])
                 self.assertEqual(saved["checks"][-1], result)
                 self.assertNotIn("load", list(worker.wait_view.wait_check_lines(saved))[-1])
+
+    def test_loaded_saved_check_reruns_after_load_drops_and_preserves_logs(self):
+        self.enable_fake_clock()
+        worker = self.worker()
+        for alternative in (None, "echo second-run"):
+            with self.subTest(alternative=alternative):
+                st = {"slug": "load-rerun-" + str(int(alternative is not None)), "repo": str(self.repo),
+                      "worktree": str(self.repo), "base": "origin/main", "account": "main", "check_loaded": alternative,
+                      "check": "if test -f check-once; then echo second-run; else "
+                               "touch check-once; echo first-run; exit 1; fi"}
+                (self.repo / "check-once").unlink(missing_ok=True)
+                directory = worker.config.TASKS / st["slug"]
+                directory.mkdir(parents=True)
+                samples = [61, 1, 60, 59, 58, 57] if alternative is None else [1, 61, 60, 59, 58, 57]
+                sleep = mock.Mock(wraps=worker.clock.CLOCK.sleep)
+                with mock.patch.object(worker.checking.os, "getloadavg",
+                                       side_effect=[(value, 0, 0) for value in samples]), \
+                        mock.patch.object(worker.checking.os, "cpu_count", return_value=2), \
+                        mock.patch.object(worker.notifications, "notify") as notify:
+                    check = worker.checking.saved_check(st, {}, lambda: False, sleep)
+                sleep.assert_called_once_with(worker.config.SLEEP_STEP)
+                first, second = st["checks"]
+                self.assertEqual([item["outcome"] for item in st["checks"]], ["failed", "passed"])
+                self.assertIs(check, second)
+                self.assertEqual(second["cmd"], alternative or st["check"])
+                self.assertEqual((second["rerun"], second["load_threshold"], second["wait_seconds"],
+                                  second["load_before_rerun"]), ("load", 60, worker.config.SLEEP_STEP, 59))
+                self.assertEqual((directory / first["log"]).read_text().strip(), "first-run")
+                self.assertEqual((directory / "check.log").read_text().strip(), "second-run")
+                self.assertEqual(self.state(st["slug"])["checks"], st["checks"])
+                lines = list(worker.wait_view.wait_check_lines(st))
+                self.assertEqual(sum(line.startswith("== check `") for line in lines), 2)
+                self.assertEqual(lines[1], "first-run")
+                self.assertIn("load rerun", lines[-1])
+                self.assertNotIn("review_skipped", st)
+                notify.assert_not_called()
+                prompt = worker.prompts.review_prompt(st, {"language": "en"})
+                self.assertIn("The saved check already passed: `" + second["cmd"], prompt)
+                without_tails = [{key: value for key, value in item.items() if key != "tail"}
+                                 for item in st["checks"]]
+                without_tails[1].update(outcome="failed", exit=1)
+                lines = list(worker.wait_view.wait_check_lines(dict(st, checks=without_tails)))
+                self.assertEqual(lines[1], "first-run")
+                self.assertEqual(lines[3], "second-run")
+
+    def test_loaded_timeout_reruns_once_after_wait_limit(self):
+        self.enable_fake_clock()
+        worker = self.worker()
+        st = {"slug": "load-timeout", "repo": str(self.repo), "worktree": str(self.repo),
+              "account": "main", "check": "fixture-check", "check_timeout": 0}
+        (worker.config.TASKS / st["slug"]).mkdir(parents=True)
+        processes = [mock.Mock(pid=IMPOSSIBLE_PID, returncode=code) for code in (-9, 0)]
+        for process, code in zip(processes, (None, 0)):
+            process.poll.return_value = code
+            process.wait.return_value = process.returncode
+        with mock.patch.object(worker.checking.subprocess, "Popen", side_effect=processes) as launch, \
+                mock.patch.object(worker.procs, "signal_group"), \
+                mock.patch.object(worker.checking, "_check_load", return_value=100), \
+                mock.patch.object(worker.checking.os, "cpu_count", return_value=2):
+            check = worker.checking.saved_check(st, {"check_load_wait_minutes": 0.05}, lambda: False,
+                                                worker.clock.CLOCK.sleep)
+        self.assertEqual([item["outcome"] for item in st["checks"]], ["timeout", "passed"])
+        self.assertEqual((check["wait_seconds"], check["load_before_rerun"]), (3, 100))
+        self.assertEqual(launch.call_count, 2)
+
+    def test_saved_check_does_not_rerun_without_loaded_failure(self):
+        worker = self.worker()
+        for outcome, code, load, per_cpu in (("failed", 1, 59, 30), ("failed", 1, 60, 30),
+                                              ("failed", 1, 100, 0), ("passed", 0, 100, 30),
+                                              ("unavailable", 75, 100, 30),
+                                              ("stopped", -9, 100, 30), ("interrupted", -9, 100, 30)):
+            with self.subTest(outcome=outcome, load=load, per_cpu=per_cpu):
+                st = {"slug": "no-load-rerun", "account": "main", "check": "fixture-check"}
+                check = {"cmd": st["check"], "outcome": outcome, "exit": code, "load": [load, load]}
+                with mock.patch.object(worker.checking, "run_check", return_value=check) as run, \
+                        mock.patch.object(worker.checking, "_check_load") as sample, \
+                        mock.patch.object(worker.checking.os, "cpu_count", return_value=2), \
+                        mock.patch.object(worker.task_state, "save"), \
+                        mock.patch.object(worker.notifications, "notify"):
+                    result = worker.checking.saved_check(st, {"check_load_per_cpu": per_cpu}, lambda: False,
+                                                        worker.clock.CLOCK.sleep)
+                self.assertIs(result, check)
+                run.assert_called_once()
+                sample.assert_not_called()
+
+    def test_unloaded_check_failure_still_notifies_when_stop_arrives_after_execution(self):
+        worker = self.worker()
+        st = {"slug": "unloaded-stop", "account": "main", "check": "exit 1",
+              "repo": str(self.repo), "worktree": str(self.repo)}
+        (worker.config.TASKS / st["slug"]).mkdir(parents=True)
+        stopped = mock.Mock(return_value=False)
+        run_check = worker.checking.run_check
+
+        def finish_check(*args):
+            check = run_check(*args)
+            stopped.return_value = True
+            return check
+
+        with mock.patch.object(worker.checking, "run_check", side_effect=finish_check), \
+                mock.patch.object(worker.checking, "_check_load", return_value=1), \
+                mock.patch.object(worker.checking.os, "cpu_count", return_value=2), \
+                mock.patch.object(worker.notifications, "notify") as notify:
+            result = worker.checking.saved_check(st, {}, stopped, worker.clock.CLOCK.sleep)
+        self.assertEqual((result["outcome"], result["exit"], result["load"]), ("failed", 1, [1, 1]))
+        self.assertEqual(st["review_skipped"], "check failed")
+        notify.assert_called_once_with(st, {}, "check_failed", "check failed on main", outcome="failed")
+
+    def test_load_rerun_does_not_apply_to_base_check(self):
+        worker = self.worker()
+        st = {"slug": "base-load", "repo": str(self.repo), "worktree": str(self.repo),
+              "base": "origin/main", "base_check": True,
+              "check": 'case "$PWD" in */base-check-*/worktree) exit 1;; *) exit 0;; esac'}
+        (worker.config.TASKS / st["slug"]).mkdir(parents=True)
+        with mock.patch.object(worker.checking, "_check_load", return_value=100), \
+                mock.patch.object(worker.checking.os, "cpu_count", return_value=2):
+            check = worker.checking.saved_check(st, {}, lambda: False, worker.clock.CLOCK.sleep)
+        self.assertEqual(len(st["checks"]), 1)
+        self.assertEqual((check["outcome"], check["base_check"]["outcome"]), ("passed", "failed"))
+        self.assertNotIn("rerun", check)
+
+    def test_stop_interrupts_loaded_check_wait_before_rerun(self):
+        self.enable_fake_clock()
+        worker = self.worker()
+        st = {"slug": "stop-load-wait", "repo": str(self.repo), "worktree": str(self.repo),
+              "account": "main", "pid": IMPOSSIBLE_PID, "stop_request": {"pid": IMPOSSIBLE_PID},
+              "check": "echo first-run; exit 1"}
+        (worker.config.TASKS / st["slug"]).mkdir(parents=True)
+        stop = worker.procs.StopSignal()
+        self.addCleanup(lambda: worker.procs.os.close(stop._read))
+        self.addCleanup(lambda: worker.procs.os.close(stop._write))
+        sleep = mock.Mock(side_effect=lambda seconds: stop.request())
+        with mock.patch.object(worker.checking, "_check_load", return_value=100), \
+                mock.patch.object(worker.checking.os, "cpu_count", return_value=2), \
+                mock.patch.object(worker.clock.CLOCK, "sleep", side_effect=AssertionError("unexpected clock sleep")), \
+                mock.patch.object(worker.notifications, "notify") as notify:
+            worker.checking.saved_check(st, {}, lambda: stop.requested, sleep)
+        sleep.assert_called_once_with(worker.config.SLEEP_STEP)
+        self.assertEqual(len(st["checks"]), 1)
+        self.assertNotIn("rerun", st["checks"][0])
+        self.assertNotIn("log", st["checks"][0])
+        self.assertEqual((worker.config.TASKS / st["slug"] / "check.log").read_text().strip(), "first-run")
+        self.assertEqual(worker.task_state.stop_outcome(st, lambda: stop.requested), "stopped")
+        notify.assert_not_called()
+
+    def test_check_load_settings_validate_finite_nonnegative_numbers(self):
+        worker = self.worker()
+        cfg = worker.config.accounts_config()
+        self.assertEqual((cfg["check_load_per_cpu"], cfg["check_load_wait_minutes"]), (30, 15))
+        for key in ("check_load_per_cpu", "check_load_wait_minutes"):
+            for value in (0, 1.5):
+                with self.subTest(key=key, value=value):
+                    self.configure(**{key: value})
+                    self.assertEqual(worker.config.accounts_config()[key], value)
+            for value in (-1, float("nan"), float("inf"), True, "30"):
+                with self.subTest(key=key, value=value):
+                    self.configure(**{key: value})
+                    with self.assertRaisesRegex(SystemExit, key + " must be a finite nonnegative number"):
+                        worker.config.accounts_config()
 
     def test_guarded_changes_keep_dirty_layers_when_base_ref_is_deleted(self):
         self.commit_fixture({"tests/test_committed.py": "assert True\n",
@@ -660,8 +861,17 @@ class CheckGuardTests(RotationTestCase):
                 self.assertNotIn("check_paths", state)
 
     def test_check_paths_return_union_without_mutating_state(self):
-        self.commit_fixture({"scripts/first.sh": "exit 0\n", "scripts/second.sh": "exit 0\n"})
+        self.commit_fixture({"scripts/first.sh": "exit 0\n", "scripts/second.sh": "exit 0\n",
+                             "scripts/loaded.sh": "exit 1\n"})
         worker = self.worker()
+        loaded = {"worktree": str(self.repo), "base": "origin/main", "check": "true",
+                  "check_loaded": "scripts/loaded.sh"}
+        self.assertEqual(worker.checking.check_paths(loaded), ["scripts/loaded.sh"])
+        (self.repo / "scripts/loaded.sh").write_text("exit 0\n")
+        self.git("add", "--", "scripts/loaded.sh")
+        self.git("commit", "--quiet", "-m", "Weaken the loaded check")
+        self.assertEqual([change["path"] for change in worker.checking.guarded_changes(loaded)],
+                         ["scripts/loaded.sh"])
         state = {"worktree": str(self.repo), "check": "sh scripts/first.sh"}
         self.assertEqual(worker.checking.check_paths(state), ["scripts/first.sh"])
         self.assertNotIn("check_paths", state)
@@ -1148,21 +1358,24 @@ class CheckGuardTests(RotationTestCase):
         self.configure()
         first = "printf 'first\\n' >> check-runs"
         second = "printf 'second\\n' >> check-runs"
-        self.start("check-say", "--check", first, "--check-timeout", "7")
+        self.start("check-say", "--check", first, "--check-loaded", "echo loaded-first", "--check-timeout", "7")
         self.wait("check-say")
         self.cli("say", "check-say", "Run another working turn")
         inherited = self.wait("check-say")
         self.assertIn("== check `" + first + "`: passed", inherited)
         self.assertEqual(len(self.state("check-say")["checks"]), 2)
         self.assertEqual(self.state("check-say")["check_timeout"], 7)
+        self.assertEqual(self.state("check-say")["check_loaded"], "echo loaded-first")
         self.cli("say", "check-say", "Use the replacement check", "--check", second,
-                 "--check-timeout", "9")
+                 "--check-loaded", "echo loaded-second", "--check-timeout", "9")
         self.wait("check-say")
         self.assertEqual(self.state("check-say")["check"], second)
         self.assertEqual(self.state("check-say")["check_timeout"], 9)
+        self.assertEqual(self.state("check-say")["check_loaded"], "echo loaded-second")
         self.cli("say", "check-say", "Continue without checking", "--no-check")
         disabled = self.wait("check-say")
         self.assertFalse(self.state("check-say").get("check"))
+        self.assertFalse(self.state("check-say").get("check_loaded"))
         self.assertNotIn("== check `", disabled)
         self.cli("say", "check-say", "The disabled check stays disabled")
         self.assertNotIn("== check `", self.wait("check-say"))
