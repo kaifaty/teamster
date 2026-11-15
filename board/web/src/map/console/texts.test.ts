@@ -3,7 +3,7 @@ import { ADMIRAL_NOTE } from "../../lib/accounts";
 import { formatClock, formatUntil } from "../../lib/format";
 import type { Machine } from "../../types";
 import type { Tank } from "../fleet";
-import { dutyBlock, machineRow, MAX_CELLS, reflectionNote, subscriptionRow, tankTitle } from "./texts";
+import { dutyBlock, machineRow, MAX_CELLS, reflectionNote, subscriptionRow, tankTitle, type ReflectionMarks } from "./texts";
 
 const NOW = 1_800_000_000;
 const tank = (overrides: Partial<Tank>): Tank => ({
@@ -114,12 +114,12 @@ describe("a machine's row", () => {
 });
 
 describe("the reflection's note", () => {
-  const marks = { batch: null, proposed: [], waiting: 0, running: false, pending: { signals: 1, records: 4 } };
+  const marks: ReflectionMarks = { batch: null, proposed: [], waiting: 0, running: false, pending: { signals: 1, records: 4, repos: [], items: [] } };
 
   it("tells the most pressing note: a question, a run, lessons to decide, else the last run", () => {
     expect(reflectionNote({ ...marks, waiting: 2, running: true })).toMatchObject({ note: "ждёт ответа 2", running: false, waiting: true });
     expect(reflectionNote({ ...marks, running: true })).toMatchObject({ note: "идёт разбор", running: true, waiting: false });
-    const proposed = reflectionNote({ ...marks, proposed: [{}, {}] as never });
+    const proposed = reflectionNote({ ...marks, proposed: [{}, {}] as unknown as ReflectionMarks["proposed"] });
     expect(proposed).toMatchObject({ note: "ждут решения 2", waiting: true, label: "Рефлексия: ждут решения 2. Открыть экран рефлексии" });
     expect(reflectionNote(marks).note).toBe("разборов не было");
   });

@@ -74,19 +74,24 @@ Until that directory exists, `/` returns a short build instruction. The API is a
 The header switches between two views of the same data: «Доска», the columns, and «Карта», a space fleet
 in painted art, drawn with PixiJS (loaded only when the tab opens). The space theme lives in the art only: every text on
 the map names the real thing in plain words — a repository, a task, its stage, an account, a machine. The galaxy shows every repository as a star, and nothing joins them: no supply lines and no
-tankers. The stars stand on a hexagonal lattice whose step follows their count, so a few stand wide apart and many fill
-the galaxy evenly, clear of the science station, the columns at the edges, the toolbar and the ship's log; a star keeps
-its place while it fits there (`galaxyLayout` in `board/web/src/map/layout/stars.ts`).
-Every subscription stands as a fuel tank in a column on the left edge of the galaxy, Codex above Claude, under the toolbar
-and above the ship's log (`fuelPositions`); on a phone the tanks stand in a row under the toolbar. The fuel in a tank's
-glass is the week's limit left, in the family's colour and red at 20% or less, where a warning light blinks; an
-exhausted, limited or logged-out tank turns grey. Seven lamps beside it burn one per day until it refills: the weekly
-reset, or the end of the limit that ran out. A star badge, «★ резерв», marks the duty account, the one teamster keeps for the
-orchestrator and new tasks skip. The label on the right tells the name, the share left and the time to the refill
-(«83% · ↻ 5 д»), with a spare cell for every free reset of a Codex account; its title has the five-hour window, the
-reset times and when the free resets expire.
-A click on a tank or its label opens the subscription's own screen (`board/web/src/map/account/`), over the galaxy like a
-ship's bridge. «Сейчас» says the state in plain words — works and how much of the week is left, little left, the week
+tankers. The galaxy shows only the systems: it is fitted into the part of the window above the control panel, and its
+stars stand on a hexagonal lattice whose step follows their count, so a few stand wide apart and many fill the galaxy
+evenly, clear of the toolbar; a star keeps its place while it fits there (`galaxyLayout` in
+`board/web/src/map/layout/stars.ts`).
+The control panel runs along the bottom of the map across its whole width, the same over the galaxy and over a system
+(`board/web/src/map/console/`, its texts in `texts.ts`). Its left wing holds «Дежурный» and «Подписки», its lower centre
+«События», its right wing «Машины» and «Рефлексия»; the wings stand taller than the centre, and the panel takes at most
+about a fifth of the window's height. «Дежурный» is the duty account, the one teamster keeps for the orchestrator and new
+tasks skip: a place for its portrait, «Дежурный · <name>», its family, the week left and the time to the refill
+(«83% · ↻ 5 д»), since when it is on duty, the reason in its title, and «в работе N · ждут тебя M» over the live tasks,
+counted as the systems' labels count them; without one it says «Дежурный не назначен». «Подписки» lists every
+subscription as a row: its name, a bar of the week's limit left in the family's colour, red at 20% or less and grey
+when exhausted, limited or logged out, the share left, the time to the refill (the weekly reset, or the end of the limit
+that ran out) and a spare cell for every free reset of a Codex account; the duty's row stands out, and a row's title has
+the five-hour window, the reset times and when the free resets expire. On a phone the panel folds to a strip with the
+duty and the newest event, and «Ещё» opens the subscriptions, the machines and the reflection over the map.
+A click on the duty or a subscription's row opens the subscription's own screen (`board/web/src/map/account/`), over the
+map like a ship's bridge. «Сейчас» says the state in plain words — works and how much of the week is left, little left, the week
 spent or a limit until when, no data, or a sign-in needed (a Codex account logged out or signed in to the same ChatGPT
 account as another, a Claude token missing or refused: `needs_login`) — with «Войти заново» as the main button when
 nothing works without it. Under it: «Лимиты» (the week and the five-hour window as bars, with the lines where Codex tasks
@@ -99,16 +104,10 @@ messages: its steps, the sign-in page to open and, for Codex, the one-time code 
 Claude, a field for the code the page shows, sent with `login/input`; «Отменить вход» (`login/cancel`), how it ended, the
 sign-in tool's own lines folded, and the `teamster login` or `claude-login` command to do the same in a terminal. The
 token never reaches the page. The logic lives in `account.ts`; `dev:fixture` plays both sign-ins on its own accounts.
-Every machine of the machines strip stands as a reactor in a column on the right edge of the galaxy
-(`machinePositions`), in three rings, outside in: CPU, memory and the GPU — its video memory where it has its own, else
-its load (`machineRings` in `board/web/src/lib/machines.ts`). A ring's arc is the share in use and its dark rest what is
-free: calm in its own colour, gold when busy and pulsing red when overloaded, by the machines strip's thresholds; a thin
-outer ring shows the fullest disk while it runs low. The core's glow tells the status — green free, amber busy, pulsing
-red overloaded — and it turns faster the busier the CPU; a grey reactor has no connection or no data. The label on its
-left tells the name and what is free, each figure after a dot of its ring's colour («● 22 ядра ● 22 ГБ ● 9,7 ГБ»), the
-status instead when the machine is offline, and the name alone on a phone. A click on the reactor or its label opens the
-same machine card as on «Доска». The map
-tab has no machines strip: there the machines live in the galaxy, as the accounts do.
+«Машины» lists every machine of the machines strip: its name after a dot of its status's colour, and its CPU and memory
+(«CPU 52 % · память 2,6 ГБ из 36»), or the strip's words «нет связи» and «нет данных» while nothing live is known; the
+title has the rest. A click on a machine opens the same machine card as on «Доска». The map tab has no machines strip:
+there the machines live in the control panel, as the accounts do.
 A busy star's label is one line: its name, its tasks and badges for alarms, tasks waiting for you and sleeping ones.
 Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,
 and a quiet star's name, shows on zooming in or under the pointer. A click on a star flies into its system: the
@@ -121,7 +120,7 @@ reviewer's colour, and the rest queue before its entrance (`lanesOf` in `board/w
 with a green tick over a clean review, or with a red ring back to the yard, where it carries a red mark per finding while
 it fixes them, and «Задачи репозитория» tells their count. Sleeping ships drift in the
 cryofield («Сон»), the lead's sessions stay at the command station («Твои сессии»). A system is laid out in the part of the window the toolbar, the list of
-its ships and the folded log leave free, and its world takes that part's shape. Each station parks its ships on one
+its ships and the control panel leave free, and its world takes that part's shape. Each station parks its ships on one
 arc on its own side, away from its name, the ships in trouble first; a station shows a few ships, and a count «+N»
 stands for the rest and opens the list at that station (`parkingOf` in `board/web/src/map/layout/parking.ts`). The list
 «Задачи репозитория» names every task by stage at the right of the map, and «Задачи» in the toolbar hides it; on a
@@ -141,13 +140,12 @@ constellation's name and its repositories, where `*` stands for any run of chara
 `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse", "my-support"]}]}`. The galaxy
 gathers their stars in one place under a faint cloud with the constellation's name, and the system picker groups them.
 The server reads the file on each request through `GET /api/constellations`; it stays outside this public repository.
-In the lower right corner of the galaxy, apart from the systems it studies, stands the science station, labelled
-«Рефлексия» and fed by `GET /api/research`. It shows the reflection
-([reflection.md](../src/teamster/docs/reflection.md)): a gold light while lessons wait for your decision, gold rings running out
-from its core while the analyst waits for your answer, and probes flying to the systems with archived records while a run
-is going. A run is a `teamster reflect` task (or, before it, a desktop session of the reflection's scheduled task); it stays
-at the station and is not counted in any system.
-A click on the station opens its own screen over the map (`board/web/src/map/station/`, titled «Рефлексия»; «← Карта» or Esc goes back,
+At the right end of the control panel, the block «Рефлексия» shows the science station's picture in a window, fed by
+`GET /api/research`, with the reflection's most pressing note ([reflection.md](../src/teamster/docs/reflection.md)):
+«ждёт ответа N» while the analyst waits for your answer, «идёт разбор» while a run is going, «ждут решения N» while
+lessons wait for your decision, else the date of the last run. A run is a `teamster reflect` task (or, before it, a
+desktop session of the reflection's scheduled task); it is not counted in any system.
+A click on the block opens the station's own screen over the map (`board/web/src/map/station/`, titled «Рефлексия»; «← Карта» or Esc goes back,
 and the galaxy stops drawing meanwhile). Under its title one line says what to do next, with at most one button, in this
 order: answer the analyst who waits («Ответить» opens the channel), answer an implementing agent that needs a decision
 («Ответить» opens the lesson in «Переписка» with the focus in the reply to the agent), decide the proposed lessons
@@ -280,9 +278,9 @@ line goes once the ship's column or phase changes later than the order's own eff
 `now.ts`, `done.ts`, `orders.ts` and `desk.ts`; a board that only reads copies the equal command, and `dev:fixture`
 plays the orders on its own tasks.
 
-The log «События» at the bottom of the map tells the last day's completed phases and lead verdicts (`GET /api/events` and
-live `event` messages) in plain words, newest first; in a system it shows only that system and folds to its newest
-line, as on a phone, opening over the map on demand. A line leads to its
+The log «События» in the control panel's centre tells the last day's completed phases and lead verdicts (`GET /api/events`
+and live `event` messages) in plain words, newest first; in a system it shows only that system. «развернуть» opens the
+long list over the map; on a phone the log folds to its newest line and opens over the map on demand. A line leads to its
 system and selects the ship while it is still there. «Сводка дня» shows today's `teamster report --by executor` and
 the day's verdicts. The map always shows the current fleet. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
 (`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them. Above the commands
@@ -292,12 +290,15 @@ A finished task shows its «Груз» above the commands (the saved check, the 
 every station; both fixture sources include a day of log events, with a ship that reaches the sun, one turned back at the gate and one in trouble, and a day's report.
 
 The map's code in `board/web/src/map/`:
-- `layout/` — the geometry, one module per subject: the stars, the systems' stations and parking, the machines, the tanks, the camera.
+- `layout/` — the geometry, one module per subject: the stars, the systems' stations and parking, the camera.
 - `scene/` — the Pixi scene: its camera, its input and its layers, `galaxy/` and `system/`; to add an object to the map,
   see the comment at the top of `scene/layer.ts`.
 - `use/` — the composables `MapView.vue` is made of: the sources, the model, the panels, the labels, the scene.
+- `console/` — the control panel under the map: `MapConsole.vue` with its left wing (`.console-left`: `ConsoleDuty.vue`,
+  `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue`) and right wing (`.console-right`:
+  `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts and `console.css` holds what the blocks share.
 - `overlay/` — the labels over the canvas: the `.ts` builders make their texts and places, and a component for each
-  kind draws one (`StarLabel.vue`, `TankLabel.vue`…), with its own styles; `overlay.css` holds what they share. A new
+  kind draws one (`StarLabel.vue`, `StationPlate.vue`…), with its own styles; `overlay.css` holds what they share. A new
   object's label is a new component there, listed in `GalaxyLabels.vue` or `SystemLabels.vue`.
 - `src/size-budget.test.ts` fails when a `.ts` file under `board/web/src/` grows past 500 lines or a `.vue` file past 650.
 
