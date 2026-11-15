@@ -155,6 +155,10 @@ def test_station_cli_options_and_plist(tmp_path, monkeypatch, capsys):
     board_main.main([])
     assert seen[-1].actions.value == {"enabled": True, "reason": None}
     assert seen[-1].actions.command == str(fake)
+    assert seen[-1].settings.no_land is False
+    board_main.main(["--no-land"])
+    assert seen[-1].settings.no_land is True
+    assert seen[-1].actions.value == {"enabled": True, "reason": None}
     board_main.main(["--teamster", str(fake), "--read-only"])
     assert seen[-1].settings.read_only is True
     assert seen[-1].actions.value == {"enabled": False, "reason": "read_only"}
@@ -163,6 +167,6 @@ def test_station_cli_options_and_plist(tmp_path, monkeypatch, capsys):
     fake.unlink()
     board_main.main([])
     assert seen[-1].actions.value == {"enabled": False, "reason": "no_teamster"}
-    board_main.main(["plist", "--teamster", str(fake), "--read-only"])
+    board_main.main(["plist", "--teamster", str(fake), "--read-only", "--no-land"])
     options = plistlib.loads(capsys.readouterr().out.encode())["ProgramArguments"]
-    assert options[-3:] == ["--teamster", str(fake), "--read-only"]
+    assert options[-4:] == ["--teamster", str(fake), "--read-only", "--no-land"]

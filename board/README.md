@@ -25,6 +25,16 @@ command, found on `PATH` at startup; `--teamster PATH` selects its executable ex
 `Content-Type: application/json` and `X-Teamster-Board: 1`. Ordinary task stop, clean, verdict and
 merge operations remain unavailable. The server never sends CORS headers.
 
+With actions enabled, the server also finishes lesson implementation tasks in the background, one at a time.
+It merges ready PRs only when `origin` is on github.com under `kaifaty`; MyWallet and other repositories
+show that a person must merge the PR. A completed change confined to a lesson's allowed files outside
+the repository needs no PR. After landing, the board marks the lesson applied, accepts the task and
+cleans it. Repositories with `scripts/bump_version.py` also get a Release commit on fresh `origin/main`
+and `uv tool upgrade teamster`: documentation-only PRs (`*.md`) use patch, other PRs use minor.
+Progress and errors appear in `lesson.implementation.landing` and resume after a server restart.
+`--no-land` disables this automatic completion while leaving the other actions enabled; `--read-only`
+also disables it.
+
 The server also supports subscription account actions for the account details page:
 
 - `POST /api/actions/login` with `{family: "codex" | "claude", account}` returns `{ok: true, login}`
@@ -334,8 +344,8 @@ across project directories run at most once per 60 seconds; a found path is cach
 ## Run as a service
 
 On macOS, launchd can keep the board running: it starts at login and restarts after a crash.
-`teamster-board plist` prints the job and installs nothing. It accepts `--host`, `--port`, `--teamster`
-and `--read-only` with the defaults above and preserves those options in the job. It sets `TEAMSTER_HOME` to a new-layout data home (also setting `TEAMSTER_CODEX_HOME` from that variable or `CODEX_TASK_HOME`
+`teamster-board plist` prints the job and installs nothing. It accepts `--host`, `--port`, `--teamster`,
+`--read-only` and `--no-land` with the defaults above and preserves those options in the job. It sets `TEAMSTER_HOME` to a new-layout data home (also setting `TEAMSTER_CODEX_HOME` from that variable or `CODEX_TASK_HOME`
 when set) or `CODEX_TASK_HOME` to a legacy one, and copies every `BOARD_*` variable set in the current
 environment into the job. Logs go to `<data home>/board-server.log`.
 

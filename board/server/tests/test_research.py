@@ -475,6 +475,7 @@ def test_implementation_matches_first_line_and_uses_newest_live_or_archived_stat
         "result_status": "needs_decision", "pr": "https://github.com/owner/project/pull/42",
         "questions": ["Which check? Keep both?", *["q" * 200] * 19], "summary": "Latest result",
         "created": 40, "updated_at": archived.stat().st_mtime_ns / 1_000_000_000,
+        "landing": None,
     }
     latest = write_record(tmp_path, "lesson-newest", dict(state, created=50))
     latest.with_name("brief.md").write_text(brief)
@@ -893,3 +894,116 @@ def test_schedule_rebuilds_next_at_but_reads_only_changed_files(tmp_path, monkey
     path.unlink()
     clock[0] += 30
     assert research.view()["schedule"] is None
+
+
+def release_repository(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+    def git(directory, *args):
+        return subprocess.run(["git", *args], cwd=directory, check=True, capture_output=True,
+                              text=True, timeout=15).stdout.strip()
+
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "init", "--bare", str(origin))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-b", "main")
+    git(repo, "config", "user.name", "Board Test")
+    git(repo, "config", "user.email", "board@example.invalid")
+    (repo / "scripts").mkdir()
+    shutil.copyfile(Path(__file__).resolve().parents[3] / "scripts/bump_version.py",
+                    repo / "scripts/bump_version.py")
+    (repo / "src/teamster").mkdir(parents=True)
+    (repo / "src/teamster/__init__.py").write_text('__version__ = "1.2.3"\n')
+    (repo / "plugins/teamster/.claude-plugin").mkdir(parents=True)
+    (repo / "plugins/teamster/.claude-plugin/plugin.json").write_text('{"version": "1.2.3"}\n')
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "Initial version")
+    git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-u", "origin", "main")
+    (repo / "lesson.md").write_text("A merged lesson\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "Merge lesson PR")
+    git(repo, "push", "origin", "main")
+    return repo, git(repo, "rev-parse", "HEAD"), git
+
+
+@pytest.mark.parametrize("files,version", [(["guide.md", "README.md"], "1.2.4"),
+                                           (["guide.md", "worker.py"], "1.3.0")])
+def test_landing_release_and_upgrade(tmp_path, monkeypatch, files, version):
+    from teamster_board import landing_release
+
+    repo, merged, git = release_repository(tmp_path, monkeypatch)
+    receipt, saves = {}, []
+    assert landing_release.release(repo, merged, files, receipt,
+                                   lambda: saves.append(dict(receipt))) == version
+    assert receipt["released"] and receipt["release_version"] == version
+    assert any(not saved["released"] for saved in saves)
+    assert git(repo, "log", "origin/main", "--format=%s", "-1") == "Release " + version
+    assert len(git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
+    # Both PATH lookup and the launchd fallback execute only this temporary fake.
+    uv = tmp_path / ".local/bin/uv"
+    uv.parent.mkdir(parents=True)
+    uv.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$HOME/upgrade-args"\n')
+    uv.chmod(0o755)
+    monkeypatch.setenv("PATH", str(uv.parent) + os.pathsep + os.environ["PATH"])
+    landing_release.upgrade()
+    assert (tmp_path / "upgrade-args").read_text().splitlines() == ["tool", "upgrade", "teamster"]
+    monkeypatch.setattr(landing_release.shutil, "which", lambda _: None)
+    landing_release.upgrade()
+    assert (tmp_path / "upgrade-args").read_text().splitlines() == ["tool", "upgrade", "teamster"]
+
+
+def test_landing_release_retries_push_from_new_main(tmp_path, monkeypatch):
+    from teamster_board import landing_release
+
+    repo, merged, git = release_repository(tmp_path, monkeypatch)
+    original = landing_release._git
+    pushes = []
+
+    def command(directory, *args, **kwargs):
+        if args[:2] == ("push", "origin"):
+            pushes.append(directory)
+            if len(pushes) == 1:
+                contender = tmp_path / "contender"
+                git(tmp_path, "clone", "-b", "main", str(tmp_path / "origin.git"), str(contender))
+                git(contender, "config", "user.name", "Concurrent Test")
+                git(contender, "config", "user.email", "concurrent@example.invalid")
+                (contender / "concurrent.md").write_text("Main advanced\n")
+                git(contender, "add", ".")
+                git(contender, "commit", "-m", "Advance main")
+                git(contender, "push", "origin", "main")
+        return original(directory, *args, **kwargs)
+
+    monkeypatch.setattr(landing_release, "_git", command)
+    assert landing_release.release(repo, merged, ["worker.py"], {}, lambda: None) == "1.3.0"
+    assert len(pushes) == 2
+    assert git(repo, "log", "origin/main", "--format=%s", "-2").splitlines() == [
+        "Release 1.3.0", "Advance main"]
+    assert len(git(repo, "worktree", "list", "--porcelain").split("worktree ")) == 2
+
+
+def test_landing_release_recovers_push_before_receipt_save(tmp_path, monkeypatch):
+    from teamster_board import landing_release
+
+    repo, merged, git = release_repository(tmp_path, monkeypatch)
+    receipt = {}
+
+    def crash():
+        if receipt.get("released"):
+            raise RuntimeError("Board stopped after push")
+
+    with pytest.raises(RuntimeError, match="Board stopped"):
+        landing_release.release(repo, merged, ["worker.py"], receipt, crash)
+    # The restart may have only the receipt written before the successful push.
+    receipt["released"] = False
+    assert landing_release.release(repo, merged, ["worker.py"], receipt, lambda: None) == "1.3.0"
+    subjects = git(repo, "log", "origin/main", "--format=%s").splitlines()
+    assert subjects.count("Release 1.3.0") == 1
+    assert sum(subject.startswith("Release ") for subject in subjects) == 1

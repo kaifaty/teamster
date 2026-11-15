@@ -1,6 +1,7 @@
 """REST, WebSocket polling, localhost protection and optional SPA serving."""
 
 import asyncio
+import copy
 import os
 import re
 import shutil
@@ -81,6 +82,7 @@ class Settings:
     reflection_task: str = "codex-batch-reflection"
     action_teamster: str | None = field(default_factory=lambda: shutil.which("teamster"))
     read_only: bool = False
+    no_land: bool = False
 
     def path(self, purpose):
         return self.task_home / LAYOUT_FILES[self.layout][purpose]
@@ -156,7 +158,8 @@ class Board:
                                  settings.research_seconds, claude_desktop_dir=settings.claude_desktop_dir)
         self.loop = None
         self.actions = Actions(self.research, self.store, settings.action_teamster, settings.read_only,
-                               publish=self.publish_launch, worktrees_path=settings.path("worktrees"))
+                               publish=self.publish_launch, worktrees_path=settings.path("worktrees"),
+                               no_land=settings.no_land, publish_research=self.publish_research)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
         self.reports = Reports(settings.teamster)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),
@@ -181,6 +184,13 @@ class Board:
         if loop is not None and not loop.is_closed():
             loop.call_soon_threadsafe(self.publish, {"type": "launch", "launch": launch})
 
+    def publish_research(self):
+        loop = self.loop
+        if loop is not None and not loop.is_closed():
+            value = copy.deepcopy({**self.research.view(), "actions": self.actions.value,
+                                   "launches": self.actions.launches()})
+            loop.call_soon_threadsafe(self.publish, {"type": "research", "research": value})
+
     async def poll(self):
         async with self.lock:
             messages = await asyncio.to_thread(self.store.poll)
@@ -188,6 +198,7 @@ class Board:
                 self.publish(message)
             if self.store.take_logins():
                 self.request_accounts()
+            self.actions.landing.poll()
 
     def request_accounts(self):
         self._login_at = time.monotonic()

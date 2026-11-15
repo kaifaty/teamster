@@ -368,6 +368,14 @@ interface Implementation {
   summary: string | null;     // last result's heading or summary, at most 600 chars
   created: number;
   updated_at: number;
+  landing: Landing | null;    // automatic completion progress; null while awaiting an answer
+}
+
+interface Landing {
+  stage: "waiting" | "merging" | "releasing" | "upgrading" | "landed" | "manual" | "failed";
+  text: string;              // ready-to-display Russian sentence or failure reason
+  pr: string | null;         // PR URL
+  version: string | null;    // released teamster version
 }
 
 interface ResearchBatch {      // the batch file with the greatest `through:` stamp
@@ -711,6 +719,11 @@ what waits for the next batch, including its planned schedule. Material and less
   Archived slugs omit their timestamp suffix. Fields use the same calculation as `TaskSummary` and
   `cargo.questions`, including PR precedence and string limits. `created` falls back to the state's
   file mtime when missing; `updated_at` is that mtime. Brief files that are symbolic links are skipped.
+  `landing` is the server's durable progress for this implementation, or `null` before landing starts,
+  when automatic landing is disabled, or while the task waits for answers to its questions. Its `text`
+  is ready for the card, for example «Жду CI PR #N», «Сливаю PR #N», «Выпускаю версию teamster»,
+  «Обновляю teamster» or «Внедрено: PR #N слит, teamster 1.80.0». The same field is included in
+  `GET /api/research` and WebSocket research messages.
 - `batch`: among the `batch-*.md` files, the one with the greatest stamp on its first `through:` line; a file
   without one ranks lowest. Its `records` are the archived records whose stamp is greater than the next lower
   batch's `through` and at most its own.
@@ -999,6 +1012,45 @@ Tasks are store records, distinct from desktop sessions. Archived tasks use thei
 in requests; the command receives that name without the `-YYYYMMDDTHHMMSSZ` suffix.
 There is no merge endpoint for ordinary tasks.
 
+### Automatic lesson landing
+
+With actions enabled and without `--no-land`, the server finishes only lesson tasks identified by the
+`lesson-` slug and implementation brief described above. Landing runs in a background thread, one task
+at a time under a shared lock, without holding up API responses. Other tasks are never landed.
+
+A PR is eligible only after its supervisor exits with `outcome: "completed"`, its last result is
+`done`, the current turn's saved check passed or is absent, its latest review is clean (or the fix
+cycle stopped at `clean` or `only P3`), and its task CI passed. Questions keep `landing: null` so the
+card can ask for the answer. An unsuccessful result, saved check, review, CI or cycle produces `failed`
+with a Russian explanation. Immediately before merging, `gh pr view` must show an open PR with
+`mergeStateStatus: "CLEAN"`, and `gh pr checks` must show every check as pass or skip.
+
+The server merges only when `origin` points at github.com with owner `kaifaty`, using
+`gh pr merge <url> --merge --delete-branch`. Other origins produce `manual` with exactly:
+
+- For owner `mytonwallet-org`: «В MyWallet PR сливаешь ты: там свои правила и боты ревью».
+- For every other owner or host: «В этом репозитории PR сливаешь ты: доска сливает сама только в своих репозиториях».
+
+When GitHub reports `mergeable: "CONFLICTING"` or `mergeStateStatus: "DIRTY"`, the server sends one
+`teamster say <slug> <order> --max-minutes 30 --review --fix-rounds 1 --ci`; the order asks the task to
+merge `origin/<base>`, resolve conflicts, run checks and push. When that cycle finishes, landing is
+checked again. A second conflict ends as `failed`. With no PR, a `done` implementation whose lesson
+lists `outside` files can be applied directly.
+
+After a merge or an outside-only change, the board runs `teamster lesson <entry> applied --note <PR URL
+or outside files>`, `teamster verdict <slug> accepted --note "landed by the board"`, and
+`teamster clean <slug>`. A repository containing `scripts/bump_version.py` also gets a release in a
+temporary git worktree from fresh `origin/main`: `python3 -I scripts/bump_version.py <minor|patch>
+--commit`, then `git push origin HEAD:main`. Changes confined to `*.md` select patch; all others select
+minor. A push rejected because main advanced is retried once after fetching and bumping from the new
+base. The temporary worktree is removed afterward. The server then runs `uv tool upgrade teamster`,
+finding uv on PATH or at `~/.local/bin/uv`, and exposes the released version in `landing.version`.
+
+Landing progress survives restarts: merged PRs are not merged again, release completion is checked
+before issuing another release for the same merge, and lesson marking, verdict and cleanup resume at
+their unfinished step. External commands use fixed argv without a shell and have timeouts; failures
+are shown as `landing.stage: "failed"` and do not terminate the server.
+
 ## REST
 
 - `GET /api/snapshot` → `Snapshot`, including `logins` and `accounts.last_logins`.
@@ -1112,6 +1164,8 @@ Server → client only; the server ignores client messages. Every message is one
   `closed` if it was archived), or a session's metadata disappeared or became archived.
 - `{"type": "activity", "slug": string, "activity": Activity}` — new latest activity of a live task.
 - `{"type": "launch", "launch": Launch}` — every launch stage transition, first and last included.
+- `{"type": "research", "research": ResearchView}` — a lesson landing stage or completed step changed,
+  including the current `lesson.implementation.landing` fields.
 - `{"type": "login", "login": Login}` — every change to a sign-in, first and final states included.
 - `{"type": "event", "event": LogEvent}` — a newly read completed event, from the same polling cycle
   as tasks. Cursor resets rebuild history without resending previously published event content.

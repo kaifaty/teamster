@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from fastapi.responses import JSONResponse
 
 from . import access
+from .landing import Landing
 from .research import RECORD, STATUSES
 from .store import Store, alive, number
 
@@ -169,7 +170,8 @@ def implementation_brief(lesson, note, started, lesson_id):
 
 
 class Actions:
-    def __init__(self, research, store, command, read_only=False, publish=None, worktrees_path=None):
+    def __init__(self, research, store, command, read_only=False, publish=None, worktrees_path=None,
+                 no_land=False, publish_research=None):
         self.research = research
         self.store = store
         command = shutil.which(str(command)) if command else None
@@ -183,6 +185,8 @@ class Actions:
         self.launch_lock = threading.RLock()
         self._launches = {}
         self._finished = {}
+        self.landing = Landing(self, no_land, publish_research)
+        self.research.landing = self.landing.value
 
     @property
     def value(self):
