@@ -307,7 +307,7 @@ worker.supervisor.signal.pthread_sigmask = sigmask
         self.assertEqual(interrupted["signal"], state["signal"])
         expected_time = datetime.datetime.fromtimestamp(state["signal"]["at"]).strftime("%Y-%m-%d %H:%M")
         message = ("interrupted externally by SIGTERM at " + expected_time +
-                   "; the worktree is kept — check git status and continue with say")
+                   "; continue: teamster resume " + slug)
         self.assertIn(message, interrupted["message"])
         self.assertNotIn("unknown", interrupted["message"])
         self.assertIn("== " + message, self.wait(slug))
@@ -446,7 +446,7 @@ worker.notifications.reap_notifications = reap
         self.assertRegex(stderr, r"pgid=\d+")
         expected_time = datetime.datetime.fromtimestamp(state["signal"]["at"]).strftime("%Y-%m-%d %H:%M")
         self.assertIn("== interrupted externally by SIGTERM at " + expected_time +
-                      "; the worktree is kept — check git status and continue with say", output)
+                      "; continue: teamster resume " + slug, output)
         self.assertEqual((worktree / "pending.txt").read_text(), "unfinished work\n")
         self.assertEqual(len(self.invocations()), 1)
         self.assertFalse(state.get("reviews"))

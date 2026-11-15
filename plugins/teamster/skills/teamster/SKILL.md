@@ -26,6 +26,8 @@ In Claude Code:
 
 - Run `teamster wait <slug>` as a background Bash command, which reports
   completion when the whole review/fix cycle ends.
+- When `wait` or `status` reports a cycle cut short by an external signal, run
+  `teamster resume <slug>` (or `teamster resume --all`) instead of a `say`, then wait again.
 - Write briefs in the session scratchpad, outside the repository, so they cannot
   enter a checkout commit. Saved check scripts must live in a stable directory.
 - Use `/code-review` for big or risky PRs if available, following the repository's rules.
