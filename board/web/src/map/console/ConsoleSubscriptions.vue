@@ -53,10 +53,10 @@ const emit = defineEmits<{ open: [key: string] }>();
 /* A row: the portrait on the left, over both lines; the name and the share, then the bar and the reset. */
 .s-row {
   --fuel: #9aa3b0;
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 20px minmax(0, 1fr);
   column-gap: 6px;
   align-items: center;
-  height: 26px;
+  height: 24px;
   padding-block: 0;
 }
 
@@ -67,8 +67,8 @@ const emit = defineEmits<{ open: [key: string] }>();
 .s-portrait {
   grid-row: 1 / span 2;
   grid-column: 1;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border: 1px solid rgba(240, 165, 70, 0.55);
   border-radius: 3px;
   object-fit: cover;
@@ -116,12 +116,12 @@ const emit = defineEmits<{ open: [key: string] }>();
   align-items: center;
   gap: 6px;
   min-width: 0;
-  height: 14px;
-  line-height: 14px;
+  height: 13px;
+  line-height: 13px;
 }
 
 .s-line + .s-line {
-  height: 10px;
+  height: 9px;
 }
 
 .s-line .c-name {

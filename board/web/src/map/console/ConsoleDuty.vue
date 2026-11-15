@@ -70,7 +70,7 @@ const emit = defineEmits<{ open: [key: string] }>();
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: 50% 20%;
+  object-position: 50% 12%;
 }
 
 .console-duty.off .duty-portrait {
@@ -83,9 +83,9 @@ const emit = defineEmits<{ open: [key: string] }>();
   flex-direction: column;
   align-items: center;
   gap: 0;
-  padding: 14px 4px 3px;
+  padding: 10px 8px 4px;
   background: linear-gradient(to bottom, transparent, rgba(5, 7, 12, 0.82) 30%, rgba(5, 7, 12, 0.94));
-  line-height: 14px;
+  line-height: 13px;
 }
 
 .console-duty.none {
@@ -100,7 +100,7 @@ const emit = defineEmits<{ open: [key: string] }>();
   display: -webkit-box;
   max-width: 100%;
   color: #f3c64e;
-  font-size: 12px;
+  font-size: 11.5px;
   white-space: normal;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;

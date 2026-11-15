@@ -19,10 +19,11 @@
 .c-title {
   flex: none;
   margin: 0;
-  padding: 0 3px 2px;
+  padding: 0 3px 1px;
   overflow: hidden;
   color: #f3c27a;
   font-size: 12px;
+  line-height: 14px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;

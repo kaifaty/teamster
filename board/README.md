@@ -80,10 +80,13 @@ evenly, clear of the toolbar; a star keeps its place while it fits there (`galax
 `board/web/src/map/layout/stars.ts`).
 The control panel runs along the bottom of the map across its whole width, the same over the galaxy and over a system
 (`board/web/src/map/console/`, its texts in `texts.ts`). It stands in a cast bronze frame: two wings drawn by
-`art/console-wing.png` (the right one is the same picture mirrored) keep the picture's proportions and stand about 26% of
-the window's height, no more than a fifth of its width each; a lower strip, `art/console-strip.png` stretched through
-`border-image` so that its rails and end caps keep their shape, joins them at 62% of their height. The blocks stand
-inside the frame's dark compartments, placed in shares of the picture, with thin amber dividers between them. The left
+`art/console-wing.png` (the right one is the same picture mirrored) and a lower strip, `art/console-strip.png`, between
+them at 62% of their height. The wings stand about 26.5% of the window's height, and at least 250 px while that stays
+within about 34% of it; each is about 31% of the window's width, no wider than 620 px. A wider wing stretches only the
+plain rail at x 612–616 of its picture through `border-image`, so the shoulder, the step, the lamps, the rivets and the
+corners keep their proportions; the strip's rails and end caps keep theirs the same way. The blocks stand inside the
+frame's dark compartments, placed in the picture's pixels from the wing's edges, with thin amber dividers between them.
+The events' list in the centre is a whole number of rows; «развернуть» opens it over the map clear of the wings. The left
 wing holds «Дежурный» and «Подписки», the centre «События», the right wing «Машины» and «Рефлексия». Every subscription has a portrait, the next one of its family in
 order (`duty-claude-1…3.jpg`, `duty-codex-1…2.jpg`, round again past the last; `portraitNames`); an exhausted, limited or
 logged-out subscription's portrait is greyed out. «Дежурный» is the duty account, the one teamster keeps for the

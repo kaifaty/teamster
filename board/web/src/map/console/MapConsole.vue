@@ -143,23 +143,32 @@ function onKey(event: KeyboardEvent) {
 <style scoped>
 /*
  * The panel's box is as tall as the wings, and the galaxy is fitted above it. The box takes no pointer itself, so the sky
- * above the low centre still moves the map. The wings are about 26 % of the window's height, within 28 % of a 1080-pixel
- * window and 34 % of a 720-pixel one, and no wider than a fifth of the window each.
+ * above the low centre still moves the map.
+ *
+ * The wings are about 26.5 % of the window's height, and at least 250 px while that stays within about 34 % of it (a
+ * 720-pixel window gets 33.8 %); a 1080-pixel window keeps 26.5 %. Each wing is about 31 % of the window's width, no
+ * wider than 620 px, and never narrower than its art at that height.
  *
  * The wing's art (console-wing.png, 875×560) holds one dark compartment: x 46–782, its top at y 103 under the high
  * shoulder (up to x 390) and at y 135 past the step, its bottom at y 510; the body's right edge is at x 820, a pipe stub
- * reaches x 873 at y 160–200. The blocks stand inside it, placed in shares of the art so that they keep clear of the frame
- * at any size. The right wing is the same art mirrored; its blocks are placed as the mirror of the left wing's.
+ * reaches x 873 at y 160–200. A wider wing stretches only the columns x 612–616, where the rails are plain: no lamp,
+ * rivet or engraving there. Everything left of them keeps its place from the wing's left edge, everything right of them
+ * from its right edge, so the blocks are placed in the art's pixels (--u, one of them on the screen) from those edges.
+ * The right wing is the same art mirrored; its blocks are placed as the mirror of the left wing's.
  */
 .console {
-  --wing-height: clamp(140px, min(26.5vh, 19.5vw), 300px);
-  --wing-width: calc(var(--wing-height) * 875 / 560);
+  --wing-height: min(max(26.5vh, min(250px, 33.8vh)), 19vw);
+  --u: calc(var(--wing-height) / 560);
+  --wing-width: max(calc(var(--u) * 875), min(31vw, 620px));
   /* The centre: 62 % of the wings, its strip's rails (console-strip.png, 2126×280: rails 72 high, end caps 52 wide). */
   --centre-height: calc(var(--wing-height) * 0.62);
   --rail-y: calc(var(--centre-height) * 72 / 280);
   --rail-x: calc(var(--centre-height) * 52 / 280);
-  /* The centre starts under the wing's body, which ends at 820 / 875 of its width. */
-  --centre-inset: calc(var(--wing-width) * 0.9);
+  /* The centre starts under the wing's body, which ends 55 art pixels before the wing's outer edge. */
+  --centre-inset: calc(var(--wing-width) - var(--u) * 87);
+  /* The room the events' list has in the centre: what the rails, the padding and its heading leave, less a foot row. */
+  --centre-foot: 0px;
+  --log-room: calc(var(--centre-height) - 2 * var(--rail-y) - 4px - 18px - var(--centre-foot));
   position: absolute;
   left: 0;
   right: 0;
@@ -188,11 +197,16 @@ function onKey(event: KeyboardEvent) {
   height: var(--wing-height);
 }
 
+/* The art: 612 columns on the left and 259 on the right at their own scale, the plain rail between them stretched. */
 .console-wing::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: url("../art/console-wing.png") center / 100% 100% no-repeat;
+  box-sizing: border-box;
+  border-style: solid;
+  border-color: transparent;
+  border-width: 0 calc(var(--u) * 259) 0 calc(var(--u) * 612);
+  border-image: url("../art/console-wing.png") 0 259 0 612 fill / 0 calc(var(--u) * 259) 0 calc(var(--u) * 612) stretch;
   pointer-events: none;
 }
 
@@ -214,56 +228,60 @@ function onKey(event: KeyboardEvent) {
   height: auto;
 }
 
-/* The duty's and the reflection's windows: under the high shoulder, their outer corners following the compartment's. */
+/*
+ * The duty's and the reflection's windows: under the high shoulder, x 56–392 and y 113–500 of the art, their outer
+ * corners following the compartment's.
+ */
 .console-left > :deep(.console-duty),
 .console-right > :deep(.console-reflection) {
-  top: 20.2%;
-  width: 38.4%;
-  height: 69.1%;
+  top: calc(var(--u) * 113);
+  width: calc(var(--u) * 336);
+  height: calc(var(--u) * 387);
 }
 
 .console-left > :deep(.console-duty) {
-  left: 6.4%;
-  --window-radius: 25% 4px 4px 16% / 21.7% 4px 4px 14%;
+  left: calc(var(--u) * 56);
+  --window-radius: calc(var(--u) * 84) 4px 4px calc(var(--u) * 55);
 }
 
 .console-right > :deep(.console-reflection) {
-  left: 55.2%;
-  --window-radius: 4px 25% 16% 4px / 4px 21.7% 14% 4px;
+  right: calc(var(--u) * 56);
+  --window-radius: 4px calc(var(--u) * 84) calc(var(--u) * 55) 4px;
 }
 
-/* The lists: past the step, below its lower top. */
+/* The lists: past the step, from x 410 to 125 art pixels before the outer edge, y 141–500, clear of the right corners. */
 .console-left > :deep(.console-subscriptions),
 .console-right > :deep(.console-machines) {
-  top: 26.2%;
-  width: 39.5%;
-  height: 62.7%;
+  top: calc(var(--u) * 141);
+  height: calc(var(--u) * 359);
 }
 
 .console-left > :deep(.console-subscriptions) {
-  left: 46.9%;
+  left: calc(var(--u) * 410);
+  right: calc(var(--u) * 125);
 }
 
 .console-right > :deep(.console-machines) {
-  left: 13.6%;
+  left: calc(var(--u) * 125);
+  right: calc(var(--u) * 410);
 }
 
 /* A thin amber divider between the blocks of a compartment, in the tone of the frame's inner kant. */
 .console-divider {
   position: absolute;
-  top: 27%;
+  top: calc(var(--u) * 150);
   width: 1px;
-  height: 61%;
+  height: calc(var(--u) * 340);
   background: linear-gradient(to bottom, transparent, rgba(240, 165, 70, 0.7) 18%, rgba(240, 165, 70, 0.7) 82%, transparent);
   box-shadow: 0 0 4px rgba(240, 150, 50, 0.45);
 }
 
 .console-left > .console-divider {
-  left: 45.7%;
+  left: calc(var(--u) * 400);
 }
 
 .console-right > .console-divider {
-  left: 54.3%;
+  right: calc(var(--u) * 400);
 }
 
 /* The low centre: the strip's rails and end caps keep their shape, its middle stretches; it starts under the wings. */
@@ -293,18 +311,23 @@ function onKey(event: KeyboardEvent) {
   background: none;
 }
 
+/* Whole rows only: the list is as tall as the rows that fit, and the rail never cuts one. */
 .console-centre > :deep(.log:not(.open)) .l-rows {
-  flex: 1;
-  height: auto;
+  flex: none;
+  height: max(var(--row), round(down, var(--log-room), var(--row)));
   min-height: 0;
 }
 
-/* «развернуть»: the long list opens over the map from the centre, up to the toolbar. */
+/*
+ * «развернуть»: the long list opens over the map from the centre, up to the toolbar, clear of the wings: it starts past
+ * their bodies, which reach into the centre's ends.
+ */
 .console-centre > :deep(.log.open) {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: calc(var(--u) * 30);
+  right: calc(var(--u) * 30);
   bottom: 0;
+  width: auto;
   height: min(62vh, calc(var(--stage-height, 100vh) - var(--below-toolbar, 46px) - 8px));
   padding: 4px 6px;
   border: 1px solid rgba(240, 165, 70, 0.6);
@@ -382,6 +405,8 @@ function onKey(event: KeyboardEvent) {
 
 /* The narrow window's whole log opens over the map, above the strip and under the toolbar. */
 .console.narrow .console-centre > :deep(.log.open) {
+  left: 0;
+  right: 0;
   height: calc(var(--stage-height, 100vh) - var(--below-toolbar, 46px) - 8px);
   max-height: 62vh;
 }

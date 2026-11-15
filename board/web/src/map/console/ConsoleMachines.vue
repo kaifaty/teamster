@@ -46,6 +46,7 @@ const emit = defineEmits<{ open: [id: string, opener: HTMLElement] }>();
 /* The status takes the board's level colours at their dark values: the panel is dark in both themes. */
 .m-row {
   --level: #9aa3b0;
+  padding-block: 0;
 }
 
 .m-row.ok {
@@ -69,6 +70,7 @@ const emit = defineEmits<{ open: [id: string, opener: HTMLElement] }>();
   align-items: center;
   gap: 6px;
   min-width: 0;
+  line-height: 14px;
 }
 
 .m-dot {
@@ -88,7 +90,7 @@ const emit = defineEmits<{ open: [id: string, opener: HTMLElement] }>();
   padding-left: 13px;
   color: #c9c1b0;
   font-size: 11px;
-  line-height: 13px;
+  line-height: 12px;
 }
 
 .m-row.dim .m-info {
