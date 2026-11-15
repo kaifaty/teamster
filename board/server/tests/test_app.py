@@ -2834,3 +2834,15 @@ def test_landing_recovers_merge_completed_before_receipt_was_saved(landing_task)
     assert not [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]
     assert [row[0] for row in task["records"]("teamster")] == ["lesson", "verdict", "clean"]
     assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+
+
+def test_landing_polls_after_launch_invalidates_research_without_an_api_request(landing_task):
+    task = landing_task
+    actions = task["make"]()
+    actions.research.view()
+    actions.research.invalidate()
+    actions.landing.poll()
+    assert actions.landing.thread is not None
+    actions.landing.thread.join(5)
+    assert not actions.landing.thread.is_alive()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"

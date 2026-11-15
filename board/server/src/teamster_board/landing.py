@@ -77,9 +77,9 @@ class Landing:
     def poll(self):
         research = self.actions.research
         view = research._view
-        if self.disabled or view is None:
+        if self.disabled or (view is None and research._next_scan == 0):
             return
-        if (not any(lesson["implementation"] for lesson in view["lessons"])
+        if (view is not None and not any(lesson["implementation"] for lesson in view["lessons"])
                 and time.monotonic() < research._next_scan):
             return
         if not self.worker_lock.acquire(blocking=False):
