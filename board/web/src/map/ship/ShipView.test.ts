@@ -3,6 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import type { ActionResult } from "../../lib/actions";
 import type { BoardSource } from "../../lib/source";
+import { createBoard } from "../../store/board";
 import type { TaskDetail, TaskSummary } from "../../types";
 import ShipView from "./ShipView.vue";
 
@@ -27,9 +28,15 @@ describe("the ship's screen after «Принять»", () => {
       fetchArt: async () => ({}), fetchConstellations: async () => ({ constellations: [], error: null }), fetchResearch: async () => null,
       fetchEvents: async () => ({ since: 0, until: 0, events: [] }), fetchReport: async () => ({}) as never,
     } as BoardSource;
-    // The map applies the task the answer carries, as the board does.
+    // The map puts the task the answer carries on the board, and the screen shows the board's task.
+    const board = createBoard(source);
+    board.put(ship);
+    const onTask = (task: TaskSummary) => {
+      board.put(task);
+      void wrapper.setProps({ task: board.state.value.tasks.t });
+    };
     const wrapper = mount(ShipView, {
-      props: { slug: "t", task: ship, source, now: NOW, frame: "", emblem: null, onTask: (task: TaskSummary) => wrapper.setProps({ task }) },
+      props: { slug: "t", task: board.state.value.tasks.t!, source, now: NOW, frame: "", emblem: null, onTask },
       attachTo: document.body,
     });
     await flushPromises();

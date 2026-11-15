@@ -1194,6 +1194,8 @@ def test_lead_verdict_belongs_to_the_task_born_with_it_until_its_next_turn(tmp_p
             "turn_started": now - 40, "turn_finished": now - 30}
     for slug in ("judged", "unjudged", "reborn", "again", "legacy"):
         write_state(tasks, slug, **done)
+    # Born before a legacy verdict without a birth would count; no turn to void it.
+    write_state(tasks, "unborn", **dict(done, turn_started=None, turn_finished=None))
     write_state(tasks, "old", **dict(done, created=now - 41 * day, turn_started=now - 41 * day,
                                      turn_finished=now - 41 * day + 1))
 
@@ -1202,15 +1204,17 @@ def test_lead_verdict_belongs_to_the_task_born_with_it_until_its_next_turn(tmp_p
                 "verdict": value, "note": None}
 
     path.write_text("".join(json.dumps(row) + "\n" for row in (
-        verdict("judged", now - 20, "revised"), verdict("judged", now - 10, "accepted"),
+        # The latest verdict counts, whatever the order of the rows.
+        verdict("judged", now - 10, "accepted"), verdict("judged", now - 20, "revised"),
         verdict("judged", now - 5, "dropped", repo="other"),
         # The task before it with the same slug; a verdict written before the last turn ended.
         verdict("reborn", now - 20, "accepted", created=now - 900), verdict("again", now - 35, "accepted"),
         # Older than the feed window; without a birth.
         verdict("old", now - 40 * day, "redone", created=now - 41 * day),
-        verdict("legacy", now - 20, "dropped", created=None))))
+        verdict("legacy", now - 20, "dropped", created=None), verdict("unborn", now - 60, "dropped", created=None))))
     expected = {"judged": ("accepted", now - 10), "unjudged": (None, None), "reborn": (None, None),
-                "again": (None, None), "old": ("redone", now - 40 * day), "legacy": ("dropped", now - 20)}
+                "again": (None, None), "old": ("redone", now - 40 * day), "legacy": ("dropped", now - 20),
+                "unborn": (None, None)}
 
     def verdicts(store):
         return {row["slug"]: (row["lead_verdict"], row["lead_verdict_at"]) for row in store.summaries()}
@@ -1218,7 +1222,7 @@ def test_lead_verdict_belongs_to_the_task_born_with_it_until_its_next_turn(tmp_p
     store = Store(tasks, stale_days=60, telemetry_path=path)
     store.poll()
     assert verdicts(store) == expected
-    assert min(event["at"] for event in store.events(0, now)["events"]) == now - 35
+    assert min(event["at"] for event in store.events(0, now)["events"]) == now - 60
     assert {row["column"] for row in store.summaries()} == {"review_me"}
     # The server starts again: the journal gives the same verdicts.
     restarted = Store(tasks, stale_days=60, telemetry_path=path)
