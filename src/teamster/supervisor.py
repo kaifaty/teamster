@@ -106,7 +106,7 @@ def start_process(st):
 RESUME_STEPS = ("work", "fix", "check", "review", "after_review", "ci")
 # Fields of the interrupted run that the resumed one must not inherit; the rest of the cycle is kept.
 RESUME_CLEARED = ("sleeping", "turn_finished", "error", "turn_stop", "wrapup", "refusal", "review_angle",
-                  "stop_request", "signal", "exec_event_start", "auto_fix_stop")
+                  "stop_request", "signal", "exec_event_start", "auto_fix_stop", "codex_pid", "claude_pid", "check_pid")
 
 
 def legacy_cycle(st):

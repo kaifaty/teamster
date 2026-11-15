@@ -59,6 +59,24 @@ class PromptTests(unittest.TestCase):
             with self.subTest(language=language):
                 self.assertEqual(self.worker.prompts.capacity_resume_prompt({"language": language}), text)
 
+    def test_interrupted_prompt_text_in_both_languages(self):
+        at = self.worker.config.local_time(1000)
+        cut, tree = {"signal": "SIGTERM", "at": 1000}, {"uncommitted": 2, "unpushed": 1, "pr": "https://example.test/pull/7"}
+        expected = {
+            "en": (f"Your turn was cut short by the external signal SIGTERM at {at}, through no fault of yours. "
+                   "Worktree state collected by the supervisor: uncommitted files: 2; unpushed commits: 1; "
+                   "PR: https://example.test/pull/7. Continue the task from this state."),
+            "ru": (f"Твой ход оборвал внешний сигнал SIGTERM в {at} — не по твоей вине. "
+                   "Состояние worktree по данным надзирателя: незакоммиченных файлов — 2; незапушенных коммитов — 1; "
+                   "PR: https://example.test/pull/7. Продолжи задачу с этого состояния."),
+        }
+        for language, text in expected.items():
+            with self.subTest(language=language):
+                self.assertEqual(self.worker.prompts.interrupted_prompt(cut, tree, {"language": language}), text)
+        unknown = self.worker.prompts.interrupted_prompt({"signal": None, "at": 1000}, dict(tree, pr=""), {"language": "ru"})
+        self.assertIn("внешний сигнал (неизвестный: надзиратель не успел записать итог)", unknown)
+        self.assertIn("PR нет.", unknown)
+
     def test_followup_prompt_text_in_both_languages(self):
         notices = {
             "en": "Task base is now origin/main; use it instead of origin/stacked.",
