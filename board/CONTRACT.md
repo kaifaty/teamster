@@ -1023,12 +1023,12 @@ A PR is eligible only after its supervisor exits with `outcome: "completed"`, it
 cycle stopped at `clean` or `only P3`), and its task CI passed. Questions keep `landing: null` so the
 card can ask for the answer. An unsuccessful result, saved check, review, CI or cycle produces `failed`
 with a Russian explanation. Immediately before merging, `gh pr view` must show an open PR with
-`mergeStateStatus: "CLEAN"`, and `gh pr checks` must show every check as pass or skip. A temporary
+`mergeStateStatus: "CLEAN"`, and `gh pr checks` must show every check as `pass`, `skip` or `skipping`. A temporary
 non-CLEAN state or pending checks keeps landing at `waiting`. Waiting or unsuccessful steps are
 checked again after 30 seconds, even when the task's state file has not changed.
 
 The server merges only when `origin` points at github.com with owner `kaifaty`, using
-`gh pr merge <url> --merge --delete-branch --match-head-commit <sha>`. The PR head must match the
+`gh pr merge <url> --merge --match-head-commit <sha>`. The PR head must match the
 task's saved CI SHA; the merge also requires that head to remain unchanged. Other origins produce
 `manual` with exactly:
 
@@ -1039,12 +1039,16 @@ When the task's check, review and CI permit landing, and GitHub reports `mergeab
 or `mergeStateStatus: "DIRTY"`, the server sends one
 `teamster say <slug> <order> --max-minutes 30 --review --fix-rounds 1 --ci`; the order asks the task to
 merge `origin/<base>`, resolve conflicts, run checks and push. When that cycle finishes, landing is
-checked again. A second conflict ends as `failed`. With no PR, a `done` implementation whose lesson
+checked again. A conflicting PR with task CI `none` or `skipped` also gets this one repair attempt;
+failed CI still blocks repair. The repaired PR must pass task CI before merging. A second conflict
+ends as `failed`. With no PR, a `done` implementation whose lesson
 lists `outside` files can be applied directly.
 
 After a merge or an outside-only change, the board runs `teamster lesson <entry> applied --note <PR URL
 or outside files>`, `teamster verdict <slug> accepted --note "landed by the board"`, and
-`teamster clean <slug>`. A repository containing `scripts/bump_version.py` also gets a release in a
+`teamster clean <slug>`. After cleanup removes the task worktree and local branch, the board deletes
+the remote branch with `gh api --method DELETE repos/<owner>/<repo>/git/refs/heads/<branch>`;
+HTTP 404 and 422 count as already removed. A repository containing `scripts/bump_version.py` also gets a release in a
 temporary git worktree from fresh `origin/main`: `python3 -I scripts/bump_version.py <minor|patch>
 --commit`, then `git push origin HEAD:main`. Changes confined to `*.md` select patch; all others select
 minor. A push rejected because main advanced is retried once after fetching and bumping from the new
@@ -1170,7 +1174,7 @@ Server → client only; the server ignores client messages. Every message is one
   `closed` if it was archived), or a session's metadata disappeared or became archived.
 - `{"type": "activity", "slug": string, "activity": Activity}` — new latest activity of a live task.
 - `{"type": "launch", "launch": Launch}` — every launch stage transition, first and last included.
-- `{"type": "research", "research": ResearchView}` — a lesson landing stage or completed step changed,
+- `{"type": "research", "research": ResearchView}` — a lesson landing stage or text changed,
   including the current `lesson.implementation.landing` fields.
 - `{"type": "login", "login": Login}` — every change to a sign-in, first and final states included.
 - `{"type": "event", "event": LogEvent}` — a newly read completed event, from the same polling cycle

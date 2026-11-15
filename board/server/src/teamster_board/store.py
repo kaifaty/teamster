@@ -495,6 +495,12 @@ class Store:
             return None, None
         return found[1], found[0]
 
+    def lead_verdict(self, slug, record, repo):
+        """Read the current verdict without consuming this store's pending journal events."""
+        reader = Store(self.tasks_path, telemetry_path=self.telemetry_path)
+        reader._poll_log()
+        return reader._lead_verdict(slug, record, repo)
+
     def _summary(self, slug, record):
         state = record.state
         now = time.time()

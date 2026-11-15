@@ -156,8 +156,10 @@ def test_station_cli_options_and_plist(tmp_path, monkeypatch, capsys):
     assert seen[-1].actions.value == {"enabled": True, "reason": None}
     assert seen[-1].actions.command == str(fake)
     assert seen[-1].settings.no_land is False
+    assert seen[-1].actions.landing.disabled is False
     board_main.main(["--no-land"])
     assert seen[-1].settings.no_land is True
+    assert seen[-1].actions.landing.disabled is True
     assert seen[-1].actions.value == {"enabled": True, "reason": None}
     board_main.main(["--teamster", str(fake), "--read-only"])
     assert seen[-1].settings.read_only is True

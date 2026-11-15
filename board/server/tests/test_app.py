@@ -2497,8 +2497,8 @@ def landing_task(tmp_path, monkeypatch):
     control, calls = tmp_path / "landing-control.json", tmp_path / "landing-calls.jsonl"
     control.write_text(json.dumps({"pr": {"state": "OPEN", "mergeable": "MERGEABLE",
         "mergeStateStatus": "CLEAN", "baseRefName": "main", "headRefOid": "a" * 40,
-        "mergeCommit": None, "files": [{"path": "app.py"}], "url": pr, "number": 42},
-        "checks": [{"bucket": "pass"}, {"bucket": "skip"}]}))
+        "headRefName": "lesson-branch", "mergeCommit": None, "files": [{"path": "app.py"}], "url": pr, "number": 42},
+        "checks": [{"bucket": "pass"}, {"bucket": "skipping"}], "branch_checked_out": True}))
     monkeypatch.setenv("LANDING_CONTROL", str(control))
     monkeypatch.setenv("LANDING_CALLS", str(calls))
     monkeypatch.setenv("LANDING_TASK", str(directory))
@@ -2534,6 +2534,18 @@ if name == "gh":
         control["pr"]["state"] = "MERGED"
         control["pr"]["mergeCommit"] = {"oid": "b" * 40}
         control_path.write_text(json.dumps(control))
+        if "--delete-branch" in args and control["branch_checked_out"]:
+            print("Cannot delete a branch checked out in the task worktree", file=sys.stderr)
+            sys.exit(1)
+    elif args[:3] == ["api", "--method", "DELETE"]:
+        assert args[3] == "repos/kaifaty/project/git/refs/heads/lesson-branch"
+        if control["branch_checked_out"]:
+            raise SystemExit("The task worktree must be cleaned before deleting its branch")
+        status = control.pop("delete_status_once", 0)
+        control_path.write_text(json.dumps(control))
+        if status:
+            print(f"gh: Remote reference deletion failed (HTTP {status})", file=sys.stderr)
+            sys.exit(1)
     else:
         raise SystemExit("Unexpected gh command")
 elif name == "teamster":
@@ -2552,6 +2564,8 @@ elif name == "teamster":
         (task / "state.json").write_text(json.dumps(state))
     elif args[0] == "clean":
         task.rename(task.parent / ".archive" / (task.name + "-20261116T000000Z"))
+        control["branch_checked_out"] = False
+        control_path.write_text(json.dumps(control))
     elif args[0] != "verdict":
         raise SystemExit("Unexpected teamster command")
 else:
@@ -2592,15 +2606,21 @@ else:
 
 def test_landing_merges_verified_pr_and_finishes_lesson(landing_task):
     task = landing_task
-    actions = task["make"]()
+    stages = []
+    actions = task["make"](publish_research=lambda: stages.append(
+        task["lesson"](actions)["implementation"]["landing"]["stage"]))
     actions.landing.run_once()
     assert [row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]] == [
-        ["pr", "merge", task["pr"], "--merge", "--delete-branch", "--match-head-commit", "a" * 40]]
+        ["pr", "merge", task["pr"], "--merge", "--match-head-commit", "a" * 40]]
     assert task["records"]("teamster") == [
         ["lesson", task["entry"], "applied", "--note", task["pr"]],
         ["verdict", task["slug"], "accepted", "--note", "landed by the board"],
         ["clean", task["slug"]],
     ]
+    records = task["records"]()
+    deletion = ["api", "--method", "DELETE", "repos/kaifaty/project/git/refs/heads/lesson-branch"]
+    assert records.index(["clean", task["slug"]]) < records.index(deletion)
+    assert "failed" not in stages
     lesson = task["lesson"](actions)
     assert lesson["status"] == "applied"
     assert lesson["implementation"]["landing"] == {
@@ -2702,9 +2722,15 @@ def test_landing_leaves_other_owners_and_hosts_to_person(landing_task, origin, t
     assert task["records"]("gh") == task["records"]("teamster") == []
 
 
-@pytest.mark.parametrize("conflicting_again", [False, True, "dispatch-failed"])
-def test_landing_repairs_base_conflict_once_then_retries(landing_task, conflicting_again):
+@pytest.mark.parametrize("conflicting_again,initial_ci", [
+    (False, "passed"), (True, "passed"), ("dispatch-failed", "passed"),
+    (False, "none"), (False, "skipped"),
+])
+def test_landing_repairs_base_conflict_once_then_retries(landing_task, conflicting_again, initial_ci):
     task = landing_task
+    if initial_ci != "passed":
+        task["state"]["ci"] = {"outcome": initial_ci}
+    task["write"]()
     control = json.loads(task["control"].read_text())
     control["pr"].update(mergeable="CONFLICTING", mergeStateStatus="DIRTY")
     if conflicting_again == "dispatch-failed":
@@ -2726,6 +2752,7 @@ def test_landing_repairs_base_conflict_once_then_retries(landing_task, conflicti
     actions.landing.run_once()
     assert task["records"]("teamster") == says
     task["state"].update(turns=2, turn_finished=3)
+    task["state"]["ci"] = {"outcome": "passed", "sha": "a" * 40}
     task["write"]()
     if not conflicting_again:
         control["pr"].update(mergeable="MERGEABLE", mergeStateStatus="CLEAN")
@@ -2836,8 +2863,9 @@ def test_landing_runs_in_background_and_publishes_research_contract(landing_task
             response = request(client.get, "/api/research")
             assert response.status_code == 200
             landing = response.json()["lessons"][0]["implementation"]["landing"]
-            assert set(landing) == {"stage", "text", "pr", "version"}
-            assert landing["pr"] == task["pr"]
+            if landing is not None:
+                assert set(landing) == {"stage", "text", "pr", "version"}
+                assert landing["pr"] == task["pr"]
             response = request(client.post, "/api/actions/lesson",
                 json={"entry": task["entry"], "status": "accepted"},
                 headers={"Origin": "http://localhost:8787", "X-Teamster-Board": "1"})
@@ -2926,7 +2954,7 @@ def test_landing_retries_transient_conditions_without_restarting(landing_task, l
     assert len([row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]) == 1
 
 
-@pytest.mark.parametrize("gate", ["check", "review", "ci"])
+@pytest.mark.parametrize("gate", ["check", "review", "failed ci"])
 def test_landing_does_not_dispatch_conflict_repair_when_other_gates_fail(landing_task, gate):
     task = landing_task
     control = json.loads(task["control"].read_text())
@@ -2995,3 +3023,74 @@ def test_landing_wires_release_upgrade_and_version_before_finalization(landing_t
     actions.landing.run_once()
     assert releases == ["b" * 40]
     assert len(upgrades) == (2 if failure == "upgrade" else 1)
+
+
+@pytest.mark.parametrize("condition", ["manual", "review", "ci"])
+def test_landing_does_not_publish_unchanged_terminal_stage_on_retry(landing_task, landing_clock, condition):
+    task = landing_task
+    if condition == "manual":
+        subprocess.run(["git", "-C", str(task["repo"]), "remote", "set-url", "origin",
+                        "https://github.com/mytonwallet-org/project.git"], check=True, capture_output=True)
+    elif condition == "review":
+        task["state"]["review_result"] = {"verdict": "defects", "findings": [{"severity": "P1"}]}
+    else:
+        task["state"]["ci"]["outcome"] = "failed"
+    task["write"]()
+    publications = []
+    actions = task["make"](publish_research=lambda: publications.append(
+        task["lesson"](actions)["implementation"]["landing"]))
+    actions.landing.run_once()
+    before = list(publications)
+    assert before[-1]["stage"] == ("manual" if condition == "manual" else "failed")
+    landing_clock[0] += 31
+    actions.landing.run_once()
+    assert publications == before
+    assert task["records"]("teamster") == []
+
+
+@pytest.mark.parametrize("status", [404, 422, 503])
+def test_landing_deletes_remote_branch_after_clean_and_retries_transient_errors(landing_task, landing_clock, status):
+    task = landing_task
+    task["configure"](delete_status_once=status)
+    actions = task["make"]()
+    actions.landing.run_once()
+    landing = task["lesson"](actions)["implementation"]["landing"]
+    if status == 503:
+        assert landing["stage"] == "failed"
+        landing_clock[0] += 31
+        actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+    assert len([row for row in task["records"]("gh") if row[:2] == ["pr", "merge"]]) == 1
+    assert len([row for row in task["records"]("teamster") if row[0] == "clean"]) == 1
+    deletes = [row for row in task["records"]("gh") if row[0] == "api"]
+    assert deletes == [["api", "--method", "DELETE",
+                        "repos/kaifaty/project/git/refs/heads/lesson-branch"]] * (2 if status == 503 else 1)
+
+
+def test_landing_verdict_lookup_preserves_pending_board_events_and_logins(landing_task):
+    task = landing_task
+    actions = task["make"]()
+    journal = task["control"].with_name("landing-journal.jsonl")
+    journal.write_text("")
+    actions.store.telemetry_path = journal
+    actions.store.poll()
+    now = time.time()
+    rows = [
+        {"kind": "work", "at": now, "slug": task["slug"], "repo": "project"},
+        {"kind": "verdict", "at": now + 1, "slug": task["slug"], "repo": "project",
+         "created": 1, "verdict": "accepted"},
+        {"event": "account_login", "at": now + 2, "family": "codex", "account": "test"},
+    ]
+    with journal.open("a") as stream:
+        for row in rows:
+            stream.write(json.dumps(row) + "\n")
+    cursor = actions.store._log_offset
+    actions.landing.run_once()
+    assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
+    assert [row[0] for row in task["records"]("teamster")] == ["lesson", "clean"]
+    assert actions.store._log_offset == cursor
+    assert actions.store.take_logins() == 0
+    messages = actions.store.poll()
+    assert [(row["event"]["kind"], row["event"]["at"]) for row in messages if row["type"] == "event"] == [
+        ("work", now), ("verdict", now + 1)]
+    assert actions.store.take_logins() == 1

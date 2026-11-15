@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from . import landing_release
 from .research import IMPLEMENTATION, RECORD
@@ -105,13 +105,13 @@ class Landing:
                 temporary.write_text(json.dumps(self.receipts, ensure_ascii=False), encoding="utf-8")
                 temporary.replace(self.path)
         self.actions.research.invalidate()
-        self.publish()
 
     def _stage(self, receipt, stage, text):
         if receipt.get("stage") == stage and receipt.get("text") == text:
             return
         receipt.update(stage=stage, text=text)
         self._save()
+        self.publish()
 
     def _run(self, argv, cwd):
         try:
@@ -120,7 +120,10 @@ class Landing:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ValueError(f"{Path(argv[0]).name}: {exc}") from exc
         # gh pr checks uses exit 8 while checks are pending; its JSON still contains their buckets.
-        if result.returncode and not (argv[:3] == ["gh", "pr", "checks"] and result.returncode == 8):
+        pending = argv[:3] == ["gh", "pr", "checks"] and result.returncode == 8
+        absent_ref = (argv[:4] == ["gh", "api", "--method", "DELETE"]
+                      and re.search(r"\(HTTP (?:404|422)\)", result.stderr) is not None)
+        if result.returncode and not (pending or absent_ref):
             message = (result.stderr.strip() or result.stdout.strip())[-1000:]
             raise ValueError(f"{Path(argv[0]).name}: {message or f'exit {result.returncode}'}")
         return result.stdout.strip()
@@ -194,8 +197,7 @@ class Landing:
                 return
             if result.get("questions"):
                 if receipt.get("stage"):
-                    receipt["stage"] = None
-                    self._save()
+                    self._stage(receipt, None, "")
                 return
             if receipt.get("repair_cycle") == cycle(state):
                 if receipt.get("repair_sent"):
@@ -218,7 +220,6 @@ class Landing:
                 receipt["outside"] = True
                 self._save()
             else:
-                self._stage(receipt, "waiting", f"Проверяю готовность {label} к слиянию")
                 self._merge(slug, state, receipt, pr, label)
                 if not receipt.get("merged"):
                     return
@@ -249,14 +250,16 @@ class Landing:
             if step == "accepted":
                 # A crash can happen after the verdict reaches the journal, before its receipt is saved.
                 store = self.actions.store
-                with store.lock:
-                    store._poll_log()
-                    record = Record(Path(), archived=False, state=state)
-                    verdict, _ = store._lead_verdict(slug, record, Path(state["repo"]).name)
+                record = Record(Path(), archived=False, state=state)
+                verdict, _ = store.lead_verdict(slug, record, Path(state["repo"]).name)
                 already_accepted = verdict == "accepted"
             if not (already_applied or already_accepted) and (step != "cleaned" or not implementation["archived"]):
                 self._run([self.actions.command, *argv], Path.home())
             receipt[step] = True
+            self._save()
+        if receipt.get("merged") and not receipt.get("remote_deleted"):
+            self._run(["gh", "api", "--method", "DELETE", receipt["remote_ref"]], Path(state["repo"]))
+            receipt["remote_deleted"] = True
             self._save()
         text = f"Внедрено: {label} слит" if pr else "Внедрено: файлы вне репозитория обновлены"
         if receipt.get("version"):
@@ -274,8 +277,12 @@ class Landing:
         if (parsed.scheme != "https" or parsed.netloc.lower() != "github.com"
                 or re.fullmatch(rf"/{re.escape(owner)}/{re.escape(name)}/pull/[0-9]+", parsed.path, re.I) is None):
             raise ValueError("PR URL does not belong to origin")
-        fields = "state,mergeable,mergeStateStatus,baseRefName,headRefOid,mergeCommit,files,url,number"
+        fields = "state,mergeable,mergeStateStatus,baseRefName,headRefName,headRefOid,mergeCommit,files,url,number"
         view = json.loads(self._run(["gh", "pr", "view", pr, "--json", fields], repo))
+        branch = view.get("headRefName")
+        if not isinstance(branch, str) or not branch:
+            raise ValueError("Missing PR head branch")
+        receipt["remote_ref"] = f"repos/{owner}/{name}/git/refs/heads/{quote(branch, safe='/')}"
         if view.get("state") == "MERGED":
             self._merged(receipt, view)
             return
@@ -292,7 +299,9 @@ class Landing:
             self._stage(receipt, "failed", "Ревью не подтвердило готовность: остались дефекты или нет результата")
             return
         ci = mapping(state.get("ci"))
-        if ci.get("outcome") != "passed":
+        conflicting = view.get("mergeable") == "CONFLICTING" or view.get("mergeStateStatus") == "DIRTY"
+        repair_without_ci = conflicting and ci.get("outcome") in ("none", "skipped")
+        if ci.get("outcome") != "passed" and not repair_without_ci:
             if ci.get("outcome") == "pending":
                 self._stage(receipt, "waiting", f"Жду CI {label}")
             else:
@@ -302,10 +311,10 @@ class Landing:
             return
         head = view.get("headRefOid")
         if (not isinstance(head, str) or re.fullmatch(r"[0-9a-fA-F]{40,64}", head) is None
-                or head != ci.get("sha")):
+                or (not repair_without_ci and head != ci.get("sha"))):
             self._stage(receipt, "failed", f"HEAD {label} не совпадает с коммитом, прошедшим CI задачи")
             return
-        if view.get("mergeable") == "CONFLICTING" or view.get("mergeStateStatus") == "DIRTY":
+        if conflicting:
             if receipt.get("conflict_attempted"):
                 self._stage(receipt, "failed", "После исправления PR всё ещё конфликтует с базой")
                 return
@@ -327,12 +336,13 @@ class Landing:
         if isinstance(checks, list) and any(row.get("bucket") == "pending" for row in checks):
             self._stage(receipt, "waiting", f"Жду CI {label}")
             return
-        if not isinstance(checks, list) or not checks or any(row.get("bucket") not in ("pass", "skip") for row in checks):
+        if (not isinstance(checks, list) or not checks
+                or any(row.get("bucket") not in ("pass", "skip", "skipping") for row in checks)):
             self._stage(receipt, "failed", f"Проверки {label} не прошли")
             return
         receipt["files"] = [row["path"] for row in view.get("files", [])]
         self._stage(receipt, "merging", f"Сливаю {label}")
-        self._run(["gh", "pr", "merge", pr, "--merge", "--delete-branch", "--match-head-commit", head], repo)
+        self._run(["gh", "pr", "merge", pr, "--merge", "--match-head-commit", head], repo)
         view = json.loads(self._run(["gh", "pr", "view", pr, "--json", fields], repo))
         if view.get("state") != "MERGED":
             raise ValueError("GitHub did not confirm the merge")
