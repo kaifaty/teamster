@@ -7,22 +7,22 @@
   "executor": "codex",
   "effort": null,
   "account": "main",
-  "thread": "c16ad2a5-7365-4703-8192-735310d4c287",
+  "thread": "ed3a0adb-864a-45f2-a83b-6350725b8260",
   "threads": [
     {
       "account": "main",
-      "thread": "c16ad2a5-7365-4703-8192-735310d4c287",
-      "started": 1794747362.723445
+      "thread": "ed3a0adb-864a-45f2-a83b-6350725b8260",
+      "started": 1794753375.83659
     }
   ],
   "rotations": [],
   "reviews": [],
   "checks": [],
-  "created": 1794747358.964479,
+  "created": 1794753375.240708,
   "turns": 1,
   "work_completed": false,
   "review_start": 0,
-  "turn_started": 1794747358.965145,
+  "turn_started": 1794753375.241281,
   "check_start": 0,
   "rotation_start": 0,
   "event_start": 0,
@@ -35,8 +35,8 @@
   "model": "fake-model",
   "reasoning_effort": null,
   "runtime": {
-    "version": "1.73.2",
-    "script": "/private/tmp/teamster-main-E7Vd/wt/src/teamster/__main__.py"
+    "version": "1.74.0",
+    "script": "/private/tmp/teamster-main-nDgR/wt/src/teamster/__main__.py"
   },
   "result": null,
   "pid": null,
@@ -58,11 +58,11 @@
   },
   "weekly_marks": {
     "main": {
-      "reset": 1794754538,
+      "reset": 1794760571,
       "used": 10
     }
   },
   "exec_event_start": 0,
   "weekly_used_percent": 0,
-  "turn_finished": 1794747362.82774
+  "turn_finished": 1794753375.899369
 }

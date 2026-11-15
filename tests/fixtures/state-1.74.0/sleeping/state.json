@@ -14,10 +14,10 @@
   "threads": [],
   "rotations": [
     {
-      "until": 1794855385.1,
+      "until": 1794861379.1,
       "account": "main",
       "reason": "all accounts unavailable",
-      "at": 1794747394.671666,
+      "at": 1794753380.488031,
       "event": "sleep"
     }
   ],
@@ -39,27 +39,27 @@
   "ci_timeout_minutes": 30,
   "max_task_weekly_percent": null,
   "weekly_used_percent": 0,
-  "created": 1794747390.291415,
+  "created": 1794753379.851187,
   "turns": 1,
-  "plugin_version": "1.73.2",
+  "plugin_version": "1.74.0",
   "kind": "work",
   "work_completed": false,
   "review_start": 0,
-  "turn_started": 1794747390.3340318,
+  "turn_started": 1794753379.8526862,
   "check_start": 0,
   "rotation_start": 0,
   "event_start": 0,
   "exhausted": null,
   "outcome": "sleeping",
-  "reset_wait_seconds": 2.574920654296875e-05,
+  "reset_wait_seconds": 6.29425048828125e-05,
   "capacity_start": 0,
   "fix_rounds": 0,
   "rounds": [],
   "model": null,
   "reasoning_effort": null,
   "runtime": {
-    "version": "1.73.2",
-    "script": "/private/tmp/teamster-main-E7Vd/wt/src/teamster/__main__.py"
+    "version": "1.74.0",
+    "script": "/private/tmp/teamster-main-nDgR/wt/src/teamster/__main__.py"
   },
   "result": null,
   "pid": 2147483647,
@@ -73,7 +73,7 @@
     "second": "B"
   },
   "sleeping": {
-    "until": 1794855385.1,
+    "until": 1794861379.1,
     "account": "main",
     "reason": "all accounts unavailable"
   }
