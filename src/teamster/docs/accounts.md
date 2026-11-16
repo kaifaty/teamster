@@ -49,9 +49,9 @@ The event protocol is:
   empty line for Enter) to teamster's stdin. Lines up to 512 characters with no control characters
   are forwarded as text, followed 0.5 seconds later by a separate `\r` write; other lines are
   silently ignored. Further lines are queued in order, with each Enter kept separate from adjacent
-  text. Tool output continues to be read during the pauses. After input, a screen with more
-  `Paste code here` rows than before (counting rows that scrolled off) emits another event; a
-  redraw of the same prompt does not.
+  text. Tool output continues to be read during the pauses. After input, `Paste code here` on a
+  screen row that did not show it before (rows keep their place as they scroll), such as a prompt
+  drawn below an error, emits another event; a redraw of the same prompt row does not.
 - `{"event":"stage","stage":"checking"}`: for Claude, setup-token issued a token and teamster is
   checking it, before anything is saved; for Codex, sign-in completed and teamster is checking the account.
 - `{"event":"stage","stage":"saving"}`: Claude's token passed the check and is being saved to
@@ -85,7 +85,8 @@ and the account's cached limits stay as they were, so a rejected token never rep
 works, and the journal row records the reason. A token that passes is written using `security -i` and
 `add-generic-password -U`, read back with the same Keychain lookup as tasks, and only then are the
 account settings saved; the check's answer is recorded as the account's limits and probe time, so
-the account is not probed a second time.
+the account is not probed a second time. The answer is recorded under the account's probe lock,
+after any probe of the replaced token still running.
 The token never enters process arguments, child environments, events, files or logs. Failed setup
 or missing output tokens leave settings and Keychain unchanged. A readback mismatch fails without
 saving settings. SIGINT and SIGTERM stop the sign-in tool and its children; cancellation during
