@@ -555,7 +555,8 @@ class Research:
             directory = archive / name
             wanted.add(directory)
             state = self._record(directory)
-            if state is None:
+            # The duty chat's record is a conversation, not material for the reflection.
+            if state is None or state.get("kind") == "duty":
                 continue
             if state.get("kind") == "reflect":
                 if recent:
@@ -587,7 +588,7 @@ class Research:
             state = self._record(directory)
             if state is None:
                 continue
-            if state.get("kind") not in ("scout", "reflect"):
+            if state.get("kind") not in ("scout", "reflect", "duty"):
                 repo = text(state.get("repo"))
                 if repo:
                     repo_paths.add(repo)
