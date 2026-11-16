@@ -1,0 +1,161 @@
+/*
+ * The control panel as a strip (MapConsole.vue): the narrow window's, with its sheet over the map, and the wide window's
+ * when the viewer folded it. Scoped to the panel through <style scoped src>.
+ */
+
+/*
+ * A narrow window: a strip in the centre's rails with the duty, the counters and the newest event; the wings and the
+ * settings open over the map above it, their blocks one under another.
+ */
+.console.strip {
+  --strip-rail-y: 16px;
+  --strip-rail-x: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  height: auto;
+  padding: 2px;
+  border-style: solid;
+  border-color: transparent;
+  border-width: var(--strip-rail-y) var(--strip-rail-x);
+  border-image: url("../art/console-strip.png") 72 52 fill / var(--strip-rail-y) var(--strip-rail-x) round;
+}
+
+.console-strip {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.console-strip > :deep(.console-duty) {
+  flex: 1;
+  min-width: 0;
+}
+
+.console-more {
+  flex: none;
+  min-width: 64px;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid rgba(240, 165, 70, 0.55);
+  border-radius: 4px;
+  background: rgba(6, 9, 16, 0.9);
+  color: #f3c27a;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.console-more:hover {
+  border-color: rgba(243, 198, 78, 0.85);
+}
+
+.console-more:focus-visible {
+  outline: 2px solid #f3c64e;
+  outline-offset: 1px;
+}
+
+/* Folded on a wide window: one line, the duty, the newest event, the counters and «Развернуть панель». */
+.console.folded {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.console.folded .console-strip {
+  display: contents;
+}
+
+.console.folded .console-strip > :deep(.console-duty) {
+  flex: 0 1 360px;
+}
+
+.console.folded .console-centre {
+  flex: 1;
+  order: 1;
+  min-width: 0;
+}
+
+.console.folded .console-strip > :deep(.commands),
+.console.folded .console-unfold {
+  order: 2;
+}
+
+.console.strip .console-centre {
+  position: relative;
+  left: auto;
+  right: auto;
+  height: auto;
+}
+
+.console.strip .console-events {
+  padding: 0;
+  border: 0;
+  border-image: none;
+}
+
+.console.strip .console-events > :deep(.log) {
+  height: auto;
+}
+
+/* The narrow window's whole log opens over the map, above the strip and under the toolbar. */
+.console.strip .console-events > :deep(.log.open) {
+  left: 0;
+  right: 0;
+  height: calc(var(--stage-height, 100vh) - var(--below-toolbar, 46px) - 8px);
+  max-height: 62vh;
+}
+
+.console.narrow .console-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + var(--strip-rail-y) + 2px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: calc(var(--stage-height, 100vh) - var(--below-toolbar, 46px) - var(--console-room, 0px) - 4px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Over the map the wings keep their whole height, the sheet scrolls, and the sky does not show through. */
+.console.narrow .console-wing {
+  position: static;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 4px;
+  width: auto;
+  height: auto;
+}
+
+.console.narrow .console-wing::before,
+.console.narrow .console-divider {
+  display: none;
+}
+
+.console.narrow .console-wing > :deep(.console-block) {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: 4px 6px;
+  border: 1px solid rgba(240, 165, 70, 0.55);
+  border-radius: 6px;
+  background-color: rgba(6, 9, 16, 0.98);
+}
+
+.console.narrow .console-wing > :deep(.console-reflection) {
+  height: 150px;
+  padding: 0;
+  --window-radius: 6px;
+}
+.console.narrow .console-sheet > :deep(.console-settings),
+.console.narrow .console-chat {
+  flex: none;
+  padding: 6px;
+  border: 1px solid rgba(240, 165, 70, 0.55);
+  border-radius: 6px;
+  background-color: rgba(6, 9, 16, 0.98);
+}

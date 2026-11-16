@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // The control panel's command row under the events: «Ждут тебя · N» and «Тревоги · N», each of which opens the next
 // task of its queue, «Сводка дня» and the menu «≡» with the panel's settings, in cast bronze buttons on a second, lower
-// copy of the centre's strip. `counters` is only the two counters, for the folded strip; `sheet` is the summary and the
-// settings as plain buttons, for the narrow window's sheet.
+// copy of the centre's strip; the row's slot, the duty chat's field, stands before them. `counters` is only the two
+// counters, for the folded strip; `sheet` is the summary and the settings as plain buttons, for the narrow window's sheet.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { taskCount, type QueueColumn } from "./queue";
 
@@ -101,7 +101,8 @@ function pickSource(kind: "board" | "scenario") {
 </script>
 
 <template>
-  <div class="commands" :class="[mode, { compact }]">
+  <div class="commands" :class="[mode, { compact, 'with-field': !!$slots.default }]">
+    <slot v-if="mode === 'row'" />
     <template v-if="mode !== 'sheet'">
       <button
         v-for="item in counters"
@@ -118,7 +119,7 @@ function pickSource(kind: "board" | "scenario") {
       </button>
     </template>
     <template v-if="mode !== 'counters'">
-      <span v-if="mode === 'row'" class="gap" aria-hidden="true"></span>
+      <span v-if="mode === 'row' && !$slots.default" class="gap" aria-hidden="true"></span>
       <button ref="summaryButton" type="button" class="cast" title="Сводка дня" :aria-expanded="summaryOpen" @click="summaryOpen = true">
         <svg class="icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
           <rect x="2" y="3" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
@@ -303,7 +304,10 @@ function pickSource(kind: "board" | "scenario") {
   padding: 0 8px;
 }
 
-/* A short row keeps the counts and the icons; the words stay for screen readers. */
+/*
+ * A short row keeps the counts and the icons; the words stay for screen readers. With the duty chat's field in it, the
+ * row is short sooner: the field keeps a usable width.
+ */
 @container (max-width: 420px) {
   .cast .word {
     position: absolute;
@@ -315,6 +319,21 @@ function pickSource(kind: "board" | "scenario") {
   }
 
   .cast {
+    padding: 0 8px;
+  }
+}
+
+@container (max-width: 680px) {
+  .with-field .cast .word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .with-field .cast {
     padding: 0 8px;
   }
 }

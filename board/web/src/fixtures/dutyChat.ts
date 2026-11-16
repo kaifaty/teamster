@@ -1,10 +1,12 @@
 // The duty chat in `dev:fixture` mode: a conversation in progress, with a question and its options, started tasks, a
 // task note, a running turn and a message waiting for it. Messages sent from the page join it; each turn answers a few
-// seconds later and the next waiting message starts the next turn.
+// seconds later, its live activity growing in the duty's feed meanwhile, and the next waiting message starts the next
+// turn. The page's `?duty=` drives the chat's other states: a reason it is unavailable (`no_duty`, `codex_duty`,
+// `old_teamster`, `read_only`, `no_teamster`), `error` for a failed last turn, `refuse` for a send teamster refuses.
 
-import type { DutyChatMessage, DutyChatView } from "../dutyChatTypes";
+import type { DutyChatMessage, DutyChatReason, DutyChatView } from "../dutyChatTypes";
 import type { ActionResult, DutyChatBody } from "../lib/actions";
-import type { ServerMessage } from "../types";
+import type { FeedItem, ServerMessage, TaskFeed } from "../types";
 
 /** How long a fixture turn of the duty takes, in milliseconds. */
 export const FIXTURE_TURN_MS = 6000;
@@ -12,6 +14,8 @@ export const FIXTURE_TURN_MS = 6000;
 export interface FixtureDutyChat {
   view(): DutyChatView;
   act(body: DutyChatBody): ActionResult;
+  /** The running turn's activity, the task feed of slug `duty`. */
+  feed(after: string | null): TaskFeed;
   /** Stops the turn that runs, for tests. */
   stop(): void;
 }
@@ -20,29 +24,29 @@ export interface FixtureDutyChat {
 export function fixtureConversation(now: number): DutyChatView {
   const at = (minutesAgo: number) => now - minutesAgo * 60;
   const messages: DutyChatMessage[] = [
-    { id: "m0", at: at(42), from: "user", text: "Почини разбор дат в парсере: он падает на ISO-строках с часовым поясом.", turn: 1 },
+    { id: "m0", at: at(42), from: "user", text: "В demo-assistant ожидание CI падает, когда раннер отвечает 502. Разберись.", turn: 1 },
     {
       id: "d0", at: at(41), from: "duty", turn: 1, status: "needs_decision", account: "claude-pool-1",
-      text: "Разбор ISO-дат есть в двух репозиториях, и в обоих он одинаково не знает про смещение.",
-      question: "В каком репозитории чинить?", options: ["demo-parser", "demo-wallet", "В обоих"], started: [],
+      text: "Ожидание CI повторяет запрос только на таймаут, а 502 считает провалом. Рядом кэш сборки без ключа по lock-файлу: часть провалов может быть оттуда.",
+      question: "Чинить повтор сразу или сначала разобрать кэш?", options: ["Чинить сразу", "Сначала кэш", "И то и другое"], started: [],
     },
-    { id: "m118", at: at(39), from: "user", text: "В обоих", turn: 2 },
+    { id: "m118", at: at(39), from: "user", text: "И то и другое", turn: 2 },
     {
       id: "d1", at: at(38), from: "duty", turn: 2, status: "started", account: "claude-pool-1",
-      text: "Запустил две задачи: исправление в demo-parser и разведку в demo-wallet — там разбор спрятан в сериализаторе.",
-      question: null, options: [], started: ["fix-iso-offset", "scout-wallet-dates"],
+      text: "Запустил две задачи в demo-assistant: ci-wait-retry чинит повтор на 502, scout-cache-layout разбирает кэш сборки.",
+      question: null, options: [], started: ["ci-wait-retry", "scout-cache-layout", "ci-runner-probe"],
     },
     {
       id: "m201", at: at(12), from: "note", turn: 3,
-      text: "Task note: fix-iso-offset ended turn 1 with outcome completed. Report it to the user, or send it a follow-up.\n\n" +
-        "== result: done\nРазбор принимает смещение и Z, добавлены тесты.\n- npm test: passed",
+      text: "Task note: scout-cache-layout ended turn 1 with outcome completed. Report it to the user, or send it a follow-up.\n\n" +
+        "== result: done\nКэш общий для всех веток, ключ без хеша lock-файла.\n- npm test: passed",
     },
     {
       id: "d2", at: at(11), from: "duty", turn: 3, status: "answered", account: "claude-pool-1",
-      text: "fix-iso-offset готова: PR открыт, тесты прошли. Посмотри и прими, когда будет время.",
+      text: "scout-cache-layout закончила первый ход: кэш общий для всех веток, ключ без хеша lock-файла. Это и роняет часть сборок.",
       question: null, options: [], started: [],
     },
-    { id: "m688", at: now - 30, from: "user", text: "Спасибо. Что там с кошельком?", turn: 4 },
+    { id: "m688", at: now - 30, from: "user", text: "Спасибо. Что с повтором на 502?", turn: 4 },
   ];
   return {
     actions: { enabled: true, reason: null },
@@ -58,14 +62,36 @@ export function fixtureConversation(now: number): DutyChatView {
 }
 
 const ANSWERS = [
-  "Разведка по кошельку закончилась: разбор там общий с парсером, после слияния fix-iso-offset хватит обновить зависимость.",
-  "Добавлю тест на летнее время в fix-iso-offset следующим указанием.",
+  "ci-wait-retry уже повторяет запрос на 502 и 503 с паузой; тесты идут, PR будет в течение часа.",
+  "Передал ci-wait-retry: тест на 502 подряд три раза.",
   "Принял.",
 ];
 
+/** A turn's steps, one more every FEED_STEP_SECONDS. */
+const WORK: Pick<FeedItem, "kind" | "text">[] = [
+  { kind: "thinking", text: "Пользователь спрашивает про ci-wait-retry: посмотрю её последний ход." },
+  { kind: "command", text: "teamster status ci-wait-retry" },
+  { kind: "tool", text: "Read ~/.teamster/tasks/ci-wait-retry/last.md" },
+  { kind: "command", text: "teamster wait ci-wait-retry --timeout 0" },
+  { kind: "message", text: "Собираю ответ." },
+];
+const FEED_STEP_SECONDS = 1.2;
+
+const REASONS = new Set<string>(["no_duty", "codex_duty", "old_teamster", "read_only", "no_teamster"]);
+
+/** The conversation in the state `mode` (the page's `?duty=`) asks for; as it is without one. */
+export function withMode(view: DutyChatView, mode: string | null, now: number): DutyChatView {
+  if (mode === "error") return { ...view, busy: false, turn_started_at: null, queued: [], last_error: { at: now - 5, text: "the duty's turn ended with outcome failed: Claude exited with code 1" } };
+  if (!mode || !REASONS.has(mode)) return view;
+  const reason = mode as DutyChatReason;
+  const duty = reason === "no_duty" ? null : reason === "codex_duty" ? { account: "codex-main", family: "codex" as const } : view.duty;
+  const off = reason === "read_only" || reason === "no_teamster";
+  return { ...view, actions: { enabled: !off, reason: off ? reason : null }, available: false, reason, duty, busy: false, turn_started_at: null, queued: [] };
+}
+
 /** `clock`: Unix seconds now; `emit` tells the page that the conversation changed. */
-export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessage) => void): FixtureDutyChat {
-  const view = fixtureConversation(clock());
+export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessage) => void, mode: string | null = null): FixtureDutyChat {
+  const view = withMode(fixtureConversation(clock()), mode, clock());
   let timer: ReturnType<typeof setTimeout> | null = null;
   let answers = 0;
   let lastId = 0;
@@ -104,6 +130,7 @@ export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessa
     act({ text }) {
       const message = text.trim();
       if (!message) return { ok: false, error: "Invalid text" };
+      if (mode === "refuse") return { ok: false, error: "teamster: no duty account (duty.json is absent or names no account)" };
       if (view.busy) {
         view.queued = [...view.queued, { at: clock(), from: "user", text: message }];
         changed();
@@ -117,6 +144,15 @@ export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessa
       runTurn();
       changed();
       return { ok: true, output: "", queued: false };
+    },
+    feed(after) {
+      const turn = view.messages.at(-1)?.turn ?? 0;
+      const start = view.busy ? view.turn_started_at : null;
+      const shown = start === null ? 0 : Math.min(WORK.length, 1 + Math.floor((clock() - start) / FEED_STEP_SECONDS));
+      const items = WORK.slice(0, shown).map((item, index) => ({ ...item, at: start! + index * FEED_STEP_SECONDS }));
+      const [from, seen] = (after ?? "").split(":").map(Number);
+      const more = from === turn && Number.isInteger(seen) && seen! <= items.length;
+      return { items: more ? items.slice(seen) : items, cursor: `${turn}:${items.length}`, reset: !more, truncated: false };
     },
     stop() {
       if (timer !== null) clearTimeout(timer);

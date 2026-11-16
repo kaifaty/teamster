@@ -93,7 +93,7 @@ export function fixtureSource(): BoardSource {
   // A subscription's sign-ins and refreshes, in the board's time.
   const logins = fixtureLogins(() => Date.now() / 1000, (message) => push?.(message), () => state.accounts);
   // The conversation with the duty, in the board's time.
-  const duty = fixtureDutyChat(() => Date.now() / 1000, (message) => push?.(message));
+  const duty = fixtureDutyChat(() => Date.now() / 1000, (message) => push?.(message), typeof location === "undefined" ? null : new URLSearchParams(location.search).get("duty"));
   const studied = (slug: string | undefined) =>
     research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
   /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
@@ -192,6 +192,7 @@ export function fixtureSource(): BoardSource {
     },
     async fetchFeed(slug, after) {
       await new Promise((resolve) => setTimeout(resolve, 60));
+      if (slug === "duty") return duty.feed(after);
       const feed = station.feed(slug, after);
       return feed && shiftTimes(feed, anchor);
     },
