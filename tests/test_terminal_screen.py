@@ -29,6 +29,7 @@ class TerminalScreenTests(unittest.TestCase):
         self.assertEqual(self.lines("日本\x1b[1;3Hx", rows=1, columns=6), ["日x"])
         self.assertEqual(self.lines("abcd日", rows=2, columns=5), ["abcd", "日"])
         self.assertEqual(self.lines("ab日\x1b[1;4Hz", rows=1), ["ab z"])
+        self.assertEqual(self.lines("\uff21x\x1b[1;3HZ", rows=1), ["\uff21Z"])
         self.assertEqual(self.lines("e\u0301x", rows=1), ["e\u0301x"])
         self.assertEqual(self.lines("日\u0301", rows=1), ["日\u0301"])
         self.assertEqual(self.lines("a\u200bb", rows=1), ["ab"])
@@ -82,6 +83,13 @@ class TerminalScreenTests(unittest.TestCase):
         self.assertEqual(self.lines(base + "\x1b[99P", rows=1), ["ab"])
         self.assertEqual(self.lines(base + "\x1b[2@", rows=1), ["ab  cdefgh"])
         self.assertEqual(self.lines(base + "\x1b[4@", rows=1), ["ab    cdef"])
+        self.assertEqual(self.lines("abcd\x1b[1;2H\x1b[P", rows=1), ["acd"])
+        self.assertEqual(self.lines("abcd\x1b[1;2H\x1b[@", rows=1), ["a bcd"])
+        # Shifting never leaves half of a wide character.
+        self.assertEqual(self.lines("abc日\x1b[1;1H\x1b[@", rows=1, columns=5), [" abc"])
+        self.assertEqual(self.lines("a日b\x1b[1;3H\x1b[P", rows=1, columns=5), ["a b"])
+        self.assertEqual(self.lines("a日bc\x1b[1;2H\x1b[P", rows=1, columns=5), ["a bc"])
+        self.assertEqual(self.lines("a日b\x1b[1;3H\x1b[@", rows=1, columns=5), ["a   b"])
 
     def test_scrolling_into_scrollback_and_scroll_regions(self):
         screen = self.screen("1\r\n2\r\n3\r\n4\r\n5\r\n6", rows=3)

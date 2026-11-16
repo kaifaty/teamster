@@ -1,4 +1,5 @@
 """Account authentication, reset waits and monitor tests."""
+import fcntl
 import io
 import json
 import os
@@ -188,14 +189,21 @@ elif sys.argv[1:] == ['setup-token']:
     for attempt in range(attempts):
         read_code()
         if attempt + 1 < attempts:
-            print('\r\nPaste code here: ', end='', flush=True)
+            # An invalid code replaces the prompt row with an error and prompts below it.
+            print('\r\x1b[2KInvalid code\r\nPaste code here: ' if fixture.get('invalid_code')
+                  else '\r\nPaste code here: ', end='', flush=True)
     if not fixture.get('no_token'):
         if fixture.get('split_token'):
             print('\r\nPaste code here: ' + token[:20], end='', flush=True)
             read_code()
             print(token[20:], flush=True)
         else:
+            if fixture.get('scrolled_token'):
+                print('\r\nExample: sk-ant-' + 'oat01-' + 'decoy', end='')
             print('\r\nToken: \x1b[32m' + token + '\x1b[0m', flush=True)
+            if fixture.get('scrolled_token'):
+                # Push the token, and the decoy before it, off the top of the screen.
+                print('\n'.join('line %d' % number for number in range(30)), flush=True)
     sys.exit(fixture.get('exit', 0))
 else:
     fd = int(os.environ['CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR'])
@@ -204,7 +212,8 @@ else:
     if fixture.get('probe_status'):
         print(json.dumps({'type': 'result', 'api_error_status': fixture['probe_status'], 'is_error': True}))
         sys.exit(1)
-    print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed'}}))
+    print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed', 'unifiedWindows': {
+        'five_hour': {'utilization': 0.25, 'resetsAt': 4102444800}}}}))
     print(json.dumps({'type': 'result', 'result': 'OK', 'is_error': False}))
     print(token, file=sys.stderr)
 '''
@@ -222,7 +231,7 @@ else:
                 server.shutdown()
                 thread.join(timeout=5)
 
-    def run_claude_event_login(self, *arguments, cancel_saving=False, codes=None):
+    def run_claude_event_login(self, *arguments, cancel_saving=False, codes=None, on_saving=None):
         proc = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "claude-login", "events", "--events", *arguments],
                                 env=self.env, cwd=self.root, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -233,6 +242,8 @@ else:
             for line in proc.stdout:
                 output.append(line)
                 event = json.loads(line)
+                if on_saving and event == {"event": "stage", "stage": "saving"}:
+                    on_saving()
                 if cancel_saving and event == {"event": "stage", "stage": "saving"}:
                     proc.terminate()
                     (self.root / "save-gate").touch()
@@ -284,6 +295,54 @@ else:
                 if path.is_file():
                     self.assertNotIn(token.encode(), path.read_bytes(), str(path))
             self.assertEqual(self.telemetry_journal()[-1]["status"], "ok")
+            # The check's answer is the account's probe: its limits and time are kept.
+            limits = self.worker().claude_accounts.read_limits()["events"]
+            self.assertEqual(limits["unifiedWindows"], {"five_hour": {"utilization": 0.25, "resetsAt": 4102444800}})
+            self.assertEqual(limits["status"], "allowed")
+            self.assertIn("probe_attempted_at", limits)
+            self.assertIn("5h 25%", events[-1]["message"])
+
+    def test_claude_login_events_prompt_again_after_an_invalid_code(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"invalid_code": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertIn({"event": "output", "text": "Invalid code"}, events)
+            self.assertEqual(sum(event["event"] == "prompt" for event in events), 2)
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual([row["input"] for row in rows if "input" in row], ["page-code\r", "\r"])
+
+    def test_claude_login_events_take_the_last_token_from_scrollback(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"scrolled_token": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(values, ["sk-ant-" + "oat01-" + "event-secret-1234567890"])
+            self.assertNotIn("decoy", result.stdout)
+            self.assertIn({"event": "output", "text": "line 29"},
+                          [json.loads(line) for line in result.stdout.splitlines()])
+
+    def test_claude_login_events_record_the_check_after_an_older_probe(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            worker = self.worker()
+            settings = self.home / "codex-worker.json"
+            worker.config.TASKS.mkdir(parents=True, exist_ok=True)
+            with (worker.config.TASKS / "claude-probe-events.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+
+                def older_probe_answers():
+                    # A probe of the replaced token holds the lock and is rejected after the save.
+                    self.until(lambda: settings.exists() and "claude-events" in settings.read_text())
+                    time.sleep(0.5)
+                    worker.claude_accounts.mark_limited("events", reason="authentication failed")
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+
+                result = self.run_claude_event_login(on_saving=older_probe_answers)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            limits = worker.claude_accounts.read_limits()["events"]
+            self.assertNotIn("reason", limits)
+            self.assertFalse(worker.claude_accounts.limited(limits), limits)
 
     def test_claude_login_events_submit_queued_codes_with_separate_return(self):
         with self.claude_event_fixture() as (fixture, trace, values):

@@ -222,12 +222,16 @@ class Screen:
         self.y, self.x = min(y, self.rows - 1), min(x, self.columns - 1)
         self.pending_wrap = pending
 
-    def _erase(self, y, start, end):
-        row = self.grid[y]
+    def _unwide(self, row, start, end):
+        """Blank wide characters that cells start..end would cut in half."""
         if start > 0 and row[start] == "":
             row[start - 1] = " "
         if end < self.columns and row[end] == "":
             row[end] = " "
+
+    def _erase(self, y, start, end):
+        row = self.grid[y]
+        self._unwide(row, start, end)
         row[start:end] = [" "] * (end - start)
 
     def _csi(self, final):
@@ -293,8 +297,11 @@ class Screen:
             row = self.grid[self.y]
             count = min(count, self.columns - self.x)
             if final == "P":
+                self._unwide(row, self.x, self.x + count)
                 row[self.x:] = row[self.x + count:] + [" "] * count
             else:
+                self._unwide(row, self.x, self.x)
+                self._unwide(row, self.columns - count, self.columns)
                 row[self.x:] = [" "] * count + row[self.x:self.columns - count]
         elif final == "S":
             self._scroll_up(count)

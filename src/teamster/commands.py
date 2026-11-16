@@ -844,9 +844,8 @@ class LoginEvents:
         self.code_expected = False
         self.code_sent = False
         self.prompted = False
-        self.prompts = 0
+        self.prompt_rows = set()
         self.scrolled = 0
-        self.scrolled_prompts = 0
         self.token = ""
         self.finished = False
         self.cancelled = None
@@ -888,20 +887,20 @@ class LoginEvents:
                 self.code_expected = True
 
     def screen(self, screen):
-        """Emit the screen rows, with those that scrolled off since the last call,
-        and a prompt when more `Paste code here` rows exist than before."""
+        """Emit the screen rows, with those that scrolled off since the last call, and a
+        prompt when `Paste code here` appears on a row that did not show it before."""
         fresh = min(screen.scrolled - self.scrolled, len(screen.scrollback))
-        scrolled = screen.scrollback[len(screen.scrollback) - fresh:]
+        first = screen.scrolled - fresh
+        rows = screen.scrollback[len(screen.scrollback) - fresh:] + screen.lines()
         self.scrolled = screen.scrolled
-        self.scrolled_prompts += sum(row.count(CLAUDE_PROMPT) for row in scrolled)
-        rows = screen.lines()
-        for row in scrolled + rows:
+        for row in rows:
             self.line(row)
-        shown = self.scrolled_prompts + sum(row.count(CLAUDE_PROMPT) for row in rows)
-        if shown > self.prompts and not self.prompted:
+        # Rows are numbered from the first output row, so they keep their numbers as they scroll.
+        shown = {first + index for index, row in enumerate(rows) if CLAUDE_PROMPT in row}
+        if shown - self.prompt_rows and not self.prompted:
             self.send("prompt")
             self.prompted = True
-        self.prompts = shown
+        self.prompt_rows = shown
 
     def result(self, status, message="", code=0):
         self.finished = True
@@ -1239,7 +1238,6 @@ def _cmd_claude_login(a, events=None):
     environment.update(LANG="en_US.UTF-8", CLAUDE_CONFIG_DIR=directory)
     Path(directory).mkdir(mode=0o700, parents=True, exist_ok=True)
     account = {"name": a.name, "config_dir": directory, "token_keychain": service}
-    record = None
     if events:
         code = claude_login_events(environment, events)
         if code or not events.token:
@@ -1248,7 +1246,8 @@ def _cmd_claude_login(a, events=None):
         events.send("stage", stage="checking")
         reason, record = claude_review.check_token(cfg, account, events.token, stopped=lambda: False)
         if reason:
-            record_login("claude", a.name, reason)
+            with config.home_lock():
+                record_login("claude", a.name, reason)
             return events.result(reason, f"Claude account {a.name}: {reason}; "
                                  "the Keychain item and account settings were not changed", code=1)
         events.saving = True
@@ -1289,11 +1288,12 @@ def _cmd_claude_login(a, events=None):
         else:
             previous.update(account)
         claude_accounts.clear_limits(a.name)
-        if record is not None:
-            # The check already answered for the saved token: book it instead of probing again.
+    if events:
+        # The check already answered for the saved token: book it instead of probing again.
+        # Like the probe, it must not run while the home moves.
+        with config.home_lock():
             record()
             record_login("claude", a.name, "ok")
-    if events:
         events.saving = False
         if events.cancelled is not None:
             return events.result("failed", "Claude login cancelled after saving account settings",

@@ -83,10 +83,15 @@ def select_account(cfg, role, exclude=(), prefer_unused=(), stopped=None, task_t
     return claude_accounts.select(cfg, role, exclude, prefer_unused)
 
 
+def _probe_lock(name):
+    """The file whose lock serializes the probes of one account."""
+    config.TASKS.mkdir(parents=True, exist_ok=True)
+    return (config.TASKS / ("claude-probe-" + name + ".lock")).open("a")
+
+
 def probe(cfg, account, stale_only=False, stopped=None):
     """Serialize account probes, rechecking stale snapshots after taking the lock."""
-    config.TASKS.mkdir(parents=True, exist_ok=True)
-    with (config.TASKS / ("claude-probe-" + account["name"] + ".lock")).open("a") as lock:
+    with _probe_lock(account["name"]) as lock:
         if stopped is None:
             fcntl.flock(lock, fcntl.LOCK_EX)
         else:
@@ -133,8 +138,11 @@ def check_token(cfg, account, token, stopped=None):
     reason = _answer(account["name"], answer, record=False)
 
     def record():
-        claude_accounts.mark_probe_attempt(account["name"])
-        _answer(account["name"], answer)
+        # A probe of the replaced token may still be running: let it answer first.
+        with _probe_lock(account["name"]) as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            claude_accounts.mark_probe_attempt(account["name"])
+            _answer(account["name"], answer)
 
     return reason, record
 
