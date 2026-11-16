@@ -154,17 +154,22 @@ def followup_messages(st):
     return [json.loads(line) for line in messages.read_text().splitlines()] if messages.exists() else []
 
 
-def followup_prompt(st, message, cfg, source="lead", queued=()):
-    """Journal follow-ups before dispatch so rotation includes the current request.
-
-    queued holds the say --queue orders that message joins: each is journaled as its own lead message.
-    """
+def journal_followups(st, message, source="lead", queued=()):
+    """Append the message, or each queued order with its own source (lead by default), to messages.jsonl."""
     at = clock.CLOCK.time()
     rows = ([{"at": at, "text": order["text"], "source": order.get("source", "lead"), "queued_at": order["at"]}
              for order in queued] or [{"at": at, "text": message, "source": source}])
     with (config.TASKS / st["slug"] / "messages.jsonl").open("a", encoding="utf-8") as stream:
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def followup_prompt(st, message, cfg, source="lead", queued=()):
+    """Journal follow-ups before dispatch so rotation includes the current request.
+
+    queued holds the say --queue orders that message joins: each is journaled as its own message.
+    """
+    journal_followups(st, message, source, queued)
     if st.get("thread") or executors.from_state(st).cursor(st):
         switch = st.get("base_switch")
         if switch:

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from . import budgets, checking, ci_runs, clock, config, executors, installs, notifications, procs, prompts, reflection, review_cycle, sandboxing, task_state, telemetry_log, threads, turns, wait_view
+from . import budgets, checking, ci_runs, clock, config, duty_chat, executors, installs, notifications, procs, prompts, reflection, review_cycle, sandboxing, task_state, telemetry_log, threads, turns, wait_view
 
 
 def require_startable():
@@ -87,6 +87,9 @@ def start_process(st):
     d = config.TASKS / st["slug"]
     # The supervisor runs in the worktree: pass the resolved homes, not relative variables.
     environment = dict(os.environ)
+    # A start from a duty chat turn inherits its credential and its marker; neither belongs to the task.
+    for key in ("CLAUDE_CODE_OAUTH_TOKEN", config.STARTED_BY):
+        environment.pop(key, None)
     if config.HOME_VARIABLES["TEAMSTER_HOME"]:
         environment["TEAMSTER_HOME"] = str(config.DATA_HOME)
     if config.HOME_VARIABLES["TEAMSTER_HOME"] and config.HOME_VARIABLES["TEAMSTER_CODEX_HOME"]:
@@ -159,7 +162,7 @@ def resume_step(st):
 def resume_refusal(st):
     """Why resume cannot continue st, or None when an external signal cut its cycle short."""
     slug = st["slug"]
-    if st.get("kind") in ("scout", "reflect"):
+    if st.get("kind") in ("scout", "reflect", "duty"):
         return f"{slug} is a {st['kind']}; resume continues only work tasks"
     busy = task_state.busy_message(st)
     if busy is not None:
@@ -239,7 +242,7 @@ def apply_say(st, options, cfg):
 
     options maps say's argument names to the values given; absent ones keep the saved settings.
     """
-    reflecting = st.get("kind") == "reflect"
+    reflecting = st.get("kind") in ("reflect", "duty")
     scouting = st.get("kind") in ("scout", "reflect")
     try:
         executor = executors.from_state(st)
@@ -291,7 +294,7 @@ def apply_say(st, options, cfg):
 def say_turn(st, options):
     """spawn's arguments after the prompt for a say with these options."""
     return dict(effort=options.get("effort") or st.get("effort"), current_message=True,
-                kind=st["kind"] if st.get("kind") in ("scout", "reflect") else "work",
+                kind=st["kind"] if st.get("kind") in ("scout", "reflect", "duty") else "work",
                 review_after=bool(options.get("review")), fix_rounds=options.get("fix_rounds") or 0)
 
 
@@ -351,6 +354,12 @@ def finish_cycle(st):
                     sending = True
                     continue
                 st["pid"] = None
+                if orders and st.get("kind") == duty_chat.CHAT_KIND:
+                    # Task notes wait out the hourly cap or a failed turn; the user's messages go as for say.
+                    orders = (duty_chat.cycle_orders(st, orders) if outcome is None
+                              else duty_chat.drop_chat_orders(orders))
+                    if not orders:
+                        task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"]})
                 if not orders:
                     task_state.save(st)
                     return None
@@ -378,6 +387,51 @@ def finish_cycle(st):
                                              "texts": [order["text"] for order in orders]}, ensure_ascii=False) + "\n")
                 task_state.save(st)
                 return {"orders": orders, "dropped": outcome}
+
+
+def queue_duty_note(st):
+    """Note the end of a cycle of a task the duty started to the duty chat; return how, or None. Never raises."""
+    if st.get("started_by") != "duty" or st.get("kind") == duty_chat.CHAT_KIND or st["slug"] == duty_chat.CHAT_SLUG:
+        return None
+    try:
+        report = "\n".join(wait_view.wait_report_lines(st, st["slug"]))
+        return deliver_duty_note(duty_chat.note_order(st, report))
+    except (Exception, SystemExit) as exc:
+        # The note is lost, never the task's cycle.
+        print(f"could not queue the duty note: {str(exc).removeprefix('teamster: ')}", file=sys.stderr)
+        return None
+
+
+def deliver_duty_note(order):
+    """Queue a note for the running duty turn, start a note-driven turn, or hold it; return queued, sent or held."""
+    slug = duty_chat.CHAT_SLUG
+    if not task_state.state_path(slug).exists():
+        return None
+    with installs.spawn_lock():
+        with task_state.state_lock(slug):
+            chat = task_state.load(slug)
+            if procs.alive(chat.get("pid")):
+                queue = task_state.read_queue(slug)
+                queue["waiting"].append(order)
+                task_state.write_queue(slug, queue)
+                return "queued"
+            cfg = config.accounts_config()
+            now = clock.CLOCK.time()
+            if not duty_chat.auto_turn_allowed(chat, cfg, now) or duty_chat.chat_account(cfg)[0] is None:
+                duty_chat.hold_notes([order])
+                return "held"
+            orders = duty_chat.take_held_notes() + [order]
+            try:
+                require_startable()
+                drop_dead_queue(slug)
+                duty_chat.mark_auto_turn(chat, now)
+                text = "\n\n".join(item["text"] for item in orders)
+                launch(chat, lambda: threads.followup_prompt(chat, text, cfg, queued=orders),
+                       None, True, duty_chat.CHAT_KIND, False, 0)
+            except (Exception, SystemExit):
+                duty_chat.hold_notes(orders)
+                raise
+            return "sent"
 
 
         # No automatic review after a CI repair. Only the saved check and CI gate it.
@@ -441,7 +495,7 @@ def cmd__run(a):
         step = pending.get("resume")
         cycle = st.get("cycle") or {}
         kind = cycle.get("kind", st.get("kind"))
-        working = kind not in ("review", "scout", "reflect")
+        working = kind not in ("review", "scout", "reflect", "duty")
         review_after = pending.get("review_after")
         in_ci = step is not None and bool(cycle.get("ci"))
         # A review fix round continues inside auto_fix, which records its decisions, check and changes.
@@ -491,7 +545,7 @@ def cmd__run(a):
             st["work_completed"] = True
             if not review_only and st.get("fix_rounds") and not stopped() and not budgets.stop_at_weekly_budget(st):
                 review_cycle.auto_fix(st, cfg, st.get("review_result"), effort, stopped, sleep)
-        elif (kind not in ("scout", "reflect") and not in_ci and step != "ci"
+        elif (kind not in ("scout", "reflect", "duty") and not in_ci and step != "ci"
                 and st.get("outcome") == "completed" and (review_after or step == "review") and not stopped()
                 and not st.get("review_skipped") and (check is None or check["outcome"] in checking.CHECK_NOT_FAILED)
                 and not budgets.stop_at_weekly_budget(st)):
@@ -548,11 +602,15 @@ def cmd__run(a):
                            signal=st.get("signal"))
                 if (result is not None and result["status"] in ("blocked", "needs_decision")
                         and (st.get("kind") not in ("review", "scout") or st.get("work_completed"))):
-                    question = next(iter(result["questions"]), "")
+                    question = (result["question"] if st.get("kind") == duty_chat.CHAT_KIND
+                                else next(iter(result["questions"]), ""))
                     notifications.notify(st, cfg, "needs_input", f"result {result['status']}: {question}",
                            result=result, question=question)
             notifications.reap_notifications()
             queued = finish_cycle(st)
+            if queued is None or "sent" not in queued:
+                # A cycle that sent queued orders goes on; the end of the next one notes the duty.
+                queue_duty_note(st)
             if queued is not None and cfg is not None:
                 texts = [order["text"] for order in queued["orders"]]
                 if "sent" in queued:

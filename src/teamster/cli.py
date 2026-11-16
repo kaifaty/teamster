@@ -28,6 +28,7 @@
       teamster upgrade [--source URL|PATH] [--ref REF] [--yes]  preview/install a version side by side
       teamster versions [--prune]                    list installed versions; move unused ones to trash
       teamster duty tick | status [--json] | clear | plist [--minutes N]  elect, show, clear or schedule the duty account
+      teamster duty chat ["text" | --file FILE] [--queue]  talk to the duty, which may start tasks; prints its answer
 
 All commands accept -h/--help.
 ~/.teamster/config.json optionally configures language (en), accounts, switch_at (99),
@@ -440,6 +441,12 @@ def main():
     duty_commands.add_parser("clear", help="remove duty.json; selection works as without a duty account")
     s = duty_commands.add_parser("plist", help="print a launchd job that runs duty tick (installs nothing)")
     s.add_argument("--minutes", type=plist_minutes, default=30, help="interval between ticks (default: 30)")
+    s = duty_commands.add_parser("chat", help="send a message to the duty conversation and print the duty's answer")
+    s.add_argument("text", nargs="?", help="the message")
+    s.add_argument("--file", help="read the message from FILE")
+    s.add_argument("--queue", action="store_true",
+                   help="while a duty turn runs, queue the message; it goes out when that turn ends")
+    duty_chat_parser = s
     if sys.argv[1:2] == ["scout"]:
         # Intermixed parsing is supported on the scout parser, not on subparsers as a group.
         a = scout_parser.parse_intermixed_args(sys.argv[2:])
@@ -458,6 +465,8 @@ def main():
                                  + ("--since" if a.since is not None else "--repo"))
     else:
         a = p.parse_args()
+    if a.cmd == "duty" and a.duty_command == "chat" and (a.text is None) == (a.file is None):
+        duty_chat_parser.error("give the message as text or with --file, not both")
     if a.cmd == "say" and a.no_check and a.check_loaded is not None:
         p.error("argument --check-loaded: not allowed with argument --no-check")
     if a.cmd in ("start", "say") and a.review_angles is not None:
