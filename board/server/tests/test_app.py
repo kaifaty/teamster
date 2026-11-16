@@ -3373,8 +3373,9 @@ def test_landing_forgejo_land_script_merges_and_finishes_in_task_worktree(forgej
 def test_landing_forgejo_land_script_repairs_once_and_retries(forgejo_landing, failure, second_failure):
     task = forgejo_landing
     task["script"]("land.py")
-    output = ("land.py: main moved while CI ran: merge it in, rerun the checks and land again (#42)"
-              if failure == "conflict" else "job lint failed\nland.py: CI did not pass (exit 1), #42 is left open")
+    diagnostic = ("land.py: main moved while CI ran: merge it in, rerun the checks and land again (#42)"
+                  if failure == "conflict" else "job lint failed\nland.py: CI did not pass (exit 1), #42 is left open")
+    output = "CI LOG BEGIN\n" + "build output\n" * 120 + diagnostic
     task["configure"](script_results=[{"code": 1, "output": output},
                                       {"code": int(second_failure), "output": output if second_failure else "merged #42"}])
     actions = task["make"]()
@@ -3386,7 +3387,8 @@ def test_landing_forgejo_land_script_repairs_once_and_retries(forgejo_landing, f
         assert says[0][2] == "Merge origin/main, resolve conflicts, run checks and push."
     else:
         assert says[0][2].startswith("CI failed: ")
-        assert output in says[0][2]
+        assert diagnostic in says[0][2]
+        assert "CI LOG BEGIN" not in says[0][2]
         assert says[0][2].endswith(". Fix it, run checks and push.")
     assert len(task["records"]("land.py")) == 1
     task["state"].update(turns=2, turn_finished=3)
@@ -3397,19 +3399,24 @@ def test_landing_forgejo_land_script_repairs_once_and_retries(forgejo_landing, f
     assert len(task["records"]("land.py")) == 2
     assert len([row for row in task["records"]("teamster") if row[0] == "say"]) == 1
     if second_failure:
-        assert "CI did not pass" in task["lesson"](actions)["implementation"]["landing"]["text"]
+        text = task["lesson"](actions)["implementation"]["landing"]["text"]
+        assert diagnostic in text
+        assert "CI LOG BEGIN" not in text
 
 
 @pytest.mark.parametrize("unavailable", [False, True])
 def test_landing_forgejo_land_script_reports_other_errors(forgejo_landing, landing_clock, unavailable):
     task = forgejo_landing
     task["script"]("land.py")
-    output = ("land.py: CI did not pass (exit 75), #42 is left open" if unavailable
-              else "fatal: push was rejected")
+    diagnostic = ("land.py: CI did not pass (exit 75), #42 is left open" if unavailable
+                  else "fatal: push was rejected")
+    output = "CI LOG BEGIN\n" + "build output\n" * 120 + diagnostic
     task["configure"](script_results=[{"code": 1, "output": output}, {"code": 0, "output": "merged #42"}])
     actions = task["make"]()
     task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed")
-    assert output in task["lesson"](actions)["implementation"]["landing"]["text"]
+    text = task["lesson"](actions)["implementation"]["landing"]["text"]
+    assert diagnostic in text
+    assert "CI LOG BEGIN" not in text
     assert task["records"]("teamster") == []
     assert len(task["records"]("land.py")) == 1
     if unavailable:
@@ -3436,10 +3443,12 @@ def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, landing_cloc
     task["script"](waiter)
     if existing:
         task["script"]("ci_wait.py")
+    log_prefix = "CI LOG BEGIN\n" + "build output\n" * 120
+    diagnostic = "CI unavailable" if code == 75 else "job lint failed"
     task["configure"](forgejo_exists=existing,
-                       script_results=[{"code": code, "output": "CI unavailable" if code == 75 else "job lint failed"},
+                       script_results=[{"code": code, "output": log_prefix + diagnostic},
                                        {"code": int(second_failure),
-                                        "output": "job lint failed again" if second_failure else "CI passed"}])
+                                        "output": log_prefix + "job lint failed again" if second_failure else "CI passed"}])
     if code == 0:
         old = dict(json.loads(task["control"].read_text())["forgejo_pr"])
         old.update(number=41, html_url=task["pr"].replace("/42", "/41"), state="closed", merged=True,
@@ -3455,14 +3464,18 @@ def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, landing_cloc
         order = task["records"]("teamster")[0]
         assert order[:2] == ["say", task["slug"]]
         assert order[2].startswith("CI failed: ")
-        assert "job lint failed" in order[2]
+        assert diagnostic in order[2]
+        assert "CI LOG BEGIN" not in order[2]
         assert order[2].endswith(". Fix it, run checks and push.")
         task["state"].update(turns=2, turn_finished=3)
         task["write"]()
         actions = task["make"]()
     if code == 75:
         task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed")
-        assert "CI не читается:" in task["lesson"](actions)["implementation"]["landing"]["text"]
+        text = task["lesson"](actions)["implementation"]["landing"]["text"]
+        assert "CI не читается:" in text
+        assert diagnostic in text
+        assert "CI LOG BEGIN" not in text
         assert task["records"]("teamster") == []
         assert len(task["records"](waiter)) == 1
         assert (task["directory"] / "state.json").read_bytes() == saved_state
@@ -3490,7 +3503,51 @@ def test_landing_forgejo_opens_pr_waits_and_merges(forgejo_landing, landing_cloc
         assert json.loads(task["control"].read_text())["forgejo_pr"]["merged"] is False
         assert task["records"]("teamster") == []
     if second_failure:
-        assert "job lint failed again" in task["lesson"](actions)["implementation"]["landing"]["text"]
+        text = task["lesson"](actions)["implementation"]["landing"]["text"]
+        assert "job lint failed again" in text
+        assert "CI LOG BEGIN" not in text
+
+
+def test_landing_forgejo_rejects_waiter_result_for_previous_commit(forgejo_landing):
+    task = forgejo_landing
+    task["script"]("ci_wait.py")
+    task["configure"](block_script=True)
+    marker = Path(str(task["control"]) + ".block")
+    ready = Path(str(task["control"]) + ".ready")
+    marker.touch()
+    actions = task["make"]()
+    try:
+        actions.landing.run_once()
+        wait_for_account(ready.exists)
+        job = next(row["forgejo_job"] for row in actions.landing.receipts.values() if row.get("forgejo_job"))
+        assert job["sha"] == task["sha"]
+        result_path = Path(job["result"])
+        subprocess.run(["git", "-C", str(task["worktree"]), "-c", "user.name=Test",
+                        "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit",
+                        "--quiet", "--allow-empty", "-m", "Update lesson"], check=True, capture_output=True)
+        current = subprocess.run(["git", "-C", str(task["worktree"]), "rev-parse", "HEAD"],
+                                 check=True, capture_output=True, text=True).stdout.strip()
+        assert current != task["sha"]
+        task["state"].update(turns=2, turn_finished=3, ci={"outcome": "passed", "sha": current})
+        task["state"]["publish"].update(sha=current, pushed=True)
+        task["write"]()
+        control = json.loads(task["control"].read_text())
+        control["forgejo_pr"]["head"]["sha"] = current
+        task["configure"](**control)
+        marker.unlink()
+        wait_for_account(result_path.exists)
+        actual = subprocess.run(["git", "-C", str(task["worktree"]), "rev-parse", "HEAD"],
+                                check=True, capture_output=True, text=True).stdout.strip()
+        assert actual == task["state"]["publish"]["sha"] == (
+            json.loads(task["control"].read_text())["forgejo_pr"]["head"]["sha"]) == current
+        task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed")
+        assert task["lesson"](actions)["implementation"]["landing"]["text"] == (
+            "HEAD PR #42 изменился после запуска ожидания CI")
+        assert len(task["records"]("ci_wait.py")) == 1
+        assert not [row for row in task["records"]("tea") if "/repos/kaifaty/infra/pulls/42/merge" in row]
+        assert task["records"]("teamster") == []
+    finally:
+        marker.unlink(missing_ok=True)
 
 
 def test_landing_forgejo_reads_result_written_before_runner_unlocks(landing_task, monkeypatch):
@@ -3514,7 +3571,8 @@ def test_landing_forgejo_reads_result_written_before_runner_unlocks(landing_task
     assert raced == [True]
 
 
-def test_landing_runner_allows_two_hours_for_ci(tmp_path, monkeypatch):
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_landing_runner_allows_two_hours_for_ci(tmp_path, monkeypatch, timed_out):
     from types import SimpleNamespace
 
     result = tmp_path / "runner-result.json"
@@ -3523,8 +3581,10 @@ def test_landing_runner_allows_two_hours_for_ci(tmp_path, monkeypatch):
     def wait(timeout=None):
         waits.append(timeout)
         # Model CI that takes ten minutes without delaying the test.
-        if timeout is not None and timeout < 600:
+        if timeout is not None and (timed_out or timeout < 600):
             raise subprocess.TimeoutExpired("ci_wait.py", timeout)
+        if timeout is None:
+            assert kills == [(12345, signal.SIGKILL)]
         return 0
 
     def start(argv, **kwargs):
@@ -3536,9 +3596,9 @@ def test_landing_runner_allows_two_hours_for_ci(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "killpg", lambda pid, sig: kills.append((pid, sig)))
     monkeypatch.setattr(sys, "argv", ["runner", str(result), "python3", "ci_wait.py"])
     exec(landing_module.RUNNER, {})
-    assert waits == [7200]
-    assert kills == []
-    assert json.loads(result.read_text()) == {"returncode": 0}
+    assert waits == ([7200, None] if timed_out else [7200])
+    assert kills == ([(12345, signal.SIGKILL)] if timed_out else [])
+    assert json.loads(result.read_text()) == {"returncode": 124 if timed_out else 0}
 
 
 @pytest.mark.parametrize("saved_log", [None, "", "Runner stopped before saving its result\n"])
