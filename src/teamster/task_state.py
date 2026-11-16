@@ -15,7 +15,7 @@ def interruption(st):
     A work or review cycle is cut short when its supervisor is gone and it either ended interrupted or
     published no result at all, as when the supervisor was killed outright. A stop is not an interruption.
     """
-    if st.get("kind") in ("scout", "reflect") or not st.get("turn_started") or procs.alive(st.get("pid")):
+    if st.get("kind") in ("scout", "reflect", "duty") or not st.get("turn_started") or procs.alive(st.get("pid")):
         return None
     if "turn_finished" in st:
         if st.get("outcome") != "interrupted":
@@ -205,6 +205,11 @@ STATE_FIELDS = {
         "ci": False, "pr": (st.get("publish") or {}).get("pr", "")}),
     # One entry per resume: when, the signal that cut the cycle short and the step it continued from.
     "resumed": StateField("history"),
+    # "duty" for a task that a duty chat turn started (config.started_by); the end of its cycles notes the duty.
+    "started_by": StateField("task"),
+    # Duty chat: one entry per recorded answer, and the start times of note-driven turns in the last hour.
+    "duty_turns": StateField("history"),
+    "duty_auto_turns": StateField("history"),
 }
 
 
@@ -359,7 +364,7 @@ def running_tasks(exclude="", root=None, scouts=False):
     out = []
     for p in (config.TASKS if root is None else root).glob("*/state.json"):
         st = json.loads(p.read_text())
-        if (st["slug"] != exclude and (scouts or st.get("kind") not in ("scout", "reflect"))
+        if (st["slug"] != exclude and (scouts or st.get("kind") not in ("scout", "reflect", "duty"))
                 and procs.alive(st.get("pid"))):
             out.append(st["slug"])
     return out

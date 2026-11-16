@@ -86,6 +86,8 @@ def wait_turn_lines(st, slug):
                    else last.read_text().strip() if last.exists() else threads.last_message(st) or "(no final message)")
             if st.get("kind") == "reflect":
                 yield from wait_reflect_lines(st, raw)
+            elif st.get("kind") == "duty":
+                yield from wait_duty_lines(st, raw)
             else:
                 yield raw if st.get("kind") == "scout" else "\n".join(result_schema.result_lines(st.get("result"), raw))
             if publication and publication["pr"]:
@@ -113,6 +115,21 @@ def wait_reflect_lines(st, raw):
             yield from ("   - " + answer for answer in answers)
 
 
+def wait_duty_lines(st, raw):
+    result = st.get("result")
+    if result is None:
+        yield "== result: unknown (no valid duty answer)"
+        yield raw
+        return
+    yield "== result: " + {"answered": "answered", "needs_decision": "NEEDS DECISION", "started": "started"}[result["status"]]
+    yield result["reply"]
+    if result["question"]:
+        yield "Question: " + result["question"]
+        yield from ("   - " + answer for answer in result["options"])
+    if result["started"]:
+        yield "Started: " + ", ".join(result["started"])
+
+
 def wait_round_lines(st):
     for number, entry in enumerate(st.get("rounds", []), 1):
         findings = (entry.get("review") or {}).get("findings", [])
@@ -132,7 +149,7 @@ def wait_round_lines(st):
 
 
 def wait_check_lines(st):
-    checks = [] if st.get("kind") in ("scout", "reflect") else st.get("checks", [])[st.get("check_start", 0):]
+    checks = [] if st.get("kind") in ("scout", "reflect", "duty") else st.get("checks", [])[st.get("check_start", 0):]
     for check in checks:
         for name, item in ((f"check `{check['cmd']}`", check), ("base tests", check.get("base_check"))):
             if not item:
@@ -235,7 +252,7 @@ def wait_stop_lines(st):
         yield "== errors: " + json.dumps(failed[-1], ensure_ascii=False)[:500]
     if st.get("error"):
         yield "== supervisor error: " + str(st["error"])
-    if st.get("kind") in ("scout", "reflect"):
+    if st.get("kind") in ("scout", "reflect", "duty"):
         return
     yield f"== commits on {st['branch']}:"
     yield procs.sh(config.GIT + ["log", "--oneline", f"{st['base']}..HEAD"], cwd=st["worktree"], check=False) or "(none)"

@@ -2,7 +2,7 @@
 import json
 import sys
 
-from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, config, duty, executors, notifications, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
+from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, config, duty, duty_chat, executors, notifications, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
 
 
 LIMIT_REASONS = ("usage limit", "authentication failed", "token unavailable")
@@ -96,6 +96,77 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
     if st["outcome"] == "unavailable":
         st["error"] = (f"No available Claude account for {'reflect' if reflecting else 'scout'}"
                        + (f": {st['error']}" if st.get("error") else ""))
+    task_state.save(st)
+
+
+def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
+    """One duty chat turn on the current Claude duty account, never another account.
+
+    When the duty moved since the last turn, the conversation continues on the new account
+    with the rotation handoff. A limit or a missing duty ends the turn unavailable or failed.
+    """
+    directory = config.TASKS / st["slug"]
+    last = directory / "last.md"
+    last.unlink(missing_ok=True)
+    account, refusal = duty_chat.chat_account(cfg)
+    if account is None:
+        st.update(outcome="failed", error=refusal)
+        task_state.save(st)
+        return
+    name, previous = account["name"], st.get("claude_account")
+    if previous and previous != name:
+        prompt = threads.handoff(st, current_message=current_message, cfg=cfg)
+        st["rotations"].append({"at": clock.CLOCK.time(), "from": previous, "to": name,
+                                "reason": f"the duty moved to {name}", "thread": ""})
+        st["session_id"] = ""
+        notifications.notify(st, cfg, "rotated", f"rotated from {previous} to {name}: the duty moved",
+                             **{"from": previous, "to": name, "account": name})
+    st.update(claude_account=name, outcome="running")
+    st.pop("error", None)
+    task_state.save(st)
+    settings = cfg["duty"]
+    minutes = settings["chat_max_minutes"]
+    deadline = clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
+
+    def started(proc):
+        st["claude_pid"] = proc.pid
+        task_state.save(st)
+
+    def progress(telemetry):
+        if telemetry.get("session_id") and telemetry["session_id"] != st.get("session_id"):
+            st["session_id"] = telemetry["session_id"]
+            task_state.save(st)
+
+    system_prompt = duty_chat.write_system_prompt(st["worktree"], directory)
+    try:
+        response = claude_runner.run_claude(
+            account, st["worktree"], prompt, stopped, deadline, settings["chat_model"] or cfg["claude"].get("model"),
+            effort or settings["chat_effort"], session_id=st.get("session_id") or None, system_prompt=system_prompt,
+            started=started, progress=progress, task_dir=directory, role="duty", max_minutes=minutes)
+    finally:
+        system_prompt.unlink(missing_ok=True)
+        st.pop("claude_pid", None)
+        task_state.save(st)
+    telemetry = response["telemetry"]
+    progress(telemetry)
+    phase = telemetry_log.telemetry_phase(st)
+    if phase is not None:
+        phase.add_claude_usage(telemetry, account=name)
+    st["outcome"] = task_state.stop_outcome(st, stopped) or response["outcome"]
+    reason = response.get("reason")
+    if st["outcome"] == "completed":
+        st["result"] = response["result"]
+        message = json.dumps(response["result"], ensure_ascii=False)
+        last.write_text(message, encoding="utf-8")
+        threads.record_claude_message(st, message)
+        duty_chat.record_chat_turn(st)
+    elif st["outcome"] == "unavailable" and reason in LIMIT_REASONS:
+        claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable", reason=reason)
+        st["error"] = f"the duty account {name} is unavailable: {reason}"
+    elif st["outcome"] == "budget_exhausted":
+        st["error"] = f"the duty chat turn reached duty.chat_max_minutes ({minutes:g})"
+    elif reason:
+        st["error"] = reason
     task_state.save(st)
 
 
@@ -310,6 +381,8 @@ def run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=
         st.pop("refusal", None)
         if kind == "reflect":
             return reflect_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=new_turn)
+        if kind == duty_chat.CHAT_KIND:
+            return run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=new_turn)
         return executors.for_turn(st).call("scout" if kind == "scout" else "turn", st, cfg, prompt, effort, current_message,
                                            stopped, sleep, new_turn=new_turn)
 
@@ -603,7 +676,7 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
 
 
 def work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, work_paths=None, **turn_options):
-    if work_paths is None and st.get("kind") not in ("scout", "reflect"):
+    if work_paths is None and st.get("kind") not in ("scout", "reflect", "duty"):
         work_paths = checking.check_paths(st)
     run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, **turn_options)
     publishing.publish_work(st, stopped)
