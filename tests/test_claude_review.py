@@ -666,12 +666,145 @@ class ClaudeReviewTests(RotationTestCase):
     def claude_invocations(self):
         return [entry for entry in self.claude_trace() if entry["command"] == "review"]
 
-    def claude_pool_fixture(self, runs=None, names=("first", "second")):
+    def claude_pool_fixture(self, runs=None, names=("first", "second"), **settings):
         accounts = [{"name": name, "config_dir": str(self.root / ("claude-" + name)),
                      "token_keychain": "codex-worker-claude-" + name}
                     for name in names]
-        self.claude_fixture(runs=runs, claude={"accounts": accounts})
+        self.claude_fixture(runs=runs, claude={"accounts": accounts}, **settings)
         return accounts
+
+    def duty_answer(self, reply, status="answered", question="", options=(), started=()):
+        return {"status": status, "reply": reply, "question": question, "options": list(options),
+                "started": list(started)}
+
+    def put_duty(self, account, family="claude"):
+        now = time.time()
+        (self.home / "duty.json").write_text(json.dumps({
+            "account": account, "family": family, "since": now, "checked_at": now, "reason": "fixture",
+            "rooms": {family: {account: 10}}}))
+
+    def chat_messages(self):
+        path = self.home / "claude-tasks" / "duty" / "messages.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def chat_settled(self, answers):
+        st = self.state("duty")
+        if st.get("pid"):
+            self.extra_pids.add(st["pid"])
+        return len(st.get("duty_turns", [])) == answers and not st.get("pid")
+
+    def test_duty_chat_runs_on_the_duty_account_resumes_and_moves_with_the_duty(self):
+        replies = [self.duty_answer("Which repository?", "needs_decision", "Which repository?", ["repo", "other"]),
+                   self.duty_answer("Started fix-parser.", "started", started=["fix-parser"]),
+                   self.duty_answer("fix-parser is still running.")]
+        accounts = self.claude_pool_fixture(runs=[{"reply": reply} for reply in replies])
+        worker = self.worker()
+        for family, expected in ((None, "no duty account"), ("codex", "the duty chat needs a Claude duty account")):
+            if family:
+                self.put_duty("main", family)
+            refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Fix the parser."], cwd=self.repo,
+                                     env=self.env, text=True, capture_output=True, timeout=60)
+            self.assertEqual(refused.returncode, 1, refused.stderr)
+            self.assertIn(expected, refused.stderr)
+            self.assertFalse((self.home / "claude-tasks" / "duty").exists())
+            self.assertEqual(self.claude_invocations(), [])
+        # Known repositories come from task records; the user's duty rules join the system prompt.
+        record = self.home / "claude-tasks" / ".archive" / "old-task-20260101T000000Z"
+        record.mkdir(parents=True)
+        (record / "state.json").write_text(json.dumps({"slug": "old-task", "kind": "work", "repo": str(self.repo)}))
+        (self.home / "duty-rules.md").write_text("Never touch the billing repository.\n")
+        self.put_duty("first")
+        output = self.cli("duty", "chat", "Fix the parser.", timeout=60)
+        self.assertIn("== result: NEEDS DECISION\nWhich repository?\nQuestion: Which repository?\n   - repo\n"
+                      "   - other", output)
+        room = self.home / "claude-tasks" / "duty" / "room"
+        self.assertTrue((room / ".git").is_dir())
+        st = self.state("duty")
+        self.assertEqual((st["kind"], st["executor"], st["claude_account"], st["worktree"]),
+                         ("duty", "claude", "first", str(room)))
+        first = self.claude_invocations()[-1]
+        argv = first["argv"]
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+        self.assertNotIn("bypassPermissions", argv)
+        self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read,Grep,Glob,Bash,Write,Edit")
+        hook, = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"]
+        self.assertEqual(hook["matcher"], "Bash|Write|Edit|MultiEdit|NotebookEdit")
+        self.assertEqual(hook["hooks"][0]["command"], shlex.join(
+            [sys.executable, "-I", str(worker.config.BASH_GUARD), "--duty-room", str(room)]))
+        self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]), worker.result_schema.DUTY_SCHEMA)
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
+        self.assertNotIn("--resume", argv)
+        self.assertIn("Fix the parser.", argv[1])
+        self.assertEqual((first["config_dir"], first["cwd"], first["started_by"]),
+                         (accounts[0]["config_dir"], str(room), "duty"))
+        for text in ("# Lead guide", "# On duty", "Never touch the billing repository.",
+                     "- repo: " + str(self.repo), "## Your room\n\n" + str(room)):
+            self.assertIn(text, first["system_prompt"])
+        # The next message resumes the same session, as say does.
+        self.assertIn("== result: started\nStarted fix-parser.\nStarted: fix-parser",
+                      self.cli("duty", "chat", "repo", timeout=60))
+        second = self.claude_invocations()[-1]
+        self.assertEqual(second["argv"][1], "repo")
+        self.assertEqual(second["argv"][second["argv"].index("--resume") + 1], st["session_id"])
+        # A new duty account takes the conversation over by the rotation handoff.
+        self.put_duty("second")
+        self.assertIn("fix-parser is still running.", self.cli("duty", "chat", "Any news?", timeout=60))
+        third = self.claude_invocations()[-1]
+        self.assertNotIn("--resume", third["argv"])
+        self.assertEqual(third["config_dir"], accounts[1]["config_dir"])
+        for text in ("The duty moved to another account", "Started fix-parser.", "Any news?"):
+            self.assertIn(text, third["argv"][1])
+        st = self.state("duty")
+        self.assertEqual([(rotation["from"], rotation["to"]) for rotation in st["rotations"]], [("first", "second")])
+        self.assertEqual([(turn["status"], turn["account"]) for turn in st["duty_turns"]],
+                         [("needs_decision", "first"), ("started", "first"), ("answered", "second")])
+        self.assertEqual(st["duty_turns"][1]["started"], ["fix-parser"])
+        self.assertEqual([(row["source"], row["text"]) for row in self.chat_messages()],
+                         [("user", "Fix the parser."), ("user", "repo"), ("user", "Any news?")])
+
+    def test_duty_started_task_notes_the_chat_under_the_hourly_cap(self):
+        self.claude_pool_fixture(runs=[{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 6)],
+                                 duty={"chat_auto_turns_per_hour": 1})
+        self.put_duty("first")
+        self.cli("duty", "chat", "Start the parser fix.", timeout=60)
+
+        def started_by_duty(slug):
+            self.env["TEAMSTER_STARTED_BY"] = "duty"
+            try:
+                self.start(slug)
+            finally:
+                self.env.pop("TEAMSTER_STARTED_BY")
+            self.wait(slug)
+            self.assertEqual(self.state(slug)["started_by"], "duty")
+
+        # The duty is idle: the end of the task's cycle starts one note-driven turn.
+        started_by_duty("noted")
+        self.until(lambda: self.chat_settled(2), timeout=60)
+        note = self.chat_messages()[-1]
+        self.assertEqual(note["source"], "note")
+        self.assertTrue(note["text"].startswith("Task note: noted ended turn 1 with outcome completed."))
+        self.assertIn("== noted: turn 1 finished", note["text"])
+        self.assertIn("Task note: noted", self.claude_invocations()[-1]["argv"][1])
+        self.assertEqual(len(self.state("duty")["duty_auto_turns"]), 1)
+        # The hourly cap is reached: the next note waits for the user's message and goes out with it.
+        started_by_duty("held-note")
+        notes = self.home / "claude-tasks" / "duty" / "notes.json"
+        self.until(lambda: notes.exists() and len(json.loads(notes.read_text())["held"]) == 1)
+        self.assertEqual((len(self.claude_invocations()), len(self.state("duty")["duty_turns"])), (2, 2))
+        self.cli("duty", "chat", "What happened?", timeout=60)
+        prompt = self.claude_invocations()[-1]["argv"][1]
+        self.assertLess(prompt.index("Task note: held-note"), prompt.index("What happened?"))
+        self.assertEqual(json.loads(notes.read_text())["held"], [])
+        self.assertEqual([row["source"] for row in self.chat_messages()], ["user", "note", "note", "user"])
+        # A note that cannot be queued is lost, never the task's cycle.
+        notes.unlink()
+        notes.mkdir()
+        started_by_duty("lost-note")
+        stderr = self.home / "claude-tasks" / "lost-note" / "stderr.log"
+        self.until(lambda: "could not queue the duty note" in stderr.read_text())
+        self.assertNotIn("Traceback", stderr.read_text())
+        self.assertEqual(self.state("lost-note")["outcome"], "completed")
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 3)
 
     def test_claude_scout_read_only_session_output_telemetry_and_clean(self):
         answers = ["The entry point reads tracked.txt.", "Its caller passes the current directory."]
