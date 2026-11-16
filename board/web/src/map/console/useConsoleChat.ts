@@ -1,21 +1,22 @@
 // The console's duty chat: the conversation of the map's source (createDutyChat), the user's draft, the messages on
-// their way, whether the panel stands open (it outlives the page), and the running turn's live activity read from the
-// task feed of slug `duty` while the panel shows it.
+// their way, and the running turn's live activity, read from the task feed of slug `duty` while the conversation shows.
 
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
-import { loadJson, saveJson } from "../../lib/storage";
 import { createDutyChat, type DutyChat, type DutyChatHost } from "../../store/dutyChat";
 import type { TaskSummary } from "../../types";
 import { createFeed, type TaskFeedHandle } from "../station/feed";
 import { arrived, chatRows, feedTail, lastErrorText, sentCount, unavailableText, type PendingMessage } from "./chat";
 
-/** Whether the duty chat's panel stands open. */
-export const CHAT_OPEN_KEY = "codex-board.console-chat.v1";
-
 /** The slug of the duty's conversation, whose feed is the running turn's activity. */
 const DUTY_SLUG = "duty";
 
-export function useConsoleChat(host: () => DutyChatHost, now: () => number, tasks: () => readonly Pick<TaskSummary, "slug" | "repo">[]) {
+/** `showing`: whether the conversation is on the screen, so that the running turn's activity is worth reading. */
+export function useConsoleChat(
+  host: () => DutyChatHost,
+  now: () => number,
+  tasks: () => readonly Pick<TaskSummary, "slug" | "repo">[],
+  showing: () => boolean,
+) {
   const chat = shallowRef<DutyChat | null>(null);
   /** The first read of this source answered: a missing view then means a server without the chat. */
   const read = ref(false);
@@ -44,8 +45,6 @@ export function useConsoleChat(host: () => DutyChatHost, now: () => number, task
     if (pending.value.some((item) => arrived(next, item))) pending.value = pending.value.filter((item) => !arrived(next, item));
   });
 
-  const open = ref(loadJson(CHAT_OPEN_KEY, false, (value): value is boolean => typeof value === "boolean"));
-  watch(open, (value) => saveJson(CHAT_OPEN_KEY, value));
   const draft = ref("");
 
   const rows = computed(() =>
@@ -98,10 +97,10 @@ export function useConsoleChat(host: () => DutyChatHost, now: () => number, task
     pending.value = pending.value.filter((row) => row.key !== key);
   }
 
-  // The running turn's activity, while the panel shows it.
+  // The running turn's activity, while the conversation shows.
   const feed = shallowRef<TaskFeedHandle | null>(null);
   watch(
-    () => (open.value && busy.value ? host().source : null),
+    () => (showing() && busy.value ? host().source : null),
     (source) => {
       feed.value?.close();
       feed.value = source ? createFeed((slug, after) => source.fetchFeed(slug, after), DUTY_SLUG, true) : null;
@@ -115,7 +114,7 @@ export function useConsoleChat(host: () => DutyChatHost, now: () => number, task
     feed.value?.close();
   });
 
-  return { view, readError, open, draft, rows, unavailable, lastError, busy, runSeconds, activity, send, sendDraft, retry, dismiss };
+  return { view, readError, draft, rows, unavailable, lastError, busy, runSeconds, activity, send, sendDraft, retry, dismiss };
 }
 
 export type ConsoleChat = ReturnType<typeof useConsoleChat>;

@@ -24,6 +24,8 @@ import { useConsoleChat } from "./useConsoleChat";
 
 /** Whether the viewer folded the wide window's panel to a strip. */
 const FOLDED_KEY = "codex-board.console-folded.v1";
+/** Whether the duty chat's conversation stands open over the events. */
+const CHAT_OPEN_KEY = "codex-board.console-chat.v1";
 
 const props = defineProps<{
   frame: string;
@@ -131,8 +133,10 @@ watch(sheetOpen, (open) => {
 
 // The duty chat: its field heads the command row, or the narrow window's sheet; the conversation opens over the events,
 // which the whole log and the conversation share.
-const chat = useConsoleChat(() => props.chatHost, () => props.now, () => props.tasks);
-const { open: chatOpen, draft, unavailable: chatOff } = chat;
+const chatOpen = ref(loadJson(CHAT_OPEN_KEY, false, (value): value is boolean => typeof value === "boolean"));
+watch(chatOpen, (value) => saveJson(CHAT_OPEN_KEY, value));
+const chat = useConsoleChat(() => props.chatHost, () => props.now, () => props.tasks, () => (props.narrow ? sheetOpen.value : chatOpen.value && !strip.value));
+const { draft, unavailable: chatOff } = chat;
 const chatShown = computed(() => chatOpen.value && !strip.value && !chatOff.value);
 const chatPanel = computed(() => ({
   rows: chat.rows.value, now: props.now, account: chat.view.value?.duty?.account ?? null, portrait: dutyPortrait.value, busy: chat.busy.value,
@@ -147,6 +151,11 @@ watch(chatOpen, (open) => {
 watch(logOpen, (open) => {
   if (open && !strip.value) chatOpen.value = false;
 });
+/** A sent message shows at once: the conversation opens with it. */
+function sendChat() {
+  chat.sendDraft();
+  if (!strip.value) chatOpen.value = true;
+}
 function closeChat() {
   chatOpen.value = false;
   void nextTick(() => rowField.value?.focusQuietly());
@@ -264,7 +273,7 @@ function onKey(event: KeyboardEvent) {
           :unavailable="chatOff"
           :busy="chat.busy.value"
           :open="chatShown"
-          @send="chat.sendDraft"
+          @send="sendChat"
           @open="chatOpen = true"
           @close="closeChat"
           @toggle="chatShown ? closeChat() : (chatOpen = true)"

@@ -96,7 +96,8 @@ onBeforeUnmount(() => {
           aria-label="Задача дежурному"
           :aria-expanded="sheet ? undefined : open"
           :aria-controls="sheet ? undefined : 'duty-chat'"
-          :placeholder="busy ? 'Задача дежурному… дождётся конца хода' : 'Задача дежурному…'"
+          placeholder="Задача дежурному…"
+          :title="busy ? 'Дежурный работает: сообщение дождётся конца хода' : undefined"
           @focus="onFocus"
           @keydown="onKey"
           @input="grow"
@@ -161,8 +162,8 @@ onBeforeUnmount(() => {
 /* The microphone: its round cast art, a little larger than the row's buttons. */
 .mic {
   flex: none;
-  width: calc(var(--cast-height, 30px) + 12px);
-  height: calc(var(--cast-height, 30px) + 12px);
+  width: calc(var(--cast-height, 30px) + 18px);
+  height: calc(var(--cast-height, 30px) + 18px);
   padding: 0;
   border: 0;
   border-radius: 50%;

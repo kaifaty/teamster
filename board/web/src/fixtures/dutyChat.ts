@@ -56,16 +56,22 @@ export function fixtureConversation(now: number): DutyChatView {
     busy: true,
     turn_started_at: now - 30,
     messages,
-    queued: [{ at: now - 10, from: "user", text: "И добавь тест на переход на летнее время." }],
+    queued: [{ at: now - 10, from: "user", text: "И пусть проверит 502 три раза подряд." }],
     last_error: null,
   };
 }
 
-const ANSWERS = [
-  "ci-wait-retry уже повторяет запрос на 502 и 503 с паузой; тесты идут, PR будет в течение часа.",
-  "Передал ci-wait-retry: тест на 502 подряд три раза.",
-  "Принял.",
+type Answer = Pick<DutyChatMessage, "status" | "text" | "question" | "options">;
+/** The turns' answers in order; the last one repeats. */
+const ANSWERS: Answer[] = [
+  { status: "answered", text: "ci-wait-retry уже повторяет запрос на 502 и 503 с паузой; тесты идут, PR будет в течение часа.", question: null, options: [] },
+  { status: "answered", text: "Принял.", question: null, options: [] },
 ];
+/** The first turn that leaves nothing waiting asks this, so that its options answer. */
+const QUESTION: Answer = {
+  status: "needs_decision", text: "Передам ci-wait-retry тест на 502 три раза подряд.",
+  question: "Добавить повтор и на 504?", options: ["Да, и на 504", "Нет, только 502 и 503"],
+};
 
 /** A turn's steps, one more every FEED_STEP_SECONDS. */
 const WORK: Pick<FeedItem, "kind" | "text">[] = [
@@ -94,6 +100,7 @@ export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessa
   const view = withMode(fixtureConversation(clock()), mode, clock());
   let timer: ReturnType<typeof setTimeout> | null = null;
   let answers = 0;
+  let asked = false;
   let lastId = 0;
   const changed = () => emit({ type: "duty_chat", at: clock() });
 
@@ -102,9 +109,11 @@ export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessa
     timer = setTimeout(() => {
       timer = null;
       const turn = (view.messages.at(-1)?.turn ?? 0) || 1;
+      const ask = !asked && !view.queued.length;
+      asked ||= ask;
       const answer: DutyChatMessage = {
-        id: `d-fixture-${++lastId}`, at: clock(), from: "duty", turn, status: "answered", account: view.duty?.account ?? null,
-        text: ANSWERS[Math.min(answers++, ANSWERS.length - 1)]!, question: null, options: [], started: [],
+        id: `d-fixture-${++lastId}`, at: clock(), from: "duty", turn, account: view.duty?.account ?? null, started: [],
+        ...(ask ? QUESTION : ANSWERS[Math.min(answers++, ANSWERS.length - 1)]!),
       };
       view.messages = [...view.messages, answer].slice(-200);
       const [next, ...rest] = view.queued;
