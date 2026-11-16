@@ -974,7 +974,9 @@ class ClaudeReviewTests(RotationTestCase):
         # A message that fails before it is journaled leaves the held note in place.
         worker = self.worker()
         message = {"at": time.time(), "text": "Lost?", "options": {}, "source": "user"}
-        with mock.patch.object(worker.threads, "journal_followups", side_effect=OSError("disk full")), \
+        # The fixture's environment names the fake Claude CLI; this process's may name none.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.threads, "journal_followups", side_effect=OSError("disk full")), \
                 self.assertRaises(OSError):
             worker.commands.send_duty_chat(worker.config.accounts_config(), message, False)
         self.assertEqual(len(json.loads(notes.read_text())["held"]), 1)
