@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import re
 import signal
 import socketserver
 import subprocess
@@ -66,6 +67,14 @@ class AccountAuthTests(RotationTestCase):
         self.assertEqual([row["argv"] for row in self.trace() if row["command"] == "login"],
                          [["--device-auth"]] * 4 + [[]])
 
+    # setup-token's sign-in frame, then its result frame drawn over it; TOKEN is the token.
+    DIFF_FRAMES = (["Browser didn't open? Use the url below to sign in (c to copy)", "",
+                    "https://login.example.test/claude", "", "Paste code here if prompted >"],
+                   ["\u2713 Long-lived authentication token created successfully!", "",
+                    "Your OAuth token (valid for 1 year):", "", "TOKEN", "",
+                    "Store this token securely. You won't be able to see it again.", "",
+                    "Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>"])
+
     @contextmanager
     def claude_event_fixture(self):
         """Keep the fake Keychain secret in memory, including across processes."""
@@ -125,6 +134,10 @@ elif sys.argv[1:] == ['setup-token']:
             trace(child=True)
         while True: time.sleep(0.1)
     tty.setraw(0)
+    # Like Node's raw mode, keep translating output newlines to CR LF.
+    attributes = termios.tcgetattr(0)
+    attributes[1] |= termios.OPOST | termios.ONLCR
+    termios.tcsetattr(0, termios.TCSANOW, attributes)
     def read_code():
         code = b''
         while True:
@@ -133,6 +146,36 @@ elif sys.argv[1:] == ['setup-token']:
                 trace(input=(code + chunk).decode())
                 return
             code += chunk.replace(b'\r', b'').replace(b'\n', b'')
+    if fixture.get('diff'):
+        # Draw like a diff renderer: the second frame writes only the cells that changed,
+        # jumping over unchanged ones with CUP, then alternately CUF and CHA.
+        first, second = DIFF_FRAMES
+        second = [row.replace('TOKEN', token) for row in second]
+        os.write(1, ('\x1b[H\x1b[2J' + '\r\n'.join(first)).encode())
+        read_code()
+        out, jumps = [], 0
+        for y, new in enumerate(second):
+            old = first[y] if y < len(first) else ''
+            x = None
+            for column in range(max(len(old), len(new))):
+                if column >= len(new):
+                    if x is None:
+                        out.append('\x1b[%d;%dH' % (y + 1, column + 1))
+                    elif column > x:
+                        out.append('\x1b[%dG' % (column + 1))
+                    out.append('\x1b[K')
+                    break
+                if column < len(old) and old[column] == new[column] or column >= len(old) and new[column] == ' ':
+                    continue
+                if x is None:
+                    out.append('\x1b[%d;%dH' % (y + 1, column + 1))
+                elif column > x:
+                    jumps += 1
+                    out.append('\x1b[%dC' % (column - x) if jumps % 2 else '\x1b[%dG' % (column + 1))
+                out.append(new[column])
+                x = column + 1
+        os.write(1, ''.join(out).encode())
+        sys.exit(0)
     if fixture.get('redraw'):
         for frame in range(50):
             spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[frame % 10]
@@ -158,12 +201,16 @@ else:
     fd = int(os.environ['CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR'])
     assert os.read(fd, 4096).decode() == token
     trace(probe=True)
+    if fixture.get('probe_status'):
+        print(json.dumps({'type': 'result', 'api_error_status': fixture['probe_status'], 'is_error': True}))
+        sys.exit(1)
     print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed'}}))
     print(json.dumps({'type': 'result', 'result': 'OK', 'is_error': False}))
     print(token, file=sys.stderr)
 '''
             source = source.replace("FIXTURE", repr(str(fixture))).replace("TRACE", repr(str(trace)))
             source = source.replace("ADDRESS", repr(server.server_address))
+            source = source.replace("DIFF_FRAMES", repr(self.DIFF_FRAMES))
             for name in ("claude", "security"):
                 path = self.root / name
                 path.write_text("#!" + PYTHON + "\n" + source)
@@ -214,7 +261,8 @@ else:
             events = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual(events[-1]["status"], "ok")
             self.assertTrue(events[-1]["ok"])
-            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["saving", "checking"])
+            # The token is checked before it is saved, and checked once.
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking", "saving"])
             self.assertEqual([e for e in events if e["event"] == "open"],
                              [{"event": "open", "url": "https://login.example.test/claude"}])
             self.assertEqual(sum(e["event"] == "prompt" for e in events), 2)
@@ -223,8 +271,11 @@ else:
             self.assertEqual([row["input"] for row in rows if "input" in row], ["page-code\r", "\r"])
             lookup = ["find-generic-password", "-s", "codex-worker-claude-events", "-a", "fixture-user", "-w"]
             self.assertEqual([row["argv"] for row in rows if row["command"] == "security"],
-                             [["-i"], lookup, lookup])
-            self.assertTrue(rows[-1]["probe"])
+                             [["-i"], lookup])
+            probes = [index for index, row in enumerate(rows) if row.get("probe")]
+            saves = [index for index, row in enumerate(rows) if row["argv"] == ["-i"]]
+            self.assertEqual(len(probes), 1)
+            self.assertLess(probes[0], saves[0])
             self.assertEqual(len(values), 1)
             token = values[0]
             self.assertIn("[token hidden]", result.stdout)
@@ -274,10 +325,58 @@ else:
             events = [json.loads(line) for line in result.stdout.splitlines()]
             lines = [event["text"] for event in events if event["event"] == "output"]
             self.assertLessEqual(len(lines), 15)
-            self.assertEqual(sum("Opening browser to sign in" in line for line in lines), 10)
+            self.assertEqual(len(lines), len(set(lines)))
+            # A burst of redraws is read once the output pauses: whole rows, ending with the last frame.
+            spinners = [line for line in lines if "Opening browser to sign in" in line]
+            self.assertTrue(all(re.fullmatch("[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Opening browser to sign in…", line)
+                                for line in spinners), spinners)
+            self.assertIn("⠏ Opening browser to sign in…", spinners)
+            self.assertIn("Waiting for sign-in…", lines)
             self.assertEqual([event for event in events if event["event"] == "open"],
                              [{"event": "open", "url": "https://login.example.test/claude"}])
             self.assertEqual(sum(event["event"] == "prompt" for event in events), 2)
+
+    def test_claude_login_events_read_a_diff_rendered_screen(self):
+        token = "sk-ant-" + "oat01-" + "event-secret-1234567890"
+        first, second = self.DIFF_FRAMES
+        # The token row is drawn over a row that already holds some of its characters.
+        self.assertTrue(any(old == new for old, new in zip(first[4], token)))
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"diff": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(events[-1]["status"], "ok")
+            self.assertEqual(values, [token])
+            expected = [row.replace("TOKEN", "[token hidden]") for row in first + second if row]
+            self.assertEqual([event["text"] for event in events if event["event"] == "output"], expected)
+            self.assertEqual(sum(event["event"] == "prompt" for event in events), 1)
+            self.assertEqual([event for event in events if event["event"] == "open"],
+                             [{"event": "open", "url": "https://login.example.test/claude"}])
+            self.assertNotIn(token, result.stdout + result.stderr)
+
+    def test_claude_login_events_keep_a_rejected_token_out_of_keychain(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            account = {"name": "events", "config_dir": str(self.root / ".claude-accounts" / "events"),
+                       "token_keychain": "codex-worker-claude-events"}
+            settings = self.home / "codex-worker.json"
+            settings.write_text(json.dumps({"language": "en", "claude": {"accounts": [account]}}))
+            before = settings.read_bytes()
+            fixture.write_text(json.dumps({"probe_status": 401}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual((events[-1]["event"], events[-1]["ok"], events[-1]["status"]),
+                             ("result", False, "authentication failed"))
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking"])
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual(sum(bool(row.get("probe")) for row in rows), 1)
+            self.assertFalse(any(row["command"] == "security" for row in rows), "no add-generic-password")
+            self.assertEqual(values, [])
+            self.assertEqual(settings.read_bytes(), before)
+            # The saved token may still work: the account is not marked as needing a sign-in.
+            self.assertNotIn("events", self.worker().claude_accounts.read_limits())
+            self.assertEqual(self.telemetry_journal()[-1]["status"], "authentication failed")
 
     def test_claude_login_events_preserve_split_tokens_across_stdin(self):
         with self.claude_event_fixture() as (fixture, trace, values):
@@ -319,12 +418,15 @@ else:
             events = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual(events[-1], {"event": "result", "ok": False, "status": "failed",
                                          "message": "Claude login cancelled after saving account settings"})
-            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["saving"])
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking", "saving"])
             self.assertEqual(len(values), 1)
             settings = json.loads((self.home / "codex-worker.json").read_text())
             self.assertIn("events", [account["name"] for account in settings["claude"]["accounts"]])
             rows = [json.loads(line) for line in trace.read_text().splitlines()]
-            self.assertFalse(any(row.get("probe") for row in rows))
+            # The only probe is the check before saving; nothing probes after the cancellation.
+            probes = [index for index, row in enumerate(rows) if row.get("probe")]
+            self.assertEqual(len(probes), 1)
+            self.assertLess(probes[0], [row["argv"] for row in rows].index(["-i"]))
 
     def test_claude_login_events_reject_missing_token_failed_setup_and_readback_mismatch(self):
         with self.claude_event_fixture() as (fixture, trace, values):
