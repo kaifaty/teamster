@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Claude Code PreToolUse hook for the Bash tool of writable Claude turns.
 
-Usage: python3 -I bash_guard.py < hook-event.json
+Usage: python3 -I bash_guard.py [--duty-room ROOM] < hook-event.json
 
 It rejects commands that start a process in the background or kill processes
 by name or pattern: exit status 2 with the reason on stderr, which Claude Code
 shows to the model. Every other command, and unreadable input, exits 0. The
 shell text is only tokenized, never run. Runs by path and never imports the
 package.
+
+With --duty-room it guards a duty chat turn and fails closed: each simple
+command of the text must be on the duty allowlist, shell expansions are
+refused, and redirections and the file tools (Write, Edit, MultiEdit,
+NotebookEdit) may write only inside ROOM, outside its .git.
 """
 import json
 import os
@@ -35,6 +40,8 @@ WRAPPERS = {
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
 SHELL_SCRIPT_OPTION = re.compile(r"-[A-Za-z]*c[A-Za-z]*")
 SUBSTITUTION = "$()"
+# The characters after a $ that start a parameter expansion.
+EXPANSION_START = re.compile(r"[A-Za-z0-9_@*#?$!-]")
 
 BACKGROUND_REASON = (
     "Blocked by teamster: this command starts a process in the background (`nohup`, `setsid`, "
@@ -103,6 +110,12 @@ class Shell:
         self.names = []
         self.background = False
         self.pattern_kill = False
+        # The duty guard judges every simple command and every redirection target.
+        self.commands = []
+        self.targets = []
+        self.operator = ""
+        # Expansions, arithmetic, globs, braces and heredoc bodies that expand: none is a literal word.
+        self.expansions = 0
 
     def peek(self, offset=0):
         index = self.pos + offset
@@ -118,6 +131,9 @@ class Shell:
         self.names += inner.names
         self.background = self.background or inner.background
         self.pattern_kill = self.pattern_kill or inner.pattern_kill
+        self.commands += inner.commands
+        self.targets += inner.targets
+        self.expansions += inner.expansions
         return inner.names
 
     def end(self, words, mark):
@@ -127,6 +143,8 @@ class Shell:
         earlier commands of its pipeline. Returns the next command's words and mark.
         """
         found = set(self.names[mark:])
+        if words:
+            self.commands.append(list(words))
         names, last = command_names(words, self)
         if "kill" in names and found & PROCESS_LOOKUPS:
             self.pattern_kill = True
@@ -171,7 +189,8 @@ class Shell:
                     self.pos += 2
                     words, mark = self.end(words, mark)
                 elif self.starts("&>"):
-                    self.pos += 3 if self.starts("&>>") else 2
+                    self.operator = "&>>" if self.starts("&>>") else "&>"
+                    self.pos += len(self.operator)
                     target = True
                 else:
                     self.pos += 1
@@ -187,6 +206,7 @@ class Shell:
                 self.pos += 1
                 if not words and self.peek() == "(":
                     self.pos += 1
+                    self.expansions += 1
                     self.skip_arithmetic()
                 else:
                     depth += 1
@@ -208,6 +228,7 @@ class Shell:
                 elif not quoted and word.isdigit() and self.starts("<", ">"):
                     pass  # The file descriptor of a redirection.
                 elif target:
+                    self.targets.append((self.operator, word))
                     target = False
                 else:
                     words.append(word)
@@ -216,6 +237,7 @@ class Shell:
     def redirect(self):
         """Skip a redirection operator; return whether a target word follows it."""
         if self.starts("<<<"):
+            self.operator = "<<<"
             self.pos += 3
             return True
         if self.starts("<<"):
@@ -224,14 +246,16 @@ class Shell:
             self.pos += strip
             while self.peek() in (" ", "\t"):
                 self.pos += 1
-            delimiter, _ = self.read_word()
-            self.heredocs.append((delimiter, strip))
+            delimiter, quoted = self.read_word()
+            self.heredocs.append((delimiter, strip, quoted))
             return False
-        self.pos += 2 if self.starts("<>", ">>", ">|", ">&", "<&") else 1
+        self.operator = next(operator for operator in ("<>", ">>", ">|", ">&", "<&", ">", "<")
+                             if self.starts(operator))
+        self.pos += len(self.operator)
         return True
 
     def read_heredocs(self):
-        for delimiter, strip in self.heredocs:
+        for delimiter, strip, quoted in self.heredocs:
             while self.pos < len(self.text):
                 end = self.text.find("\n", self.pos)
                 end = len(self.text) if end < 0 else end
@@ -239,6 +263,9 @@ class Shell:
                 self.pos = end + 1
                 if (line.lstrip("\t") if strip else line) == delimiter:
                     break
+                if not quoted and ("$" in line or "`" in line):
+                    # The body of an unquoted delimiter expands like double quotes.
+                    self.expansions += 1
         self.heredocs = []
 
     def read_word(self):
@@ -278,6 +305,9 @@ class Shell:
                 else:
                     value.append(self.dollar())
             else:
+                if char in "*?[]{}":
+                    # Unquoted globs and braces expand into words the guard never sees.
+                    self.expansions += 1
                 value.append(char)
                 self.pos += 1
         return "".join(value), quoted
@@ -318,6 +348,8 @@ class Shell:
 
     def dollar(self):
         """Read one expansion; parse the commands of a command substitution."""
+        if self.peek(1) in ("(", "{") or EXPANSION_START.match(self.peek(1)):
+            self.expansions += 1
         if self.starts("$(("):
             self.pos += 3
             self.skip_arithmetic()
@@ -348,6 +380,7 @@ class Shell:
             self.pos += 1
 
     def backticks(self):
+        self.expansions += 1
         chars = []
         while self.pos < len(self.text) and self.text[self.pos] != "`":
             if self.text[self.pos] == "\\" and self.peek(1) in ("`", "\\", "$"):
@@ -372,14 +405,145 @@ def denial(command):
     return None
 
 
+# The duty chat's allowlist: teamster commands, read-only git and gh, and plain readers.
+DUTY_TEAMSTER = frozenset({"start", "say", "scout", "review", "stop", "status", "wait", "report", "docs",
+                           "accounts"})
+# Commands on the duty conversation itself, which only the user sends.
+DUTY_SELF = frozenset({"say", "stop", "review", "wait"})
+DUTY_SLUG = "duty"
+DUTY_GIT = frozenset({"log", "diff", "show", "status", "fetch", "ls-files", "grep"})
+# Options that make an allowed git command write a file or run another program.
+DUTY_GIT_OPTIONS = ("--output", "-O", "--open-files-in-pager", "--upload-pack")
+DUTY_GH = {"pr": frozenset({"view", "diff", "checks", "list"}), "run": frozenset({"view", "list"})}
+DUTY_READERS = frozenset({"ls", "cat", "head", "tail", "wc", "rg"})
+# Options that make rg run another program.
+DUTY_RG_OPTIONS = ("--pre", "--hostname-bin")
+OUTPUT_REDIRECTIONS = frozenset({">", ">>", ">|", "&>", "&>>", "<>", ">&"})
+FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
+DUTY_ALLOWED = (
+    "`teamster start|say|scout|review|stop|status|wait|report|docs|accounts` and `teamster duty status`; "
+    "`git log|diff|show|status|fetch|ls-files|grep`; `gh pr view|diff|checks|list` and `gh run view|list`; "
+    "`ls`, `cat`, `head`, `tail`, `wc` and `rg`")
+
+
+def duty_reason(detail):
+    return ("Blocked by teamster: " + detail + ". The duty may run only " + DUTY_ALLOWED
+            + ", with literal arguments; it writes only inside its room (briefs) and never merges, "
+            "releases or accepts work: that stays with the user.")
+
+
+def has_option(words, options):
+    """Whether any word is one of ``options``, given alone, with =VALUE, or as a short option with its value attached."""
+    return any(word == option or word.startswith(option + "=")
+               or (len(option) == 2 and word.startswith(option)) for word in words for option in options)
+
+
+def inside_room(path, room, cwd):
+    """Whether ``path`` resolves inside ``room`` and outside its .git."""
+    root = os.path.realpath(room)
+    target = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
+    if os.path.commonpath([root, target]) != root:
+        return False
+    return ".git" not in os.path.relpath(target, root).split(os.sep)
+
+
+def duty_command_denial(words, room, cwd):
+    """Why the duty may not run one simple command, or None."""
+    if ASSIGNMENT.match(words[0]):
+        return f"variable assignments are refused (`{words[0]}`)"
+    name = words[0]
+    if "/" in name:
+        return f"commands run by path are refused (`{name}`); use the bare command name"
+    arguments = words[1:]
+    if name == "teamster":
+        command = arguments[0] if arguments else ""
+        if command == "duty":
+            return None if arguments[1:2] == ["status"] else f"`teamster duty {' '.join(arguments[1:2])}` is refused"
+        if command not in DUTY_TEAMSTER:
+            return f"`teamster {command}` is refused"
+        if command in DUTY_SELF and DUTY_SLUG in arguments[1:]:
+            return f"`teamster {command}` on the duty conversation itself is refused"
+        return None
+    if name == "git":
+        index = 0
+        while index < len(arguments) and arguments[index].startswith("-"):
+            option = arguments[index]
+            if option == "-C" and index + 1 < len(arguments):
+                # The room is writable: a repository planted in it could run its own config.
+                if inside_room(arguments[index + 1], room, cwd):
+                    return "`git -C` inside the room is refused"
+                index += 2
+            elif option == "--no-pager":
+                index += 1
+            else:
+                return f"the git option `{option}` is refused"
+        command = arguments[index] if index < len(arguments) else ""
+        if command not in DUTY_GIT:
+            return f"`git {command}` is refused; git is read-only here"
+        if has_option(arguments[index + 1:], DUTY_GIT_OPTIONS):
+            return "git options that write files or run programs (`--output`, `-O`, `--upload-pack`) are refused"
+        return None
+    if name == "gh":
+        group, command = (arguments + ["", ""])[:2]
+        if command not in DUTY_GH.get(group, ()):
+            return f"`gh {' '.join(arguments[:2])}` is refused; gh is read-only here"
+        return None
+    if name in DUTY_READERS:
+        if name == "rg" and has_option(arguments, DUTY_RG_OPTIONS):
+            return "rg options that run programs (`--pre`, `--hostname-bin`) are refused"
+        return None
+    return f"`{name}` is not on the duty allowlist"
+
+
+def duty_denial(event, room):
+    """Return why the duty's hook rejects a tool call, or None to let it run. Unreadable input is rejected."""
+    if not isinstance(event, dict) or not isinstance(event.get("tool_input"), dict):
+        return duty_reason("unreadable hook input")
+    tool, tool_input = event.get("tool_name"), event["tool_input"]
+    cwd = event.get("cwd") if isinstance(event.get("cwd"), str) and event.get("cwd") else room
+    if tool in FILE_TOOLS:
+        path = tool_input.get(FILE_TOOLS[tool])
+        if not isinstance(path, str) or not path or not inside_room(path, room, cwd):
+            return duty_reason(f"{tool} outside the room {room} (or inside its .git) is refused")
+        return None
+    if tool != "Bash":
+        return None
+    command = tool_input.get("command")
+    if not isinstance(command, str):
+        return duty_reason("unreadable command")
+    reason = denial(command)
+    if reason is not None:
+        return reason
+    shell = Shell(command)
+    shell.parse()
+    if shell.expansions:
+        return duty_reason("shell expansions (`$VAR`, `$(…)`, backticks, arithmetic, globs, braces, "
+                           "unquoted heredocs that expand) are refused")
+    for operator, target in shell.targets:
+        if operator in (">&", "<&") and (target.isdigit() or target == "-"):
+            continue
+        if operator in OUTPUT_REDIRECTIONS and target != "/dev/null" and not inside_room(target, room, cwd):
+            return duty_reason(f"redirection to `{target}` outside the room (or inside its .git) is refused")
+    for words in shell.commands:
+        reason = duty_command_denial(words, room, cwd)
+        if reason is not None:
+            return duty_reason(reason)
+    return None
+
+
 def main():
+    arguments = sys.argv[1:]
+    room = arguments[1] if arguments[:1] == ["--duty-room"] and len(arguments) == 2 else None
     try:
         event = json.loads(sys.stdin.buffer.read())
     except ValueError:
-        return 0
-    tool_input = event.get("tool_input") if isinstance(event, dict) else None
-    command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    reason = denial(command) if isinstance(command, str) else None
+        event = None
+    if room is not None:
+        reason = duty_denial(event, room)
+    else:
+        tool_input = event.get("tool_input") if isinstance(event, dict) else None
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        reason = denial(command) if isinstance(command, str) else None
     if reason is None:
         return 0
     sys.stderr.write(reason + "\n")
