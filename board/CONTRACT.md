@@ -1099,8 +1099,9 @@ Everywhere else the conversation is not a task: `Snapshot.tasks` and the `task`,
 `activity` WebSocket messages leave out `kind: "duty"` records, live or archived, and the research leaves
 them out of studies, material and repositories. `teamster report` (`GET /api/report`) still counts the
 conversation, slug `duty` with its room `room` as the repository; the page's day summary takes its tasks, turns
-and active minutes off the totals and off its executor's task count, and leaves it out of the costly tasks (that
-group's done share and median minutes still include it). Tasks the duty started (`started_by: "duty"`) stay
+and active minutes off the totals, counts its executor's group again from the report's other tasks (`tasks`,
+the share with `result_status: "done"` and the median `active_minutes`), and leaves it out of the costly tasks.
+Tasks the duty started (`started_by: "duty"`) stay
 ordinary tasks.
 
 ### Automatic lesson landing
