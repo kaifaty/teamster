@@ -64,6 +64,31 @@ describe("dictation", () => {
     expect(FakeRecognition.made).toHaveLength(2);
   });
 
+  it("drops a dropped dictation's late words, and an ended one's, so that a sent field stays empty", () => {
+    const { voice, field, last } = setup();
+    voice.toggle();
+    const first = last();
+    first.say(["привет", false]);
+    // The send empties the field and drops the dictation; the browser still delivers its final result.
+    voice.dispose();
+    field.text = "";
+    first.say(["привет", true]);
+    expect(field.text).toBe("");
+    expect(voice.state.value).toBe("idle");
+    // A new dictation does not take the old one's words either.
+    voice.toggle();
+    first.say(["старое", true]);
+    expect(field.text).toBe("");
+    last().say(["новое", false]);
+    expect(field.text).toBe("новое");
+  });
+
+  it("listens in Russian when the page names no language", () => {
+    FakeRecognition.made = [];
+    createVoice({ ctor: FakeRecognition, text: () => "", onText: () => {} }).toggle();
+    expect(FakeRecognition.made[0]!.lang).toBe("ru-RU");
+  });
+
   it("is off without the browser's recognition, and after the microphone was refused, with a title that says why", () => {
     const none = createVoice({ ctor: null, text: () => "", onText: () => {} });
     none.toggle();

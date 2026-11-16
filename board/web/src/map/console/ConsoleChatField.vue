@@ -39,11 +39,16 @@ defineExpose({
   },
 });
 
+/** Sends the field; a dictation still running is dropped, so that its late words do not fill the emptied field. */
+function send() {
+  voice.dispose();
+  emit("send");
+}
+
 function onKey(event: KeyboardEvent) {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    if (voice.state.value === "listening") voice.stop();
-    emit("send");
+    send();
   } else if (event.key === "Escape" && props.open && !props.sheet) {
     event.preventDefault();
     event.stopPropagation();
@@ -116,7 +121,7 @@ onBeforeUnmount(() => {
             <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
           </svg>
         </button>
-        <button type="button" class="tool send" :disabled="!text.trim()" aria-label="Отправить дежурному" title="Отправить (Enter)" @click="emit('send')">
+        <button type="button" class="tool send" :disabled="!text.trim()" aria-label="Отправить дежурному" title="Отправить (Enter)" @click="send">
           <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
             <path d="M2 2.5l12 5.5-12 5.5 2-5.5z" fill="currentColor" />
           </svg>

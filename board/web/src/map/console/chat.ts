@@ -50,6 +50,11 @@ export function sentCount(view: DutyChatView | null, text: string): number {
   return view.messages.filter(same).length + view.queued.filter(same).length;
 }
 
+/** A new send's `before`: the messages with its text in the view, and the identical sends still on their way. */
+export function pendingBefore(view: DutyChatView | null, pending: readonly PendingMessage[], text: string): number {
+  return sentCount(view, text) + pending.filter((row) => row.text === text && row.state !== "failed").length;
+}
+
 /** Whether the server's view shows the pending message: one more message with its text than when it went. */
 export function arrived(view: DutyChatView | null, pending: PendingMessage): boolean {
   return pending.state !== "failed" && sentCount(view, pending.text) > pending.before;

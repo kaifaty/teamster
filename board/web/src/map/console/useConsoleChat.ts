@@ -5,7 +5,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { createDutyChat, type DutyChat, type DutyChatHost } from "../../store/dutyChat";
 import type { TaskSummary } from "../../types";
 import { createFeed, type TaskFeedHandle } from "../station/feed";
-import { arrived, chatRows, feedTail, lastErrorText, sentCount, unavailableText, type PendingMessage } from "./chat";
+import { arrived, chatRows, feedTail, lastErrorText, pendingBefore, unavailableText, type PendingMessage } from "./chat";
 
 /** The slug of the duty's conversation, whose feed is the running turn's activity. */
 const DUTY_SLUG = "duty";
@@ -74,7 +74,7 @@ export function useConsoleChat(
   function send(text: string) {
     const message = text.trim();
     if (!message || !chat.value) return false;
-    const before = sentCount(view.value, message) + pending.value.filter((row) => row.text === message && row.state !== "failed").length;
+    const before = pendingBefore(view.value, pending.value, message);
     const item: PendingMessage = { key: ++keys, text: message, at: Date.now() / 1000, before, state: "sending", error: null };
     pending.value = [...pending.value, item];
     void deliver(item);

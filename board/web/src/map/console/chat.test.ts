@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DutyChatView } from "../../dutyChatTypes";
 import { fixtureConversation, withMode } from "../../fixtures/dutyChat";
-import { activeQuestion, arrived, chatRows, feedTail, noteParts, runTime, sentCount, unavailableText, type PendingMessage } from "./chat";
+import { activeQuestion, arrived, chatRows, feedTail, noteParts, pendingBefore, runTime, sentCount, unavailableText, type PendingMessage } from "./chat";
 
 const NOW = 1_800_000_000;
 const ON_MAP: Record<string, string> = { "ci-wait-retry": "demo-assistant" };
@@ -48,6 +48,15 @@ describe("the duty chat's rows", () => {
     expect(arrived(queued, pending(text, sentCount(queued, text)))).toBe(false);
     expect(arrived(queued, { ...sent, state: "failed" })).toBe(false);
     expect(chatRows(queued, [{ ...sent, state: "failed", error: "refused" }], findTask).at(-1)).toMatchObject({ kind: "pending", pending: { state: "failed", error: "refused" } });
+  });
+
+  it("counts identical sends still on their way, so that the first one's arrival keeps the second pending", () => {
+    const view = fixtureConversation(NOW);
+    const first = pending("Да", pendingBefore(view, [], "Да"), "sent", 1);
+    const second = pending("Да", pendingBefore(view, [first, pending("Да", 0, "failed", 3), pending("Нет", 0, "sending", 4)], "Да"), "sending", 2);
+    expect(second.before).toBe(first.before + 1);
+    const once = { ...view, queued: [...view.queued, { at: NOW, from: "user" as const, text: "Да" }] };
+    expect([arrived(once, first), arrived(once, second)]).toEqual([true, false]);
   });
 
   it("makes only the latest unanswered question's options active", () => {

@@ -76,6 +76,9 @@ describe("the arrival chime", () => {
 
     await show([...first, task("ready-2", "review_me"), task("alarm-2", "attention")]);
     expect(played).toEqual([[660, 880], [440, 330]]);
+    // Both queues at once: one chime, the alarm's.
+    await show([...first, task("ready-2", "review_me"), task("alarm-2", "attention"), task("ready-3", "review_me"), task("alarm-3", "attention")]);
+    expect(played).toEqual([[660, 880], [440, 330], [440, 330]]);
     wrapper.unmount();
   });
 
