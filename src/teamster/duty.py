@@ -1,8 +1,9 @@
 """Duty account elections, the shared duty record and the new-work exclusion.
 
 One account at a time is on duty. ``elect`` is pure; ``run_duty_tick`` builds
-its candidates from cached limits and records the result. New work skips the
-duty account while another account can take it.
+its candidates from cached limits and records the result. ``pin_duty`` sets the
+duty by hand, and ticks keep a pinned duty until ``duty auto`` or ``duty clear``.
+New work skips the duty account, pinned or elected, while another account can take it.
 """
 import fcntl
 import json
@@ -47,6 +48,11 @@ def valid_duty(record):
         return False
     if not all(result_schema.is_finite_number(record.get(key)) for key in ("since", "checked_at")):
         return False
+    # Records written before pins existed have neither key and read as elected.
+    pinned, unavailable = record.get("pinned", False), record.get("pinned_unavailable")
+    if not isinstance(pinned, bool) or pinned and account is None or not (
+            unavailable is None or pinned and isinstance(unavailable, str)):
+        return False
     return isinstance(rooms, dict) and all(
         name in DUTY_FAMILIES and isinstance(entries, dict)
         and all(isinstance(key, str) and result_schema.is_finite_number(room) for key, room in entries.items())
@@ -66,6 +72,8 @@ def read_duty(warn=True):
     except (OSError, ValueError):
         record = None
     if valid_duty(record):
+        record.setdefault("pinned", False)
+        record.setdefault("pinned_unavailable", None)
         return record
     if warn and not DUTY_WARNINGS:
         DUTY_WARNINGS.add(str(duty_path()))
@@ -101,8 +109,33 @@ def write_duty(record):
     temporary.replace(path)
 
 
+def append_duty_log(entry):
+    """Append one change to the log; written after duty.json, so an interruption loses a line, never invents one."""
+    with duty_log_path().open("a", encoding="utf-8") as log:
+        log.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def pin_duty(family, name, unavailable):
+    """Pin ``family/name`` as the duty by hand; the caller holds duty_lock.
+
+    ``unavailable`` is why the account cannot work now, or None. The rooms and
+    the check time stay those of the last tick. Every pin adds a log line.
+    Returns the record.
+    """
+    now = clock.CLOCK.time()
+    previous = read_duty(warn=False)
+    rooms = previous["rooms"] if previous else {item: {} for item in DUTY_FAMILIES}
+    record = {"account": name, "family": family, "since": now,
+              "checked_at": previous["checked_at"] if previous else now, "reason": "manual", "rooms": rooms,
+              "pinned": True, "pinned_unavailable": unavailable}
+    write_duty(record)
+    append_duty_log({"at": now, "from": duty_label(previous), "to": duty_label(record), "reason": "manual",
+                     "rooms": rooms, "pinned": True})
+    return record
+
+
 def clear_duty():
-    """Remove duty.json; return whether it existed. The change log stays."""
+    """Remove duty.json, and with it a pin; return whether it existed. The change log stays."""
     with duty_lock():
         try:
             duty_path().unlink()
@@ -224,12 +257,14 @@ def elect(candidates, current, settings):
                             + ("s" if len(missed) > 1 else ""))
 
 
-def run_duty_tick(cfg, infos, refreshed_at):
+def run_duty_tick(cfg, infos, refreshed_at, unpin=False):
     """Elect from cached Claude limits and Codex snapshots; record the result.
 
-    The caller holds duty_lock. The record is rewritten on every tick; the
-    change log gets one line only when the duty account changes. Returns
-    (record, changed).
+    The caller holds duty_lock. The record is rewritten on every tick. A pinned
+    duty stays whatever the rooms; the tick records only why it is unavailable,
+    in pinned_unavailable. ``unpin`` removes the pin and elects. The change log
+    gets one line only when the duty account changes or a pin is removed.
+    Returns (record, changed).
     """
     now = clock.CLOCK.time()
     limits = claude_accounts.read_limits()
@@ -240,18 +275,25 @@ def run_duty_tick(cfg, infos, refreshed_at):
                       if candidate["family"] == family and candidate["unavailable"] is None}
              for family in DUTY_FAMILIES}
     previous = read_duty(warn=False)
+    pinned = bool(previous and previous["pinned"])
+    if pinned and not unpin:
+        holder = next((candidate for candidate in candidates if candidate["family"] == previous["family"]
+                       and candidate["name"] == previous["account"]), None)
+        record = dict(previous, checked_at=now, rooms=rooms,
+                      pinned_unavailable="no longer configured" if holder is None else holder["unavailable"])
+        write_duty(record)
+        return record, False
     current = {"account": previous["account"], "family": previous["family"]} if previous else None
     decision = elect(candidates, current, cfg["duty"])
     changed = duty_label(previous) != duty_label(decision)
+    reason = ("pin removed; " if pinned else "") + decision["reason"]
     record = {"account": decision["account"], "family": decision["family"],
               "since": previous["since"] if previous and not changed else now,
-              "checked_at": now, "reason": decision["reason"], "rooms": rooms}
+              "checked_at": now, "reason": reason, "rooms": rooms, "pinned": False, "pinned_unavailable": None}
     write_duty(record)
-    if changed:
-        # An interruption here loses this line, never invents a change.
-        with duty_log_path().open("a", encoding="utf-8") as log:
-            log.write(json.dumps({"at": now, "from": duty_label(previous), "to": duty_label(decision),
-                                  "reason": decision["reason"], "rooms": rooms}, ensure_ascii=False) + "\n")
+    if changed or pinned:
+        append_duty_log({"at": now, "from": duty_label(previous), "to": duty_label(decision),
+                         "reason": reason, "rooms": rooms, "pinned": False})
     return record, changed
 
 

@@ -28,6 +28,7 @@
       teamster upgrade [--source URL|PATH] [--ref REF] [--yes]  preview/install a version side by side
       teamster versions [--prune]                    list installed versions; move unused ones to trash
       teamster duty tick | status [--json] | clear | plist [--minutes N]  elect, show, clear or schedule the duty account
+      teamster duty set <account> [--family codex|claude] | auto  pin the duty account by hand, or return to election
       teamster duty chat ["text" | --file FILE] [--queue]  talk to the duty, which may start tasks; prints its answer
 
 All commands accept -h/--help.
@@ -433,12 +434,17 @@ def main():
     s.add_argument("--yes", action="store_true", help="install and switch (default: print the plan only)")
     s = sub.add_parser("versions", help="list installed versions and the supervisors that use them")
     s.add_argument("--prune", action="store_true", help="move unused, non-current versions to versions/.trash")
-    s = sub.add_parser("duty", help="elect, show, clear or schedule the duty account")
+    s = sub.add_parser("duty", help="elect, pin, show, clear or schedule the duty account")
     duty_commands = s.add_subparsers(dest="duty_command", required=True)
     duty_commands.add_parser("tick", help="refresh stale limits and re-elect the duty account")
     s = duty_commands.add_parser("status", help="show the duty account, its reason, rooms and check age")
     s.add_argument("--json", action="store_true", help="print the duty record as JSON")
-    duty_commands.add_parser("clear", help="remove duty.json; selection works as without a duty account")
+    duty_commands.add_parser("clear", help="remove duty.json and its pin; selection works as without a duty account")
+    s = duty_commands.add_parser("set", help="pin the duty to an account by hand; duty tick keeps it")
+    s.add_argument("account", help="a Claude or Codex account name from teamster accounts")
+    s.add_argument("--family", choices=("codex", "claude"),
+                   help="the account's family, needed when a Claude and a Codex account share the name")
+    duty_commands.add_parser("auto", help="remove the pin and elect the duty account at once")
     s = duty_commands.add_parser("plist", help="print a launchd job that runs duty tick (installs nothing)")
     s.add_argument("--minutes", type=plist_minutes, default=30, help="interval between ticks (default: 30)")
     s = duty_commands.add_parser("chat", help="send a message to the duty conversation and print the duty's answer")

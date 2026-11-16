@@ -51,7 +51,7 @@ A hook enforces them; a refused command is not an error to work around.
   `git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null -C <path> diff --no-ext-diff --no-textconv --no-show-signature --submodule=short --stat origin/main...<branch> --`.
   `git status` and `git fetch` are refused; `teamster status <slug>` shows a task's commits.
 - Refused, among everything else: `gh pr merge`, `git push|commit|merge|rebase|reset|checkout`,
-  `teamster clean|verdict|login|claude-login|duty tick|duty clear`, version bumps, package managers,
+  `teamster clean|verdict|login|claude-login|duty tick|duty set|duty auto|duty clear`, version bumps, package managers,
   `curl`, `rm`, scripts run by path, variable assignments, commands on the duty conversation itself,
   abbreviated option names, and `--check`, `--check-loaded` and `--ci-command` (put the checks to run
   in the brief instead).

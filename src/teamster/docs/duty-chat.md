@@ -23,10 +23,11 @@ removes the room and archives the record, and the next message starts a new conv
 
 Without a duty account (`duty.json` absent or its `account` null) the command fails with
 `no duty account` and starts nothing. A Codex duty is refused the same way: the chat needs a Claude
-duty. The turn always runs on the current duty account and never on another one: when `duty tick`
-moved the duty, the next turn continues on the new account with the rotation handoff (the brief, the
-messages so far and the duty's earlier replies), and `status` shows the rotation. A limit on the duty
-account ends the turn `unavailable`; the next turn runs once the account recovers or the duty moves.
+duty. The turn always runs on the current duty account, pinned by `duty set` or elected, and never on
+another one: when `duty tick` moved the duty, the next turn continues on the new account with the
+rotation handoff (the brief, the messages so far and the duty's earlier replies), and `status` shows
+the rotation. A limit on the duty account ends the turn `unavailable`; the next turn runs once the
+account recovers or the duty moves.
 
 The turn's system prompt is the [lead guide](lead-guide.md), the duty's role (`duty-role.md` in the
 package: how to answer, when to ask instead of starting, one task per independent piece, briefs in the
@@ -64,7 +65,7 @@ so no account or project setting turns the hook off. The hook fails closed and a
 - `ls`, `cat`, `head`, `tail`, `wc` and `rg` (without `--pre` or `--hostname-bin`).
 
 Everything else is refused, in particular `gh pr merge`, `git push|commit|merge|rebase|reset|checkout`,
-`teamster clean|verdict|login|claude-login|duty tick|duty clear`, `scripts/bump_version.py`, package
+`teamster clean|verdict|login|claude-login|duty tick|duty set|duty auto|duty clear`, `scripts/bump_version.py`, package
 managers, `curl` and `rm`. Commands run by path and variable assignments are refused. A compound
 command (`;`, `&&`, `||`, `|`, a subshell) is judged by every part; shell expansions (`$VAR`, `$(…)`,
 backticks, ANSI-C quoting `$'…'`, arithmetic, globs, braces, the body of an unquoted heredoc that
