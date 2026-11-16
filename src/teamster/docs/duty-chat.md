@@ -16,8 +16,10 @@ checks and held notes, but returns as soon as the turn starts; its `--effort`, `
 `--max-minutes` replace `duty.chat_effort`, `duty.chat_model` and `duty.chat_max_minutes` for the
 conversation, as `say` does for a task. `duty chat` returns when its turn's supervisor exits, also when
 that supervisor is killed. A creation that an interruption cut short (a room without `state.json`) is
-removed and made again by the next message. `status duty` shows the room and the number of answers;
-`clean duty` removes the room and archives the record, and the next message starts a new conversation.
+removed and made again by the next message. When a duty turn's supervisor dies before its Claude
+process, that process still holds the session: the next message and `clean duty` refuse until
+`teamster stop duty` ends it. `status duty` shows the room and the number of answers; `clean duty`
+removes the room and archives the record, and the next message starts a new conversation.
 
 Without a duty account (`duty.json` absent or its `account` null) the command fails with
 `no duty account` and starts nothing. A Codex duty is refused the same way: the chat needs a Claude
@@ -99,8 +101,11 @@ turn began). The note joins the running duty turn's queue, or starts a note-driv
 is idle. At most `duty.chat_auto_turns_per_hour` note-driven turns start in an hour, whether the notes
 arrive while the duty is idle or wait in the queue of a running turn; the rest wait in
 `tasks/duty/notes.json` and go out with the next user message, as do notes held while the duty is not
-a Claude account, after a failed or stopped duty turn, or in the queue of a duty supervisor that died. The duty conversation's own turns never
-notify, and a failure to queue a note is logged in the task's `stderr.log`, never failing its cycle.
+a Claude account, after a failed or stopped duty turn, or in the queue of a duty supervisor that died.
+Held notes leave `notes.json` only once the turn that carries them has started and is saved: a start
+that fails, or a command that dies first, leaves them held for the next message, at the cost of a note
+journaled twice in `messages.jsonl`. The duty conversation's own turns never notify, and a failure to
+queue a note is logged in the task's `stderr.log`, never failing its cycle.
 
 ## Settings
 

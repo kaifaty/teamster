@@ -131,16 +131,23 @@ def write_held_notes(notes):
 
 
 def hold_notes(notes):
-    """Keep notes for later; the caller holds the duty state lock."""
-    write_held_notes(held_notes() + list(notes))
+    """Keep notes for later, each once; the caller holds the duty state lock."""
+    held = held_notes()
+    added = [note for note in notes if note not in held]
+    if added:
+        write_held_notes(held + added)
 
 
-def take_held_notes():
-    """Return the held notes and empty the store; the caller holds the duty state lock."""
-    notes = held_notes()
-    if notes:
-        write_held_notes([])
-    return notes
+def release_held_notes(sent):
+    """Remove the held notes that a started and saved turn carries; the caller holds the duty state lock.
+
+    Until then they stay held: a start that fails or a process that dies first loses none of them,
+    at the cost of a note journaled twice.
+    """
+    held = held_notes()
+    left = [note for note in held if note not in sent]
+    if len(left) != len(held):
+        write_held_notes(left)
 
 
 def auto_turn_allowed(st, cfg, now):
@@ -164,18 +171,19 @@ def note_order(st, report):
 def cycle_orders(st, orders):
     """The orders the end of a duty cycle sends; the caller holds the duty state lock.
 
-    Held notes join any user message. Notes alone start a turn while the hourly cap and a Claude
-    duty allow it; otherwise they wait in notes.json and the end sends nothing.
+    Held notes join any user message; the caller releases them once that turn has started. Notes alone
+    start a turn while the hourly cap and a Claude duty allow it; otherwise they wait in notes.json and
+    the end sends nothing.
     """
     if not orders:
         return []
     cfg = config.accounts_config()
     now = clock.CLOCK.time()
     if any(order.get("source") != "note" for order in orders):
-        return take_held_notes() + orders
+        return held_notes() + orders
     if auto_turn_allowed(st, cfg, now) and chat_account(cfg)[0] is not None:
         mark_auto_turn(st, now)
-        return take_held_notes() + orders
+        return held_notes() + orders
     hold_notes(orders)
     return []
 

@@ -926,9 +926,15 @@ class ClaudeReviewTests(RotationTestCase):
                                         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertRaises(subprocess.TimeoutExpired, cleaning.wait, timeout=5)
             self.assertTrue((room / ".git").is_dir())
+            # A turn starts while clean waits (this process stands in for its supervisor).
+            path = self.home / "claude-tasks" / "duty" / "state.json"
+            path.write_text(json.dumps(dict(json.loads(path.read_text()), pid=os.getpid())))
         output, errors = cleaning.communicate(timeout=60)
-        self.assertEqual(cleaning.returncode, 0, errors)
-        self.assertIn("cleaned duty", output)
+        self.assertEqual(cleaning.returncode, 1, output)
+        self.assertIn("still running; stop it first", errors)
+        self.assertTrue((room / ".git").is_dir())
+        path.write_text(json.dumps(dict(json.loads(path.read_text()), pid=None)))
+        output = self.cli("clean", "duty")
         self.assertFalse((self.home / "claude-tasks" / "duty").exists())
 
     def started_by_duty(self, slug, *command):
@@ -948,8 +954,10 @@ class ClaudeReviewTests(RotationTestCase):
     def test_duty_started_task_notes_the_chat_under_the_hourly_cap(self):
         self.enable_fake_clock(auto_advance=False)
         release = self.root / "release-user-turn"
+        news = self.root / "release-news-turn"
         runs = [{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 7)]
         runs[2]["gate"] = str(release)
+        runs[3]["gate"] = str(news)
         self.claude_pool_fixture(runs=runs, duty={"chat_auto_turns_per_hour": 1})
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
         self.put_duty("first")
@@ -981,7 +989,14 @@ class ClaudeReviewTests(RotationTestCase):
             worker.commands.send_duty_chat(worker.config.accounts_config(), message, False)
         self.assertEqual(len(json.loads(notes.read_text())["held"]), 1)
         self.assertEqual(self.state("duty")["turns"], 2)
-        # say delivers it with the user's message, as duty chat does.
+        # So does a supervisor that cannot start, though the message and the note are journaled by then.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process", side_effect=OSError("fork failed")), \
+                self.assertRaises(OSError):
+            worker.commands.send_duty_chat(worker.config.accounts_config(), message, False)
+        self.assertEqual([note["task"] for note in json.loads(notes.read_text())["held"]], ["held-note"])
+        self.assertEqual(self.state("duty")["turns"], 2)
+        # say delivers it with the user's next message, as duty chat does.
         self.assertIn("sent to duty (turn 3), pid ", self.cli("say", "duty", "What happened?"))
         self.until(lambda: len(self.claude_invocations()) == 3, timeout=60)
         prompt = self.claude_invocations()[-1]["argv"][1]
@@ -995,17 +1010,26 @@ class ClaudeReviewTests(RotationTestCase):
         self.until(lambda: self.chat_settled(3), timeout=60)
         self.assertEqual(len(self.claude_invocations()), 3)
         self.assertEqual([note["task"] for note in json.loads(notes.read_text())["held"]], ["queued-note"])
-        self.assertEqual([row["source"] for row in self.chat_messages()], ["user", "note", "note", "user"])
-        # Once the hour has passed the cap has room again: a scout the duty started starts the next note-driven
-        # turn, which takes the held note too, and the expired mark is gone.
+        # The failed start journaled the note and the message once more; the note was not lost.
+        self.assertEqual([row["source"] for row in self.chat_messages()], ["user", "note", "note", "user", "note", "user"])
+        # Once the hour has passed, the next user turn takes the held note; a note queued while it runs starts a
+        # note-driven turn when it ends, that turn spends the cap, and the expired mark is gone.
         self.advance_fake_clock(2)
+        self.assertIn("sent to duty (turn 4), pid ", self.cli("say", "duty", "Any news?"))
+        self.until(lambda: len(self.claude_invocations()) == 4, timeout=60)
+        self.assertLess(self.claude_invocations()[-1]["argv"][1].index("Task note: queued-note"),
+                        self.claude_invocations()[-1]["argv"][1].index("Any news?"))
         self.started_by_duty("scouted", "scout", "scouted", "Where is tracked.txt read?", "--repo", str(self.repo))
-        self.until(lambda: self.chat_settled(4), timeout=60)
-        prompt = self.claude_invocations()[-1]["argv"][1]
-        self.assertLess(prompt.index("Task note: queued-note"), prompt.index("Task note: scouted ended turn 1"))
+        self.until(lambda: queue.exists() and len(json.loads(queue.read_text())["waiting"]) == 1, timeout=60)
+        news.touch()
+        self.until(lambda: self.chat_settled(5), timeout=60)
+        self.assertIn("Task note: scouted ended turn 1", self.claude_invocations()[-1]["argv"][1])
         mark, = self.state("duty")["duty_auto_turns"]
         self.assertGreaterEqual(mark, first_mark + 3600)
-        self.assertEqual([row["source"] for row in self.chat_messages()].count("note"), 4)
+        self.started_by_duty("capped")
+        self.until(lambda: [note["task"] for note in json.loads(notes.read_text())["held"]] == ["capped"])
+        self.assertEqual(len(self.claude_invocations()), 5)
+        self.assertEqual([row["source"] for row in self.chat_messages()].count("note"), 5)
         # The note carries every section wait prints: result, checks, review, CI and PR.
         worker = self.worker()
         st = worker.task_state.load("noted")
@@ -1041,7 +1065,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.until(lambda: "could not queue the duty note" in stderr.read_text())
         self.assertNotIn("Traceback", stderr.read_text())
         self.assertEqual(self.state("lost-note")["outcome"], "completed")
-        self.assertEqual(len(self.state("duty")["duty_turns"]), 4)
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 5)
 
     def test_duty_chat_queued_notes_keep_the_cap_one_per_cycle_and_survive_a_crash(self):
         release = self.root / "release-duty"
@@ -1119,8 +1143,18 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(refused.returncode, 1, refused.stdout)
         self.assertIn("Claude process %d of the previous duty turn outlived its supervisor" % st["claude_pid"],
                       refused.stderr)
+        self.assertIn("end it with teamster stop duty", refused.stderr)
         self.assertEqual(len(self.claude_invocations()), 2)
-        os.kill(st["claude_pid"], signal.SIGKILL)
+        # clean refuses to take the room from it; stop duty ends it.
+        refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "clean", "duty"], cwd=self.repo, env=self.env,
+                                 text=True, capture_output=True, timeout=60)
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("Claude process %d of the last duty turn is still running; end it with teamster stop duty"
+                      % st["claude_pid"], refused.stderr)
+        self.assertTrue((self.home / "claude-tasks" / "duty" / "room" / ".git").is_dir())
+        self.assertEqual(self.cli("stop", "duty", timeout=60),
+                         "stopped duty: ended Claude process %d\n" % st["claude_pid"])
+        self.assertNotIn("claude_pid", self.state("duty"))
 
         def gone():
             try:

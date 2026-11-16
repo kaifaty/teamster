@@ -494,7 +494,15 @@ def cmd_stop(a):
         st = task_state.load(a.slug)
         pid = st.get("pid")
         if not procs.alive(pid):
-            print("not running")
+            orphan = st.get("claude_pid") if st.get("kind") == duty_chat.CHAT_KIND else None
+            if not procs.alive(orphan):
+                print("not running")
+                return
+            # The duty's supervisor died before its Claude, which still holds the session.
+            procs.end_group(orphan)
+            st.pop("claude_pid", None)
+            task_state.write_state(st)
+            print(f"stopped {a.slug}: ended Claude process {orphan}")
             return
         st["stop_request"] = {"at": clock.CLOCK.time(), "pid": pid}
         task_state.write_state(st)
@@ -520,7 +528,11 @@ def cmd_clean(a):
     if st.get("kind") == duty_chat.CHAT_KIND:
         # A task note may start a duty turn at any moment: check and archive under the lock that delivery takes.
         with task_state.state_lock(a.slug):
-            return clean_task(a, task_state.load(a.slug))
+            st = task_state.load(a.slug)
+            if not procs.alive(st.get("pid")) and procs.alive(st.get("claude_pid")):
+                procs.die(f"Claude process {st['claude_pid']} of the last duty turn is still running; "
+                          f"end it with {config.COMMAND} stop duty, then clean")
+            return clean_task(a, st)
     return clean_task(a, st)
 
 
@@ -907,16 +919,18 @@ def open_duty_chat(cfg, account, order):
             supervisor.apply_say(st, order["options"], cfg)
             task_state.save(st)
 
+            sent = []
+
             def prompt():
-                held = duty_chat.held_notes()
-                orders = held + [order]
+                sent.extend(duty_chat.held_notes())
+                orders = sent + [order]
                 threads.journal_followups(st, order["text"], "user", orders if len(orders) > 1 else ())
-                if held:
-                    duty_chat.write_held_notes([])
                 return brief + "\n\n" + "\n\n".join(item["text"] for item in orders)
 
             turn = supervisor.say_turn(st, order["options"])
             proc = supervisor.launch(st, prompt, turn["effort"], True, duty_chat.CHAT_KIND, False, 0)
+            # The held notes leave notes.json only once the turn that carries them is started and saved.
+            duty_chat.release_held_notes(sent)
     return st, proc
 
 
@@ -940,20 +954,22 @@ def send_duty_chat(cfg, order, queue):
         procs.die(task_state.busy_message(st) + "; or queue the message with --queue")
     if not procs.alive(st.get("pid")) and procs.alive(st.get("claude_pid")):
         procs.die(f"Claude process {st['claude_pid']} of the previous duty turn outlived its supervisor and still "
-                  f"holds the session; end it (kill {st['claude_pid']}), then send the message again")
+                  f"holds the session; end it with {config.COMMAND} stop duty, then send the message again")
     supervisor.apply_say(st, order["options"], cfg)
+    sent = []
 
     def prompt():
-        # Read under the state lock: the notes held for this message go out with it, cleared once journaled.
-        held = duty_chat.held_notes()
-        orders = held + [order]
+        # Read under the state lock: the notes held for this message go out with it.
+        sent.extend(duty_chat.held_notes())
+        orders = sent + [order]
         if len(orders) == 1:
             return threads.followup_prompt(st, order["text"], cfg, source="user")
-        text = threads.followup_prompt(st, "\n\n".join(item["text"] for item in orders), cfg, queued=orders)
-        duty_chat.write_held_notes([])
-        return text
+        return threads.followup_prompt(st, "\n\n".join(item["text"] for item in orders), cfg, queued=orders)
 
     proc = supervisor.spawn(st, prompt, **supervisor.say_turn(st, order["options"]))
+    # The held notes leave notes.json only once the turn that carries them is started and saved.
+    with task_state.state_lock(duty_chat.CHAT_SLUG):
+        duty_chat.release_held_notes(sent)
     return st, proc
 
 

@@ -379,6 +379,7 @@ def finish_cycle(st):
                     except (Exception, SystemExit) as exc:
                         outcome = str(exc).removeprefix("teamster: ")
                     else:
+                        duty_chat.release_held_notes(orders)
                         with task_state.queue_sent_path(slug).open("a", encoding="utf-8") as stream:
                             stream.write(json.dumps({"at": clock.CLOCK.time(), "turn": st.get("turns", 0),
                                                      "next_turn": following["turns"], "count": len(orders),
@@ -443,7 +444,7 @@ def deliver_duty_note(order):
                     or procs.alive(chat.get("claude_pid"))):
                 duty_chat.hold_notes([order])
                 return "held"
-            orders = duty_chat.take_held_notes() + [order]
+            orders = duty_chat.held_notes() + [order]
             try:
                 require_startable()
                 drop_dead_queue(slug)
@@ -452,8 +453,9 @@ def deliver_duty_note(order):
                 launch(chat, lambda: threads.followup_prompt(chat, text, cfg, queued=orders),
                        None, True, duty_chat.CHAT_KIND, False, 0)
             except (Exception, SystemExit):
-                duty_chat.hold_notes(orders)
+                duty_chat.hold_notes([order])
                 raise
+            duty_chat.release_held_notes(orders)
             return "sent"
 
 
