@@ -23,8 +23,8 @@ SLUG = "duty"
 KIND = "duty"
 MESSAGE_LIMIT = 200
 TEXT_LIMIT = 8000
-# The newest part of messages.jsonl that is read; older messages fall outside the 200 kept anyway.
-JOURNAL_BYTES = 2 * 1024 * 1024
+# messages.jsonl is read backwards by chunks of this size.
+JOURNAL_CHUNK = 1024 * 1024
 STATE_BYTES = 16 * 1024 * 1024
 SIDE_BYTES = 1024 * 1024
 # A refusal by teamster within this long reaches the sender's answer; a later one goes to last_error.
@@ -52,37 +52,49 @@ def read_object(path, limit):
     return value if isinstance(value, dict) else None
 
 
+def journal_row(position, line):
+    """(position, at, source, text) of a user message or task note on one line of messages.jsonl, or None."""
+    try:
+        row = json.loads(line)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+    if not isinstance(row, dict) or row.get("source") not in ("user", "note"):
+        return None
+    at, message = number(row.get("at")), row.get("text")
+    return (position, at, row["source"], message[:TEXT_LIMIT]) if at is not None and isinstance(message, str) else None
+
+
 def journal(path):
-    """(byte offset, at, source, text) of each user message and task note in messages.jsonl's newest part."""
+    """(byte offset, at, source, text) of the newest 200 user messages and task notes in messages.jsonl, in file order.
+
+    The file is read backwards by chunks until it gave 200 of them or ended: however long they are, the newest 200
+    messages of the conversation are among them.
+    """
     rows = []
     if path is None:
         return rows
     try:
         with path.open("rb") as stream:
-            stream.seek(0, os.SEEK_END)
-            start = max(0, stream.tell() - JOURNAL_BYTES)
-            stream.seek(start)
-            raw = stream.read(JOURNAL_BYTES)
+            position = stream.seek(0, os.SEEK_END)
+            tail = b""
+            while position > 0 and len(rows) < MESSAGE_LIMIT:
+                start = max(0, position - JOURNAL_CHUNK)
+                stream.seek(start)
+                lines = (stream.read(position - start) + tail).split(b"\n")
+                # Unless the chunk starts the file, its first piece belongs to a line that starts before it.
+                tail = lines.pop(0) if start else b""
+                offset = start + (len(tail) + 1 if start else 0)
+                found = []
+                for line in lines:
+                    row = journal_row(offset, line)
+                    if row is not None:
+                        found.append(row)
+                    offset += len(line) + 1
+                rows = found + rows
+                position = start
     except OSError:
         return rows
-    offset = start
-    lines = raw.split(b"\n")
-    if start:
-        # The first line may be cut: it starts before the window.
-        offset += len(lines[0]) + 1
-        lines = lines[1:]
-    for line in lines:
-        position, offset = offset, offset + len(line) + 1
-        try:
-            row = json.loads(line)
-        except (ValueError, UnicodeDecodeError, RecursionError):
-            continue
-        if not isinstance(row, dict) or row.get("source") not in ("user", "note"):
-            continue
-        at, message = number(row.get("at")), row.get("text")
-        if at is not None and isinstance(message, str):
-            rows.append((position, at, row["source"], message[:TEXT_LIMIT]))
-    return rows
+    return rows[-MESSAGE_LIMIT:]
 
 
 def strings(value):

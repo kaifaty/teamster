@@ -2,7 +2,9 @@
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -215,6 +217,13 @@ def test_view_with_conversation(duty):
             stream.write(json.dumps({"at": 171.0, "text": "More.", "source": "user"}) + "\n")
         again = client.get("/api/duty-chat").json()["messages"]
         assert again[:-1] == messages and again[-1]["text"] == "More."
+        # A supervisor that died keeps its pid in state.json: no turn runs.
+        with subprocess.Popen(["true"]) as finished:
+            pass
+        state = json.loads((directory / "state.json").read_text())
+        (directory / "state.json").write_text(json.dumps(dict(state, pid=finished.pid)))
+        view = client.get("/api/duty-chat").json()
+        assert (view["busy"], view["turn_started_at"]) == (False, None)
 
 
 def test_view_keeps_the_last_200_messages(duty):
@@ -228,6 +237,19 @@ def test_view_keeps_the_last_200_messages(duty):
         assert first[0]["text"] == "message 50" and first[-1]["text"] == "answer 99"
         assert [row["at"] for row in first] == sorted(row["at"] for row in first)
         assert client.get("/api/duty-chat").json()["messages"] == first
+        # The newest 200 hold whole long messages, also past several chunks of the journal read.
+        directory = duty["tasks"] / "duty"
+        with (directory / "messages.jsonl").open("w", encoding="utf-8") as stream:
+            for index in range(100):
+                stream.write(json.dumps({"at": index * 10.0, "text": "測" * 8000, "source": "user"},
+                                        ensure_ascii=False) + "\n")
+        assert (directory / "messages.jsonl").stat().st_size > 2 * duty_chat_module.JOURNAL_CHUNK
+        turns = [dict(turn, at=index * 10.0 + 1) for index, turn in enumerate(turns)]
+        state = json.loads((directory / "state.json").read_text())
+        (directory / "state.json").write_text(json.dumps(dict(state, duty_turns=turns)))
+        long = client.get("/api/duty-chat").json()["messages"]
+        assert [row["from"] for row in long] == ["user", "duty"] * 100
+        assert long[0]["text"] == "測" * 8000
 
 
 def test_send_argv_queue_text_file_and_limits(duty):
@@ -259,6 +281,10 @@ def test_send_argv_queue_text_file_and_limits(duty):
             response = client.post("/api/actions/duty-chat", json=body)
             assert (response.status_code, response.json()) == (400, {"ok": False, "error": "Invalid text"})
         assert client.post("/api/actions/duty-chat", json={"text": "x" * 8000}).status_code == 200
+        until(lambda: client.app.state.board.duty_chat._job is None)
+        # One character is a message: the answer "1" to the duty's options.
+        assert client.post("/api/actions/duty-chat", json={"text": " 1 "}).json() == {"ok": True, "queued": False}
+        assert duty["records"]()[-1]["file"] == "1"
         for headers in ({"X-Teamster-Board": "0"}, {"Origin": "http://evil.example"},
                         {"Content-Type": "text/plain"}):
             response = client.post("/api/actions/duty-chat", content=json.dumps({"text": "Hi"}), headers={
@@ -266,16 +292,19 @@ def test_send_argv_queue_text_file_and_limits(duty):
             assert (response.status_code, response.json()) == (403, {"ok": False, "error": "forbidden"})
         assert client.post("/api/actions/duty-chat", content=b"[1]", headers={
             "Content-Type": "application/json"}).status_code == 400
-        assert len(duty["records"]()) == 4
+        assert len(duty["records"]()) == 5
         # The text goes only through the temporary file, never into an argv word.
-        assert not any(record["file"] in word for record in duty["records"]() for word in record["argv"])
+        assert all(record["argv"][:3] == ["duty", "chat", "--file"] and record["argv"][4:] in ([], ["--queue"])
+                   and Path(record["argv"][3]).parent == Path(tempfile.gettempdir()) for record in duty["records"]())
     with duty["start"](read_only=True) as client:
         response = client.post("/api/actions/duty-chat", json={"text": "Hi"})
         assert (response.status_code, response.json()) == (403, {"ok": False, "error": "read_only"})
-    assert len(duty["records"]()) == 4
+    assert len(duty["records"]()) == 5
 
 
 def test_send_refusals_reach_the_page(duty, monkeypatch):
+    # A refusal within 2 seconds reaches the answer; the test shortens that window.
+    assert duty_chat_module.ACCEPT_SECONDS == 2.0
     monkeypatch.setattr(duty_chat_module, "ACCEPT_SECONDS", 0.5)
     with duty["start"]() as client:
         duty["configure"](refuse="teamster: no duty account (duty.json is absent or names no account)")
@@ -300,8 +329,10 @@ def test_send_refusals_reach_the_page(duty, monkeypatch):
         assert client.get("/api/duty-chat").json()["last_error"] is None
 
 
-def test_two_posts_at_once_start_one_conversation(duty):
-    duty["configure"](hold=True, start_after=0.3)
+def test_two_posts_at_once_start_one_conversation(duty, monkeypatch):
+    # The first command creates the conversation only after its answer: the second still finds no state.json.
+    monkeypatch.setattr(duty_chat_module, "ACCEPT_SECONDS", 0.5)
+    duty["configure"](hold=True, start_after=1.0)
     with duty["start"]() as client:
         set_duty(client)
         with ThreadPoolExecutor(2) as pool:
@@ -310,7 +341,7 @@ def test_two_posts_at_once_start_one_conversation(duty):
         assert sorted(answer["queued"] for answer in answers) == [False, True]
         records = duty["records"]()
         assert sorted("--queue" in record["argv"] for record in records) == [False, True]
-        view = client.get("/api/duty-chat").json()
+        view = until(lambda: (view := client.get("/api/duty-chat").json())["messages"] and view)
         assert [row["from"] for row in view["messages"]] == ["user"]
         assert [row["text"] for row in view["queued"]] == [records[1]["file"]]
         duty["release"].touch()
@@ -331,7 +362,20 @@ def test_websocket_announces_changes_of_the_conversation(duty, monkeypatch):
                         return message
                 pytest.fail("no duty_chat message")
 
+            def drain():
+                """Read until the queue is empty: the server pings only then."""
+                time.sleep(0.2)
+                while socket.receive_json()["type"] != "ping":
+                    pass
+
             assert set(next_duty_chat()) == {"type", "at"}
+            drain()
+            # An answer changes only state.json.
+            state = json.loads((directory / "state.json").read_text())
+            state["duty_turns"].append({"at": 175.0, "turn": 5, "status": "answered", "reply": "Fine."})
+            (directory / "state.json").write_text(json.dumps(state))
+            next_duty_chat()
+            drain()
             (directory / "notes.json").write_text(json.dumps({"held": [{"at": 1.0, "text": "Held.", "source": "note"}]}))
             next_duty_chat()
             (directory / "queue.json").write_text(json.dumps({"waiting": [{"at": 2.0, "text": "Q", "source": "user"}]}))

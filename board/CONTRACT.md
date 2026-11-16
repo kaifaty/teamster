@@ -1051,7 +1051,7 @@ long-lived task, slug `duty` and kind `duty`, in the tasks directory. The board 
   a string `reply` and a known `status` is one `from: "duty"` message with `id: "d<index>"`, its index in
   `duty_turns`, which only grows; other entries are skipped. `pid` alive makes `busy`; `turn_started` gives
   `turn_started_at`.
-- `messages.jsonl`, its last 2 MiB with a partial first line discarded: rows with `source: "user"` or
+- `messages.jsonl`, read backwards by 1 MiB chunks until it gave 200 rows or ended: rows with `source: "user"` or
   `source: "note"`, a finite `at` and a string `text` are messages from `user` or `note`, with
   `id: "m<byte offset of the line>"`. Other sources (the lead's orders) are not part of the chat. A message's
   `turn` is `state.turns` when it is not older than `turn_started`, otherwise the turn of the first answer
@@ -1097,8 +1097,11 @@ reads an agent's feed. `GET /api/tasks/duty` also works and carries `activity_lo
 
 Everywhere else the conversation is not a task: `Snapshot.tasks` and the `task`, `task_removed` and
 `activity` WebSocket messages leave out `kind: "duty"` records, live or archived, and the research leaves
-them out of studies, material and repositories. Tasks the duty started (`started_by: "duty"`) stay ordinary
-tasks.
+them out of studies, material and repositories. `teamster report` (`GET /api/report`) still counts the
+conversation, slug `duty` with its room `room` as the repository; the page's day summary takes its tasks, turns
+and active minutes off the totals and off its executor's task count, and leaves it out of the costly tasks (that
+group's done share and median minutes still include it). Tasks the duty started (`started_by: "duty"`) stay
+ordinary tasks.
 
 ### Automatic lesson landing
 
