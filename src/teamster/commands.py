@@ -1245,7 +1245,8 @@ def _cmd_claude_login(a, events=None):
         # Check the captured token before it can replace a saved one that still works.
         events.send("stage", stage="checking")
         reason, record = claude_review.check_token(cfg, account, events.token, stopped=lambda: False)
-        if reason:
+        # A usage limit also proves that the token authenticates: save it and report the limit.
+        if reason not in (None, "usage limit"):
             with config.home_lock():
                 record_login("claude", a.name, reason)
             return events.result(reason, f"Claude account {a.name}: {reason}; "
@@ -1293,11 +1294,13 @@ def _cmd_claude_login(a, events=None):
         # Like the probe, it must not run while the home moves.
         with config.home_lock():
             record()
-            record_login("claude", a.name, "ok")
+            record_login("claude", a.name, reason or "ok")
         events.saving = False
         if events.cancelled is not None:
             return events.result("failed", "Claude login cancelled after saving account settings",
                                  code=128 + events.cancelled)
+        if reason:
+            return events.result(reason, f"Claude account {a.name}: {reason}", code=1)
         windows = claude_accounts.format_windows(claude_accounts.read_limits().get(a.name, {}))
         return events.result("ok", f"Claude account {a.name}: token ok; {windows}")
     print(f"Claude account {a.name} saved")

@@ -117,6 +117,11 @@ if Path(sys.argv[0]).name == 'security':
         request = {'save': args[-1]}
     else:
         assert sys.argv[1:] == ['find-generic-password', '-s', 'codex-worker-claude-events', '-a', 'fixture-user', '-w']
+        if os.environ.get('OLDER_PROBE_LOOKUP'):
+            # An older probe's lookup that finds no token once its gate opens.
+            while not Path(fixture['lookup_gate']).exists():
+                time.sleep(0.01)
+            sys.exit(44)
     with socket.create_connection(ADDRESS) as connection:
         connection.sendall(json.dumps(request).encode() + b'\n')
         result = json.loads(connection.makefile('rb').readline())
@@ -211,6 +216,10 @@ else:
     trace(probe=True)
     if fixture.get('probe_status'):
         print(json.dumps({'type': 'result', 'api_error_status': fixture['probe_status'], 'is_error': True}))
+        sys.exit(1)
+    if fixture.get('probe_limit'):
+        print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'rejected', 'resetsAt': 4102444800}}))
+        print(json.dumps({'type': 'result', 'result': '', 'is_error': True}))
         sys.exit(1)
     print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed', 'unifiedWindows': {
         'five_hour': {'utilization': 0.25, 'resetsAt': 4102444800}}}}))
@@ -421,21 +430,77 @@ else:
             settings = self.home / "codex-worker.json"
             settings.write_text(json.dumps({"language": "en", "claude": {"accounts": [account]}}))
             before = settings.read_bytes()
-            fixture.write_text(json.dumps({"probe_status": 401}))
+            for status, reason in ((401, "authentication failed"), (500, "request failed")):
+                with self.subTest(reason=reason):
+                    trace.unlink(missing_ok=True)
+                    fixture.write_text(json.dumps({"probe_status": status}))
+                    result = self.run_claude_event_login()
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    events = [json.loads(line) for line in result.stdout.splitlines()]
+                    self.assertEqual((events[-1]["event"], events[-1]["ok"], events[-1]["status"]),
+                                     ("result", False, reason))
+                    self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking"])
+                    rows = [json.loads(line) for line in trace.read_text().splitlines()]
+                    self.assertEqual(sum(bool(row.get("probe")) for row in rows), 1)
+                    self.assertFalse(any(row["command"] == "security" for row in rows), "no add-generic-password")
+                    self.assertEqual(values, [])
+                    self.assertEqual(settings.read_bytes(), before)
+                    # The saved token may still work: the account is not marked as needing a sign-in.
+                    self.assertNotIn("events", self.worker().claude_accounts.read_limits())
+                    self.assertEqual(self.telemetry_journal()[-1]["status"], reason)
+
+    def test_claude_login_events_save_a_usage_limited_token(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"probe_limit": True}))
             result = self.run_claude_event_login()
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             events = [json.loads(line) for line in result.stdout.splitlines()]
-            self.assertEqual((events[-1]["event"], events[-1]["ok"], events[-1]["status"]),
-                             ("result", False, "authentication failed"))
-            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking"])
+            # A usage limit proves the token authenticates: it is saved and the limit is reported.
+            self.assertEqual(events[-1], {"event": "result", "ok": False, "status": "usage limit",
+                                         "message": "Claude account events: usage limit"})
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking", "saving"])
+            self.assertEqual(values, ["sk-ant-" + "oat01-" + "event-secret-1234567890"])
+            settings = json.loads((self.home / "codex-worker.json").read_text())
+            self.assertIn("events", [account["name"] for account in settings["claude"]["accounts"]])
             rows = [json.loads(line) for line in trace.read_text().splitlines()]
             self.assertEqual(sum(bool(row.get("probe")) for row in rows), 1)
-            self.assertFalse(any(row["command"] == "security" for row in rows), "no add-generic-password")
-            self.assertEqual(values, [])
-            self.assertEqual(settings.read_bytes(), before)
-            # The saved token may still work: the account is not marked as needing a sign-in.
-            self.assertNotIn("events", self.worker().claude_accounts.read_limits())
-            self.assertEqual(self.telemetry_journal()[-1]["status"], "authentication failed")
+            pool = self.worker().claude_accounts
+            limits = pool.read_limits()["events"]
+            self.assertEqual((limits["reason"], limits["limited_until"]), ("usage limit", 4102444800))
+            self.assertTrue(pool.limited(limits))
+            self.assertEqual(self.telemetry_journal()[-1]["status"], "usage limit")
+
+    def test_claude_login_events_clear_a_late_missing_token_mark(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            worker = self.worker()
+            account = {"name": "events", "config_dir": str(self.root / ".claude-accounts" / "events"),
+                       "token_keychain": "codex-worker-claude-events"}
+            (self.home / "codex-worker.json").write_text(json.dumps({"claude": {"accounts": [account]}}))
+            gate = self.root / "lookup-gate"
+            fixture.write_text(json.dumps({"lookup_gate": str(gate)}))
+            # A supervisor's background probe holds the probe lock (not the home lock); its Keychain
+            # lookup finds no token only after the new sign-in has cleared the account's limits.
+            with mock.patch.dict(os.environ, dict(self.env, OLDER_PROBE_LOOKUP="1"), clear=True), \
+                    ThreadPoolExecutor(1) as pool:
+                older = pool.submit(worker.claude_review.probe, worker.config.accounts_config(), account)
+                try:
+                    self.until(lambda: trace.exists() and any(
+                        json.loads(line)["env"].get("OLDER_PROBE_LOOKUP") for line in trace.read_text().splitlines()),
+                        timeout=20)
+
+                    def older_lookup_finds_nothing():
+                        self.until(lambda: "events" not in worker.claude_accounts.read_limits(), timeout=20)
+                        gate.touch()
+
+                    result = self.run_claude_event_login(on_saving=older_lookup_finds_nothing)
+                finally:
+                    gate.touch()
+                self.assertEqual(older.result(timeout=20), "token unavailable")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout.splitlines()[-1])["status"], "ok")
+            limits = worker.claude_accounts.read_limits()["events"]
+            self.assertNotIn("token_unavailable", limits)
+            self.assertFalse(worker.claude_accounts.limited(limits), limits)
 
     def test_claude_login_events_preserve_split_tokens_across_stdin(self):
         with self.claude_event_fixture() as (fixture, trace, values):

@@ -142,6 +142,8 @@ def check_token(cfg, account, token, stopped=None):
         with _probe_lock(account["name"]) as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             claude_accounts.mark_probe_attempt(account["name"])
+            # The saved token is there now, whatever an older probe failed to read.
+            claude_accounts.token_available(account["name"])
             _answer(account["name"], answer)
 
     return reason, record

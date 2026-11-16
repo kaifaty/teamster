@@ -79,14 +79,17 @@ teamster takes the token, in memory, from the final screen and its scrollback wh
 exits: the last whole `sk-ant-oat01-…` match. It then checks the token before saving anything: the
 probe (the same request as `claude-probe`) receives it through
 `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, containing only a descriptor number in the environment.
-If the probe fails, the sign-in ends with `result` `ok: false` and the probe's reason as `status`
-(`authentication failed`, `usage limit`, `request failed`); the Keychain item, the account settings
-and the account's cached limits stay as they were, so a rejected token never replaces one that still
-works, and the journal row records the reason. A token that passes is written using `security -i` and
-`add-generic-password -U`, read back with the same Keychain lookup as tasks, and only then are the
-account settings saved; the check's answer is recorded as the account's limits and probe time, so
-the account is not probed a second time. The answer is recorded under the account's probe lock,
-after any probe of the replaced token still running.
+The token is saved when the check proves that it authenticates: on success and on `usage limit`.
+On any other reason (`authentication failed`, `request failed`, including timeouts and probe
+errors) the sign-in ends with `result` `ok: false` and that reason as `status`; the Keychain item,
+the account settings and the account's cached limits stay as they were, so a rejected token never
+replaces one that still works, and the journal row records the reason. A token that is saved is
+written using `security -i` and `add-generic-password -U`, read back with the same Keychain lookup
+as tasks, and only then are the account settings saved; the check's answer is recorded as the
+account's limits and probe time, so the account is not probed a second time. The answer is recorded
+under the account's probe lock, after any probe of the replaced token still running, and first
+clears a missing-token mark such a probe may have left. A usage-limited token then ends the sign-in
+with `result` `ok: false` and `status` `usage limit`, as `claude-probe` would report it.
 The token never enters process arguments, child environments, events, files or logs. Failed setup
 or missing output tokens leave settings and Keychain unchanged. A readback mismatch fails without
 saving settings. SIGINT and SIGTERM stop the sign-in tool and its children; cancellation during
