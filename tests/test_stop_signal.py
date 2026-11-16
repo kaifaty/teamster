@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -117,9 +118,17 @@ class StopSignalTests(unittest.TestCase):
             worker.procs.end_group(leader.pid)
         reaper.join(10)
         self.assertIsNotNone(leader.returncode)
-        # end_group returns only once SIGKILL has ended the child as well.
-        with self.assertRaises(ProcessLookupError):
-            os.killpg(leader.pid, 0)
+        # end_group returns only once SIGKILL has ended the child as well. The dead child may stay a zombie
+        # until init reaps it, and macOS then answers killpg with EPERM, so wait for the child itself to go.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("the child is still there after end_group")
 
 
 if __name__ == "__main__":
