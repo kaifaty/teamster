@@ -1,0 +1,185 @@
+{
+  "slug": "review",
+  "repo": "/teamster-fixture/repo",
+  "worktree": "/teamster-fixture/codex-home/worktrees/claude-review/repo",
+  "branch": "codex/review",
+  "base": "origin/main",
+  "executor": "codex",
+  "effort": null,
+  "task_type": null,
+  "task_model": null,
+  "review_model": null,
+  "account": "main",
+  "thread": "53d1ce72-b763-4d05-a967-c7b5a80802b8",
+  "threads": [
+    {
+      "account": "main",
+      "thread": "53d1ce72-b763-4d05-a967-c7b5a80802b8",
+      "started": 1794848885.293036
+    }
+  ],
+  "rotations": [],
+  "reviews": [
+    {
+      "account": "main",
+      "thread": "4f703c96-6379-43f6-80d7-5d80468c808f",
+      "started": 1794848885.734935,
+      "finished": 1794848885.836512,
+      "result": {
+        "verdict": "defects",
+        "findings": [
+          {
+            "id": "F1",
+            "severity": "P2",
+            "file": "src/parser.py",
+            "line": 12,
+            "title": "Empty input raises an exception",
+            "detail": "An empty line reaches the index lookup.",
+            "verify": "Pass an empty line and assert that parsing succeeds."
+          },
+          {
+            "id": "F2",
+            "severity": "P3",
+            "file": "src/format.py",
+            "line": 7,
+            "title": "Summary loses the final word",
+            "detail": "The slice excludes the last token.",
+            "verify": "Format three words and check that all three remain."
+          }
+        ],
+        "summary": "Found two defects."
+      },
+      "round": 0,
+      "angle": "correctness",
+      "outcome": "completed"
+    }
+  ],
+  "checks": [],
+  "check": null,
+  "check_timeout": 1800,
+  "check_loaded": null,
+  "guards": [],
+  "base_check": false,
+  "sandbox": "off",
+  "writable_dirs": [],
+  "no_push": false,
+  "review_angles": null,
+  "reviewer": "codex",
+  "max_turn_minutes": null,
+  "ci_enabled": false,
+  "ci_command": null,
+  "ci_rounds": 1,
+  "ci_timeout_minutes": 30,
+  "max_task_weekly_percent": null,
+  "weekly_used_percent": 0,
+  "created": 1794848884.9926631,
+  "turns": 1,
+  "plugin_version": "1.85.3",
+  "parallel": false,
+  "kind": "review",
+  "work_completed": true,
+  "review_start": 0,
+  "turn_started": 1794848884.993375,
+  "check_start": 0,
+  "rotation_start": 0,
+  "event_start": 0,
+  "exhausted": null,
+  "outcome": "completed",
+  "reset_wait_seconds": 0,
+  "capacity_start": 0,
+  "fix_rounds": 0,
+  "rounds": [],
+  "model": "fake-model",
+  "reasoning_effort": null,
+  "runtime": {
+    "version": "1.85.3",
+    "script": "/private/var/folders/mv/rdldtylj03vgz7zv6rvkygsr0000gn/T/teamster-release-7b37ro8l/1.85.3/src/teamster/__main__.py"
+  },
+  "review_after": true,
+  "cycle": {
+    "kind": "work",
+    "effort": null,
+    "step": "review",
+    "ci": false,
+    "pr": "",
+    "angles": 1
+  },
+  "result": {
+    "status": "done",
+    "summary": "Implemented the typed final result.",
+    "checks": [
+      {
+        "command": "python3 -I tests/test_rotation.py",
+        "outcome": "passed",
+        "details": "3 tests passed, 0 failed"
+      }
+    ],
+    "pr": "",
+    "pr_title": "",
+    "pr_body": "",
+    "questions": [],
+    "remaining": [],
+    "findings": [],
+    "commit_message": ""
+  },
+  "pid": null,
+  "turn_stops": [],
+  "auth_excluded": [],
+  "auth_excluded_ids": [],
+  "auth_transitions": 0,
+  "auth_failures": {
+    "main": 0
+  },
+  "account_ids": {
+    "main": "A",
+    "second": "B"
+  },
+  "weekly_marks": {
+    "main": {
+      "reset": 1794856081,
+      "used": 10
+    }
+  },
+  "exec_event_start": 4,
+  "publish": {
+    "at": 1794848885.3531148,
+    "sha": "",
+    "pushed": false,
+    "pr": "",
+    "action": "skipped",
+    "error": "not pushed"
+  },
+  "check_paths": [],
+  "base_merges": [
+    {
+      "base": "origin/main",
+      "outcome": "passed"
+    }
+  ],
+  "review_account": "main",
+  "review_result": {
+    "verdict": "defects",
+    "findings": [
+      {
+        "id": "F1",
+        "severity": "P2",
+        "file": "src/parser.py",
+        "line": 12,
+        "title": "Empty input raises an exception",
+        "detail": "An empty line reaches the index lookup.",
+        "verify": "Pass an empty line and assert that parsing succeeds."
+      },
+      {
+        "id": "F2",
+        "severity": "P3",
+        "file": "src/format.py",
+        "line": 7,
+        "title": "Summary loses the final word",
+        "detail": "The slice excludes the last token.",
+        "verify": "Format three words and check that all three remain."
+      }
+    ],
+    "summary": "Found two defects."
+  },
+  "turn_finished": 1794848885.991429
+}
