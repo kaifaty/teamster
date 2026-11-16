@@ -10,8 +10,9 @@ shell text is only tokenized, never run. Runs by path and never imports the
 package.
 
 With --duty-room it guards a duty chat turn and fails closed: each simple
-command of the text must be on the duty allowlist, shell expansions are
-refused, and redirections and the file tools (Write, Edit, MultiEdit,
+command of the text must be on the duty allowlist (git only with switches
+that keep the repository's config from running programs), shell expansions
+are refused, and redirections and the file tools (Write, Edit, MultiEdit,
 NotebookEdit) may write only inside ROOM, outside its .git.
 """
 import json
@@ -300,6 +301,8 @@ class Shell:
                 value.append(SUBSTITUTION)
             elif char == "$":
                 if self.starts("$'"):
+                    # The guard does not decode escapes such as \x2f: the duty refuses the word.
+                    self.expansions += 1
                     value.append(self.ansi_c())
                     quoted = True
                 else:
@@ -406,16 +409,39 @@ def denial(command):
 
 
 # The duty chat's allowlist: teamster commands, read-only git and gh, and plain readers.
-DUTY_TEAMSTER = frozenset({"start", "say", "scout", "review", "stop", "status", "wait", "report", "docs",
-                           "accounts"})
+# Each teamster command takes only these exact option names: argparse would expand an abbreviation
+# such as --ci-comm into --ci-command, whose shell command the supervisor runs outside the hook.
+DUTY_TEAMSTER = {
+    "start": frozenset({"--brief", "--repo", "--base", "--branch", "--no-push", "--executor", "--effort", "--model",
+                        "--review-model", "--task-type", "--parallel", "--sandbox", "--max-minutes", "--max-weekly",
+                        "--review", "--reviewer", "--review-angles", "--fix-rounds", "--ci", "--ci-rounds",
+                        "--check-timeout", "--guard", "--base-check"}),
+    "say": frozenset({"--file", "--effort", "--model", "--review-model", "--task-type", "--max-minutes",
+                      "--max-weekly", "--review", "--reviewer", "--review-angles", "--fix-rounds", "--ci", "--no-ci",
+                      "--no-ci-command", "--ci-rounds", "--no-check", "--check-timeout", "--no-base-check",
+                      "--upgrade", "--queue"}),
+    "scout": frozenset({"--file", "--repo", "--executor", "--effort"}),
+    "review": frozenset({"--effort", "--review-model", "--max-weekly", "--reviewer", "--review-angles"}),
+    "stop": frozenset(), "status": frozenset(), "docs": frozenset(),
+    "wait": frozenset({"--timeout", "--through-sleep"}),
+    "report": frozenset({"--since", "--repo", "--slug", "--by", "--json"}),
+    "accounts": frozenset({"--json", "--refresh"}),
+}
+DUTY_HELP = frozenset({"-h", "--help"})
 # Commands on the duty conversation itself, which only the user sends.
 DUTY_SELF = frozenset({"say", "stop", "review", "wait"})
-# Options that make the supervisor run a shell command the guard never sees.
-DUTY_TEAMSTER_OPTIONS = ("--check", "--check-loaded", "--ci-command")
 DUTY_SLUG = "duty"
-DUTY_GIT = frozenset({"log", "diff", "show", "status", "fetch", "ls-files", "grep"})
-# Options that make an allowed git command write a file or run another program.
-DUTY_GIT_OPTIONS = ("--output", "-O", "--open-files-in-pager", "--upload-pack")
+DUTY_GIT = frozenset({"log", "show", "diff", "ls-files", "grep"})
+# Before its subcommand every git command turns off the pager, the fsmonitor hook and the hooks
+# that the repository's config may name: the repository's config is not the duty's to trust.
+DUTY_GIT_PREFIX = "git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null"
+DUTY_GIT_SETTINGS = {"core.fsmonitor": "false", "core.hookspath": "/dev/null"}
+# log, show and diff also turn off external diffs, textconv, signature checks (gpg.program) and submodule diffs.
+DUTY_GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--no-show-signature", "--submodule=short")
+# Options, and every abbreviation of them, that run a program, write a file or read through the repository's filters.
+DUTY_GIT_REFUSED = ("--ext-diff", "--textconv", "--show-signature", "--output", "--open-files-in-pager", "--no-index",
+                    "--submodule", "--recurse-submodules")
+DUTY_GIT_LS_FILES = frozenset({"-z", "-s", "--stage", "--cached", "--full-name", "--error-unmatch", "--"})
 DUTY_GH = {"pr": frozenset({"view", "diff", "checks", "list"}), "run": frozenset({"view", "list"})}
 DUTY_READERS = frozenset({"ls", "cat", "head", "tail", "wc", "rg"})
 # Options that make rg run another program.
@@ -423,9 +449,10 @@ DUTY_RG_OPTIONS = ("--pre", "--hostname-bin")
 OUTPUT_REDIRECTIONS = frozenset({">", ">>", ">|", "&>", "&>>", "<>", ">&"})
 FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
 DUTY_ALLOWED = (
-    "`teamster start|say|scout|review|stop|status|wait|report|docs|accounts` and `teamster duty status`; "
-    "`git log|diff|show|status|fetch|ls-files|grep`; `gh pr view|diff|checks|list` and `gh run view|list`; "
-    "`ls`, `cat`, `head`, `tail`, `wc` and `rg`")
+    "`teamster start|say|scout|review|stop|status|wait|report|docs|accounts` and `teamster duty status` "
+    "with their exact option names; `" + DUTY_GIT_PREFIX + " [-C <path>] log|show|diff|ls-files|grep`, where "
+    "log, show and diff also take `" + " ".join(DUTY_GIT_DIFF_FLAGS) + "`; `gh pr view|diff|checks|list` and "
+    "`gh run view|list`; `ls`, `cat`, `head`, `tail`, `wc` and `rg`")
 
 
 def duty_reason(detail):
@@ -441,12 +468,94 @@ def has_option(words, options):
 
 
 def inside_room(path, room, cwd):
-    """Whether ``path`` resolves inside ``room`` and outside its .git."""
+    """Whether ``path`` resolves inside ``room`` and outside its .git, following every symbolic link."""
     root = os.path.realpath(room)
     target = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
     if os.path.commonpath([root, target]) != root:
         return False
     return ".git" not in os.path.relpath(target, root).split(os.sep)
+
+
+def teamster_denial(arguments):
+    """Why the duty may not run ``teamster`` with these arguments, or None."""
+    command = arguments[0] if arguments else ""
+    if command == "duty":
+        allowed, rest = frozenset({"--json"}), arguments[2:]
+        if arguments[1:2] != ["status"]:
+            return f"`teamster duty {' '.join(arguments[1:2])}` is refused"
+    elif command in DUTY_TEAMSTER:
+        allowed, rest = DUTY_TEAMSTER[command], arguments[1:]
+    else:
+        return f"`teamster {command}` is refused"
+    if command in DUTY_SELF and DUTY_SLUG in rest:
+        return f"`teamster {command}` on the duty conversation itself is refused"
+    for word in rest:
+        name = word.split("=", 1)[0]
+        # argparse reads a word with a space before any = as a positional value, like a message.
+        if word.startswith("-") and word != "-" and " " not in name and name not in allowed | DUTY_HELP:
+            return (f"the option `{name}` of `teamster {command}` is refused: only exact option names are allowed, "
+                    "and `--check`, `--check-loaded` and `--ci-command` never (the supervisor would run that shell "
+                    "command; put the checks in the brief)")
+    return None
+
+
+def git_denial(arguments, room, cwd):
+    """Why the duty may not run ``git`` with these arguments, or None."""
+    index, settings = 0, set()
+    while index < len(arguments) and arguments[index].startswith("-"):
+        option = arguments[index]
+        if option == "-C" and index + 1 < len(arguments):
+            # The room is writable: a repository planted in it could run its own config.
+            if inside_room(arguments[index + 1], room, cwd):
+                return "`git -C` inside the room is refused"
+            index += 2
+        elif option in ("--no-pager", "-P"):
+            settings.add("--no-pager")
+            index += 1
+        elif option == "-c" and index + 1 < len(arguments):
+            key, _, value = arguments[index + 1].partition("=")
+            if DUTY_GIT_SETTINGS.get(key.lower()) != value:
+                return f"`git -c {arguments[index + 1]}` is refused"
+            settings.add(key.lower())
+            index += 2
+        else:
+            return f"the git option `{option}` is refused"
+    command, rest = (arguments[index], arguments[index + 1:]) if index < len(arguments) else ("", [])
+    if command == "status":
+        return ("`git status` is refused: it can run the repository's clean filters; compare commits with "
+                f"`{DUTY_GIT_PREFIX} -C <path> diff {' '.join(DUTY_GIT_DIFF_FLAGS)} A...B`, or ask "
+                "`teamster status <slug>`")
+    if command == "fetch":
+        return ("`git fetch` is refused: the repository's config can make it run credential helpers, ssh commands, "
+                "proxies, upload-pack and hooks; `teamster start` fetches by itself")
+    if command not in DUTY_GIT:
+        return f"`git {command}` is refused; git is read-only here"
+    if settings != {"--no-pager", *DUTY_GIT_SETTINGS}:
+        return (f"git must start with `{DUTY_GIT_PREFIX}`: otherwise the repository's config can start a pager, "
+                "an fsmonitor hook or another hook")
+    options = rest[:rest.index("--")] if "--" in rest else rest
+    for word in options:
+        name = word.split("=", 1)[0]
+        if (name.startswith("--") and len(name) > 2 and word != "--submodule=short"
+                and any(refused.startswith(name) for refused in DUTY_GIT_REFUSED)):
+            return f"the git option `{name}` is refused: it runs a program, writes a file or reads through filters"
+        if command == "grep" and word.startswith("-") and not word.startswith("--") and "O" in word:
+            return "`git grep -O` is refused: it opens a pager"
+        if command in ("log", "show") and "%G" in word:
+            return "signature placeholders (`%G…`) are refused: they run gpg.program"
+    if command in ("log", "show", "diff") and not set(DUTY_GIT_DIFF_FLAGS) <= set(options):
+        return (f"`git {command}` needs `{' '.join(DUTY_GIT_DIFF_FLAGS)}`: otherwise the repository's config can "
+                "run an external diff, textconv, gpg or a submodule diff")
+    if command == "diff":
+        revisions = [word for word in options if not word.startswith("-")]
+        if not ({"--cached", "--staged"} & set(options) or any(".." in word for word in revisions)
+                or (len(revisions) >= 2 and "--" in rest)):
+            return ("`git diff` against the working tree is refused: it runs the repository's clean filters; "
+                    "compare commits (`A...B`, or `A B --`) or use `--cached`")
+    if command == "ls-files" and any(word not in DUTY_GIT_LS_FILES for word in options if word.startswith("-")):
+        return ("`git ls-files` takes only " + ", ".join(f"`{option}`" for option in sorted(DUTY_GIT_LS_FILES))
+                + ": the others compare the working tree through filters")
+    return None
 
 
 def duty_command_denial(words, room, cwd):
@@ -458,36 +567,9 @@ def duty_command_denial(words, room, cwd):
         return f"commands run by path are refused (`{name}`); use the bare command name"
     arguments = words[1:]
     if name == "teamster":
-        command = arguments[0] if arguments else ""
-        if command == "duty":
-            return None if arguments[1:2] == ["status"] else f"`teamster duty {' '.join(arguments[1:2])}` is refused"
-        if command not in DUTY_TEAMSTER:
-            return f"`teamster {command}` is refused"
-        if command in DUTY_SELF and DUTY_SLUG in arguments[1:]:
-            return f"`teamster {command}` on the duty conversation itself is refused"
-        if has_option(arguments[1:], DUTY_TEAMSTER_OPTIONS):
-            return ("`--check`, `--check-loaded` and `--ci-command` are refused: the supervisor would run "
-                    "that shell command; put the checks in the brief")
-        return None
+        return teamster_denial(arguments)
     if name == "git":
-        index = 0
-        while index < len(arguments) and arguments[index].startswith("-"):
-            option = arguments[index]
-            if option == "-C" and index + 1 < len(arguments):
-                # The room is writable: a repository planted in it could run its own config.
-                if inside_room(arguments[index + 1], room, cwd):
-                    return "`git -C` inside the room is refused"
-                index += 2
-            elif option == "--no-pager":
-                index += 1
-            else:
-                return f"the git option `{option}` is refused"
-        command = arguments[index] if index < len(arguments) else ""
-        if command not in DUTY_GIT:
-            return f"`git {command}` is refused; git is read-only here"
-        if has_option(arguments[index + 1:], DUTY_GIT_OPTIONS):
-            return "git options that write files or run programs (`--output`, `-O`, `--upload-pack`) are refused"
-        return None
+        return git_denial(arguments, room, cwd)
     if name == "gh":
         group, command = (arguments + ["", ""])[:2]
         if command not in DUTY_GH.get(group, ()):
@@ -522,7 +604,7 @@ def duty_denial(event, room):
     shell = Shell(command)
     shell.parse()
     if shell.expansions:
-        return duty_reason("shell expansions (`$VAR`, `$(…)`, backticks, arithmetic, globs, braces, "
+        return duty_reason("shell expansions (`$VAR`, `$(…)`, backticks, `$'…'`, arithmetic, globs, braces, "
                            "unquoted heredocs that expand) are refused")
     for operator, target in shell.targets:
         if operator in (">&", "<&") and (target.isdigit() or target == "-"):

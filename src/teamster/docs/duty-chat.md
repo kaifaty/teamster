@@ -34,11 +34,20 @@ The turn never uses `bypassPermissions`: it runs with `--permission-mode dontAsk
 on `Bash`, `Write`, `Edit`, `MultiEdit` and `NotebookEdit`. The hook fails closed and allows:
 
 - `teamster start|say|scout|review|stop|status|wait|report|docs|accounts` and `teamster duty status`,
-  except `say`, `stop`, `review` and `wait` on the duty conversation itself, and without `--check`,
+  except `say`, `stop`, `review` and `wait` on the duty conversation itself. Each takes only the exact
+  names of its options (argparse would expand an abbreviation such as `--ci-comm`), and never `--check`,
   `--check-loaded` or `--ci-command`, whose shell command the supervisor would run outside the hook;
-- read-only `git log|diff|show|status|fetch|ls-files|grep`, with no global option but `-C DIR`
-  (outside the room) and `--no-pager`, and without `--output`, `-O`/`--open-files-in-pager` or
-  `--upload-pack`;
+- read-only git in a form that keeps the repository's config from starting a program:
+  `git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null [-C DIR]` (no other global
+  option, and `-C` outside the room), then `log`, `show`, `diff`, `ls-files` or `grep`. `log`, `show`
+  and `diff` also need `--no-ext-diff --no-textconv --no-show-signature --submodule=short` and refuse
+  `--ext-diff`, `--textconv`, `--show-signature`, `--output`, other `--submodule` values, `%G`
+  placeholders and every abbreviation of these. `diff` compares commits (an argument with `..`, or two
+  revisions before `--`) or the index (`--cached`), never the working tree, whose clean filters it would
+  run; `--no-index` is refused. `ls-files` takes only `-z`, `-s`/`--stage`, `--cached`, `--full-name` and
+  `--error-unmatch`; `grep` refuses `-O`/`--open-files-in-pager`, `--textconv`, `--no-index` and
+  `--recurse-submodules`. `git status` (clean filters) and `git fetch` (credential helpers, ssh commands,
+  proxies, upload-pack and hooks from the config) are refused;
 - read-only `gh pr view|diff|checks|list` and `gh run view|list`;
 - `ls`, `cat`, `head`, `tail`, `wc` and `rg` (without `--pre` or `--hostname-bin`).
 
@@ -46,9 +55,9 @@ Everything else is refused, in particular `gh pr merge`, `git push|commit|merge|
 `teamster clean|verdict|login|claude-login|duty tick|duty clear`, `scripts/bump_version.py`, package
 managers, `curl` and `rm`. Commands run by path and variable assignments are refused. A compound
 command (`;`, `&&`, `||`, `|`, a subshell) is judged by every part; shell expansions (`$VAR`, `$(…)`,
-backticks, arithmetic, globs, braces, the body of an unquoted heredoc that expands) and control
-keywords are refused. Redirections and the file tools may write only inside the room and outside its
-`.git` (`/dev/null` and `2>&1` are fine). The duty never merges, releases or accepts work: that stays
+backticks, ANSI-C quoting `$'…'`, arithmetic, globs, braces, the body of an unquoted heredoc that
+expands) and control keywords are refused. Redirections and the file tools may write only inside the
+room and outside its `.git`, with every symbolic link resolved (`/dev/null` and `2>&1` are fine). The duty never merges, releases or accepts work: that stays
 with the user.
 
 ## The answer
