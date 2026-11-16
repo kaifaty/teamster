@@ -2,6 +2,8 @@
 
 import asyncio
 import copy
+import json
+import logging
 import os
 import re
 import shutil
@@ -19,6 +21,7 @@ from .accounts import Accounts, Reports, probe
 from .actions import Actions, action_body, error
 from .art import MEDIA_TYPES, art_file, art_index
 from .constellations import read_constellations
+from .duty import Duty
 from .duty_chat import DutyChat
 from .logins import Logins
 from .machines import Machines
@@ -32,6 +35,7 @@ LOGIN_REFRESH_SECONDS = 5
 ACCOUNT_REFRESH_SECONDS = 30
 FILE_LIMIT = 256 * 1024
 LOCAL_HOST = re.compile(r"(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?", re.I)
+LOGGER = logging.getLogger("uvicorn.error")
 # The board's files in the worker's data home, by layout. The board never imports the worker.
 LAYOUT_FILES = {
     "legacy": {"tasks": "claude-tasks", "board_machines": "board-machines.json", "board_log": "board-server.log",
@@ -84,6 +88,7 @@ class Settings:
     action_teamster: str | None = field(default_factory=lambda: shutil.which("teamster"))
     read_only: bool = False
     no_land: bool = False
+    duty_seconds: float = 1800
 
     def path(self, purpose):
         return self.task_home / LAYOUT_FILES[self.layout][purpose]
@@ -110,6 +115,7 @@ class Settings:
             machines_seconds=float(os.environ.get("BOARD_MACHINES_SECONDS", "30")),
             research_seconds=float(os.environ.get("BOARD_RESEARCH_SECONDS", "30")),
             reflection_task=os.environ.get("BOARD_REFLECTION_TASK") or "codex-batch-reflection",
+            duty_seconds=float(os.environ.get("BOARD_DUTY_SECONDS", "1800")),
         )
 
 
@@ -162,6 +168,14 @@ class Board:
                                publish=self.publish_launch, worktrees_path=settings.path("worktrees"),
                                no_land=settings.no_land, publish_research=self.publish_research)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
+        self.duty = Duty(self.actions)
+        self._duty_reason = self.actions.reason or "old_teamster"
+        self._duty_mode = "off"
+        self._duty_due = float("inf")
+        self._duty_changed = asyncio.Event()
+        self._duty_lock = asyncio.Lock()
+        self._accounts_lock = asyncio.Lock()
+        self._election_error = None
         self.duty_chat = DutyChat(settings.path("tasks"), self.actions, lambda: self.accounts.value)
         self.reports = Reports(settings.teamster)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),
@@ -210,7 +224,32 @@ class Board:
 
     @property
     def account_value(self):
-        return {**self.accounts.value, "last_logins": self.store.last_logins()}
+        value = {**self.accounts.value, "last_logins": self.store.last_logins()}
+        data = value["data"]
+        if not isinstance(data, dict) or not any(isinstance(data.get(family), list) for family in ("codex", "claude")):
+            return value
+        data = copy.deepcopy(data)
+        status = self.accounts.duty["data"]
+        if self.accounts.duty["error"] is not None and self.accounts.value["error"] is None:
+            status = None
+        record = status.get("duty") if isinstance(status, dict) else data.get("duty")
+        record = record if isinstance(record, dict) else {}
+        mode = "pinned" if record.get("pinned") else "auto" if record or (
+            isinstance(status, dict) and status.get("unreadable")
+        ) else "off"
+        data["duty"] = {"account": None, "family": None, "since": None, "checked_at": None,
+                        "reason": None, **record, "mode": mode,
+                        "pinned_unavailable": record.get("pinned_unavailable"),
+                        "choosable": self._duty_reason is None, "reason_disabled": self._duty_reason,
+                        "last_election": self._election_error or {
+                            "at": record.get("checked_at"), "error": self.accounts.duty["error"]}}
+        for family in ("codex", "claude"):
+            for row in data.get(family, []):
+                if isinstance(row, dict):
+                    needs_login = (row.get("status") == "not_logged_in" if family == "codex" else
+                                   row.get("needs_login") is True or row.get("token_unavailable") is True)
+                    row.update(pinnable=not needs_login, pin_reason="needs_login" if needs_login else None)
+        return {**value, "data": data}
 
     def account_target(self, data):
         family, account = data.get("family"), data.get("account")
@@ -223,10 +262,71 @@ class Board:
         return (family, account), None
 
     async def refresh_accounts(self):
-        value = await self.accounts.refresh(force=True)
-        if value is not None:
-            async with self.lock:
-                self.publish({"type": "accounts", "accounts": self.account_value})
+        async with self._accounts_lock:
+            value = await self.accounts.refresh(force=True)
+            if value is not None:
+                data = value["data"]
+                if isinstance(data, dict) and any(isinstance(data.get(family), list) for family in ("codex", "claude")):
+                    self._duty_reason = await asyncio.to_thread(self.duty.reason)
+                    if self._duty_reason is None:
+                        await self.accounts.refresh_duty()
+                    mode = self.account_value["data"]["duty"]["mode"]
+                    if mode != self._duty_mode:
+                        self._duty_mode = mode
+                        self._duty_due = time.monotonic() if mode == "auto" else float("inf")
+                    self._duty_changed.set()
+                async with self.lock:
+                    self.publish({"type": "accounts", "accounts": self.account_value})
+
+    async def choose_duty(self, data):
+        if self.settings.read_only:
+            return error(403, "read_only")
+        if self.actions.reason is not None:
+            return error(403, self.actions.reason)
+        if set(data) == {"account", "family"}:
+            target, failure = self.account_target(data)
+            if failure is not None:
+                return failure
+            family, account = target
+            arguments = ["set", account, "--family", family]
+        elif set(data) == {"mode"} and data["mode"] in ("auto", "off"):
+            arguments = ["auto" if data["mode"] == "auto" else "clear"]
+        else:
+            return error(400, "Expected account and family, or mode auto or off")
+        async with self._duty_lock:
+            result = await asyncio.to_thread(self.duty.execute, arguments)
+            if isinstance(result, dict) and result.get("ok"):
+                self._election_error = None
+                await self.refresh_accounts()
+            return result
+
+    async def poll_duty(self):
+        while True:
+            self._duty_changed.clear()
+            if (self.settings.duty_seconds <= 0 or self.settings.read_only
+                    or self._duty_mode != "auto" or self._duty_reason is not None):
+                await self._duty_changed.wait()
+                continue
+            remaining = self._duty_due - time.monotonic()
+            if remaining > 0:
+                try:
+                    await asyncio.wait_for(self._duty_changed.wait(), remaining)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            async with self._duty_lock:
+                # A manual selection may have acquired the lock while this tick waited.
+                if self.settings.read_only or self._duty_mode != "auto" or self._duty_reason is not None:
+                    continue
+                result = await asyncio.to_thread(self.duty.execute, ["tick"])
+                if isinstance(result, dict) and result.get("ok"):
+                    self._election_error = None
+                else:
+                    detail = json.loads(result.body)["error"]
+                    self._election_error = {"at": time.time(), "error": detail}
+                    LOGGER.warning("Duty election failed: %s", detail)
+                self._duty_due = time.monotonic() + self.settings.duty_seconds
+                await self.refresh_accounts()
 
     def account_refresh(self, family, account):
         key = (family, account)
@@ -313,6 +413,7 @@ def create_app(settings=None):
         board.loop = asyncio.get_running_loop()
         await board.poll()
         jobs = [asyncio.create_task(board.poll_tasks()), asyncio.create_task(board.poll_accounts()),
+                asyncio.create_task(board.poll_duty()),
                 asyncio.create_task(board.poll_machines()),
                 asyncio.create_task(asyncio.to_thread(board.research.view))]
         try:
@@ -392,6 +493,13 @@ def create_app(settings=None):
         if not isinstance(data, dict):
             return data
         return await asyncio.to_thread(board.duty_chat.send, data)
+
+    @app.post("/api/actions/duty")
+    async def duty_action(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        return await board.choose_duty(data)
 
     @app.post("/api/actions/lesson")
     @app.post("/api/actions/implement")

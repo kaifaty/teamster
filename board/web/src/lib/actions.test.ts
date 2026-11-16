@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { postAction, requestAction } from "./actions";
+import { postAction, requestAction, requestDuty } from "./actions";
 
 const reply = (status: number, body: unknown, statusText = "") =>
   new Response(typeof body === "string" ? body : JSON.stringify(body), { status, statusText });
@@ -18,6 +18,11 @@ describe("requestAction", () => {
     // A message to the duty says whether it waits for the running turn.
     expect(await requestAction("duty-chat", { text: "Hi" }, async () => reply(200, { ok: true, queued: true }))).toEqual({ ok: true, output: "", queued: true });
     expect(await requestAction("duty-chat", { text: "Hi" }, async () => reply(409, { ok: false, error: "old_teamster" }))).toMatchObject({ ok: false, error: expect.stringContaining("duty chat") });
+    const dutySend = vi.fn(async () => reply(200, { ok: true, warning: "The pinned duty is exhausted" }));
+    expect(await requestDuty({ account: "personal", family: "codex" }, (route, body) => requestAction(route, body, dutySend)))
+      .toEqual({ ok: true, output: "", warning: "The pinned duty is exhausted" });
+    expect(dutySend).toHaveBeenCalledWith("/api/actions/duty", expect.objectContaining({ body: JSON.stringify({ account: "personal", family: "codex" }) }));
+    expect(await requestAction("duty", { mode: "auto" }, async () => reply(409, { ok: false, error: "old_teamster" }))).toMatchObject({ ok: false, error: expect.stringContaining("duty set") });
     expect(fetcher).toHaveBeenCalledWith("/api/actions/reflect", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Teamster-Board": "1" },

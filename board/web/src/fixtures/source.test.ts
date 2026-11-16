@@ -1,9 +1,43 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fixtureSource } from "./source";
+import { parseAccounts, parseDuty } from "../lib/accounts";
+import type { Accounts } from "../types";
 
 afterEach(() => vi.useRealTimers());
 
 describe("fixture source", () => {
+  it("pins a known account, elects automatically and switches off across fixture reconnects", async () => {
+    vi.useFakeTimers();
+    const source = fixtureSource();
+    let accounts: Accounts | null = null;
+    const connect = () => source.connect((message) => {
+      if (message.type === "snapshot") accounts = message.snapshot.accounts;
+      if (message.type === "accounts") accounts = message.accounts;
+    }, () => {});
+    let stop = connect();
+    const current = () => accounts!;
+    try {
+      expect(parseDuty(current().data)?.mode).toBe("auto");
+      const rows = (parseAccounts(current().data, Date.now() / 1000).items ?? []).flatMap((item) => item.kind === "row" ? [item.row] : []);
+      const codex = rows.find((row) => row.executor === "codex" && row.pinnable)!;
+      expect(await source.act!("duty", { account: codex.name, family: "codex" })).toMatchObject({ ok: true });
+      expect(parseDuty(current().data)).toMatchObject({ mode: "pinned", account: codex.name, family: "codex", checked_at: Date.now() / 1000, last_election: { at: Date.now() / 1000, error: null } });
+      await vi.advanceTimersByTimeAsync(2000);
+      stop();
+      stop = connect();
+      expect(parseDuty(current().data)).toMatchObject({ mode: "pinned", account: codex.name });
+      const login = rows.find((row) => !row.pinnable)!;
+      expect(await source.act!("duty", { account: login.name, family: login.executor })).toMatchObject({ ok: false });
+      expect(await source.act!("duty", { account: "unknown", family: "claude" })).toMatchObject({ ok: false });
+      expect(await source.act!("duty", { mode: "auto" })).toMatchObject({ ok: true });
+      expect(parseDuty(current().data)).toMatchObject({ mode: "auto", family: "claude", last_election: { error: null } });
+      expect(await source.act!("duty", { mode: "off" })).toMatchObject({ ok: true });
+      expect(parseDuty(current().data)).toMatchObject({ mode: "off", account: null, family: null, checked_at: null, last_election: { at: null, error: null } });
+    } finally {
+      stop();
+    }
+  });
+
   it("takes a say to an ordinary task into its messages or its queue and acts on every task", async () => {
     vi.useFakeTimers();
     const source = fixtureSource();

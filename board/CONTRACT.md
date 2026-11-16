@@ -5,6 +5,7 @@ desktop app. The server reads existing files and pushes changes over a WebSocket
 science station actions run the installed `teamster` command: replies, verdicts, reviews, stopping
 and cleaning tasks, lesson decisions, implementations and new reflection orders.
 Subscription sign-ins and refreshes use the accounts script's event login and probe commands.
+Duty selection and automatic elections run the installed `teamster` command.
 
 ## Sources
 
@@ -40,6 +41,13 @@ Subscription sign-ins and refreshes use the accounts script's event login and pr
   `Accounts.last_logins` retains the latest `account_login` row per `(family, account)`, including
   rows already present at startup and rows older than the event history window. Each entry has
   `family`, `account`, `at` and `status`; no credentials are read or returned.
+- Duty: `python3 -I <script> duty status --json`, using the accounts script, refreshes with accounts
+  only when duty selection capability is enabled. Read-only servers, missing action executables
+  and older installed versions use the duty record already in `accounts --json`.
+  The server combines these records to expose the selection state below;
+  it never reads `duty.json` directly. This read has the same 60-second timeout and 1 MiB stdout
+  limit as accounts. Selection capability comes from the installed action executable's cached
+  version probe, independently of this script.
 - Reports: `python3 -I <script> report --json --since <date> [--by <dimensions>]`, using the same script
   as accounts. Both commands have a 60-second timeout and a 1 MiB stdout limit. Report stderr goes
   only to server logs; accounts errors retain their stderr reason. A report response is cached for
@@ -239,8 +247,28 @@ interface Cargo {             // every string is one line, ≤ 200 chars
 interface Accounts {
   fetched_at: number | null;
   error: string | null;
-  data: unknown | null;       // `accounts --json` output, passed through unchanged
+  data: unknown | null;       // `accounts --json`, with duty and per-account selection fields below
   last_logins: { family: "codex" | "claude"; account: string; at: number; status: string | null }[];
+}
+
+// Added to each recognised `data.codex[]` and `data.claude[]` account; other fields stay unchanged.
+interface AccountPin {
+  pinnable: boolean;
+  pin_reason: "needs_login" | null;
+}
+
+// `accounts.data.duty`, including when the duty is off. Other CLI duty record fields are retained.
+interface DutyData {
+  account: string | null;
+  family: "codex" | "claude" | null;
+  since: number | null;
+  checked_at: number | null;
+  reason: string | null;
+  mode: "auto" | "pinned" | "off";
+  pinned_unavailable: string | null;
+  choosable: boolean;
+  reason_disabled: "old_teamster" | "read_only" | "no_teamster" | null;
+  last_election: { at: number | null; error: string | null };
 }
 
 interface Login {
@@ -862,6 +890,56 @@ of the installed executable selected by `--teamster`:
   `python3 -I <settings.teamster> claude-probe <account>` with a 90-second timeout, then refreshes
   accounts, including after a failed or timed-out probe. The result uses the ordinary `accounts`
   WebSocket message, with `last_logins` included.
+
+Duty selection uses the installed action executable selected by `--teamster`, rather than the
+accounts script. `POST /api/actions/duty` accepts exactly one of these complete bodies:
+
+- `{account: string, family: "codex" | "claude"}` runs
+  `teamster duty set <account> --family <family>`.
+- `{mode: "auto"}` runs `teamster duty auto`, removing a pin and electing immediately.
+- `{mode: "off"}` runs `teamster duty clear`, leaving no duty.
+
+Unknown, missing, mixed or additional fields get 400. Pin targets are validated exactly as login
+targets against the known `accounts.data[family][].name`: invalid types or family get 400 and an
+unknown account gets 404. These requests use the same Host, origin, JSON content type, body limit
+and `X-Teamster-Board` protections as other actions. Disabled actions get 403 `read_only` or
+`no_teamster`; a version without `duty set` gets 409 `old_teamster`. The endpoint waits for the quick
+command to finish, with a 120-second timeout, no shell, closed stdin and the user's home as cwd.
+A refusal gets 422 `{ok: false, error: string}`, preserving teamster's refusal text. Success returns
+`{ok: true, warning: string | null}`, retaining warning text, then refreshes accounts and publishes
+the ordinary `accounts` WebSocket message, including `last_logins`.
+
+`accounts.data.duty.mode` is `pinned` for a pinned record, `auto` for an existing unpinned duty
+record, and `off` without a duty file. A status reporting an unreadable existing file also means
+`auto`, allowing the next tick to repair it. An automatic record may name no account when no
+candidate can be elected. Without a record, `account`, `family`, `since`, `checked_at` and `reason`
+are null. Existing record fields such as `pinned` and `rooms` are retained when present.
+`pinned_unavailable` retains the CLI's reason why a pin cannot work now.
+`last_election.at` is the last election/check time in Unix seconds; a failed server tick records
+its attempt time and text in `last_election.error`, retained until the next successful election.
+When no tick error is pending, a failed duty status read appears in `last_election.error`; the
+current accounts snapshot's duty record supplies the mode and selection. Account and status
+refreshes are serialized with duty actions and ticks, so an earlier periodic read cannot undo a
+completed selection.
+`choosable` requires enabled actions and installed teamster 1.87.0 or later. Otherwise
+`reason_disabled` is `read_only` (taking precedence), `no_teamster` or `old_teamster`. This uses the
+same once-per-server version probe as queued orders and duty chat; disabled actions never probe.
+Per-account `pinnable` is false with `pin_reason: "needs_login"` for Codex `not_logged_in`, or Claude
+`needs_login`/`token_unavailable`. Other accounts can be pinned, including exhausted or duplicate
+accounts; teamster can accept a pin with a warning and `pinned_unavailable`. The control also
+respects the duty's global `choosable` state.
+
+With actions and selection capability enabled, the server runs `teamster duty tick` only in
+`auto` mode, immediately when it first observes or enters that mode, then every
+`BOARD_DUTY_SECONDS` (default 1800 seconds) after the previous tick finishes. Setting the interval
+to 0 disables server ticks, including the immediate one; `duty auto` itself still elects. A single
+timer serializes ticks and duty actions, so ticks never overlap. `pinned`, `off`, read-only and
+unavailable-action servers run no ticks. A failing tick is logged and exposed in
+`last_election.error`, and later timer ticks continue. The server never calls `launchctl`.
+
+The web data layer exposes the duty mode, account pin ability and `choose(account, family)`,
+`setAuto()` and `setOff()` through its duty store. Fixture sources accept the same actions,
+publish updated account data and retain the chosen duty and mode across later fixture snapshots.
 
 Login stdout is JSON lines: `output` with `text` appends a bounded output line; `open` with `url` or
 `code` with `code` and Unix `expires_at` sets `waiting`; `prompt` sets `prompt: true`; `stage` with
