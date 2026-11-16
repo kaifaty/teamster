@@ -457,7 +457,8 @@ class ClaudeReviewTests(RotationTestCase):
             "cat /dev/null > $'..\\x2foutside'", "cat $'a.md'",
             "cat a.md > /tmp/out", "cat a.md >> ../out", "cat a.md > .git/config", "cat a.md > %s/.git/HEAD" % room,
             "cat a.md > linked/brief.md", "cat a.md > %s/linked/brief.md" % room,
-            "cat a.md > .claude/settings.json",
+            "cat a.md > .claude/settings.json", "cat README.md &> ../outside", "cat README.md &>> ../outside",
+            "cat README.md <> ../outside", "cat README.md >| ../outside", "cat README.md >&../outside",
         )
         # Each required switch is required on its own.
         required = ["--no-pager", "-c core.fsmonitor=false", "-c core.hooksPath=/dev/null"]
@@ -824,7 +825,9 @@ class ClaudeReviewTests(RotationTestCase):
         replies = [self.duty_answer("I need a decision.", "needs_decision", "Which repository?",
                                     ["parser-repo", "billing-repo"]),
                    self.duty_answer("Started fix-parser.", "started", started=["fix-parser"]),
-                   self.duty_answer("fix-parser is still running.")]
+                   self.duty_answer("fix-parser is still running."),
+                   # needs_decision without a question breaks the duty rules.
+                   self.duty_answer("Decide for me.", "needs_decision")]
         accounts = self.claude_pool_fixture(runs=[{"reply": reply} for reply in replies])
         worker = self.worker()
         for family, expected in ((None, "no duty account"), ("codex", "the duty chat needs a Claude duty account")):
@@ -910,6 +913,11 @@ class ClaudeReviewTests(RotationTestCase):
                       self.cli("status", "duty"))
         self.assertIn("== result: answered\nfix-parser is still running.", self.cli("wait", "duty"))
         self.assertIn("== Claude duty", self.cli("stats", "duty"))
+        invalid = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Decide."], cwd=self.repo, env=self.env,
+                                 text=True, capture_output=True, timeout=60)
+        self.assertEqual(invalid.returncode, 1, invalid.stdout)
+        self.assertIn("the duty gave no answer (outcome failed): invalid structured output", invalid.stderr)
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 3)
         self.assertNotIn("telemetry unavailable", (self.home / "claude-tasks" / "duty" / "stderr.log").read_text())
         # A next turn that cannot start keeps the task notes of the queue: they wait for the next duty turn.
         worker = self.worker()
@@ -917,12 +925,23 @@ class ClaudeReviewTests(RotationTestCase):
                 "source": "note", "task": "queued"}
         worker.task_state.write_queue("duty", {"waiting": [note], "dropped": []})
         st = worker.task_state.load("duty")
-        st.update(pid=None, outcome="completed", turn_finished=time.time())
+        # A pid other than the saved one: no stop request applies, so the end sends the queue.
+        st.update(pid=-1, outcome="completed", turn_finished=time.time())
         with mock.patch.object(worker.supervisor, "send_queue",
                                side_effect=SystemExit("teamster: Claude Code CLI was not found")):
             self.assertIsNone(worker.supervisor.finish_cycle(st))
         self.assertEqual(json.loads((self.home / "claude-tasks" / "duty" / "notes.json").read_text())["held"], [note])
         self.assertEqual(worker.task_state.read_queue("duty"), {"waiting": [], "dropped": []})
+        notes = self.home / "claude-tasks" / "duty" / "notes.json"
+        notes.write_text(json.dumps({"held": []}))
+        worker.task_state.write_queue("duty", {"waiting": [note], "dropped": []})
+        # An exception finish_cycle does not catch stands in for the process dying inside start_process.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            worker.supervisor.finish_cycle(dict(st, pid=-1, outcome="completed"))
+        self.assertEqual(worker.task_state.read_queue("duty")["waiting"], [])
+        self.assertEqual(json.loads(notes.read_text())["held"], [note])
         # clean waits for the state lock that note delivery holds while it starts a duty turn.
         with (self.home / "claude-tasks" / "duty" / "state.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -962,6 +981,7 @@ class ClaudeReviewTests(RotationTestCase):
         runs = [{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 7)]
         runs[2]["gate"] = str(release)
         runs[3]["gate"] = str(news)
+        runs[5]["mode"] = "hold"
         self.claude_pool_fixture(runs=runs, duty={"chat_auto_turns_per_hour": 1})
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
         self.put_duty("first")
@@ -1070,6 +1090,19 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertNotIn("Traceback", stderr.read_text())
         self.assertEqual(self.state("lost-note")["outcome"], "completed")
         self.assertEqual(len(self.state("duty")["duty_turns"]), 5)
+        # A turn that holds ends at duty.chat_max_minutes (20) on the turn's clock.
+        notes.rmdir()
+        holding = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Hold on."], cwd=self.repo,
+                                   env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.until(lambda: any(entry["command"] == "holding" for entry in self.claude_trace()), timeout=60)
+        self.extra_pids.add(self.state("duty")["pid"])
+        self.advance_fake_clock(20 * 60 + 1)
+        output, errors = holding.communicate(timeout=60)
+        self.assertEqual(holding.returncode, 1, output)
+        self.assertIn("the duty gave no answer (outcome budget_exhausted): the duty chat turn reached its time "
+                      "budget (20 minutes)", errors)
+        self.assertTrue(any(entry["command"] == "signal" for entry in self.claude_trace()))
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 5)
 
     def test_duty_chat_queued_notes_keep_the_cap_one_per_cycle_and_survive_a_crash(self):
         release = self.root / "release-duty"
@@ -1148,6 +1181,15 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertIn("Claude process %d of the previous duty turn outlived its supervisor" % st["claude_pid"],
                       refused.stderr)
         self.assertIn("end it with teamster stop duty", refused.stderr)
+        worker = self.worker()
+        stale = {key: value for key, value in worker.task_state.load("duty").items() if key != "claude_pid"}
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process") as start, \
+                self.assertRaises(SystemExit) as refusal:
+            worker.supervisor.spawn(stale, "Never sent.", current_message=True, kind="duty")
+        self.assertIn("outlived its supervisor", str(refusal.exception))
+        start.assert_not_called()
+        self.assertEqual(len(waiting()), 1)
         self.assertEqual(len(self.claude_invocations()), 2)
         # clean refuses to take the room from it; stop duty ends it.
         refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "clean", "duty"], cwd=self.repo, env=self.env,

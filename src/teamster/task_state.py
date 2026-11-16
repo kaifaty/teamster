@@ -268,9 +268,13 @@ def save(st):
 def busy_message(st, queue_hint=False):
     """Why no new turn may start beside the live supervisor of st, or None when it is idle.
 
-    queue_hint adds the say --queue alternative to the refusal of a say.
+    queue_hint adds the say --queue alternative to the refusal of a say. A duty Claude that outlived
+    its supervisor still holds the session, so the duty conversation is not idle then either.
     """
     if not procs.alive(st.get("pid")):
+        if st.get("kind") == "duty" and procs.alive(st.get("claude_pid")):
+            return (f"Claude process {st['claude_pid']} of the previous duty turn outlived its supervisor and still "
+                    f"holds the session; end it with {config.COMMAND} stop duty, then send the message again")
         return None
     if st.get("outcome") == "sleeping":
         return (f"waiting for limit reset until {config.local_time(st['sleeping']['until'])}; stop first to send a new message"

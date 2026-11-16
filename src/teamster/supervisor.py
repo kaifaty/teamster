@@ -372,6 +372,10 @@ def finish_cycle(st):
                         report = "\n".join(wait_view.wait_report_lines(st, slug))
                     except Exception as exc:
                         report = f"(report unavailable: {exc})"
+                    chatting = st.get("kind") == duty_chat.CHAT_KIND
+                    if chatting:
+                        # Task notes stay held until the turn that carries them is started and saved.
+                        duty_chat.hold_notes([order for order in orders if order.get("source") == "note"])
                     # Emptied before the start, so a failure after the message is journaled never sends it twice.
                     task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"]})
                     try:
@@ -379,7 +383,8 @@ def finish_cycle(st):
                     except (Exception, SystemExit) as exc:
                         outcome = str(exc).removeprefix("teamster: ")
                     else:
-                        duty_chat.release_held_notes(orders)
+                        if chatting:
+                            duty_chat.release_held_notes(orders)
                         with task_state.queue_sent_path(slug).open("a", encoding="utf-8") as stream:
                             stream.write(json.dumps({"at": clock.CLOCK.time(), "turn": st.get("turns", 0),
                                                      "next_turn": following["turns"], "count": len(orders),

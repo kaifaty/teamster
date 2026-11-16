@@ -952,11 +952,9 @@ def send_duty_chat(cfg, order, queue):
             print(f"queued for the duty: {waiting} waiting; sent when the current turn ends")
             return None
         st = task_state.load(duty_chat.CHAT_SLUG)
-    elif task_state.busy_message(st) is not None:
-        procs.die(task_state.busy_message(st) + "; or queue the message with --queue")
-    if not procs.alive(st.get("pid")) and procs.alive(st.get("claude_pid")):
-        procs.die(f"Claude process {st['claude_pid']} of the previous duty turn outlived its supervisor and still "
-                  f"holds the session; end it with {config.COMMAND} stop duty, then send the message again")
+    else:
+        # spawn checks again under the lock, on the state as it is then.
+        require_idle(st, queue_hint=True)
     supervisor.apply_say(st, order["options"], cfg)
     sent = []
 
