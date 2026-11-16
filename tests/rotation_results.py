@@ -1025,9 +1025,9 @@ class ResultScoutConfigTests(RotationTestCase):
         old = legacy.read_bytes()
         worker = self.worker()
         with mock.patch.object(worker.accounts, "prepare_home"), \
-                mock.patch.object(worker.commands.subprocess, "run", return_value=SimpleNamespace(returncode=5)) as execute, \
+                mock.patch.object(worker.account_commands.subprocess, "run", return_value=SimpleNamespace(returncode=5)) as execute, \
                 mock.patch("builtins.print"), self.assertRaises(SystemExit) as stopped:
-            worker.commands.cmd_login(SimpleNamespace(name="second", browser=False))
+            worker.account_commands.cmd_login(SimpleNamespace(name="second", browser=False))
         self.assertEqual(stopped.exception.code, 5)
         self.assertEqual(legacy.read_bytes(), old)
         saved = json.loads((self.home / "codex-worker.json").read_text())

@@ -53,7 +53,7 @@ import math
 import re
 import sys
 
-from . import commands, config, executors, home_migration, installs, prompts, reviewers, supervisor, telemetry_log, wait_view
+from . import account_commands, commands, config, executors, home_migration, installs, prompts, reviewers, supervisor, telemetry_log, wait_view
 
 
 HELP_TEXT = __doc__
@@ -318,11 +318,11 @@ COMMAND_HANDLERS = {
     "clean": commands.cmd_clean,
     "accounts": commands.cmd_accounts,
     "reset-credit": commands.cmd_reset_credit,
-    "login": commands.cmd_login,
-    "claude-login": commands.cmd_claude_login,
-    "claude-probe": commands.cmd_claude_probe,
-    "claude-rename": commands.cmd_claude_rename,
-    "claude-remove": commands.cmd_claude_remove,
+    "login": account_commands.cmd_login,
+    "claude-login": account_commands.cmd_claude_login,
+    "claude-probe": account_commands.cmd_claude_probe,
+    "claude-rename": account_commands.cmd_claude_rename,
+    "claude-remove": account_commands.cmd_claude_remove,
     "duty": commands.cmd_duty,
     "docs": commands.cmd_docs,
     "path": commands.cmd_path,
