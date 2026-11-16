@@ -59,9 +59,9 @@ def worktree_snapshot(st):
     return head, status, files
 
 
-def event_unavailable(event, account):
+def event_unavailable(event, account, record=True):
     """Recognize review account errors using the shared transport parser."""
-    return claude_runner.stream_unavailable(event, account)
+    return claude_runner.stream_unavailable(event, account, record)
 
 
 def refresh_limits(cfg, stopped=None):
@@ -83,10 +83,15 @@ def select_account(cfg, role, exclude=(), prefer_unused=(), stopped=None, task_t
     return claude_accounts.select(cfg, role, exclude, prefer_unused)
 
 
-def probe(cfg, account, stale_only=False, stopped=None, token_via_fd=False):
-    """Serialize account probes, rechecking stale snapshots after taking the lock."""
+def _probe_lock(name):
+    """The file whose lock serializes the probes of one account."""
     config.TASKS.mkdir(parents=True, exist_ok=True)
-    with (config.TASKS / ("claude-probe-" + account["name"] + ".lock")).open("a") as lock:
+    return (config.TASKS / ("claude-probe-" + name + ".lock")).open("a")
+
+
+def probe(cfg, account, stale_only=False, stopped=None):
+    """Serialize account probes, rechecking stale snapshots after taking the lock."""
+    with _probe_lock(account["name"]) as lock:
         if stopped is None:
             fcntl.flock(lock, fcntl.LOCK_EX)
         else:
@@ -106,11 +111,11 @@ def probe(cfg, account, stale_only=False, stopped=None, token_via_fd=False):
         if stopped is not None and stopped():
             return "request failed"
         claude_accounts.mark_probe_attempt(account["name"])
-        return _probe(cfg, account, stopped, token_via_fd)
+        return _probe(cfg, account, stopped)
 
 
-def _probe(cfg, account, stopped=None, token_via_fd=False):
-    """Send one short request without tools or persisted CLI output."""
+def _probe(cfg, account, stopped=None):
+    """Send one short request with the saved token, without tools or persisted CLI output."""
     environment, token = claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)
     if stopped is not None and stopped():
         return "request failed"
@@ -118,9 +123,41 @@ def _probe(cfg, account, stopped=None, token_via_fd=False):
         claude_accounts.mark_limited(account["name"], token_unavailable=True)
         return "token unavailable"
     claude_accounts.token_available(account["name"])
+    return _answer(account["name"], _ask(cfg, environment, stopped))
+
+
+def check_token(cfg, account, token, stopped=None):
+    """Probe a token that is not saved yet; return (reason, record).
+
+    The token reaches the CLI only through a pipe. Nothing about the account is
+    stored, so a rejected token cannot mark an account whose saved token still
+    works; once the token is saved, record() books the answer as probe() would.
+    """
+    environment = claude_runner.isolated_environment(account)
+    answer = _ask(cfg, environment, stopped, token)
+    reason = _answer(account["name"], answer, record=False)
+
+    def record():
+        # A probe of the replaced token may still be running: let it answer first.
+        with _probe_lock(account["name"]) as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            claude_accounts.mark_probe_attempt(account["name"])
+            # The saved token is there now, whatever an older probe failed to read.
+            claude_accounts.token_available(account["name"])
+            _answer(account["name"], answer)
+
+    return reason, record
+
+
+def _ask(cfg, environment, stopped=None, token=None):
+    """Run the probe request; return (output, returncode, timed_out), or None if it could not start.
+
+    A token given here is written to a pipe the CLI reads
+    (CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR); otherwise the environment carries it.
+    """
     executable = config.claude_binary()
     if executable is None:
-        return "request failed"
+        return None
     args = [executable, "-p", "Reply with the single word OK.",
             "--output-format", "stream-json", "--verbose", "--max-turns", "1",
             "--tools", "", "--permission-mode", "dontAsk"]
@@ -130,7 +167,7 @@ def _probe(cfg, account, stopped=None, token_via_fd=False):
     credential_fd = None
     credential_args = {}
     try:
-        if token_via_fd:
+        if token is not None:
             credential_fd, writer = os.pipe()
             with os.fdopen(writer, "wb") as stream:
                 stream.write(token.encode("utf-8"))
@@ -170,13 +207,21 @@ def _probe(cfg, account, stopped=None, token_via_fd=False):
                     proc.stdout.close()
                 output, returncode = b"".join(chunks), proc.returncode
     except subprocess.TimeoutExpired as exc:
-        output = exc.stdout or b""
+        output, returncode = exc.stdout or b"", None
         timed_out = True
     except OSError:
-        return "request failed"
+        return None
     finally:
         if credential_fd is not None:
             os.close(credential_fd)
+    return output, returncode, timed_out
+
+
+def _answer(name, answer, record=True):
+    """The probe's failure reason, or None; with record, store what it says about the account."""
+    if answer is None:
+        return "request failed"
+    output, returncode, timed_out = answer
     reason, answered = None, False
     for line in output.splitlines():
         if not line.strip():
@@ -189,19 +234,20 @@ def _probe(cfg, account, stopped=None, token_via_fd=False):
         if not isinstance(event, dict):
             reason = reason or "request failed"
             continue
-        unavailable = event_unavailable(event, account["name"])
+        unavailable = event_unavailable(event, name, record)
         reason = reason or unavailable
         if event.get("type") == "result":
             if event.get("is_error"):
                 reason = reason or "request failed"
             else:
                 answered = isinstance(event.get("result"), str) and bool(event["result"].strip())
-    if reason in ("usage limit", "authentication failed"):
-        claude_accounts.mark_limited(account["name"], reason=reason)
+    if reason in ("usage limit", "authentication failed") and record:
+        claude_accounts.mark_limited(name, reason=reason)
     if timed_out:
         return "request failed"
     if reason is None and returncode == 0 and answered:
-        claude_accounts.authenticated(account["name"])
+        if record:
+            claude_accounts.authenticated(name)
         return None
     return reason or "request failed"
 

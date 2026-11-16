@@ -383,8 +383,8 @@ const STEPS: Record<Family, { id: LoginStage; label: string }[]> = {
   claude: [
     { id: "starting", label: "Запуск" },
     { id: "waiting", label: "Вход на странице" },
-    { id: "saving", label: "Токен в связку ключей" },
     { id: "checking", label: "Проверка" },
+    { id: "saving", label: "Токен в связку ключей" },
     { id: "done", label: "Готово" },
   ],
 };
