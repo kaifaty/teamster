@@ -82,6 +82,10 @@ export function fixtureSource(): BoardSource {
   // A ship's orders change the board itself, in the board's time.
   let push: ((message: ServerMessage) => void) | null = null;
   let selectedDuty: DutyData | null = null;
+  // The page's `?pick=` plays the duty's choice the slow way (any value), refuses it (`refuse`), or switches it off as the
+  // server would (`read_only`, `no_teamster`, `old_teamster`).
+  const pickMode = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("pick");
+  const pickOff = pickMode === "read_only" || pickMode === "no_teamster" || pickMode === "old_teamster" ? pickMode : null;
   const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
   // The duty choice, like a completed sign-in, survives every later stream message and reconnect.
   function patchAccounts(value: Accounts): Accounts {
@@ -100,7 +104,7 @@ export function fixtureSource(): BoardSource {
         account: null, family: null, since: null, checked_at: null, reason: null,
         ...record, mode: record ? record.pinned === true ? "pinned" : "auto" : "off",
         pinned_unavailable: record?.pinned_unavailable ?? null,
-        choosable: true, reason_disabled: null, last_election: { at: checked, error: null }, ...selectedDuty,
+        choosable: !pickOff, reason_disabled: pickOff, last_election: { at: checked, error: null }, ...selectedDuty,
       } },
     };
   }
@@ -114,13 +118,16 @@ export function fixtureSource(): BoardSource {
       : rows.find((row) => row.name === body.account && row.executor === body.family);
     if (body.mode === undefined && !target) return { ok: false, error: "Account not found" };
     if (target && !target.pinnable) return { ok: false, error: "Account needs a login" };
+    if (pickMode === "refuse") return { ok: false, error: "duty.json is locked by another teamster command; try again" };
+    // teamster pins an exhausted account, with a warning and the reason it cannot work now.
+    const spent = body.mode === undefined && target?.bad ? "weekly limit exhausted" : null;
     const now = Date.now() / 1000;
     selectedDuty = { ...previous, mode: body.mode ?? "pinned", account: target?.name ?? null, family: target?.executor ?? null,
       since: target ? now : null, checked_at: body.mode === "off" ? null : now, reason: body.mode === "off" ? null : body.mode === "auto" ? "automatic election" : "manual",
-      pinned_unavailable: null, last_election: { at: body.mode === "off" ? null : now, error: null } };
+      pinned_unavailable: spent, last_election: { at: body.mode === "off" ? null : now, error: null } };
     push?.({ type: "accounts", accounts: patchAccounts({ ...current, fetched_at: now, error: null }) });
     push?.({ type: "duty_chat", at: now });
-    return { ok: true, output: "", warning: null };
+    return { ok: true, output: "", warning: spent && `${target!.name}: ${spent}; pinned anyway, the duty waits until it recovers` };
   }
   // The station's starts and agents tell the board in the snapshot's time, which the board sees shifted to now.
   const station = fixtureActions(research, () => Date.now() / 1000 - anchor, (message) => push?.(shiftTimes(message, anchor)));
@@ -139,13 +146,16 @@ export function fixtureSource(): BoardSource {
   const duty = fixtureDutyChat(() => Date.now() / 1000, (message) => push?.(message), () => {
     const current = parseDuty(state.accounts?.data);
     return current?.account && current.family ? { account: current.account, family: current.family } : null;
-  });
+  }, typeof location === "undefined" ? null : new URLSearchParams(location.search).get("duty"));
   const studied = (slug: string | undefined) =>
     research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
   /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
   const act: ActionSender = async (route, body) => {
     const study = route === "say" && studied((body as { slug?: string }).slug);
-    if (route === "duty") return selectDuty(body as DutyBody);
+    if (route === "duty") {
+      if (pickMode) await new Promise((resolve) => setTimeout(resolve, 700));
+      return selectDuty(body as DutyBody);
+    }
     if (route === "lesson" || route === "implement" || route === "reflect" || study) return station.act(route as StationRoute, body as never);
     if (route === "duty-chat") {
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -242,6 +252,7 @@ export function fixtureSource(): BoardSource {
     },
     async fetchFeed(slug, after) {
       await new Promise((resolve) => setTimeout(resolve, 60));
+      if (slug === "duty") return duty.feed(after);
       const feed = station.feed(slug, after);
       return feed && shiftTimes(feed, anchor);
     },

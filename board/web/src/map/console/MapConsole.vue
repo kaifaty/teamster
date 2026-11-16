@@ -1,25 +1,35 @@
 <script setup lang="ts">
 // The control panel at the map's bottom, across its whole width, in a cast frame: on the left wing the duty and the
 // subscriptions, in the lower centre the events over the command row, on the right wing the machines and the reflection.
-// The galaxy and a system are laid out above it. On a narrow window it folds to a strip, the duty, the counters and the
+// The command row starts with the duty chat's field, and the conversation opens over the events. The galaxy and a system are laid out above it. On a narrow window it folds to a strip, the duty, the counters and the
 // newest event, and the wings open over the map on demand; on a wide one the viewer may fold it to the same strip.
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { loadJson, saveJson } from "../../lib/storage";
+import type { DutyHost } from "../../store/duty";
+import type { DutyChatHost } from "../../store/dutyChat";
 import type { Machines, LogEvent, TaskSummary } from "../../types";
 import type { Star, Tank } from "../fleet";
 import type { Research } from "../research";
 import ShipLog from "../ShipLog.vue";
+import ConsoleChat from "./ConsoleChat.vue";
+import ConsoleChatField from "./ConsoleChatField.vue";
 import ConsoleCommands from "./ConsoleCommands.vue";
 import ConsoleDuty from "./ConsoleDuty.vue";
+import ConsoleDutyPick from "./ConsoleDutyPick.vue";
 import ConsoleMachines from "./ConsoleMachines.vue";
 import ConsoleReflection from "./ConsoleReflection.vue";
 import ConsoleSubscriptions from "./ConsoleSubscriptions.vue";
 import { PORTRAIT_URLS } from "./portraits";
 import { nextInQueue, queueOf, type QueueColumn } from "./queue";
 import { dutyBlock, machineRow, portraitNames, reflectionNote, subscriptionRow } from "./texts";
+import { useConsoleChat } from "./useConsoleChat";
+import { withShownDuty } from "./dutyPick";
+import { useDutyPick } from "./useDutyPick";
 
 /** Whether the viewer folded the wide window's panel to a strip. */
 const FOLDED_KEY = "codex-board.console-folded.v1";
+/** Whether the duty chat's conversation stands open over the events. */
+const CHAT_OPEN_KEY = "codex-board.console-chat.v1";
 
 const props = defineProps<{
   frame: string;
@@ -45,6 +55,8 @@ const props = defineProps<{
   tasks: readonly TaskSummary[];
   /** `dev:fixture`: the map's source can be switched from the menu. */
   demo: boolean;
+  /** The map's source: its duty chat, which the command row's field writes to, and its duty's choice. */
+  host: DutyChatHost & DutyHost;
 }>();
 const emit = defineEmits<{
   go: [event: LogEvent];
@@ -60,7 +72,9 @@ const summaryOpen = defineModel<boolean>("summaryOpen", { required: true });
 const sound = defineModel<boolean>("sound", { required: true });
 const sourceKind = defineModel<"board" | "scenario">("sourceKind", { required: true });
 
-const duty = computed(() => dutyBlock(props.tanks, props.stars, props.now));
+// The duty's choice shows in the wing at once, before the accounts confirm it.
+const pick = useDutyPick(() => props.host);
+const duty = computed(() => dutyBlock(withShownDuty(props.tanks, pick.pending.value), props.stars, props.now));
 const subscriptions = computed(() => props.tanks.map((tank) => subscriptionRow(tank, props.now)));
 const machineRows = computed(() => (props.machines?.items ?? []).map((machine) => machineRow(machine, props.now)));
 const reflection = computed(() => reflectionNote(props.station));
@@ -123,8 +137,73 @@ watch(sheetOpen, (open) => {
   if (open) logOpen.value = false;
 });
 
+// The duty chat: its field heads the command row, or the narrow window's sheet; the conversation opens over the events,
+// which the whole log and the conversation share.
+const chatOpen = ref(loadJson(CHAT_OPEN_KEY, false, (value): value is boolean => typeof value === "boolean"));
+watch(chatOpen, (value) => saveJson(CHAT_OPEN_KEY, value));
+const chat = useConsoleChat(() => props.host, () => props.now, () => props.tasks, () => (props.narrow ? sheetOpen.value : chatOpen.value && !strip.value));
+const { draft, unavailable: chatOff } = chat;
+const chatShown = computed(() => chatOpen.value && !strip.value && !chatOff.value);
+const chatPanel = computed(() => ({
+  rows: chat.rows.value, now: props.now, account: chat.view.value?.duty?.account ?? null, portrait: dutyPortrait.value, busy: chat.busy.value,
+  runSeconds: chat.runSeconds.value, activity: chat.activity.value, lastError: chat.lastError.value, readError: chat.readError.value,
+}));
+/** How much the row's field grew above one line: the conversation stands above it. */
+const fieldGrow = ref(0);
+const rowField = ref<InstanceType<typeof ConsoleChatField> | null>(null);
+watch(chatOpen, (open) => {
+  if (open && !strip.value) logOpen.value = false;
+});
+watch(logOpen, (open) => {
+  if (open && !strip.value) chatOpen.value = false;
+});
+/** A sent message shows at once: the conversation opens with it. */
+function sendChat() {
+  chat.sendDraft();
+  if (!strip.value) chatOpen.value = true;
+}
+function closeChat() {
+  chatOpen.value = false;
+  void nextTick(() => rowField.value?.focusQuietly());
+}
+
+// The duty's choice: a panel over the left wing, or the narrow window's sheet; it gives the focus back to its opener.
+const pickOpen = ref(false);
+const sheetPick = ref<InstanceType<typeof ConsoleDutyPick> | null>(null);
+const pickPanel = computed(() => ({
+  choices: pick.choices.value, mode: pick.shown.value?.mode ?? null, line: pick.line.value, off: pick.off.value,
+  error: pick.error.value, warning: pick.warning.value, electionError: pick.duty.value?.last_election.error ?? null,
+}));
+let pickOpener: HTMLElement | null = null;
+function openPick(opener: HTMLElement | null) {
+  pickOpener = opener ?? root.value?.querySelector<HTMLElement>(".console-duty") ?? null;
+  if (props.narrow) {
+    sheetOpen.value = true;
+    void nextTick(() => sheetPick.value?.focusInside());
+  } else pickOpen.value = !pickOpen.value;
+}
+function closePick(focus = true) {
+  pickOpen.value = false;
+  if (focus) void nextTick(() => (pickOpener?.isConnected ? pickOpener : root.value?.querySelector<HTMLElement>(".console-duty"))?.focus());
+}
+/** A press outside the panel and the duty's block folds the panel and leaves the focus where it went. */
+function onPressAway(event: PointerEvent) {
+  const target = event.target as Element | null;
+  if (!target?.closest(".duty-pick, .console-left > .console-duty, .pick-duty")) closePick(false);
+}
+watch(pickOpen, (open) => (open ? document.addEventListener : document.removeEventListener)("pointerdown", onPressAway, true));
+watch(strip, () => closePick(false));
+onBeforeUnmount(() => document.removeEventListener("pointerdown", onPressAway, true));
+/** The chat cannot work without a Claude duty: its field offers the choice. */
+const chatNeedsDuty = computed(() => chat.view.value?.reason === "no_duty" || chat.view.value?.reason === "codex_duty");
+
 /** Escape folds what the strip opened before the map hears it. */
 function onKey(event: KeyboardEvent) {
+  if (event.key === "Escape" && chatShown.value) {
+    event.stopPropagation();
+    closeChat();
+    return;
+  }
   if (event.key !== "Escape" || !props.narrow || !sheetOpen.value) return;
   event.stopPropagation();
   sheetOpen.value = false;
@@ -142,7 +221,7 @@ function onKey(event: KeyboardEvent) {
     @keydown="onKey"
   >
     <div v-if="strip" class="console-strip">
-      <ConsoleDuty :duty="duty" :portrait="dutyPortrait" compact @open="(key, opener) => emit('openAccount', key, opener)" />
+      <ConsoleDuty :duty="duty" :portrait="dutyPortrait" :line="pick.line.value" compact @pick="openPick" />
       <ConsoleCommands mode="counters" :ready="queues.review_me.length" :alarms="queues.attention.length" :compact="narrow" @next="next" />
       <button
         v-if="narrow"
@@ -159,8 +238,14 @@ function onKey(event: KeyboardEvent) {
       <button v-else type="button" class="console-more console-unfold" @click="fold(false)">Развернуть панель</button>
     </div>
     <div v-show="!strip || sheetOpen" id="console-sheet" class="console-sheet">
+      <ConsoleDutyPick v-if="narrow" ref="sheetPick" v-bind="pickPanel" inline class="console-pick" @pick="pick.pick" @auto="pick.setAuto" />
+      <div v-if="narrow" class="console-chat">
+        <ConsoleChat v-if="!chatOff" v-bind="chatPanel" sheet @choose="chat.send" @task="(repo, slug) => emit('task', repo, slug)" @retry="chat.retry" @dismiss="chat.dismiss" />
+        <ConsoleChatField v-model="draft" sheet open :unavailable="chatOff" :pick-duty="chatNeedsDuty" :busy="chat.busy.value" @send="chat.sendDraft" @pick-duty="openPick" />
+      </div>
       <div class="console-wing console-left">
-        <ConsoleDuty v-if="!narrow" :duty="duty" :portrait="dutyPortrait" @open="(key, opener) => emit('openAccount', key, opener)" />
+        <ConsoleDuty v-if="!narrow" :duty="duty" :portrait="dutyPortrait" :line="pick.line.value" :expanded="pickOpen" @pick="openPick" />
+        <ConsoleDutyPick v-if="pickOpen && !narrow" v-bind="pickPanel" @pick="pick.pick" @auto="pick.setAuto" @close="closePick()" />
         <i class="console-divider" aria-hidden="true"></i>
         <ConsoleSubscriptions :rows="subscriptions" :portraits="portraits" :open="account" @open="(key, opener) => emit('openAccount', key, opener)" />
       </div>
@@ -182,8 +267,17 @@ function onKey(event: KeyboardEvent) {
         :demo="demo"
       />
     </div>
-    <div ref="centre" class="console-centre" :style="keptHeight ? { minHeight: `${keptHeight}px` } : undefined">
-      <div class="console-events">
+    <div ref="centre" class="console-centre" :style="{ minHeight: keptHeight ? `${keptHeight}px` : undefined, '--chat-grow': `${fieldGrow}px` }">
+      <ConsoleChat
+        v-if="chatShown"
+        v-bind="chatPanel"
+        @close="closeChat"
+        @choose="chat.send"
+        @task="(repo, slug) => emit('task', repo, slug)"
+        @retry="chat.retry"
+        @dismiss="chat.dismiss"
+      />
+      <div class="console-events" :class="{ covered: chatShown }">
         <ShipLog
           v-model:open="logOpen"
           :events="logEvents"
@@ -210,7 +304,22 @@ function onKey(event: KeyboardEvent) {
         foldable
         @next="next"
         @fold="fold(true)"
-      />
+      >
+        <ConsoleChatField
+          ref="rowField"
+          v-model="draft"
+          :unavailable="chatOff"
+          :pick-duty="chatNeedsDuty"
+          :busy="chat.busy.value"
+          :open="chatShown"
+          @send="sendChat"
+          @open="chatOpen = true"
+          @close="closeChat"
+          @toggle="chatShown ? closeChat() : (chatOpen = true)"
+          @grow="fieldGrow = $event"
+          @pick-duty="openPick"
+        />
+      </ConsoleCommands>
     </div>
   </section>
 </template>
@@ -412,6 +521,11 @@ function onKey(event: KeyboardEvent) {
   height: 100%;
 }
 
+/* The open conversation stands over the events. */
+.console-events.covered {
+  visibility: hidden;
+}
+
 .console-events > :deep(.log:not(.open)) {
   padding: 0;
   border: 0;
@@ -443,160 +557,5 @@ function onKey(event: KeyboardEvent) {
   border-radius: 6px;
   background: rgba(6, 9, 16, 0.97);
 }
-
-/*
- * A narrow window: a strip in the centre's rails with the duty, the counters and the newest event; the wings and the
- * settings open over the map above it, their blocks one under another.
- */
-.console.strip {
-  --strip-rail-y: 16px;
-  --strip-rail-x: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  height: auto;
-  padding: 2px;
-  border-style: solid;
-  border-color: transparent;
-  border-width: var(--strip-rail-y) var(--strip-rail-x);
-  border-image: url("../art/console-strip.png") 72 52 fill / var(--strip-rail-y) var(--strip-rail-x) round;
-}
-
-.console-strip {
-  display: flex;
-  gap: 4px;
-  min-width: 0;
-}
-
-.console-strip > :deep(.console-duty) {
-  flex: 1;
-  min-width: 0;
-}
-
-.console-more {
-  flex: none;
-  min-width: 64px;
-  min-height: 40px;
-  padding: 0 10px;
-  border: 1px solid rgba(240, 165, 70, 0.55);
-  border-radius: 4px;
-  background: rgba(6, 9, 16, 0.9);
-  color: #f3c27a;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-}
-
-.console-more:hover {
-  border-color: rgba(243, 198, 78, 0.85);
-}
-
-.console-more:focus-visible {
-  outline: 2px solid #f3c64e;
-  outline-offset: 1px;
-}
-
-/* Folded on a wide window: one line, the duty, the newest event, the counters and «Развернуть панель». */
-.console.folded {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-
-.console.folded .console-strip {
-  display: contents;
-}
-
-.console.folded .console-strip > :deep(.console-duty) {
-  flex: 0 1 360px;
-}
-
-.console.folded .console-centre {
-  flex: 1;
-  order: 1;
-  min-width: 0;
-}
-
-.console.folded .console-strip > :deep(.commands),
-.console.folded .console-unfold {
-  order: 2;
-}
-
-.console.strip .console-centre {
-  position: relative;
-  left: auto;
-  right: auto;
-  height: auto;
-}
-
-.console.strip .console-events {
-  padding: 0;
-  border: 0;
-  border-image: none;
-}
-
-.console.strip .console-events > :deep(.log) {
-  height: auto;
-}
-
-/* The narrow window's whole log opens over the map, above the strip and under the toolbar. */
-.console.strip .console-events > :deep(.log.open) {
-  left: 0;
-  right: 0;
-  height: calc(var(--stage-height, 100vh) - var(--below-toolbar, 46px) - 8px);
-  max-height: 62vh;
-}
-
-.console.narrow .console-sheet {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + var(--strip-rail-y) + 2px);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: calc(var(--stage-height, 100vh) - var(--below-toolbar, 46px) - var(--console-room, 0px) - 4px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-/* Over the map the wings keep their whole height, the sheet scrolls, and the sky does not show through. */
-.console.narrow .console-wing {
-  position: static;
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  gap: 4px;
-  width: auto;
-  height: auto;
-}
-
-.console.narrow .console-wing::before,
-.console.narrow .console-divider {
-  display: none;
-}
-
-.console.narrow .console-wing > :deep(.console-block) {
-  position: static;
-  width: auto;
-  height: auto;
-  padding: 4px 6px;
-  border: 1px solid rgba(240, 165, 70, 0.55);
-  border-radius: 6px;
-  background-color: rgba(6, 9, 16, 0.98);
-}
-
-.console.narrow .console-wing > :deep(.console-reflection) {
-  height: 150px;
-  padding: 0;
-  --window-radius: 6px;
-}
-.console.narrow .console-sheet > :deep(.console-settings) {
-  flex: none;
-  padding: 6px;
-  border: 1px solid rgba(240, 165, 70, 0.55);
-  border-radius: 6px;
-  background-color: rgba(6, 9, 16, 0.98);
-}
 </style>
+<style scoped src="./strip.css"></style>
