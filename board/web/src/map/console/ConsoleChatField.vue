@@ -82,7 +82,7 @@ onBeforeUnmount(() => {
   <div class="chat-field" :class="{ sheet, off: !!unavailable }">
     <p v-if="unavailable" class="chat-off" :title="unavailable">{{ unavailable }}</p>
     <button v-if="unavailable && pickDuty" type="button" class="pick-duty" aria-haspopup="dialog" aria-label="Выбрать дежурного" title="Выбрать дежурного" @click="emit('pickDuty', null)">Выбрать</button>
-    <template v-else>
+    <template v-else-if="!unavailable">
       <button
         type="button"
         class="mic"
