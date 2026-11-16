@@ -115,15 +115,15 @@ export function unavailableText(view: DutyChatView | null, state: { read: boolea
   if (view.available) return null;
   switch (view.reason) {
     case "no_duty":
-      return "Дежурный не выбран: назначь дежурным аккаунт Claude командой teamster duty set <аккаунт>";
+      return "Дежурный не выбран: назначь аккаунт Claude командой teamster duty set";
     case "codex_duty":
-      return `Дежурный — аккаунт Codex${view.duty ? ` ${view.duty.account}` : ""}, а чат работает только с аккаунтом Claude: назначь его командой teamster duty set`;
+      return `Дежурный${view.duty ? ` ${view.duty.account}` : ""} — аккаунт Codex; чат работает только с Claude (teamster duty set)`;
     case "old_teamster":
-      return "Установленный teamster старше 1.86.0 и не умеет чат с дежурным: обнови teamster";
+      return "teamster старше 1.86.0 и не умеет чат с дежурным: обнови teamster";
     case "read_only":
-      return "Доска запущена только для чтения (--read-only): отправлять сообщения нельзя";
+      return "Доска запущена с --read-only: писать дежурному нельзя";
     case "no_teamster":
-      return "Доска не нашла команду teamster: отправлять сообщения нельзя";
+      return "Доска не нашла команду teamster: писать дежурному нельзя";
     default:
       return "Писать дежурному сейчас нельзя";
   }

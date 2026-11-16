@@ -113,7 +113,25 @@ button stays, switched off. «Сводка дня» shows today's `teamster repo
 «Развернуть панель» (kept in `localStorage` as `codex-board.console-folded.v1`; the galaxy is fitted anew above the
 strip), «Звук уведомлений», off by default (`codex-board.console-sound.v1`): a short quiet chime made by Web Audio,
 lower for an alarm, when a task comes into `review_me` or `attention` (not at the page's first snapshot; the browser lets
-it sound after your first press or key), and in `dev:fixture` the map's source, «доска» or «сценарий». Every subscription has a portrait, the next one of its family in
+it sound after your first press or key), and in `dev:fixture` the map's source, «доска» or «сценарий».
+The command row starts with the duty chat (`GET /api/duty-chat`, `POST /api/actions/duty-chat`; `store/dutyChat.ts`):
+a microphone and the field «Задача дежурному…», which grows to five lines; Enter sends, Shift+Enter breaks the line, and
+a short row hides the other buttons' words first so that the field keeps its width. Focusing the field, or its
+conversation button, opens the conversation upward over the events, between the wings and under the toolbar; Escape or
+«×» folds it back to the field, and whether it stands open is kept as `codex-board.console-chat.v1`. It shows the
+user's messages, the duty's replies with their question's options as chips (only the latest unanswered question's
+are active, and a press sends the option's text) and the tasks a reply started as links that open them as the counters
+do, and teamster's notes about finished tasks, quieter, their details folded. A sent message shows at once until the
+server's view has it, and a refused one stays with the reason, «Повторить» and «Убрать»; messages waiting for the
+running turn are marked so, and while the duty works the conversation says for how long, with the last steps of the
+task feed of slug `duty`. The list stays at its newest message unless you scrolled up. When the chat cannot work a
+plain sentence by the server's `reason` stands instead of the field; `last_error` and a failed read show in the
+conversation. The microphone dictates through the browser's speech recognition (`console/voice.ts`) in the page's
+language, the words coming into the field as they are heard, and never sends; a second press or a pause stops it, and
+without recognition or after the microphone was refused it is switched off with the reason in its title. On a phone
+the conversation and the field open in the sheet under «Ещё». In `dev:fixture` the conversation runs its turns, and
+`?duty=` shows the chat's other states: `no_duty`, `codex_duty`, `old_teamster`, `read_only`, `no_teamster`,
+`error` (a failed last turn) and `refuse` (every send refused). Every subscription has a portrait, the next one of its family in
 order (`duty-claude-1…3.jpg`, `duty-codex-1…2.jpg`, round again past the last; `portraitNames`); an exhausted, limited or
 logged-out subscription's portrait is greyed out. «Дежурный» is the duty account, the one teamster keeps for the
 orchestrator and new tasks skip: its portrait large in an amber-edged window, and over its foot «Дежурный · <name>», its family, the week left and the time to the refill
@@ -343,10 +361,12 @@ The map's code in `board/web/src/map/`:
 - `use/` — the composables `MapView.vue` is made of: the sources, the model, the panels, the labels, the scene and the
   notification sound (`useArrivalChime.ts`).
 - `console/` — the control panel under the map: `MapConsole.vue` with its left wing (`.console-left`: `ConsoleDuty.vue`,
-  `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue` and the command row, `ConsoleCommands.vue`) and
-  right wing (`.console-right`: `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts,
-  `queue.ts` the command row's queues, `portraits.ts` finds the subscriptions'
-  pictures, and `console.css` holds what the blocks share.
+  `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue` and the command row, `ConsoleCommands.vue`,
+  with the duty chat's field `ConsoleChatField.vue` and its conversation `ConsoleChat.vue`) and right wing
+  (`.console-right`: `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts, `queue.ts` the
+  command row's queues, `chat.ts` the conversation's rows and sentences, `useConsoleChat.ts` holds its state,
+  `voice.ts` wraps the speech recognition, `portraits.ts` finds the subscriptions' pictures, `console.css` holds what
+  the blocks share and `strip.css` the narrow window's strip.
 - `overlay/` — the labels over the canvas: the `.ts` builders make their texts and places, and a component for each
   kind draws one (`StarLabel.vue`, `StationPlate.vue`…), with its own styles; `overlay.css` holds what they share. A new
   object's label is a new component there, listed in `GalaxyLabels.vue` or `SystemLabels.vue`.

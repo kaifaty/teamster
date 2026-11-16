@@ -3,8 +3,8 @@
 // user's messages, the duty's replies with their question's options and the tasks they started, the quieter notes about
 // finished tasks, the messages that wait for the running turn and those still on their way. The newest stands at the
 // bottom, and the list stays there unless the user scrolled up. While the duty works: how long, and its last steps.
-import { onMounted, ref } from "vue";
-import { useFollow } from "../station/feed";
+import { onMounted, ref, watch } from "vue";
+import { atBottom } from "../station/feed";
 import type { ChatRow } from "./chat";
 import { runTime } from "./chat";
 import { shortClock } from "./texts";
@@ -26,17 +26,32 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ close: []; choose: [text: string]; task: [repo: string, slug: string]; retry: [key: number]; dismiss: [key: number] }>();
 
+// The list stays at its bottom while the user leaves it there, and goes there with the user's own message; scrolled up,
+// it stays put and offers the news. The jumps are instant, so that the list knows at once where it stands.
 const scroller = ref<HTMLElement | null>(null);
-const pendingCount = () => props.rows.filter((row) => row.kind === "pending").length;
-const { fresh, onScroll, down } = useFollow(
-  scroller,
-  () => [props.rows.length, props.busy, props.activity.length, props.activity.at(-1)?.text, props.lastError],
-  () => props.rows.length,
-  pendingCount,
-);
-onMounted(() => {
+const fresh = ref(false);
+let stuck = true;
+function down() {
   if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight;
-});
+  stuck = true;
+  fresh.value = false;
+}
+function onScroll() {
+  if (!scroller.value) return;
+  stuck = atBottom(scroller.value, 8);
+  if (stuck) fresh.value = false;
+}
+onMounted(down);
+const pendingCount = () => props.rows.filter((row) => row.kind === "pending").length;
+watch(pendingCount, (count, before) => count > before && down(), { flush: "post" });
+watch(
+  () => [props.rows.length, props.rows.at(-1)?.key, props.busy, props.activity.map((line) => line.text).join("\n"), props.lastError],
+  ([count], [was]) => {
+    if (stuck) down();
+    else if (count !== was) fresh.value = true;
+  },
+  { flush: "post" },
+);
 
 const PENDING_WORD = { sending: "отправляю…", sent: "отправлено, жду ответа сервера", failed: "не отправлено" } as const;
 </script>
