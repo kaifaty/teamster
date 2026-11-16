@@ -8,6 +8,7 @@ import os
 import plistlib
 import runpy
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -781,7 +782,8 @@ class ClaudeReviewTests(RotationTestCase):
         return len(st.get("duty_turns", [])) == answers and not st.get("pid")
 
     def test_duty_chat_runs_on_the_duty_account_resumes_and_moves_with_the_duty(self):
-        replies = [self.duty_answer("Which repository?", "needs_decision", "Which repository?", ["repo", "other"]),
+        replies = [self.duty_answer("I need a decision.", "needs_decision", "Which repository?",
+                                    ["parser-repo", "billing-repo"]),
                    self.duty_answer("Started fix-parser.", "started", started=["fix-parser"]),
                    self.duty_answer("fix-parser is still running.")]
         accounts = self.claude_pool_fixture(runs=[{"reply": reply} for reply in replies])
@@ -801,11 +803,15 @@ class ClaudeReviewTests(RotationTestCase):
         (record / "state.json").write_text(json.dumps({"slug": "old-task", "kind": "work", "repo": str(self.repo)}))
         (self.home / "duty-rules.md").write_text("Never touch the billing repository.\n")
         self.put_duty("first")
-        output = self.cli("duty", "chat", "Fix the parser.", timeout=60)
-        self.assertIn("== result: NEEDS DECISION\nWhich repository?\nQuestion: Which repository?\n   - repo\n"
-                      "   - other", output)
+        # A creation cut short before its state.json left a room behind: the next command makes it again.
         room = self.home / "claude-tasks" / "duty" / "room"
+        room.mkdir(parents=True)
+        (room / "partial.txt").write_text("cut short\n")
+        output = self.cli("duty", "chat", "Fix the parser.", timeout=60)
+        self.assertIn("== result: NEEDS DECISION\nI need a decision.\nQuestion: Which repository?\n   - parser-repo\n"
+                      "   - billing-repo", output)
         self.assertTrue((room / ".git").is_dir())
+        self.assertFalse((room / "partial.txt").exists())
         st = self.state("duty")
         self.assertEqual((st["kind"], st["executor"], st["claude_account"], st["worktree"]),
                          ("duty", "claude", "first", str(room)))
@@ -829,9 +835,9 @@ class ClaudeReviewTests(RotationTestCase):
             self.assertIn(text, first["system_prompt"])
         # The next message resumes the same session, as say does.
         self.assertIn("== result: started\nStarted fix-parser.\nStarted: fix-parser",
-                      self.cli("duty", "chat", "repo", timeout=60))
+                      self.cli("duty", "chat", "1", timeout=60))
         second = self.claude_invocations()[-1]
-        self.assertEqual(second["argv"][1], "repo")
+        self.assertEqual(second["argv"][1], "1")
         self.assertEqual(second["argv"][second["argv"].index("--resume") + 1], st["session_id"])
         # A new duty account takes the conversation over by the rotation handoff.
         self.put_duty("second")
@@ -839,7 +845,9 @@ class ClaudeReviewTests(RotationTestCase):
         third = self.claude_invocations()[-1]
         self.assertNotIn("--resume", third["argv"])
         self.assertEqual(third["config_dir"], accounts[1]["config_dir"])
-        for text in ("The duty moved to another account", "Started fix-parser.", "Any news?"):
+        # The new account sees the earlier question and its options, so that the answer "1" stays readable.
+        for text in ("The duty moved to another account", "I need a decision.\nQuestion: Which repository?\n"
+                     "1. parser-repo\n2. billing-repo", "Started fix-parser.\nStarted: fix-parser", "Any news?"):
             self.assertIn(text, third["argv"][1])
         st = self.state("duty")
         self.assertEqual([(rotation["from"], rotation["to"]) for rotation in st["rotations"]], [("first", "second")])
@@ -847,56 +855,171 @@ class ClaudeReviewTests(RotationTestCase):
                          [("needs_decision", "first"), ("started", "first"), ("answered", "second")])
         self.assertEqual(st["duty_turns"][1]["started"], ["fix-parser"])
         self.assertEqual([(row["source"], row["text"]) for row in self.chat_messages()],
-                         [("user", "Fix the parser."), ("user", "repo"), ("user", "Any news?")])
+                         [("user", "Fix the parser."), ("user", "1"), ("user", "Any news?")])
         self.assertIn("room " + str(room) + "\nanswers 3\nresult answered: fix-parser is still running.",
                       self.cli("status", "duty"))
         self.assertIn("== result: answered\nfix-parser is still running.", self.cli("wait", "duty"))
         self.assertIn("== Claude duty", self.cli("stats", "duty"))
         self.assertNotIn("telemetry unavailable", (self.home / "claude-tasks" / "duty" / "stderr.log").read_text())
 
+    def started_by_duty(self, slug, *command):
+        """Start a task (or the given command) as a duty turn would, wait for it and check its provenance."""
+        self.env["TEAMSTER_STARTED_BY"] = "duty"
+        try:
+            if command:
+                self.cli(*command)
+            else:
+                self.start(slug)
+        finally:
+            self.env.pop("TEAMSTER_STARTED_BY")
+        output = self.wait(slug)
+        self.assertEqual(self.state(slug)["started_by"], "duty")
+        return output
+
     def test_duty_started_task_notes_the_chat_under_the_hourly_cap(self):
-        self.claude_pool_fixture(runs=[{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 6)],
+        self.enable_fake_clock(auto_advance=False)
+        self.claude_pool_fixture(runs=[{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 7)],
                                  duty={"chat_auto_turns_per_hour": 1})
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
         self.put_duty("first")
         self.cli("duty", "chat", "Start the parser fix.", timeout=60)
-
-        def started_by_duty(slug):
-            self.env["TEAMSTER_STARTED_BY"] = "duty"
-            try:
-                self.start(slug)
-            finally:
-                self.env.pop("TEAMSTER_STARTED_BY")
-            self.wait(slug)
-            self.assertEqual(self.state(slug)["started_by"], "duty")
-
-        # The duty is idle: the end of the task's cycle starts one note-driven turn.
-        started_by_duty("noted")
+        # The duty is idle: the end of the task's cycle starts one note-driven turn with the whole wait report.
+        report = self.started_by_duty("noted")
         self.until(lambda: self.chat_settled(2), timeout=60)
         note = self.chat_messages()[-1]
         self.assertEqual(note["source"], "note")
-        self.assertTrue(note["text"].startswith("Task note: noted ended turn 1 with outcome completed."))
-        self.assertIn("== noted: turn 1 finished", note["text"])
+        self.assertEqual(note["text"], "Task note: noted ended turn 1 with outcome completed. Report it to the user, "
+                                       "or send it a follow-up.\n\n" + report.strip())
+        self.assertIn("== result: done\nImplemented the typed final result.\n"
+                      "- python3 -I tests/test_rotation.py: passed — 3 tests passed, 0 failed", note["text"])
         self.assertIn("Task note: noted", self.claude_invocations()[-1]["argv"][1])
-        self.assertEqual(len(self.state("duty")["duty_auto_turns"]), 1)
-        # The hourly cap is reached: the next note waits for the user's message and goes out with it.
-        started_by_duty("held-note")
+        first_mark, = self.state("duty")["duty_auto_turns"]
+        # The hourly cap is reached: the next note waits for the user's next message, which say delivers too.
+        self.started_by_duty("held-note")
         notes = self.home / "claude-tasks" / "duty" / "notes.json"
         self.until(lambda: notes.exists() and len(json.loads(notes.read_text())["held"]) == 1)
         self.assertEqual((len(self.claude_invocations()), len(self.state("duty")["duty_turns"])), (2, 2))
-        self.cli("duty", "chat", "What happened?", timeout=60)
+        self.assertIn("sent to duty (turn 3), pid ", self.cli("say", "duty", "What happened?"))
+        self.until(lambda: self.chat_settled(3), timeout=60)
         prompt = self.claude_invocations()[-1]["argv"][1]
         self.assertLess(prompt.index("Task note: held-note"), prompt.index("What happened?"))
         self.assertEqual(json.loads(notes.read_text())["held"], [])
         self.assertEqual([row["source"] for row in self.chat_messages()], ["user", "note", "note", "user"])
-        # A note that cannot be queued is lost, never the task's cycle.
+        # An hour later the cap has room again: a scout the duty started starts the next note-driven turn,
+        # and the expired mark is gone.
+        self.advance_fake_clock(3601)
+        self.started_by_duty("scouted", "scout", "scouted", "Where is tracked.txt read?", "--repo", str(self.repo))
+        self.until(lambda: self.chat_settled(4), timeout=60)
+        self.assertIn("Task note: scouted ended turn 1", self.claude_invocations()[-1]["argv"][1])
+        mark, = self.state("duty")["duty_auto_turns"]
+        self.assertGreaterEqual(mark, first_mark + 3600)
+        self.assertEqual([row["source"] for row in self.chat_messages()].count("note"), 3)
+        # The note carries every section wait prints: result, checks, review, CI and PR.
+        worker = self.worker()
+        st = worker.task_state.load("noted")
+        now = worker.clock.CLOCK.time()
+        st.update(review_start=0, reviews=[{"account": "main", "thread": "review-thread", "started": now - 60,
+                                            "finished": now, "outcome": "completed", "result": self.review_result()}],
+                  ci={"sha": "abcdef1234567", "outcome": "passed", "reason": "", "seconds": 120,
+                      "checks": [{"name": "unit", "bucket": "pass", "link": ""}]},
+                  publish={"at": now, "sha": "", "pushed": True, "pr": "https://github.com/fixture/repo/pull/7",
+                           "action": "created", "error": ""})
+        worker.task_state.save(st)
+        delivered = []
+        with mock.patch.object(worker.supervisor, "deliver_duty_note", side_effect=delivered.append):
+            worker.supervisor.queue_duty_note(st)
+        body = delivered[0]["text"].split("\n\n", 1)[1]
+        self.assertEqual(body, self.cli("wait", "noted").strip())
+        for text in ("== result: done", "- python3 -I tests/test_rotation.py: passed", "== review by main",
+                     "Found two defects.", "[P2] F1 src/parser.py:12", "== CI abcdef1: passed (1/1, 2.0 min)",
+                     "PR: https://github.com/fixture/repo/pull/7"):
+            self.assertIn(text, body)
+        # A note that cannot be queued is lost, never the task's cycle: neither an error nor procs.die escapes.
+        errors = io.StringIO()
+        with mock.patch.object(worker.supervisor, "deliver_duty_note",
+                               side_effect=SystemExit("teamster: settings must be a JSON object")), \
+                contextlib.redirect_stderr(errors):
+            self.assertIsNone(worker.supervisor.queue_duty_note(st))
+        self.assertIn("could not queue the duty note: settings must be a JSON object", errors.getvalue())
+        self.assertEqual(worker.task_state.load("noted")["outcome"], "completed")
         notes.unlink()
         notes.mkdir()
-        started_by_duty("lost-note")
+        self.started_by_duty("lost-note")
         stderr = self.home / "claude-tasks" / "lost-note" / "stderr.log"
         self.until(lambda: "could not queue the duty note" in stderr.read_text())
         self.assertNotIn("Traceback", stderr.read_text())
         self.assertEqual(self.state("lost-note")["outcome"], "completed")
-        self.assertEqual(len(self.state("duty")["duty_turns"]), 3)
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 4)
+
+    def test_duty_chat_queued_notes_keep_the_cap_one_per_cycle_and_survive_a_crash(self):
+        release = self.root / "release-duty"
+        self.claude_pool_fixture(runs=[{"reply": self.duty_answer("First answer."), "gate": str(release)},
+                                       {"reply": self.duty_answer("Never sent."), "mode": "hold"},
+                                       {"reply": self.duty_answer("Third answer.")}],
+                                 duty={"chat_auto_turns_per_hour": 0})
+        finish = self.root / "finish-first-cycle"
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "delay_gate": str(finish), "reply": "First cycle done"},
+            {"mode": "complete", "reply": "Second cycle done"}, {"mode": "complete", "reply": "Late cycle done"}])
+        self.put_duty("first")
+        queue = self.home / "claude-tasks" / "duty" / "queue.json"
+        notes = self.home / "claude-tasks" / "duty" / "notes.json"
+
+        def chat(text):
+            return subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "chat", text], cwd=self.repo, env=self.env,
+                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def waiting():
+            return json.loads(queue.read_text())["waiting"] if queue.exists() else []
+
+        first = chat("Start the parser fix.")
+        self.until(lambda: len(self.claude_invocations()) == 1, timeout=60)
+        self.extra_pids.add(self.state("duty")["pid"])
+        # While the duty turn runs, a task it started ends two cycles, the second for its queued order: two notes.
+        self.env["TEAMSTER_STARTED_BY"] = "duty"
+        try:
+            self.start("noted")
+        finally:
+            self.env.pop("TEAMSTER_STARTED_BY")
+        self.until(lambda: len(self.invocations()) == 1)
+        self.cli("say", "noted", "Follow up.", "--queue")
+        finish.touch()
+        self.wait("noted")
+        self.until(lambda: len(waiting()) == 2, timeout=60)
+        self.assertEqual([order["text"].split(". ", 1)[0] for order in waiting()],
+                         ["Task note: noted ended turn 1 with outcome completed",
+                          "Task note: noted ended turn 2 with outcome completed"])
+        self.assertIn("First cycle done", waiting()[0]["text"])
+        self.assertIn("Second cycle done", waiting()[1]["text"])
+        # The turn ends with notes alone in its queue: under a cap of 0 they wait, and no turn starts.
+        release.touch()
+        output, errors = first.communicate(timeout=60)
+        self.assertEqual(first.returncode, 0, errors)
+        self.assertIn("First answer.", output)
+        self.until(lambda: self.chat_settled(1))
+        self.assertEqual((len(self.claude_invocations()), waiting()), (1, []))
+        self.assertEqual(len(json.loads(notes.read_text())["held"]), 2)
+        # The next message takes both notes. While its turn runs, another task's note joins the queue; then
+        # the supervisor is killed: duty chat does not wait on its zombie, and the next turn still gets the note.
+        second = chat("What finished?")
+        self.until(lambda: len(self.claude_invocations()) == 2 and self.state("duty").get("claude_pid"), timeout=60)
+        prompt = self.claude_invocations()[-1]["argv"][1]
+        for text in ("Task note: noted ended turn 1", "Task note: noted ended turn 2", "What finished?"):
+            self.assertIn(text, prompt)
+        self.assertEqual(json.loads(notes.read_text())["held"], [])
+        self.started_by_duty("late")
+        self.until(lambda: len(waiting()) == 1, timeout=60)
+        st = self.state("duty")
+        for pid in (st["pid"], st["claude_pid"]):
+            self.extra_pids.add(pid)
+            os.kill(pid, signal.SIGKILL)
+        output, errors = second.communicate(timeout=30)
+        self.assertEqual(second.returncode, 1, output)
+        self.assertIn("the duty gave no answer (outcome running)", errors)
+        self.assertIn("Third answer.", self.cli("duty", "chat", "And now?", timeout=60))
+        prompt = self.claude_invocations()[-1]["argv"][1]
+        self.assertLess(prompt.index("Task note: late ended turn 1"), prompt.index("And now?"))
+        self.assertFalse(any(order.get("source") == "note" for order in json.loads(queue.read_text())["dropped"]))
 
     def test_claude_scout_read_only_session_output_telemetry_and_clean(self):
         answers = ["The entry point reads tracked.txt.", "Its caller passes the current directory."]

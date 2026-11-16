@@ -125,7 +125,8 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
     st.pop("error", None)
     task_state.save(st)
     settings = cfg["duty"]
-    minutes = settings["chat_max_minutes"]
+    # say duty --max-minutes and --model replace the settings for the conversation, as say does for a task.
+    minutes = st.get("max_turn_minutes") or settings["chat_max_minutes"]
     deadline = clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
 
     def started(proc):
@@ -140,7 +141,8 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
     system_prompt = duty_chat.write_system_prompt(st["worktree"], directory)
     try:
         response = claude_runner.run_claude(
-            account, st["worktree"], prompt, stopped, deadline, settings["chat_model"] or cfg["claude"].get("model"),
+            account, st["worktree"], prompt, stopped, deadline,
+            st.get("task_model") or settings["chat_model"] or cfg["claude"].get("model"),
             effort or settings["chat_effort"], session_id=st.get("session_id") or None, system_prompt=system_prompt,
             started=started, progress=progress, task_dir=directory, role="duty", max_minutes=minutes)
     finally:
@@ -164,7 +166,7 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
         claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable", reason=reason)
         st["error"] = f"the duty account {name} is unavailable: {reason}"
     elif st["outcome"] == "budget_exhausted":
-        st["error"] = f"the duty chat turn reached duty.chat_max_minutes ({minutes:g})"
+        st["error"] = f"the duty chat turn reached its time budget ({minutes:g} minutes)"
     elif reason:
         st["error"] = reason
     task_state.save(st)

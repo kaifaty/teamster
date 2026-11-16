@@ -50,13 +50,18 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
 
 
 def drop_dead_queue(slug):
-    """Drop the orders a supervisor that died before its cycle ended neither sent nor dropped; the caller holds the state lock."""
+    """Drop the orders a supervisor that died before its cycle ended neither sent nor dropped; the caller holds the state lock.
+
+    Task notes a dead duty turn had accepted are held for the next duty turn instead.
+    """
     queue = task_state.read_queue(slug)
     if queue["waiting"]:
+        dropped = duty_chat.drop_chat_orders(queue["waiting"])
         task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"] + [
-            dict(order, dropped_at=clock.CLOCK.time(), outcome="interrupted") for order in queue["waiting"]]})
-        print(f"{len(queue['waiting'])} queued orders of the previous cycle were not sent; "
-              f"see {task_state.queue_path(slug)}")
+            dict(order, dropped_at=clock.CLOCK.time(), outcome="interrupted") for order in dropped]})
+        if dropped:
+            print(f"{len(dropped)} queued orders of the previous cycle were not sent; "
+                  f"see {task_state.queue_path(slug)}")
 
 
 def launch(st, prompt, effort, current_message, kind, review_after, fix_rounds):
@@ -379,7 +384,7 @@ def finish_cycle(st):
                             stream.write(json.dumps({"at": clock.CLOCK.time(), "turn": st.get("turns", 0),
                                                      "next_turn": following["turns"], "count": len(orders),
                                                      "report": report}, ensure_ascii=False) + "\n")
-                        return {"orders": orders, "sent": following}
+                        return {"orders": orders, "sent": following, "report": report}
                 task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"] + [
                     dict(order, dropped_at=st["turn_finished"], outcome=outcome) for order in orders]})
                 with task_state.queue_dropped_path(slug).open("a", encoding="utf-8") as stream:
@@ -392,12 +397,16 @@ def finish_cycle(st):
         # No automatic review after a CI repair. Only the saved check and CI gate it.
 
 
-def queue_duty_note(st):
-    """Note the end of a cycle of a task the duty started to the duty chat; return how, or None. Never raises."""
+def queue_duty_note(st, report=None):
+    """Note the end of a cycle of a task the duty started to the duty chat; return how, or None. Never raises.
+
+    report is the wait report finish_cycle saved before it started the next turn, which removes last.md.
+    """
     if st.get("started_by") != "duty" or st.get("kind") == duty_chat.CHAT_KIND or st["slug"] == duty_chat.CHAT_SLUG:
         return None
     try:
-        report = "\n".join(wait_view.wait_report_lines(st, st["slug"]))
+        if report is None:
+            report = "\n".join(wait_view.wait_report_lines(st, st["slug"]))
         return deliver_duty_note(duty_chat.note_order(st, report))
     except (Exception, SystemExit) as exc:
         # The note is lost, never the task's cycle.
@@ -610,9 +619,8 @@ def cmd__run(a):
                            result=result, question=question)
             notifications.reap_notifications()
             queued = finish_cycle(st)
-            if queued is None or "sent" not in queued:
-                # A cycle that sent queued orders goes on; the end of the next one notes the duty.
-                queue_duty_note(st)
+            # Every cycle notes the duty, also one whose end started the next turn for queued orders.
+            queue_duty_note(st, (queued or {}).get("report"))
             if queued is not None and cfg is not None:
                 texts = [order["text"] for order in queued["orders"]]
                 if "sent" in queued:

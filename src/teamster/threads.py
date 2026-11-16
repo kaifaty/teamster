@@ -320,7 +320,16 @@ def handoff(st, current_message=False, cfg=None):
         else:
             prompt += procs.sh(config.GIT + ["status", "--short"], cwd=st["worktree"], check=False) or ("(чисто)" if ru else "(clean)")
     if has_threads and chatting:
-        replies = [turn["reply"] for turn in st.get("duty_turns", [])[-10:]]
+        replies = []
+        for turn in st.get("duty_turns", [])[-10:]:
+            reply = turn["reply"]
+            if turn.get("question"):
+                # The user may answer only "the first option": keep the question and its choices.
+                reply += ("\nВопрос: " if ru else "\nQuestion: ") + turn["question"]
+                reply += "".join(f"\n{number}. {option}" for number, option in enumerate(turn.get("options", []), 1))
+            if turn.get("started"):
+                reply += ("\nЗапущены: " if ru else "\nStarted: ") + ", ".join(turn["started"])
+            replies.append(reply)
         prompt += (("\n\nТвои прежние ответы, по порядку:\n" if ru else "\n\nYour earlier replies, in order:\n")
                    + "\n\n".join(replies)[-6000:])
     elif has_threads:

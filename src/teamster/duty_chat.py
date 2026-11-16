@@ -8,6 +8,7 @@ note-driven turns is reached and go out with the next user message.
 """
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -42,6 +43,17 @@ def chat_account(cfg):
     if account is None:
         return None, f"the duty account {record['account']} is not in claude.accounts; nothing was started"
     return account, None
+
+
+def clear_partial_chat():
+    """Remove what a creation cut short before its state.json left, except the state lock; the caller holds it."""
+    for path in chat_dir().iterdir():
+        if path.name == "state.lock":
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
 
 def build_chat_room(room):

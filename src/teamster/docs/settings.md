@@ -27,7 +27,7 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `duty.relative_margin` | `25` | finite number ≥ 0; the duty account moves within a family only to a room at least this many percent larger ([accounts.md](accounts.md#duty-account)) |
 | `duty.absolute_margin` | `100` | finite number ≥ 0; the same move also needs a room at least this many units larger |
 | `duty.claude_only_task_types` | `["visual", "layout"]` | task types (`--task-type`) that a Claude duty account still takes when it is the only Claude account left |
-| `duty.chat_model` | `claude.model` | model of the [duty chat](duty-chat.md) turns, a nonempty string or null |
+| `duty.chat_model` | `claude.model` | model of the [duty chat](duty-chat.md) turns, a nonempty string or null; `say duty --model`, `--effort` and `--max-minutes` replace these chat settings for the conversation |
 | `duty.chat_effort` | `"high"` | effort of the duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
 | `duty.chat_max_minutes` | `20` | positive number; active time budget of one duty chat turn |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; duty chat turns that task notes may start in an hour; the other notes wait for the next user message |

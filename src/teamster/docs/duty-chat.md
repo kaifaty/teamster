@@ -11,8 +11,13 @@ The first message creates one long-lived task, slug `duty` and kind `duty`, with
 repository in `~/.teamster/tasks/duty/room` where the duty writes its briefs. Later messages go to the
 same task exactly as `say` does: the turn resumes the duty's session, and while a turn runs
 `--queue` queues the message and its turn starts when the running one ends (without `--queue` the
-command refuses). `status duty` shows the room and the number of answers; `clean duty` removes the
-room and archives the record, and the next message starts a new conversation.
+command refuses). `teamster say duty "…"` takes the same path as `duty chat`, with the same duty
+checks and held notes, but returns as soon as the turn starts; its `--effort`, `--model` and
+`--max-minutes` replace `duty.chat_effort`, `duty.chat_model` and `duty.chat_max_minutes` for the
+conversation, as `say` does for a task. `duty chat` returns when its turn's supervisor exits, also when
+that supervisor is killed. A creation that an interruption cut short (a room without `state.json`) is
+removed and made again by the next message. `status duty` shows the room and the number of answers;
+`clean duty` removes the room and archives the record, and the next message starts a new conversation.
 
 Without a duty account (`duty.json` absent or its `account` null) the command fails with
 `no duty account` and starts nothing. A Codex duty is refused the same way: the chat needs a Claude
@@ -83,12 +88,13 @@ one row each, in order. `needs_decision` sends the `needs_input` notification wi
 A task started from inside a duty turn records `started_by: "duty"` in its `state.json` (`start` and
 `scout` read `TEAMSTER_STARTED_BY=duty` from the turn's environment). When a cycle of such a task ends,
 its supervisor queues a note to the conversation: `Task note: <slug> ended turn N with outcome …`
-followed by what `wait` prints (result, checks, review, CI, PR). A cycle that sent the task's own
-queued orders goes on, and the end of the next one notes the duty. The note joins the running duty
-turn's queue, or starts a note-driven turn while the duty is idle. At most
-`duty.chat_auto_turns_per_hour` note-driven turns start in an hour; the rest wait in
-`tasks/duty/notes.json` and go out with the next user message, as do notes held while the duty is
-not a Claude account or after a failed or stopped duty turn. The duty conversation's own turns never
+followed by what `wait` prints (result, checks, review, CI, PR). Every cycle sends one, also a cycle
+whose end started the next turn for the task's own queued orders (with the report saved before that
+turn began). The note joins the running duty turn's queue, or starts a note-driven turn while the duty
+is idle. At most `duty.chat_auto_turns_per_hour` note-driven turns start in an hour, whether the notes
+arrive while the duty is idle or wait in the queue of a running turn; the rest wait in
+`tasks/duty/notes.json` and go out with the next user message, as do notes held while the duty is not
+a Claude account, after a failed or stopped duty turn, or in the queue of a duty supervisor that died. The duty conversation's own turns never
 notify, and a failure to queue a note is logged in the task's `stderr.log`, never failing its cycle.
 
 ## Settings
