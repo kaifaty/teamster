@@ -318,8 +318,8 @@ def wait_for_account(st, infos, cfg, reason, stopped, sleep=None):
     return None
 
 
-def claude_reset(cfg, skip=()):
-    """Earliest future limit end or window reset in the Claude pool, without the accounts in skip."""
+def claude_reset(cfg, skip=(), model=None):
+    """Earliest future limit end or window reset in the Claude pool for ``model``, without the accounts in skip."""
     limits, now, resets = claude_accounts.read_limits(), clock.CLOCK.time(), []
     for account in claude_accounts.accounts(cfg):
         if account["name"] in skip:
@@ -327,8 +327,8 @@ def claude_reset(cfg, skip=()):
         info = limits.get(account["name"], {})
         windows = info.get("unifiedWindows") or {}
         # A limited account returns at its known limit end, whatever its windows say.
-        stamps = ([info.get("limited_until", info.get("resetsAt"))]
-                  if claude_accounts.limited(info, now) else [])
+        stamps = ([claude_accounts.limit_end(info, now, model)]
+                  if claude_accounts.limited(info, now, model) else [])
         if not any(result_schema.is_finite_number(stamp) for stamp in stamps):
             stamps = [window.get("resetsAt") for window in windows.values() if isinstance(window, dict)]
         resets += [(stamp, account["name"]) for stamp in stamps
@@ -339,15 +339,16 @@ def claude_reset(cfg, skip=()):
 def claude_choice(st, cfg, stopped, exclude=()):
     """Prefer the task's account and session, then any other pool account."""
     current = st.get("claude_account")
+    model = st.get("task_model") or cfg["claude"].get("model")
     others = [account["name"] for account in claude_accounts.accounts(cfg) if account["name"] != current]
     if current and current not in exclude:
         # The task's own account is not new work, even on duty.
         claude_review.refresh_limits(cfg, stopped)
-        chosen = claude_accounts.select(cfg, "work", exclude=others)
+        chosen = claude_accounts.select(cfg, "work", exclude=others, model=model)
         if chosen is not None or stopped():
             return chosen
     return claude_review.select_account(cfg, "work", exclude=set(exclude) | {current}, stopped=stopped,
-                                        task_type=st.get("task_type"))
+                                        task_type=st.get("task_type"), model=model)
 
 
 def wait_for_claude_account(st, cfg, reason, stopped, sleep=None):
@@ -357,16 +358,18 @@ def wait_for_claude_account(st, cfg, reason, stopped, sleep=None):
     already_waited = st.get("reset_wait_seconds", 0)
     deadline = wait_started + config.MAX_RESET_WAIT_SECONDS - already_waited
 
+    model = st.get("task_model") or cfg["claude"].get("model")
+
     def update_waited():
         st["reset_wait_seconds"] = already_waited + max(0, clock.CLOCK.time() - wait_started)
 
     def reserved():
         # Do not wake for a duty account that this task may not take.
         current = st.get("claude_account")
-        return duty.claude_reserved(cfg, "work", {current} if current else (), st.get("task_type"), stopped)
+        return duty.claude_reserved(cfg, "work", {current} if current else (), st.get("task_type"), stopped, model)
 
     def exhausted(why):
-        stamp, name = claude_reset(cfg, reserved())
+        stamp, name = claude_reset(cfg, reserved(), model)
         st.pop("sleeping", None)
         st.update(outcome="exhausted", exhausted={"at": clock.CLOCK.time(), "reset": stamp,
                                                   "account": name, "reason": why})
@@ -382,7 +385,7 @@ def wait_for_claude_account(st, cfg, reason, stopped, sleep=None):
         if not cfg["wait_for_reset"]:
             exhausted(reason)
             return None
-        stamp, name = claude_reset(cfg, reserved())
+        stamp, name = claude_reset(cfg, reserved(), model)
         # A delayed reset may still have its old timestamp. Avoid a tight probe loop.
         until = stamp + config.RESET_MARGIN if stamp is not None else started + config.RESET_RETRY_SECONDS
         if until <= started:

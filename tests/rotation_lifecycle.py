@@ -1844,10 +1844,10 @@ worker.notifications.reap_notifications = reap
             "claude": [{"name": "reviewer", "weight": 1, "updated_at": None, "stale": True,
                         "five_hour": {"used_percent": 25, "resets_at": iso_time(self.reset - 1800)},
                         "seven_day": {"used_percent": 80, "resets_at": iso_time(self.reset)},
-                        "limited_until": iso_time(self.reset), "token_unavailable": True, "needs_login": True},
+                        "model_limits": [], "limited_until": iso_time(self.reset), "token_unavailable": True, "needs_login": True},
                        {"name": "unknown", "weight": 1, "updated_at": None, "stale": True,
                         "five_hour": None, "seven_day": None,
-                        "limited_until": None, "token_unavailable": None, "needs_login": None}],
+                        "model_limits": [], "limited_until": None, "token_unavailable": None, "needs_login": None}],
             "thresholds": {"soft_switch_at": 80, "switch_at": 99},
             "credits_floor": 0, "credits_floor_until": None, "duty": None})
         for private in (token, str(self.home), str(self.other), str(claude_home)):

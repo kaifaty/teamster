@@ -286,6 +286,8 @@ def claude_account_lines(cfg, duty_account=None):
         if claude_accounts.limited(info):
             reason = " (token unavailable)" if claude_accounts.token_marked(info) else ""
             parts.append("limited until " + config.local_time(info.get("limited_until", info.get("resetsAt"))) + reason)
+        for model, until in claude_accounts.model_limits(info).items():
+            parts.append(f"limited until {config.local_time(until)} for model {model}")
         if account["name"] == duty_account:
             parts.append("on duty")
         lines.append("claude " + account["name"] + ": " + "; ".join(parts))
