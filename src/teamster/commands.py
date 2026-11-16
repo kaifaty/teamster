@@ -843,14 +843,14 @@ def cmd_duty_set(a):
         if not claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1]:
             procs.die(f"{label} has no token; sign it in with teamster claude-login {name}; nothing changed")
         info = claude_accounts.read_limits().get(name, {})
-        if info.get("reason") == "authentication failed" and claude_accounts.limited(info, now):
+        if info.get("reason") == "authentication failed":
             procs.die(f"{label} needs login: authentication failed; run teamster claude-login {name}; nothing changed")
         # The token was just read: drop a missing-token mark as duty tick does.
         claude_accounts.token_available(name)
         candidate = duty.claude_duty_candidate(cfg, account, claude_accounts.read_limits().get(name, {}), now, now)
     else:
         config.CODEX["path"] = config.resolve_codex()
-        info = accounts.account_read(account)
+        info = next(item for item in accounts.snapshots(cfg) if item["name"] == name)
         if info["logged_in"] is False:
             procs.die(f"{label} is not logged in; run teamster login {name}; nothing changed")
         candidate = duty.codex_duty_candidate(cfg, info)

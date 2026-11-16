@@ -3063,7 +3063,7 @@ class ClaudeReviewTests(RotationTestCase):
         worker = self.worker()
         cfg = worker.config.accounts_config()
         limits_path = self.home / "claude-tasks" / "claude-limits.json"
-        limits = {"first": dict(self.duty_snapshot(.1), limited_until=self.reset), "main": self.duty_snapshot(.5)}
+        limits = {"first": self.duty_snapshot(.1), "main": self.duty_snapshot(.5)}
         limits_path.write_text(json.dumps(limits))
         duty_path, log = self.home / "duty.json", self.home / "duty-log.jsonl"
 
@@ -3076,6 +3076,21 @@ class ClaudeReviewTests(RotationTestCase):
         def record():
             return json.loads(duty_path.read_text())
 
+        def lookups():
+            return len(self.security_trace_path.read_text().splitlines())
+
+        # A pinned Codex duty stays although a Claude account would win the election.
+        before = time.time()
+        self.assertEqual(self.cli("duty", "set", "second"),
+                         "duty pinned to codex/second; duty tick keeps it until teamster duty auto or duty clear\n")
+        pinned = record()
+        self.assertTrue(before <= pinned["since"] <= time.time(), pinned)
+        self.assertEqual(pinned, {"account": "second", "family": "codex", "since": pinned["since"],
+                                  "checked_at": pinned["since"], "reason": "manual",
+                                  "rooms": {"claude": {}, "codex": {}}, "pinned": True, "pinned_unavailable": None})
+
+        # Refusals keep the duty and the log as they were.
+        saved = (duty_path.read_text(), log.read_text())
         self.assertIn("no account 'nobody'", refused("nobody"))
         self.assertIn("no codex account 'first'", refused("first", "--family", "codex"))
         self.assertIn("'main' names both claude/main and codex/main", refused("main"))
@@ -3088,24 +3103,38 @@ class ClaudeReviewTests(RotationTestCase):
             claude, security={"codex-worker-claude-first": {"unavailable": True}})))
         self.assertIn("claude/first has no token", refused("first"))
         self.claude_fixture_path.write_text(json.dumps(claude))
-        self.assertFalse(duty_path.exists() or log.exists())
+        # An expired limit does not lift a failed authentication.
+        limits_path.write_text(json.dumps(dict(limits, main=dict(limits["main"], reason="authentication failed"))))
+        self.assertIn("claude/main needs login", refused("main", "--family", "claude"))
+        limits_path.write_text(json.dumps(limits))
+        self.assertEqual((duty_path.read_text(), log.read_text()), saved)
 
-        # A pinned Codex duty stays although a Claude account would win the election.
-        self.assertEqual(self.cli("duty", "set", "second"),
-                         "duty pinned to codex/second; duty tick keeps it until teamster duty auto or duty clear\n")
-        pinned = record()
-        self.assertEqual(pinned, {"account": "second", "family": "codex", "since": pinned["since"],
-                                  "checked_at": pinned["since"], "reason": "manual",
-                                  "rooms": {"claude": {}, "codex": {}}, "pinned": True, "pinned_unavailable": None})
         self.assertIn("duty codex/second since ", self.cli("duty", "tick"))
-        self.assertEqual(record(), dict(pinned, checked_at=record()["checked_at"],
-                                        rooms={"claude": {"main": 35}, "codex": {"main": 89, "second": 89}}))
+        self.assertEqual(record(), dict(pinned, checked_at=record()["checked_at"], rooms={
+            "claude": {"first": 75, "main": 35}, "codex": {"main": 89, "second": 89}}))
         self.assertIn("pinned by hand: duty tick keeps it", self.cli("duty", "status"))
+        # New Codex work skips the pinned duty account.
+        now = time.time()
+        infos = [{"name": name, "logged_in": True, "account_id": name, "limits": {
+            "primary": {"used": 10, "minutes": 10080, "reset": now + delay},
+            "secondary": {"used": 2, "minutes": 300, "reset": now + delay}}}
+            for name, delay in (("second", 600), ("main", 3600))]
+        self.assertEqual(worker.accounts.available(infos, cfg)["name"], "second")
+        self.assertEqual(worker.accounts.available(infos, cfg, worker.duty.codex_reserved(infos, cfg))["name"],
+                         "main")
+        # An account with another's account id is pinned with a warning.
+        other = json.loads((self.other / "fixture.json").read_text())
+        (self.other / "fixture.json").write_text(json.dumps(dict(other, accountId=codex["accountId"])))
+        self.assertIn("\nwarning: codex/second cannot work now: same account as main;", self.cli("duty", "set", "second"))
+        self.assertEqual(record()["pinned_unavailable"], "same account as main")
+        (self.other / "fixture.json").write_text(json.dumps(other))
 
-        # A limited account is pinned with a warning; a tick keeps it and records why it cannot work.
-        output = self.cli("duty", "set", "first", "--family", "claude")
-        self.assertRegex(output, r"\nwarning: claude/first cannot work now: limited until [^\n]+; "
-                                 r"it stays on duty while pinned\n$")
+        # A tick keeps a pinned Claude duty that became limited and records why it cannot work.
+        self.assertEqual(self.cli("duty", "set", "first", "--family", "claude"),
+                         "duty pinned to claude/first; duty tick keeps it until teamster duty auto or duty clear\n")
+        self.assertIsNone(record()["pinned_unavailable"])
+        limits["first"]["limited_until"] = self.reset
+        limits_path.write_text(json.dumps(limits))
         self.assertRegex(self.cli("duty", "tick"), r"^duty claude/first since [^\n]+: manual "
                                                    r"\(pinned; unavailable: limited until [^\n]+\)\n$")
         kept = record()
@@ -3114,30 +3143,38 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertIn("\nwarning: the pinned duty cannot work now: limited until ", self.cli("duty", "status"))
         self.assertEqual(json.loads(self.cli("duty", "status", "--json"))["duty"], kept)
         self.assertEqual(json.loads(self.cli("accounts", "--json"))["duty"], kept)
+        self.assertRegex(self.cli("duty", "set", "first"), r"\nwarning: claude/first cannot work now: limited until "
+                                                           r"[^\n]+; it stays on duty while pinned\n$")
 
-        # auto unpins and elects at once.
-        self.assertIn("duty elected automatically: changed to claude/main since ", self.cli("duty", "auto"))
+        # auto unpins and elects at once from fresh snapshots: with every Claude account limited, Codex wins.
+        limits["main"]["limited_until"] = self.reset
+        limits_path.write_text(json.dumps(limits))
+        self.assertIn("duty elected automatically: changed to codex/main since ", self.cli("duty", "auto"))
         elected = record()
-        self.assertEqual((elected["account"], elected["pinned"], elected["pinned_unavailable"]), ("main", False, None))
+        self.assertEqual((elected["family"], elected["account"], elected["pinned"], elected["pinned_unavailable"]),
+                         ("codex", "main", False, None))
         self.assertRegex(elected["reason"], r"^pin removed; claude/first unavailable: limited until ")
 
-        # A set that comes during a tick waits for it, and its pin is what stays.
-        del limits["first"]["limited_until"]
+        # A set during a tick waits for the whole tick, and its pin is what stays.
+        for name in limits:
+            del limits[name]["limited_until"]
         limits_path.write_text(json.dumps(limits))
-        lookups = len(self.security_trace_path.read_text().splitlines())
-        with (self.home / "duty.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            setting = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "set", "first"], cwd=self.repo,
-                                       env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # The token lookup comes before the lock.
-            deadline = time.time() + 30
-            while len(self.security_trace_path.read_text().splitlines()) == lookups and time.time() < deadline:
-                time.sleep(0.05)
-            worker.duty.run_duty_tick(cfg, [], time.time())
-            self.assertIsNone(setting.poll())
-            self.assertEqual((record()["account"], record()["pinned"]), ("main", False))
-        stdout, stderr = setting.communicate(timeout=30)
-        self.assertEqual(setting.returncode, 0, stderr)
+        gate = self.root / "tick-gate"
+        (self.home / "fixture.json").write_text(json.dumps(dict(codex, rate_limits_gate=str(gate))))
+        ticking = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "tick"], cwd=self.repo, env=self.env,
+                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.until(lambda: any(event.get("command") == "quota-waiting" for event in self.trace()), timeout=30)
+        looked_up = lookups()
+        setting = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "set", "first"], cwd=self.repo,
+                                   env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # The token lookup comes before the lock.
+        self.until(lambda: lookups() > looked_up, timeout=30)
+        time.sleep(0.5)
+        self.assertIsNone(setting.poll())
+        gate.touch()
+        outputs = [process.communicate(timeout=60) + (process.returncode,) for process in (ticking, setting)]
+        self.assertEqual([code for _, _, code in outputs], [0, 0], outputs)
+        self.assertIn("duty changed to claude/first since ", outputs[0][0])
         self.cli("duty", "tick")
         self.assertEqual((record()["account"], record()["pinned"], record()["pinned_unavailable"]),
                          ("first", True, None))
@@ -3154,9 +3191,12 @@ class ClaudeReviewTests(RotationTestCase):
         entries = [json.loads(line) for line in log.read_text().splitlines()]
         self.assertEqual([(entry["from"], entry["to"], entry["reason"].split(";")[0], entry["pinned"])
                           for entry in entries],
-                         [(None, "codex/second", "manual", True), ("codex/second", "claude/first", "manual", True),
-                          ("claude/first", "claude/main", "pin removed", False),
-                          ("claude/main", "claude/first", "manual", True),
+                         [(None, "codex/second", "manual", True), ("codex/second", "codex/second", "manual", True),
+                          ("codex/second", "claude/first", "manual", True),
+                          ("claude/first", "claude/first", "manual", True),
+                          ("claude/first", "codex/main", "pin removed", False),
+                          ("codex/main", "claude/first", "a Claude account is available again", False),
+                          ("claude/first", "claude/first", "manual", True),
                           (None, "claude/first", "largest room 75", False)])
 
     def test_duty_status_clear_accounts_and_launchd_plist(self):
