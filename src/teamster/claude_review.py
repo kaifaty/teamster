@@ -59,9 +59,9 @@ def worktree_snapshot(st):
     return head, status, files
 
 
-def event_unavailable(event, account, record=True, model=None):
+def event_unavailable(event, account, record=True, model=None, limit=None):
     """Recognize review account errors using the shared transport parser."""
-    return claude_runner.stream_unavailable(event, account, record, model)
+    return claude_runner.stream_unavailable(event, account, record, model, limit)
 
 
 def refresh_limits(cfg, stopped=None):
@@ -225,7 +225,7 @@ def _answer(name, answer, record=True, model=None):
     if answer is None:
         return "request failed"
     output, returncode, timed_out = answer
-    reason, answered = None, False
+    reason, answered, limit = None, False, {}
     for line in output.splitlines():
         if not line.strip():
             continue
@@ -238,14 +238,14 @@ def _answer(name, answer, record=True, model=None):
             reason = reason or "request failed"
             continue
         # Later events of a failed probe do not lift its mark.
-        unavailable = event_unavailable(event, name, record, model if reason is None else None)
+        unavailable = event_unavailable(event, name, record, model if reason is None else None, limit)
         reason = reason or unavailable
         if event.get("type") == "result":
             if event.get("is_error"):
                 reason = reason or "request failed"
             else:
                 answered = isinstance(event.get("result"), str) and bool(event["result"].strip())
-    if reason in ("usage limit", "authentication failed") and record:
+    if reason in ("usage limit", "authentication failed") and record and "limited_until" not in limit:
         claude_accounts.mark_limited(name, reason=reason, model=model)
     if timed_out:
         return "request failed"

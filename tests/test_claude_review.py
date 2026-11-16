@@ -1931,6 +1931,19 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual((saved.get("status"), saved.get("limited_until"), list(saved["model_limits"])),
                          (None, None, ["model-a"]))
 
+    def test_claude_work_sleeps_until_the_model_limit_of_its_only_account(self):
+        self.fixture_timeout = 90
+        self.claude_pool_fixture(names=("first",), runs=[{"limits": self.model_rejection(.35),
+                                                          "reply": self.work_result()}])
+        self.start("claude-model-sleep", "--executor", "claude", "--model", "model-a")
+        self.cli("wait", "claude-model-sleep", "--timeout", "60", timeout=75)
+        state = self.state("claude-model-sleep")
+        self.assertEqual((state["outcome"], state["sleeping"]["account"]), ("sleeping", "first"))
+        self.assertAlmostEqual(state["sleeping"]["until"], self.reset + 0.1, delta=1)
+        self.assertEqual(len(self.claude_invocations()), 1)
+        self.cli("stop", "claude-model-sleep")
+        self.wait("claude-model-sleep")
+
     def test_claude_review_takes_an_account_limited_for_the_task_model(self):
         self.claude_pool_fixture(names=("first",))
         settings = json.loads((self.home / "claude-accounts.json").read_text())
@@ -1964,20 +1977,24 @@ class ClaudeReviewTests(RotationTestCase):
             return name(worker.account_rotation.claude_choice(st, cfg, lambda: False))
 
         def reject(weekly, short=0):
+            # The rejected event is saved and scoped in one write; nobody sees it account-wide first.
             pool.clear_limits("first")
-            event = {"type": "rate_limit_event", "rate_limit_info": self.model_rejection(weekly, short)}
-            self.assertEqual(worker.claude_review.event_unavailable(event, "first", model="model-a"), "usage limit")
-            pool.mark_limited("first", reason="usage limit", model="model-a")
+            event, limit = {"type": "rate_limit_event", "rate_limit_info": self.model_rejection(weekly, short)}, {}
+            self.assertEqual(worker.claude_review.event_unavailable(event, "first", model="model-a", limit=limit),
+                             "usage limit")
+            return limit["limited_until"], limit["limited_model"]
 
         # Any window at 100% still excludes the account for every model.
         for weekly, short in ((1, 0), (.35, 1)):
             with self.subTest(weekly=weekly, short=short):
-                reject(weekly, short)
+                self.assertEqual(reject(weekly, short), (self.reset, None))
                 self.assertEqual(pool.read_limits()["first"]["limited_until"], self.reset)
                 self.assertNotIn("model_limits", pool.read_limits()["first"])
                 self.assertEqual((choose("model-a"), choose("model-b")), (None, None))
 
-        reject(.35)
+        self.assertEqual(reject(.999), (self.reset, "model-a"))
+        self.assertEqual(reject(.35), (self.reset, "model-a"))
+        self.assertNotIn("status", pool.read_limits()["first"])
         marked = pool.read_limits()["first"]["model_limits"]["model-a"]
         self.assertEqual((choose("model-a"), choose("model-b"), choose(None)), (None, "first", "first"))
         self.assertEqual((choose("model-a", "first"), choose("model-b", "first")), (None, "first"))
@@ -2003,7 +2020,11 @@ class ClaudeReviewTests(RotationTestCase):
         worker.claude_review.event_unavailable(success, "first", model="model-b")
         self.assertIsNone(choose("model-a"))
         clock.sleep(1)
-        worker.claude_review.event_unavailable(success, "first", model="model-a")
+        # A request on the limited model that succeeds lifts the mark from its own stream.
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            response = worker.claude_review.claude_runner.run_claude(
+                pool.accounts(cfg)[0], str(self.repo), "Review.", lambda: False, model="model-a", reviewing=True)
+        self.assertEqual(response["outcome"], "completed")
         self.assertEqual(choose("model-a"), "first")
         pool.mark_limited("first", reason="usage limit", model="model-a")
         marked = pool.read_limits()["first"]["model_limits"]["model-a"]
@@ -2033,6 +2054,9 @@ class ClaudeReviewTests(RotationTestCase):
                 path.write_text(json.dumps(limits))
                 self.assertEqual((pool.select(cfg, "work", model="model-a"),
                                   pool.select(cfg, "work", model="model-b")), (None, None))
+                self.assertEqual(pool.limit_end(pool.read_limits()["default"], model="model-a"), later)
+        clock.sleep(later - clock.time() + 1)
+        self.assertEqual(name(pool.select(cfg, "work", model="model-a")), "default")
         path.write_text(json.dumps(self.claude_limits))
         self.assertEqual(name(pool.select(cfg, "work", model="model-b")), "default")
 

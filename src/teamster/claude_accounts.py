@@ -57,10 +57,13 @@ def _locked_limits():
         temporary.replace(path)
 
 
-def save_limits(name, info, event_time=None, model=None):
+def save_limits(name, info, event_time=None, model=None, mark_model=None):
     """Store only documented numeric fields, never arbitrary CLI output.
 
-    An allowance on ``model`` newer than that model's mark clears the mark.
+    An allowance on ``model`` newer than that model's mark clears the mark. A
+    rejection with ``mark_model`` is marked in the same write, as mark_scope()
+    would, so no reader sees the rejected snapshot without its scope; the result
+    of that mark is returned, otherwise None.
     """
     selected = {}
     if info.get("status") in ("allowed", "allowed_warning", "rejected"):
@@ -95,6 +98,9 @@ def save_limits(name, info, event_time=None, model=None):
             _clear_model_mark(previous, model, event_time)
         _prune_model_marks(previous)
         limits[name] = previous
+        if mark_model and selected.get("status") == "rejected":
+            return _mark(previous, clock.CLOCK.time(), False, "usage limit", mark_model)
+        return None
 
 
 def _model_marks(info):
@@ -260,49 +266,52 @@ def mark_limited(name, token_unavailable=False, reason=None, model=None):
 
 def mark_scope(name, token_unavailable=False, reason=None, model=None):
     """Mark as mark_limited(); return (limit end, the model when only it was limited, else None)."""
-    now = clock.CLOCK.time()
     with _locked_limits() as limits:
-        info = limits.setdefault(name, {})
-        windows = info.get("unifiedWindows") if isinstance(info.get("unifiedWindows"), dict) else {}
-        windows = {key: window for key, window in windows.items() if isinstance(window, dict)}
-        model_only = (not token_unavailable and reason == "usage limit" and bool(model)
-                      and any(result_schema.is_finite_number(window.get("utilization"))
-                              for window in windows.values())
-                      and all(window_used(window, now) < 100 for window in windows.values()))
-        if token_unavailable:
-            info["reason"] = "token unavailable"
-        elif reason in ("authentication failed", "usage limit") and not model_only:
-            info["reason"] = reason
-        if token_unavailable:
-            until = now + TOKEN_RETRY_SECONDS
-            if limited(info, now):
-                # An unknown reset would exclude the account for good; keep the hour.
-                reset = info.get("limited_until", info.get("resetsAt"))
-                if result_schema.is_finite_number(reset) and reset > until:
-                    until = reset
-            info.update(token_unavailable=True, token_retry_at=now + TOKEN_RETRY_SECONDS,
-                        limited_until=until, limited_at=now)
-            return until, None
-        depleted = [window.get("resetsAt") for window in windows.values() if window_used(window, now) >= 100]
-        depleted = [reset for reset in depleted if result_schema.is_finite_number(reset) and reset > now]
-        resets = [window.get("resetsAt") for window in windows.values()]
-        resets = [reset for reset in resets if result_schema.is_finite_number(reset) and reset > now]
-        reset = info.get("resetsAt")
-        if not result_schema.is_finite_number(reset) or reset <= now:
-            reset = max(depleted) if depleted else min(resets, default=None)
-        if model_only:
-            # The rejected snapshot belongs to this model; other models keep the account.
-            if info.get("status") == "rejected":
-                info.pop("status")
-            _prune_model_marks(info, now)
-            info.setdefault("model_limits", {})[model] = {"limited_until": reset, "limited_at": now}
-            return reset, model
-        if token_marked(info, now) and (not result_schema.is_finite_number(reset)
-                                        or reset < info["token_retry_at"]):
-            reset = info["token_retry_at"]
-        info["limited_until"] = reset
-        info["limited_at"] = now
-        return reset, None
+        return _mark(limits.setdefault(name, {}), clock.CLOCK.time(), token_unavailable, reason, model)
+
+
+def _mark(info, now, token_unavailable, reason, model):
+    """Apply mark_scope() to one account's cached limits; the caller holds the limits lock."""
+    windows = info.get("unifiedWindows") if isinstance(info.get("unifiedWindows"), dict) else {}
+    windows = {key: window for key, window in windows.items() if isinstance(window, dict)}
+    model_only = (not token_unavailable and reason == "usage limit" and bool(model)
+                  and any(result_schema.is_finite_number(window.get("utilization"))
+                          for window in windows.values())
+                  and all(window_used(window, now) < 100 for window in windows.values()))
+    if token_unavailable:
+        info["reason"] = "token unavailable"
+    elif reason in ("authentication failed", "usage limit") and not model_only:
+        info["reason"] = reason
+    if token_unavailable:
+        until = now + TOKEN_RETRY_SECONDS
+        if limited(info, now):
+            # An unknown reset would exclude the account for good; keep the hour.
+            reset = info.get("limited_until", info.get("resetsAt"))
+            if result_schema.is_finite_number(reset) and reset > until:
+                until = reset
+        info.update(token_unavailable=True, token_retry_at=now + TOKEN_RETRY_SECONDS,
+                    limited_until=until, limited_at=now)
+        return until, None
+    depleted = [window.get("resetsAt") for window in windows.values() if window_used(window, now) >= 100]
+    depleted = [reset for reset in depleted if result_schema.is_finite_number(reset) and reset > now]
+    resets = [window.get("resetsAt") for window in windows.values()]
+    resets = [reset for reset in resets if result_schema.is_finite_number(reset) and reset > now]
+    reset = info.get("resetsAt")
+    if not result_schema.is_finite_number(reset) or reset <= now:
+        reset = max(depleted) if depleted else min(resets, default=None)
+    if model_only:
+        # The rejected snapshot belongs to this model; other models keep the account.
+        if info.get("status") == "rejected":
+            info.pop("status")
+        _prune_model_marks(info, now)
+        info.setdefault("model_limits", {})[model] = {"limited_until": reset, "limited_at": now}
+        return reset, model
+    if token_marked(info, now) and (not result_schema.is_finite_number(reset)
+                                    or reset < info["token_retry_at"]):
+        reset = info["token_retry_at"]
+    info["limited_until"] = reset
+    info["limited_at"] = now
+    return reset, None
 
 
 def select(cfg, role, exclude=(), prefer_unused=(), model=None):

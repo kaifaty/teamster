@@ -62,11 +62,14 @@ def bash_timeouts(deadline, max_minutes):
             "BASH_MAX_TIMEOUT_MS": str(maximum)}
 
 
-def stream_unavailable(event, account, record=True, model=None):
+def stream_unavailable(event, account, record=True, model=None, limit=None):
     """Persist safe limit fields and recognize account availability errors.
 
     With record false, only recognize them: nothing about the account is stored.
     ``model`` is the ``--model`` of the request; its success lifts that model's limit mark.
+    With a ``limit`` dict, a rejection on ``model`` (or on the model ``limit`` already
+    names) is marked together with its snapshot, and ``limit`` gets ``limited_until``
+    and ``limited_model``.
     """
     kind = event.get("type")
     if (kind == "result" or kind == "system" and event.get("subtype") == "api_retry"):
@@ -80,13 +83,17 @@ def stream_unavailable(event, account, record=True, model=None):
         info = event.get("rate_limit_info")
         if isinstance(info, dict):
             if record:
-                claude_accounts.save_limits(account, info, event.get("timestamp"), model)
+                mark_model = (model or limit.get("limited_model")) if limit is not None else None
+                marked = claude_accounts.save_limits(account, info, event.get("timestamp"), model, mark_model)
+                if marked is not None:
+                    limit["limited_until"], limit["limited_model"] = marked
             if info.get("status") == "rejected":
                 return "usage limit"
     return None
 
 
-def event_result(event, telemetry, token, account, reviewing=True, scouting=False, reflecting=False, model=None):
+def event_result(event, telemetry, token, account, reviewing=True, scouting=False, reflecting=False, model=None,
+                 limit=None):
     """Decode selected stream fields; return (result, unavailability reason)."""
     if not isinstance(event, dict):
         return None, "invalid JSON output"
@@ -110,7 +117,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
                     telemetry.setdefault("weekly_reset_before", reset)
                     telemetry["weekly_used_after"] = used * 100
                     telemetry["weekly_reset_after"] = reset
-        return None, stream_unavailable(event, account, model=model)
+        return None, stream_unavailable(event, account, model=model, limit=limit)
     usage = event.get("usage")
     if isinstance(usage, dict):
         telemetry["usage"] = {key: usage[key] for key in
@@ -120,7 +127,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
         telemetry["cost_usd"] = event["total_cost_usd"]
     if type(event.get("num_turns")) is int:
         telemetry["num_turns"] = event["num_turns"]
-    reason = stream_unavailable(event, account, model=model)
+    reason = stream_unavailable(event, account, model=model, limit=limit)
     if reason:
         return None, reason
     if event.get("is_error"):
@@ -325,16 +332,12 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                                     response["raw_message"] = event["result"].replace(token, "[REDACTED]")
                         # Later events of a failed stream do not lift its mark.
                         stream_model = (model or None) if response["reason"] is None else None
+                        # Each rejection on a known model is marked with its snapshot: a stop before
+                        # the caller returns must not leave the account excluded for every model,
+                        # and the caller does not mark again over a later success on this model.
                         result, reason = event_result(event, response["telemetry"], token,
                                                       account["name"], reviewing, scouting, reflecting,
-                                                      stream_model)
-                        limit_model = stream_model or response.get("limited_model")
-                        if reason == "usage limit" and limit_model:
-                            # Mark each rejection now: a stop before the caller returns must not leave
-                            # the rejected snapshot excluding the account for every model, and the
-                            # caller does not mark again over a later success on this model.
-                            response["limited_until"], response["limited_model"] = claude_accounts.mark_scope(
-                                account["name"], reason=reason, model=limit_model)
+                                                      stream_model, limit=response)
                         if reason is not None:
                             response["reason"] = response["reason"] or reason
                             response["result"] = None

@@ -309,7 +309,8 @@ an older unnamed cache is read as `default`. An account's top-level `limited_unt
 mark the whole account; the optional `model_limits` maps a model to
 `{"limited_until": <timestamp or null>, "limited_at": <timestamp>}`. Files without `model_limits`
 keep their meaning. Every write takes the `claude-limits.lock` file lock and rereads the file, so a
-model limit and a concurrent snapshot update never overwrite each other. Every Claude review record and journal row carries its
+model limit and a concurrent snapshot update never overwrite each other. A rejection on a known model is
+saved together with its scope, so no reader sees it as an account limit first. Every Claude review record and journal row carries its
 account name; `report --json` includes it in each task's `reviews` list. Claude review costs and tokens remain separate from Codex.
 
 ## Duty account
