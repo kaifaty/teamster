@@ -393,6 +393,8 @@ class ClaudeReviewTests(RotationTestCase):
             "teamster clean fix-parser", "teamster verdict fix-parser accepted", "teamster login a",
             "teamster claude-login a", "teamster duty tick", "teamster duty clear", "teamster lesson x applied",
             "teamster say duty 'Talk to yourself'", "teamster stop duty",
+            "teamster start x --brief b.md --check 'gh pr merge 1'", "teamster say x hi --ci-command=sh",
+            "teamster start x --brief b.md --check-loaded make",
             "scripts/bump_version.py minor --commit", "python3 scripts/bump_version.py patch", "./teamster status",
             "npm install", "pip install x", "uv tool install x", "brew install x", "curl https://example.test",
             "rm -rf build", "rg --pre=sh x .", "echo hi", "PATH=/tmp teamster status", "cd /work && git log",

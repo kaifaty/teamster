@@ -389,6 +389,9 @@ def finish_cycle(st):
                 return {"orders": orders, "dropped": outcome}
 
 
+        # No automatic review after a CI repair. Only the saved check and CI gate it.
+
+
 def queue_duty_note(st):
     """Note the end of a cycle of a task the duty started to the duty chat; return how, or None. Never raises."""
     if st.get("started_by") != "duty" or st.get("kind") == duty_chat.CHAT_KIND or st["slug"] == duty_chat.CHAT_SLUG:
@@ -434,9 +437,6 @@ def deliver_duty_note(order):
                 duty_chat.hold_notes(orders)
                 raise
             return "sent"
-
-
-        # No automatic review after a CI repair. Only the saved check and CI gate it.
 
 
 def cmd__run(a):

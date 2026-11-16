@@ -34,7 +34,8 @@ The turn never uses `bypassPermissions`: it runs with `--permission-mode dontAsk
 on `Bash`, `Write`, `Edit`, `MultiEdit` and `NotebookEdit`. The hook fails closed and allows:
 
 - `teamster start|say|scout|review|stop|status|wait|report|docs|accounts` and `teamster duty status`,
-  except `say`, `stop`, `review` and `wait` on the duty conversation itself;
+  except `say`, `stop`, `review` and `wait` on the duty conversation itself, and without `--check`,
+  `--check-loaded` or `--ci-command`, whose shell command the supervisor would run outside the hook;
 - read-only `git log|diff|show|status|fetch|ls-files|grep`, with no global option but `-C DIR`
   (outside the room) and `--no-pager`, and without `--output`, `-O`/`--open-files-in-pager` or
   `--upload-pack`;

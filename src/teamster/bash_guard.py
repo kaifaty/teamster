@@ -410,6 +410,8 @@ DUTY_TEAMSTER = frozenset({"start", "say", "scout", "review", "stop", "status", 
                            "accounts"})
 # Commands on the duty conversation itself, which only the user sends.
 DUTY_SELF = frozenset({"say", "stop", "review", "wait"})
+# Options that make the supervisor run a shell command the guard never sees.
+DUTY_TEAMSTER_OPTIONS = ("--check", "--check-loaded", "--ci-command")
 DUTY_SLUG = "duty"
 DUTY_GIT = frozenset({"log", "diff", "show", "status", "fetch", "ls-files", "grep"})
 # Options that make an allowed git command write a file or run another program.
@@ -463,6 +465,9 @@ def duty_command_denial(words, room, cwd):
             return f"`teamster {command}` is refused"
         if command in DUTY_SELF and DUTY_SLUG in arguments[1:]:
             return f"`teamster {command}` on the duty conversation itself is refused"
+        if has_option(arguments[1:], DUTY_TEAMSTER_OPTIONS):
+            return ("`--check`, `--check-loaded` and `--ci-command` are refused: the supervisor would run "
+                    "that shell command; put the checks in the brief")
         return None
     if name == "git":
         index = 0

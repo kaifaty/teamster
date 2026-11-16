@@ -41,6 +41,7 @@ A hook enforces them; a refused command is not an error to work around.
   `wc` and `rg`. Pipes, `;` and `&&` are fine when every part is allowed.
 - Refused, among everything else: `gh pr merge`, `git push|commit|merge|rebase|reset|checkout`,
   `teamster clean|verdict|login|claude-login|duty tick|duty clear`, version bumps, package managers,
-  `curl`, `rm`, scripts run by path, variable assignments, and commands on the duty conversation itself.
+  `curl`, `rm`, scripts run by path, variable assignments, commands on the duty conversation itself, and
+  `--check`, `--check-loaded` and `--ci-command` (put the checks to run in the brief instead).
 - Write literal arguments: no `$VAR`, `$(…)`, backticks, globs or braces. Write files only inside your
   room, with the Write tool or a redirection into it.
