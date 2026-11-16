@@ -74,10 +74,6 @@ def stream_unavailable(event, account, model=None):
         if isinstance(info, dict):
             claude_accounts.save_limits(account, info, event.get("timestamp"), model)
             if info.get("status") == "rejected":
-                if model:
-                    # Record the limit's scope now; a stop before the caller's mark must not leave
-                    # the rejected snapshot excluding the account for every model.
-                    claude_accounts.mark_limited(account, reason="usage limit", model=model)
                 return "usage limit"
     return None
 
@@ -319,10 +315,17 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                             elif event.get("type") == "result" and isinstance(event.get("result"), str):
                                 if event["result"]:
                                     response["raw_message"] = event["result"].replace(token, "[REDACTED]")
+                        # Later events of a failed stream do not lift its mark.
+                        stream_model = (model or None) if response["reason"] is None else None
                         result, reason = event_result(event, response["telemetry"], token,
                                                       account["name"], reviewing, scouting, reflecting,
-                                                      # Later events of a failed stream do not lift its mark.
-                                                      (model or None) if response["reason"] is None else None)
+                                                      stream_model)
+                        if reason == "usage limit" and stream_model:
+                            # Mark once, now: a stop before the caller returns must not leave the
+                            # rejected snapshot excluding the account for every model, and a later
+                            # success on this model must not be undone by a second mark.
+                            response["limited_until"], response["limited_model"] = claude_accounts.mark_scope(
+                                account["name"], reason=reason, model=stream_model)
                         if reason is not None:
                             response["reason"] = response["reason"] or reason
                             response["result"] = None

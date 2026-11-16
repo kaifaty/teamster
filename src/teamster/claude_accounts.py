@@ -255,6 +255,11 @@ def mark_limited(name, token_unavailable=False, reason=None, model=None):
     known window of the account is below 100% excludes the account for that
     model only.
     """
+    return mark_scope(name, token_unavailable, reason, model)[0]
+
+
+def mark_scope(name, token_unavailable=False, reason=None, model=None):
+    """Mark as mark_limited(); return (limit end, the model when only it was limited, else None)."""
     now = clock.CLOCK.time()
     with _locked_limits() as limits:
         info = limits.setdefault(name, {})
@@ -277,7 +282,7 @@ def mark_limited(name, token_unavailable=False, reason=None, model=None):
                     until = reset
             info.update(token_unavailable=True, token_retry_at=now + TOKEN_RETRY_SECONDS,
                         limited_until=until, limited_at=now)
-            return until
+            return until, None
         depleted = [window.get("resetsAt") for window in windows.values() if window_used(window, now) >= 100]
         depleted = [reset for reset in depleted if result_schema.is_finite_number(reset) and reset > now]
         resets = [window.get("resetsAt") for window in windows.values()]
@@ -291,13 +296,13 @@ def mark_limited(name, token_unavailable=False, reason=None, model=None):
                 info.pop("status")
             _prune_model_marks(info, now)
             info.setdefault("model_limits", {})[model] = {"limited_until": reset, "limited_at": now}
-            return reset
+            return reset, model
         if token_marked(info, now) and (not result_schema.is_finite_number(reset)
                                         or reset < info["token_retry_at"]):
             reset = info["token_retry_at"]
         info["limited_until"] = reset
         info["limited_at"] = now
-        return reset
+        return reset, None
 
 
 def select(cfg, role, exclude=(), prefer_unused=(), model=None):

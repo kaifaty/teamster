@@ -91,8 +91,9 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
         task_state.save(st)
         if response["outcome"] != "unavailable" or reason not in LIMIT_REASONS or stopped():
             return
-        claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable", reason=reason,
-                                     model=model)
+        if "limited_until" not in response:  # The stream has already marked its own rejection.
+            claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable", reason=reason,
+                                         model=model)
         account = claude_review.select_account(cfg, "review", exclude=attempted, stopped=stopped,
                                                task_type=st.get("task_type"), model=model)
     st["outcome"] = task_state.stop_outcome(st, stopped) or "unavailable"
@@ -187,7 +188,8 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
     if outcome == "unavailable":
         reason = reason or "account unavailable"
         st["error"] = f"No available Claude account: {account['name']} ({reason})"
-        if reason in LIMIT_REASONS:
+        if reason in LIMIT_REASONS and "limited_until" not in response:
+            # The stream has already marked its own rejection.
             claude_accounts.mark_limited(account["name"], token_unavailable=reason == "token unavailable",
                                          reason=reason, model=model)
             if not wrapup:

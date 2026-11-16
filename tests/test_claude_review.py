@@ -112,6 +112,9 @@ if mode == "auth_error":
 limits = run.get("limits", fixture.get("limits"))
 if limits and mode != "rejected_buffered":
     emit({"type": "rate_limit_event", "rate_limit_info": limits})
+if run.get("gate_after_limits"):
+    while not Path(run["gate_after_limits"]).exists():
+        time.sleep(0.01)
 if mode == "rejected_shutdown":
     while not stopped[0]:
         time.sleep(0.02)
@@ -1873,7 +1876,11 @@ class ClaudeReviewTests(RotationTestCase):
         saved = worker.claude_accounts.read_limits()["first"]
         self.assertNotIn("limited_until", saved)
         self.assertNotIn("status", saved)
+        self.assertEqual(list(saved["model_limits"]), ["model-a"])
         self.assertEqual(saved["model_limits"]["model-a"]["limited_until"], self.reset)
+        # One mark, written from the stream: a second one after the review ended would be newer.
+        self.assertLess(saved["model_limits"]["model-a"]["limited_at"],
+                        self.state("claude-model-limit")["reviews"][0]["finished"])
         line = next(line for line in self.cli("accounts").splitlines() if line.startswith("claude first:"))
         self.assertTrue(line.endswith(f"; limited until {until} for model model-a"), line)
         self.assertEqual(line.count("limited"), 1)
@@ -1882,6 +1889,32 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual((reported[0]["limited_until"], reported[0]["model_limits"]),
                          (None, [{"model": "model-a", "limited_until": iso}]))
         self.assertEqual(reported[1]["model_limits"], [])
+
+    def test_claude_model_limit_lifted_during_the_rejected_request_stays_lifted(self):
+        gate = self.root / "rejected-request-ends"
+        self.claude_pool_fixture(runs=[{"limits": self.model_rejection(.35), "gate_after_limits": str(gate)},
+                                       {"reply": self.review_result(False)}])
+        settings = json.loads((self.home / "claude-accounts.json").read_text())
+        settings["claude"]["model"] = "model-a"
+        (self.home / "claude-accounts.json").write_text(json.dumps(settings))
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
+        worker = self.worker()
+        self.start("claude-model-lift", "--review", "--reviewer", "claude")
+        deadline = time.monotonic() + 30
+        while "model-a" not in worker.claude_accounts.model_limits(worker.claude_accounts.read_limits().get(
+                "first", {})):
+            self.assertLess(time.monotonic(), deadline, "the rejected event left no model mark")
+            time.sleep(0.05)
+        # The stream marked the rejection while the request still runs; a newer success lifts it.
+        marked = worker.claude_accounts.read_limits()["first"]["model_limits"]["model-a"]
+        worker.claude_accounts.model_succeeded("first", "model-a", marked["limited_at"] + 1)
+        gate.touch()
+        output = self.wait("claude-model-lift")
+        self.assertIn(f"== claude account first limited until {worker.config.local_time(self.reset)} "
+                      "for model model-a; review by second\n", output)
+        entry = self.state("claude-model-lift")["reviews"][0]
+        self.assertEqual((entry["limited_until"], entry["limited_model"]), (self.reset, "model-a"))
+        self.assertNotIn("model_limits", worker.claude_accounts.read_limits()["first"])
 
     def test_claude_review_takes_an_account_limited_for_the_task_model(self):
         self.claude_pool_fixture(names=("first",))
@@ -1916,10 +1949,10 @@ class ClaudeReviewTests(RotationTestCase):
             return name(worker.account_rotation.claude_choice(st, cfg, lambda: False))
 
         def reject(weekly, short=0):
-            # The rejected event alone records the scope, as when the task stops before its caller marks it.
             pool.clear_limits("first")
             event = {"type": "rate_limit_event", "rate_limit_info": self.model_rejection(weekly, short)}
             self.assertEqual(worker.claude_review.event_unavailable(event, "first", "model-a"), "usage limit")
+            pool.mark_limited("first", reason="usage limit", model="model-a")
 
         # Any window at 100% still excludes the account for every model.
         for weekly, short in ((1, 0), (.35, 1)):
