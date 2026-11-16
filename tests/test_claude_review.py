@@ -440,6 +440,7 @@ class ClaudeReviewTests(RotationTestCase):
             git + " --git-dir=/x log " + flags, git + " -C %s/planted log %s" % (room, flags),
             "teamster clean fix-parser", "teamster verdict fix-parser accepted", "teamster login a",
             "teamster claude-login a", "teamster duty tick", "teamster duty clear", "teamster lesson x applied",
+            "teamster duty set first", "teamster duty set main --family codex", "teamster duty auto",
             "teamster say duty 'Talk to yourself'", "teamster stop duty", "teamster --version",
             # Shell commands the supervisor would run, by their full names and by argparse abbreviations.
             "teamster start x --brief b.md --check 'gh pr merge 1'", "teamster say x hi --ci-command=sh",
@@ -3057,6 +3058,107 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(resumed["config_dir"], accounts[0]["config_dir"])
         self.assertEqual(resumed["argv"][resumed["argv"].index("--resume") + 1], session)
 
+    def test_duty_set_pins_ticks_keep_the_pin_and_auto_or_clear_remove_it(self):
+        self.claude_pool_fixture(names=("first", "main"))
+        worker = self.worker()
+        cfg = worker.config.accounts_config()
+        limits_path = self.home / "claude-tasks" / "claude-limits.json"
+        limits = {"first": dict(self.duty_snapshot(.1), limited_until=self.reset), "main": self.duty_snapshot(.5)}
+        limits_path.write_text(json.dumps(limits))
+        duty_path, log = self.home / "duty.json", self.home / "duty-log.jsonl"
+
+        def refused(*args):
+            result = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "set"] + list(args), cwd=self.repo,
+                                    env=self.env, text=True, capture_output=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            return result.stderr
+
+        def record():
+            return json.loads(duty_path.read_text())
+
+        self.assertIn("no account 'nobody'", refused("nobody"))
+        self.assertIn("no codex account 'first'", refused("first", "--family", "codex"))
+        self.assertIn("'main' names both claude/main and codex/main", refused("main"))
+        codex = json.loads((self.home / "fixture.json").read_text())
+        (self.home / "fixture.json").write_text(json.dumps(dict(codex, account=None)))
+        self.assertIn("codex/main is not logged in", refused("main", "--family", "codex"))
+        (self.home / "fixture.json").write_text(json.dumps(codex))
+        claude = json.loads(self.claude_fixture_path.read_text())
+        self.claude_fixture_path.write_text(json.dumps(dict(
+            claude, security={"codex-worker-claude-first": {"unavailable": True}})))
+        self.assertIn("claude/first has no token", refused("first"))
+        self.claude_fixture_path.write_text(json.dumps(claude))
+        self.assertFalse(duty_path.exists() or log.exists())
+
+        # A pinned Codex duty stays although a Claude account would win the election.
+        self.assertEqual(self.cli("duty", "set", "second"),
+                         "duty pinned to codex/second; duty tick keeps it until teamster duty auto or duty clear\n")
+        pinned = record()
+        self.assertEqual(pinned, {"account": "second", "family": "codex", "since": pinned["since"],
+                                  "checked_at": pinned["since"], "reason": "manual",
+                                  "rooms": {"claude": {}, "codex": {}}, "pinned": True, "pinned_unavailable": None})
+        self.assertIn("duty codex/second since ", self.cli("duty", "tick"))
+        self.assertEqual(record(), dict(pinned, checked_at=record()["checked_at"],
+                                        rooms={"claude": {"main": 35}, "codex": {"main": 89, "second": 89}}))
+        self.assertIn("pinned by hand: duty tick keeps it", self.cli("duty", "status"))
+
+        # A limited account is pinned with a warning; a tick keeps it and records why it cannot work.
+        output = self.cli("duty", "set", "first", "--family", "claude")
+        self.assertRegex(output, r"\nwarning: claude/first cannot work now: limited until [^\n]+; "
+                                 r"it stays on duty while pinned\n$")
+        self.assertRegex(self.cli("duty", "tick"), r"^duty claude/first since [^\n]+: manual "
+                                                   r"\(pinned; unavailable: limited until [^\n]+\)\n$")
+        kept = record()
+        self.assertEqual((kept["account"], kept["pinned"]), ("first", True))
+        self.assertRegex(kept["pinned_unavailable"], r"^limited until ")
+        self.assertIn("\nwarning: the pinned duty cannot work now: limited until ", self.cli("duty", "status"))
+        self.assertEqual(json.loads(self.cli("duty", "status", "--json"))["duty"], kept)
+        self.assertEqual(json.loads(self.cli("accounts", "--json"))["duty"], kept)
+
+        # auto unpins and elects at once.
+        self.assertIn("duty elected automatically: changed to claude/main since ", self.cli("duty", "auto"))
+        elected = record()
+        self.assertEqual((elected["account"], elected["pinned"], elected["pinned_unavailable"]), ("main", False, None))
+        self.assertRegex(elected["reason"], r"^pin removed; claude/first unavailable: limited until ")
+
+        # A set that comes during a tick waits for it, and its pin is what stays.
+        del limits["first"]["limited_until"]
+        limits_path.write_text(json.dumps(limits))
+        lookups = len(self.security_trace_path.read_text().splitlines())
+        with (self.home / "duty.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            setting = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "set", "first"], cwd=self.repo,
+                                       env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # The token lookup comes before the lock.
+            deadline = time.time() + 30
+            while len(self.security_trace_path.read_text().splitlines()) == lookups and time.time() < deadline:
+                time.sleep(0.05)
+            worker.duty.run_duty_tick(cfg, [], time.time())
+            self.assertIsNone(setting.poll())
+            self.assertEqual((record()["account"], record()["pinned"]), ("main", False))
+        stdout, stderr = setting.communicate(timeout=30)
+        self.assertEqual(setting.returncode, 0, stderr)
+        self.cli("duty", "tick")
+        self.assertEqual((record()["account"], record()["pinned"], record()["pinned_unavailable"]),
+                         ("first", True, None))
+        # New work skips a pinned duty account as an elected one.
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            chosen = worker.account_rotation.claude_choice({"claude_account": None, "task_type": None},
+                                                           cfg, lambda: False)
+        self.assertEqual(chosen["name"], "main")
+
+        # clear removes the pin with the record; the next tick elects.
+        self.cli("duty", "clear")
+        self.cli("duty", "tick")
+        self.assertEqual((record()["account"], record()["pinned"]), ("first", False))
+        entries = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual([(entry["from"], entry["to"], entry["reason"].split(";")[0], entry["pinned"])
+                          for entry in entries],
+                         [(None, "codex/second", "manual", True), ("codex/second", "claude/first", "manual", True),
+                          ("claude/first", "claude/main", "pin removed", False),
+                          ("claude/main", "claude/first", "manual", True),
+                          (None, "claude/first", "largest room 75", False)])
+
     def test_duty_status_clear_accounts_and_launchd_plist(self):
         self.claude_pool_fixture()
         self.assertEqual(self.cli("duty", "status"), "no duty account: duty.json is absent\n")
@@ -3065,9 +3167,11 @@ class ClaudeReviewTests(RotationTestCase):
                                  claude={"first": 75}, codex={"main": 89})
         status = self.cli("duty", "status")
         self.assertIn("duty claude/first since ", status)
-        self.assertIn("rooms: claude first 75; codex main 89\n", status)
+        self.assertIn("\nelected by duty tick\nrooms: claude first 75; codex main 89\n", status)
         self.assertRegex(status, r"warning: no duty check for 10\d minutes; re-election is not running")
+        # A record written before pins existed reads as elected.
         report = json.loads(self.cli("duty", "status", "--json"))
+        record.update(pinned=False, pinned_unavailable=None)
         self.assertEqual((report["duty"], report["stale"], report["unreadable"]), (record, True, False))
         self.assertEqual(json.loads(self.cli("accounts", "--json"))["duty"], record)
         self.assertRegex(self.cli("accounts"), r"\nclaude first: [^\n]*; on duty\n")

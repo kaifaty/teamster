@@ -771,9 +771,12 @@ def duty_rooms_text(record):
 
 
 def duty_summary(record):
-    label = duty.duty_label(record)
-    return ((f"{label} since " if label else "no duty account since ")
+    label, unavailable = duty.duty_label(record), record["pinned_unavailable"]
+    text = ((f"{label} since " if label else "no duty account since ")
             + config.local_time(record["since"]) + ": " + record["reason"])
+    if record["pinned"]:
+        text += " (pinned" + (f"; unavailable: {unavailable}" if unavailable else "") + ")"
+    return text
 
 
 def cmd_duty_tick(a):
@@ -782,28 +785,81 @@ def cmd_duty_tick(a):
         if not held:
             print("duty tick: another duty tick is running; nothing changed")
             return
-        refreshed_at = clock.CLOCK.time()
-        try:
-            claude_review.refresh_limits(cfg)
-        except Exception as exc:
-            # Stale or unknown snapshots simply stay out of the election.
-            print(f"duty tick: Claude limit refresh failed: {exc}", file=sys.stderr)
-        # A fresh snapshot is not probed; mark a missing token as probes and selection do.
-        for account in claude_accounts.accounts(cfg):
-            if claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1]:
-                claude_accounts.token_available(account["name"])
-            else:
-                claude_accounts.mark_limited(account["name"], token_unavailable=True)
-        try:
-            config.CODEX["path"] = config.resolve_codex()
-        except SystemExit as exc:
-            # procs.die reports a missing Codex CLI; Claude accounts can still be elected.
-            print(f"duty tick: Codex accounts skipped: {exc}", file=sys.stderr)
-            infos = [dict(account, logged_in=None) for account in cfg["accounts"]]
-        else:
-            infos = accounts.snapshots(cfg)
-        record, changed = duty.run_duty_tick(cfg, infos, refreshed_at)
+        record, changed = duty_tick(cfg)
     print(("duty changed to " if changed else "duty ") + duty_summary(record))
+
+
+def duty_tick(cfg, unpin=False):
+    """Refresh stale limits and record the election as duty tick does; the caller holds duty_lock."""
+    refreshed_at = clock.CLOCK.time()
+    try:
+        claude_review.refresh_limits(cfg)
+    except Exception as exc:
+        # Stale or unknown snapshots simply stay out of the election.
+        print(f"duty tick: Claude limit refresh failed: {exc}", file=sys.stderr)
+    # A fresh snapshot is not probed; mark a missing token as probes and selection do.
+    for account in claude_accounts.accounts(cfg):
+        if claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1]:
+            claude_accounts.token_available(account["name"])
+        else:
+            claude_accounts.mark_limited(account["name"], token_unavailable=True)
+    try:
+        config.CODEX["path"] = config.resolve_codex()
+    except SystemExit as exc:
+        # procs.die reports a missing Codex CLI; Claude accounts can still be elected.
+        print(f"duty tick: Codex accounts skipped: {exc}", file=sys.stderr)
+        infos = [dict(account, logged_in=None) for account in cfg["accounts"]]
+    else:
+        infos = accounts.snapshots(cfg)
+    return duty.run_duty_tick(cfg, infos, refreshed_at, unpin)
+
+
+def cmd_duty_auto(a):
+    cfg = config.accounts_config()
+    # Waits for a running tick, which then cannot undo this election.
+    with duty.duty_lock():
+        record, changed = duty_tick(cfg, unpin=True)
+    print("duty elected automatically: " + ("changed to " if changed else "") + duty_summary(record))
+
+
+def duty_set_target(cfg, name, family):
+    """(family, account settings) that duty set names; dies on an unknown or ambiguous name."""
+    pools = (("claude", claude_accounts.accounts(cfg)), ("codex", cfg["accounts"]))
+    matches = [(pool_family, account) for pool_family, pool in pools for account in pool
+               if account["name"] == name and family in (None, pool_family)]
+    if not matches:
+        procs.die(f"no {family + ' ' if family else ''}account {name!r} (see teamster accounts); nothing changed")
+    if len(matches) > 1:
+        procs.die(f"{name!r} names both claude/{name} and codex/{name}; choose one with --family claude "
+                  "or --family codex; nothing changed")
+    return matches[0]
+
+
+def cmd_duty_set(a):
+    cfg = config.accounts_config()
+    family, account = duty_set_target(cfg, a.account, a.family)
+    label, name, now = family + "/" + a.account, a.account, clock.CLOCK.time()
+    if family == "claude":
+        if not claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1]:
+            procs.die(f"{label} has no token; sign it in with teamster claude-login {name}; nothing changed")
+        info = claude_accounts.read_limits().get(name, {})
+        if info.get("reason") == "authentication failed" and claude_accounts.limited(info, now):
+            procs.die(f"{label} needs login: authentication failed; run teamster claude-login {name}; nothing changed")
+        # The token was just read: drop a missing-token mark as duty tick does.
+        claude_accounts.token_available(name)
+        candidate = duty.claude_duty_candidate(cfg, account, claude_accounts.read_limits().get(name, {}), now, now)
+    else:
+        config.CODEX["path"] = config.resolve_codex()
+        info = accounts.account_read(account)
+        if info["logged_in"] is False:
+            procs.die(f"{label} is not logged in; run teamster login {name}; nothing changed")
+        candidate = duty.codex_duty_candidate(cfg, info)
+    # Written after a running tick ends; a tick that starts meanwhile finds the lock held and changes nothing.
+    with duty.duty_lock():
+        duty.pin_duty(family, name, candidate["unavailable"])
+    print(f"duty pinned to {label}; duty tick keeps it until teamster duty auto or duty clear")
+    if candidate["unavailable"]:
+        print(f"warning: {label} cannot work now: {candidate['unavailable']}; it stays on duty while pinned")
 
 
 def cmd_duty_status(a):
@@ -820,8 +876,12 @@ def cmd_duty_status(a):
               if unreadable else "no duty account: duty.json is absent")
         return
     print("duty " + duty_summary(record))
+    print("pinned by hand: duty tick keeps it; teamster duty auto returns to election" if record["pinned"]
+          else "elected by duty tick")
     print("rooms: " + duty_rooms_text(record))
     print(f"checked {config.local_time(record['checked_at'])} ({age:.0f} min ago)")
+    if record["pinned_unavailable"]:
+        print(f"warning: the pinned duty cannot work now: {record['pinned_unavailable']}")
     if stale:
         print(f"warning: no duty check for {age:.0f} minutes; re-election is not running "
               "(run duty tick, or install the duty plist job)")
@@ -974,8 +1034,8 @@ def send_duty_chat(cfg, order, queue):
 
 
 def cmd_duty(a):
-    {"tick": cmd_duty_tick, "status": cmd_duty_status, "clear": cmd_duty_clear,
-     "plist": cmd_duty_plist, "chat": cmd_duty_chat}[a.duty_command](a)
+    {"tick": cmd_duty_tick, "status": cmd_duty_status, "clear": cmd_duty_clear, "set": cmd_duty_set,
+     "auto": cmd_duty_auto, "plist": cmd_duty_plist, "chat": cmd_duty_chat}[a.duty_command](a)
 
 
 def cmd_reset_credit(a):
