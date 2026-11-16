@@ -59,13 +59,15 @@ async def _read_output(stream, truncate=False):
 
 
 async def _snapshot(script, command, arguments, previous):
+    command_parts = (command,) if isinstance(command, str) else command
+    command = " ".join(command_parts)
     proc = None
     output = None
     readers = []
     data, error = previous, None
     try:
         proc = await asyncio.create_subprocess_exec(
-            "python3", "-I", str(script), command, "--json", *arguments,
+            "python3", "-I", str(script), *command_parts, "--json", *arguments,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -116,6 +118,7 @@ class Accounts:
         self.script = script
         self.seconds = seconds
         self.value = {"fetched_at": None, "error": None, "data": None}
+        self.duty = {"fetched_at": None, "error": None, "data": None}
         self._last_started = float("-inf")
         self._lock = asyncio.Lock()
 
@@ -126,6 +129,9 @@ class Accounts:
             self._last_started = time.monotonic()
             self.value = await _snapshot(self.script, "accounts", (), self.value["data"])
             return self.value
+
+    async def refresh_duty(self):
+        self.duty = await _snapshot(self.script, ("duty", "status"), (), self.duty["data"])
 
 
 class Reports:

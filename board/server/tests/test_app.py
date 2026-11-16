@@ -87,6 +87,9 @@ def test_stale_days_environment_reaches_store(tmp_path, monkeypatch):
     monkeypatch.setenv("BOARD_CODEX_TASK", str(tmp_path / "fake_accounts.py"))
     monkeypatch.delenv("BOARD_STALE_DAYS", raising=False)
     assert Settings.from_env().stale_days == 7
+    assert Settings.from_env().duty_seconds == 1800
+    monkeypatch.setenv("BOARD_DUTY_SECONDS", "0")
+    assert Settings.from_env().duty_seconds == 0
     assert Settings.from_env().teamster == tmp_path / "fake_accounts.py"
     monkeypatch.setenv("BOARD_TEAMSTER_COMMAND", str(tmp_path / "new_accounts.py"))
     assert Settings.from_env().teamster == tmp_path / "new_accounts.py"
@@ -2162,6 +2165,205 @@ else:
             assert options["stdin"] == (asyncio.subprocess.DEVNULL if expected[0] == "claude-probe"
                                          else asyncio.subprocess.PIPE)
     assert not expected_commands
+
+
+@pytest.fixture
+def duty_actions(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
+    script = tmp_path / "teamster"
+    script.write_text(f"#!{sys.executable}\n" + '''import json, os, sys, time
+from pathlib import Path
+root = Path(__file__).parent
+args = sys.argv[1:]
+with (root / 'duty-calls').open('a') as stream:
+    stream.write(json.dumps({'args': args, 'cwd': os.getcwd(), 'stdin': sys.stdin.read()}) + '\\n')
+record_path = root / 'record'
+record = json.loads(record_path.read_text()) if record_path.exists() else None
+if args == ['--version']:
+    print((root / 'version').read_text() if (root / 'version').exists() else '1.87.0')
+elif args == ['accounts', '--json']:
+    print(json.dumps({'codex': [{'name': 'c1', 'status': 'available'},
+                               {'name': 'logged-out', 'status': 'not_logged_in'},
+                               {'name': 'duplicate', 'status': 'duplicate'}],
+                      'claude': [{'name': 'cl1'}, {'name': 'no-token', 'token_unavailable': True},
+                                 {'name': 'expired', 'needs_login': True}], 'duty': record}))
+elif args == ['duty', 'status', '--json']:
+    if (root / 'status-fail').exists():
+        sys.exit(4)
+    print(json.dumps({'duty': record, 'unreadable': False, 'stale': False}))
+else:
+    assert args[:1] == ['duty']
+    assert Path.cwd() == root
+    if (root / 'refuse').exists():
+        print('sign in before pinning; nothing changed', file=sys.stderr)
+        sys.exit(2)
+    if args[1] == 'tick':
+        # An exclusive marker makes overlapping ticks fail, even from separate subprocesses.
+        with (root / 'running').open('x'):
+            (root / 'tick-started').touch()
+            while (root / 'tick-block').exists():
+                time.sleep(0.01)
+        (root / 'running').unlink()
+        if (root / 'fail-tick').exists():
+            (root / 'fail-tick').unlink()
+            print('election temporarily failed', file=sys.stderr)
+            sys.exit(3)
+    if args[1] == 'clear':
+        record_path.unlink(missing_ok=True)
+    else:
+        pinned = args[1] == 'set'
+        record = {'account': args[2] if pinned else 'cl1', 'family': args[4] if pinned else 'claude',
+                  'pinned': pinned, 'pinned_unavailable': 'exhausted' if pinned else None,
+                  'checked_at': time.time(), 'since': 1, 'reason': 'manual' if pinned else 'elected'}
+        record_path.write_text(json.dumps(record))
+        if pinned:
+            print('warning: account exhausted; it stays pinned')
+''')
+    script.chmod(0o755)
+
+    def start(**options):
+        settings = Settings(tmp_path, script, web_dist=tmp_path / "dist", poll_seconds=0.02,
+                            **{"action_teamster": str(script), "duty_seconds": 0, **options})
+        return TestClient(create_app(settings), base_url="http://localhost", headers={
+            "Host": "localhost", "Origin": "http://localhost", "X-Teamster-Board": "1"})
+
+    def calls():
+        path = tmp_path / "duty-calls"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    return start, calls, tmp_path
+
+
+def test_duty_action_shapes_data_and_accounts_publication(duty_actions):
+    start, calls, root = duty_actions
+    with start() as client:
+        board = client.app.state.board
+        wait_for_account(lambda: board.accounts.duty["fetched_at"] is not None)
+        data = client.get("/api/snapshot").json()["accounts"]["data"]
+        assert data["duty"]["mode"] == "off" and data["duty"]["choosable"] is True
+        assert [(row["pinnable"], row["pin_reason"]) for row in data["codex"]] == [
+            (True, None), (False, "needs_login"), (True, None)]
+        assert [row["pinnable"] for row in data["claude"]] == [True, False, False]
+        with client.websocket_connect("/ws") as socket:
+            socket.receive_json()
+            for family, account in (("codex", "c1"), ("claude", "cl1")):
+                response = client.post("/api/actions/duty", json={"account": account, "family": family})
+                assert response.json() == {"ok": True, "warning": "warning: account exhausted; it stays pinned"}
+                duty = receive_until(socket, "accounts")["accounts"]["data"]["duty"]
+                assert (duty["mode"], duty["account"], duty["family"]) == ("pinned", account, family)
+                assert duty["pinned_unavailable"] == "exhausted"
+            for mode in ("auto", "off"):
+                assert client.post("/api/actions/duty", json={"mode": mode}).json() == {"ok": True, "warning": None}
+                duty = receive_until(socket, "accounts")["accounts"]["data"]["duty"]
+                assert duty["mode"] == mode
+                assert duty["account"] == ("cl1" if mode == "auto" else None)
+                assert duty["last_election"]["error"] is None
+                assert (duty["last_election"]["at"] is not None) == (mode == "auto")
+        commands = [row for row in calls() if row["args"][0] == "duty" and row["args"][1] != "status"]
+        assert [row["args"] for row in commands] == [
+            ["duty", "set", "c1", "--family", "codex"], ["duty", "set", "cl1", "--family", "claude"],
+            ["duty", "auto"], ["duty", "clear"]]
+        assert all(row["cwd"] == str(root) and row["stdin"] == "" for row in commands)
+        assert sum(row["args"] == ["--version"] for row in calls()) == 1
+
+
+def test_duty_action_validation_protection_and_refusal(duty_actions):
+    start, calls, root = duty_actions
+    with start() as client:
+        wait_for_account(lambda: client.app.state.board.accounts.duty["fetched_at"] is not None)
+        url = "/api/actions/duty"
+        body = {"account": "c1", "family": "codex"}
+        for invalid in ({}, {"mode": "pinned"}, {"mode": []}, {"account": "c1"}, {"family": "codex"},
+                        {**body, "mode": "auto"}, {**body, "extra": True}, {"mode": "auto", "extra": True},
+                        {"account": [], "family": "codex"}, {"account": "c1", "family": "other"}):
+            assert client.post(url, json=invalid).status_code == 400
+        assert client.post(url, json={**body, "account": "unknown"}).status_code == 404
+        for header, value in (("Origin", None), ("Origin", "http://evil.example"), ("Host", "evil.example"),
+                              ("X-Teamster-Board", None), ("Content-Type", "text/plain")):
+            request = client.build_request("POST", url, json=body)
+            del request.headers[header]
+            if value is not None:
+                request.headers[header] = value
+            assert client.send(request).status_code == 403
+        assert client.post(url, content="{", headers={"Content-Type": "application/json"}).status_code == 400
+        assert client.post(url, json=[]).status_code == 400
+        assert client.post(url, content="x" * 65537, headers={"Content-Type": "application/json"}).status_code == 413
+        assert not any(row["args"][:2] == ["duty", "set"] for row in calls())
+        (root / "refuse").touch()
+        response = client.post(url, json=body)
+        assert response.status_code == 422
+        assert response.json() == {"ok": False, "error": "sign in before pinning; nothing changed"}
+
+
+@pytest.mark.parametrize("reason,options,status", [
+    ("old_teamster", {}, 409), ("read_only", {"read_only": True}, 403),
+    ("no_teamster", {"action_teamster": None}, 403),
+])
+def test_duty_disabled_never_elects(duty_actions, reason, options, status):
+    start, calls, root = duty_actions
+    (root / "version").write_text("1.86.0")
+    (root / "record").write_text(json.dumps({"account": "cl1", "family": "claude", "pinned": False}))
+    with start(duty_seconds=0.01, **options) as client:
+        board = client.app.state.board
+        wait_for_account(lambda: board._duty_mode == "auto")
+        duty = client.get("/api/snapshot").json()["accounts"]["data"]["duty"]
+        assert duty["choosable"] is False and duty["reason_disabled"] == reason
+        response = client.post("/api/actions/duty", json={"mode": "auto"})
+        assert response.status_code == status and response.json()["error"] == reason
+        time.sleep(0.05)
+        assert not any(row["args"][0] == "duty" for row in calls())
+        if reason != "old_teamster":
+            assert not any(row["args"] == ["--version"] for row in calls())
+
+
+def test_duty_timer_enters_auto_serializes_and_survives_failure(duty_actions, caplog):
+    start, calls, root = duty_actions
+    with start(duty_seconds=30) as client:
+        board = client.app.state.board
+        wait_for_account(lambda: board.accounts.duty["fetched_at"] is not None)
+        ticks = lambda: [row for row in calls() if row["args"] == ["duty", "tick"]]
+        time.sleep(0.25)
+        assert not ticks()  # Off has no timer.
+        (root / "tick-block").touch()
+        (root / "fail-tick").touch()
+        entered_auto = time.monotonic()
+        assert client.post("/api/actions/duty", json={"mode": "auto"}).status_code == 200
+        wait_for_account(lambda: (root / "tick-started").exists())
+        assert time.monotonic() - entered_auto < board.settings.duty_seconds
+        board.settings.duty_seconds = 0.2
+        # The first tick runs immediately; multiple elapsed intervals cannot overlap it.
+        time.sleep(0.25)
+        assert len(ticks()) == 1
+        (root / "tick-block").unlink()
+        wait_for_account(lambda: board._election_error is not None)
+        last = client.get("/api/snapshot").json()["accounts"]["data"]["duty"]["last_election"]
+        assert last["error"] == "election temporarily failed" and isinstance(last["at"], float)
+        assert "Duty election failed: election temporarily failed" in caplog.text
+        wait_for_account(lambda: len(ticks()) >= 2 and board._election_error is None)
+        for body, mode in (({"account": "c1", "family": "codex"}, "pinned"), ({"mode": "off"}, "off")):
+            if mode == "off":
+                (root / "status-fail").touch()
+            assert client.post("/api/actions/duty", json=body).status_code == 200
+            assert board._duty_mode == mode
+            before = len(ticks())
+            time.sleep(0.25)
+            assert len(ticks()) == before
+        (root / "status-fail").unlink()
+        # A duty pinned outside the board is detected by an accounts refresh too.
+        (root / "record").write_text(json.dumps({"account": None, "family": None, "pinned": False}))
+        client.portal.call(board.refresh_accounts)
+        wait_for_account(lambda: len(ticks()) > before)
+        # A CLI clear between polls must stop the timer rather than recreate the duty.
+        client.portal.call(board._duty_lock.acquire)
+        try:
+            (root / "record").unlink()
+            before = len(ticks())
+        finally:
+            client.portal.call(board._duty_lock.release)
+        wait_for_account(lambda: board._duty_mode == "off")
+        assert not (root / "record").exists()
+        assert len(ticks()) == before
 
 
 def test_account_login_events_snapshot_and_last_logins(account_actions):

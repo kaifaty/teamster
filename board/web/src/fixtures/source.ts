@@ -3,16 +3,18 @@
 import type { BoardSource } from "../lib/source";
 import { ART, BACKDROPS } from "../map/art";
 import { emptyState, reduce, type BoardState } from "../store/reduce";
-import type { Activity, Cargo, ServerMessage, Snapshot, TaskChanges, TaskDetail, TaskFile, TaskLimits, TaskMessage, TaskQueue } from "../types";
+import type { Accounts, Activity, Cargo, ServerMessage, Snapshot, TaskChanges, TaskDetail, TaskFile, TaskLimits, TaskMessage, TaskQueue } from "../types";
+import type { DutyBody, DutyData } from "../dutyTypes";
 import snapshotJson from "./snapshot.json";
 import streamJson from "./stream.json";
 import detailsJson from "./details.json";
 import { FIXTURE_EVENTS, FIXTURE_LIVE, demoEvents, demoReport, logEvent } from "./events";
-import type { ActionSender } from "../lib/actions";
+import type { ActionResult, ActionSender } from "../lib/actions";
 import { fixtureActions, fixtureResearch, type StationRoute } from "./research";
 import { fixtureShips, type ShipRoute } from "./ships";
 import { fixtureLogins, type LoginRoute } from "./logins";
 import { fixtureDutyChat } from "./dutyChat";
+import { parseAccounts, parseDuty } from "../lib/accounts";
 
 interface FixtureDetail {
   timeline: { at: number; text: string }[];
@@ -79,6 +81,47 @@ export function fixtureSource(): BoardSource {
   const anchor = origin - BASE;
   // A ship's orders change the board itself, in the board's time.
   let push: ((message: ServerMessage) => void) | null = null;
+  let selectedDuty: DutyData | null = null;
+  const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+  // The duty choice, like a completed sign-in, survives every later stream message and reconnect.
+  function patchAccounts(value: Accounts): Accounts {
+    if (!isObject(value.data)) return value;
+    const raw = value.data;
+    const record = isObject(raw.duty) ? raw.duty : null;
+    const checked = typeof record?.checked_at === "number" ? record.checked_at : null;
+    const pin = (family: "codex" | "claude") => Array.isArray(raw[family]) ? raw[family].map((entry: unknown) => {
+      if (!isObject(entry)) return entry;
+      const needsLogin = family === "codex" ? entry.status === "not_logged_in" : entry.token_unavailable === true || entry.needs_login === true;
+      return { ...entry, pinnable: !needsLogin, pin_reason: needsLogin ? "needs_login" : null };
+    }) : raw[family];
+    return {
+      ...value,
+      data: { ...raw, codex: pin("codex"), claude: pin("claude"), duty: {
+        account: null, family: null, since: null, checked_at: null, reason: null,
+        ...record, mode: record ? record.pinned === true ? "pinned" : "auto" : "off",
+        pinned_unavailable: record?.pinned_unavailable ?? null,
+        choosable: true, reason_disabled: null, last_election: { at: checked, error: null }, ...selectedDuty,
+      } },
+    };
+  }
+  function selectDuty(body: DutyBody): ActionResult {
+    const current = state.accounts && patchAccounts(state.accounts);
+    if (!current) return { ok: false, error: "Accounts are not loaded" };
+    const previous = parseDuty(current.data)!;
+    const rows = (parseAccounts(current.data, Date.now() / 1000).items ?? []).flatMap((item) => item.kind === "row" ? [item.row] : []);
+    const target = body.mode === "off" ? null : body.mode === "auto"
+      ? rows.find((row) => row.executor === "claude" && row.pinnable) ?? rows.find((row) => row.pinnable)
+      : rows.find((row) => row.name === body.account && row.executor === body.family);
+    if (body.mode === undefined && !target) return { ok: false, error: "Account not found" };
+    if (target && !target.pinnable) return { ok: false, error: "Account needs a login" };
+    const now = Date.now() / 1000;
+    selectedDuty = { ...previous, mode: body.mode ?? "pinned", account: target?.name ?? null, family: target?.executor ?? null,
+      since: target ? now : null, checked_at: body.mode === "off" ? null : now, reason: body.mode === "off" ? null : body.mode === "auto" ? "automatic election" : "manual",
+      pinned_unavailable: null, last_election: { at: body.mode === "off" ? null : now, error: null } };
+    push?.({ type: "accounts", accounts: patchAccounts({ ...current, fetched_at: now, error: null }) });
+    push?.({ type: "duty_chat", at: now });
+    return { ok: true, output: "", warning: null };
+  }
   // The station's starts and agents tell the board in the snapshot's time, which the board sees shifted to now.
   const station = fixtureActions(research, () => Date.now() / 1000 - anchor, (message) => push?.(shiftTimes(message, anchor)));
   // A ship the fixture stream has just taken off the board still takes orders, as in the snapshot.
@@ -93,12 +136,16 @@ export function fixtureSource(): BoardSource {
   // A subscription's sign-ins and refreshes, in the board's time.
   const logins = fixtureLogins(() => Date.now() / 1000, (message) => push?.(message), () => state.accounts);
   // The conversation with the duty, in the board's time.
-  const duty = fixtureDutyChat(() => Date.now() / 1000, (message) => push?.(message));
+  const duty = fixtureDutyChat(() => Date.now() / 1000, (message) => push?.(message), () => {
+    const current = parseDuty(state.accounts?.data);
+    return current?.account && current.family ? { account: current.account, family: current.family } : null;
+  });
   const studied = (slug: string | undefined) =>
     research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
   /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
   const act: ActionSender = async (route, body) => {
     const study = route === "say" && studied((body as { slug?: string }).slug);
+    if (route === "duty") return selectDuty(body as DutyBody);
     if (route === "lesson" || route === "implement" || route === "reflect" || study) return station.act(route as StationRoute, body as never);
     if (route === "duty-chat") {
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -118,7 +165,10 @@ export function fixtureSource(): BoardSource {
       let index = -1; // -1 = the snapshot, then the stream; the cycle repeats like a reconnect.
       const emit = (original: ServerMessage) => {
         const shipped = ships.patch(original);
-        const patched = shipped && logins.patch(shipped);
+        const signedIn = shipped && logins.patch(shipped);
+        const patched = signedIn?.type === "snapshot"
+          ? { ...signedIn, snapshot: { ...signedIn.snapshot, accounts: patchAccounts(signedIn.snapshot.accounts) } }
+          : signedIn?.type === "accounts" ? { ...signedIn, accounts: patchAccounts(signedIn.accounts) } : signedIn;
         // The implementing agents stay on the board when the fixture loop starts over.
         const message: ServerMessage | null =
           patched?.type === "snapshot"

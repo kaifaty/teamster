@@ -64,29 +64,31 @@ const ANSWERS = [
 ];
 
 /** `clock`: Unix seconds now; `emit` tells the page that the conversation changed. */
-export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessage) => void): FixtureDutyChat {
+export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessage) => void, currentDuty?: () => DutyChatView["duty"]): FixtureDutyChat {
   const view = fixtureConversation(clock());
   let timer: ReturnType<typeof setTimeout> | null = null;
   let answers = 0;
   let lastId = 0;
   const changed = () => emit({ type: "duty_chat", at: clock() });
+  const selectedDuty = () => currentDuty ? currentDuty() : view.duty;
 
   /** The running turn answers in a few seconds; the first waiting message then starts the next. */
-  function runTurn() {
+  function runTurn(account = view.duty?.account ?? null) {
     timer = setTimeout(() => {
       timer = null;
       const turn = (view.messages.at(-1)?.turn ?? 0) || 1;
       const answer: DutyChatMessage = {
-        id: `d-fixture-${++lastId}`, at: clock(), from: "duty", turn, status: "answered", account: view.duty?.account ?? null,
+        id: `d-fixture-${++lastId}`, at: clock(), from: "duty", turn, status: "answered", account,
         text: ANSWERS[Math.min(answers++, ANSWERS.length - 1)]!, question: null, options: [], started: [],
       };
       view.messages = [...view.messages, answer].slice(-200);
       const [next, ...rest] = view.queued;
-      if (next) {
+      const duty = selectedDuty();
+      if (next && duty?.family === "claude") {
         view.queued = rest;
         view.messages = [...view.messages, { id: `m-fixture-${++lastId}`, at: clock(), from: next.from, text: next.text, turn: turn + 1 }];
         view.turn_started_at = clock();
-        runTurn();
+        runTurn(duty.account);
       } else {
         view.busy = false;
         view.turn_started_at = null;
@@ -99,11 +101,16 @@ export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessa
     view() {
       // The running turn of the fixture goes on once someone looks at it.
       if (view.busy && timer === null) runTurn();
-      return structuredClone(view);
+      const duty = selectedDuty();
+      const reason = duty === null ? "no_duty" : duty.family === "codex" ? "codex_duty" : null;
+      return structuredClone({ ...view, duty, reason, available: reason === null });
     },
     act({ text }) {
       const message = text.trim();
       if (!message) return { ok: false, error: "Invalid text" };
+      const duty = selectedDuty();
+      if (!duty) return { ok: false, error: "No duty account" };
+      if (duty.family !== "claude") return { ok: false, error: "The duty chat needs a Claude duty account" };
       if (view.busy) {
         view.queued = [...view.queued, { at: clock(), from: "user", text: message }];
         changed();
@@ -114,7 +121,7 @@ export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessa
       view.busy = true;
       view.turn_started_at = clock();
       view.last_error = null;
-      runTurn();
+      runTurn(duty.account);
       changed();
       return { ok: true, output: "", queued: false };
     },
