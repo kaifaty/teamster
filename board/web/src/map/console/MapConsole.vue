@@ -250,6 +250,8 @@ function onKey(event: KeyboardEvent) {
   --events-height: calc(var(--centre-height) - var(--row-height));
   --rail-y: calc(var(--events-height) * 72 / 280);
   --rail-x: calc(var(--events-height) * 52 / 280);
+  /* The row's buttons start past the wings' boxes, which reach 87 art pixels into the centre's ends. */
+  --row-inset: calc(var(--u) * 87 + 6px);
   /* The room the events' list has: what the rails, the padding and its heading leave. */
   --log-room: calc(var(--events-height) - 2 * var(--rail-y) - 4px - 18px);
   position: absolute;

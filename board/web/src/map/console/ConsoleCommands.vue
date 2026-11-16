@@ -119,13 +119,13 @@ function pickSource(kind: "board" | "scenario") {
     </template>
     <template v-if="mode !== 'counters'">
       <span v-if="mode === 'row'" class="gap" aria-hidden="true"></span>
-      <button ref="summaryButton" type="button" class="cast" :aria-expanded="summaryOpen" @click="summaryOpen = true">
+      <button ref="summaryButton" type="button" class="cast" title="Сводка дня" :aria-expanded="summaryOpen" @click="summaryOpen = true">
         <svg class="icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
           <rect x="2" y="3" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" />
           <path d="M2 6.5h12M5 1.5v3M11 1.5v3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
           <path d="M5 9h1.5M7.8 9h1.5M10.6 9h.6M5 11.5h1.5M7.8 11.5h1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
         </svg>
-        Сводка дня
+        <span class="word">Сводка дня</span>
       </button>
     </template>
     <div v-if="mode === 'row'" ref="wrap" class="menu-wrap">
@@ -190,7 +190,8 @@ function pickSource(kind: "board" | "scenario") {
   isolation: isolate;
   box-sizing: border-box;
   height: 100%;
-  padding: 0 calc(var(--row-u, 0.25px) * 64 + 6px);
+  padding: 0 var(--row-inset, calc(var(--row-u, 0.25px) * 64 + 6px));
+  container-type: inline-size;
 }
 
 .commands.row::before {
@@ -300,6 +301,22 @@ function pickSource(kind: "board" | "scenario") {
 
 .commands.compact .counter {
   padding: 0 8px;
+}
+
+/* A short row keeps the counts and the icons; the words stay for screen readers. */
+@container (max-width: 420px) {
+  .cast .word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .cast {
+    padding: 0 8px;
+  }
 }
 
 .menu-wrap {
