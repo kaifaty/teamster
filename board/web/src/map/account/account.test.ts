@@ -236,7 +236,10 @@ describe("a sign-in", () => {
     const states = (value: Login) => loginSteps(value).map((step) => `${step.id}:${step.state}`);
     expect(states(login({ code: "AB-CD" }))).toEqual(["starting:done", "waiting:current", "checking:todo", "done:todo"]);
     expect(states(login({ stage: "done", status: "available" }))).toEqual(["starting:done", "waiting:done", "checking:done", "done:done"]);
-    expect(states(login({ family: "claude", stage: "saving" }))).toEqual(["starting:done", "waiting:done", "saving:current", "checking:todo", "done:todo"]);
+    // teamster checks a new Claude token before it saves it to the Keychain.
+    expect(states(login({ family: "claude", stage: "checking" }))).toEqual(["starting:done", "waiting:done", "checking:current", "saving:todo", "done:todo"]);
+    expect(states(login({ family: "claude", stage: "saving" }))).toEqual(["starting:done", "waiting:done", "checking:done", "saving:current", "done:todo"]);
+    expect(states(login({ family: "claude", stage: "failed", url: "https://x", status: "authentication failed" }))).toEqual(["starting:done", "waiting:done", "checking:failed", "saving:todo", "done:todo"]);
     expect(states(login({ stage: "failed" }))).toEqual(["starting:failed", "waiting:todo", "checking:todo", "done:todo"]);
     expect(states(login({ stage: "cancelled", url: "https://x" }))).toEqual(["starting:done", "waiting:failed", "checking:todo", "done:todo"]);
     expect(states(login({ stage: "failed", url: "https://x", status: "duplicate" }))).toEqual(["starting:done", "waiting:done", "checking:failed", "done:todo"]);
