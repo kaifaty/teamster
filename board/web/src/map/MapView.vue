@@ -14,6 +14,7 @@ import GalaxyLabels from "./overlay/GalaxyLabels.vue";
 import SystemLabels from "./overlay/SystemLabels.vue";
 import ShipView from "./ship/ShipView.vue";
 import StationView from "./station/StationView.vue";
+import { useArrivalChime } from "./use/useArrivalChime";
 import { useFleetScene } from "./use/useFleetScene";
 import { useGalaxyModel } from "./use/useGalaxyModel";
 import { useMapPanels } from "./use/useMapPanels";
@@ -34,12 +35,12 @@ const emit = defineEmits<{ board: []; machine: [id: string, opener: HTMLElement 
 const host = ref<HTMLElement | null>(null);
 const overlay = ref<HTMLElement | null>(null);
 const fleetPanel = ref<InstanceType<typeof FleetPanel> | null>(null);
-const toolbar = ref<InstanceType<typeof MapToolbar> | null>(null);
-const summaryButton = computed(() => toolbar.value?.summaryButton ?? null);
+const mapConsole = ref<InstanceType<typeof MapConsole> | null>(null);
+const summaryButton = computed(() => mapConsole.value?.summaryButton ?? null);
 
 // The order matters: each part reads the ones made before it, and the scene comes last, after everything it draws.
 const sources = useMapSources(props);
-const { now, demo, sourceKind, source, loaded, emblemOf, events, eventsError, loadResearch } = sources;
+const { now, demo, sourceKind, source, loaded, tasks, emblemOf, events, eventsError, loadResearch } = sources;
 
 const model = useGalaxyModel(props, sources);
 const { starList, systemNames, pickerGroups, station, tankList, machinesData } = model;
@@ -56,8 +57,10 @@ const panels = useMapPanels({
 });
 const { repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip, showOnMap } = panels;
 const { account, openAccount, closeAccount } = panels;
-const { openMachine, flying, enter, leave, goTo, summaryOpen, closeSummary } = panels;
+const { openMachine, flying, enter, leave, goTo, openTask, summaryOpen, closeSummary } = panels;
 const { narrow, logOpen, fleetVisible, toggleFleet, showStation } = panels;
+
+const { sound } = useArrivalChime(sources);
 
 const labels = useOverlayLabels(sources, model);
 const { starLabels, constellationLabels } = labels;
@@ -72,15 +75,11 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
 <template>
   <section class="map" aria-label="Карта задач">
     <MapToolbar
-      ref="toolbar"
       v-model:repoModel="repoModel"
-      v-model:sourceKind="sourceKind"
-      v-model:summaryOpen="summaryOpen"
       :repo="repo"
       :emblem-of="emblemOf"
       :star-list="starList"
       :picker-groups="pickerGroups"
-      :demo="demo"
       :fleet-visible="fleetVisible"
       :entries="entries"
       @leave="leave"
@@ -115,7 +114,11 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
         @close="toggleFleet"
       />
       <MapConsole
+        ref="mapConsole"
         v-model:logOpen="logOpen"
+        v-model:summaryOpen="summaryOpen"
+        v-model:sound="sound"
+        v-model:sourceKind="sourceKind"
         :frame="frameLight"
         :now="now"
         :tanks="tankList"
@@ -131,7 +134,10 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
         :system-names="systemNames"
         :emblem-of="emblemOf"
         :narrow="narrow"
+        :tasks="tasks"
+        :demo="demo"
         @go="goTo"
+        @task="openTask"
         @open-account="openAccount"
         @machine="openMachine"
         @open-research="openResearch"

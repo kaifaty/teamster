@@ -1,19 +1,25 @@
 <script setup lang="ts">
 // The control panel at the map's bottom, across its whole width, in a cast frame: on the left wing the duty and the
-// subscriptions, in the lower centre the events, on the right wing the machines and the reflection. The galaxy and a
-// system are laid out above it. On a narrow window it folds to a strip, the duty and the newest event, and the wings open
-// over the map on demand.
+// subscriptions, in the lower centre the events over the command row, on the right wing the machines and the reflection.
+// The galaxy and a system are laid out above it. On a narrow window it folds to a strip, the duty, the counters and the
+// newest event, and the wings open over the map on demand; on a wide one the viewer may fold it to the same strip.
 import { computed, nextTick, ref, watch } from "vue";
-import type { Machines, LogEvent } from "../../types";
+import { loadJson, saveJson } from "../../lib/storage";
+import type { Machines, LogEvent, TaskSummary } from "../../types";
 import type { Star, Tank } from "../fleet";
 import type { Research } from "../research";
 import ShipLog from "../ShipLog.vue";
+import ConsoleCommands from "./ConsoleCommands.vue";
 import ConsoleDuty from "./ConsoleDuty.vue";
 import ConsoleMachines from "./ConsoleMachines.vue";
 import ConsoleReflection from "./ConsoleReflection.vue";
 import ConsoleSubscriptions from "./ConsoleSubscriptions.vue";
 import { PORTRAIT_URLS } from "./portraits";
+import { nextInQueue, queueOf, type QueueColumn } from "./queue";
 import { dutyBlock, machineRow, portraitNames, reflectionNote, subscriptionRow } from "./texts";
+
+/** Whether the viewer folded the wide window's panel to a strip. */
+const FOLDED_KEY = "codex-board.console-folded.v1";
 
 const props = defineProps<{
   frame: string;
@@ -35,15 +41,24 @@ const props = defineProps<{
   emblemOf: (repo: string | null) => string | null;
   /** A phone-sized window: the panel folds to a strip. */
   narrow: boolean;
+  /** The tasks the systems' badges count, for the command row's counters. */
+  tasks: readonly TaskSummary[];
+  /** `dev:fixture`: the map's source can be switched from the menu. */
+  demo: boolean;
 }>();
 const emit = defineEmits<{
   go: [event: LogEvent];
-  openAccount: [key: string];
+  /** A counter was pressed: the next task of its queue. */
+  task: [repo: string, slug: string];
+  openAccount: [key: string, opener: HTMLElement];
   machine: [id: string, opener: HTMLElement];
   openResearch: [];
 }>();
 /** The whole log, open over the map from the narrow strip. */
 const logOpen = defineModel<boolean>("logOpen", { required: true });
+const summaryOpen = defineModel<boolean>("summaryOpen", { required: true });
+const sound = defineModel<boolean>("sound", { required: true });
+const sourceKind = defineModel<"board" | "scenario">("sourceKind", { required: true });
 
 const duty = computed(() => dutyBlock(props.tanks, props.stars, props.now));
 const subscriptions = computed(() => props.tanks.map((tank) => subscriptionRow(tank, props.now)));
@@ -53,15 +68,42 @@ const reflection = computed(() => reflectionNote(props.station));
 const portraits = computed(() => new Map([...portraitNames(props.tanks)].flatMap(([key, name]) => (PORTRAIT_URLS[name] ? [[key, PORTRAIT_URLS[name]] as const] : []))));
 const dutyPortrait = computed(() => (duty.value.key ? (portraits.value.get(duty.value.key) ?? null) : null));
 
+// The command row's queues: a counter opens the task after the one it opened last, round the queue.
+const queues = computed(() => ({ review_me: queueOf(props.tasks, "review_me"), attention: queueOf(props.tasks, "attention") }));
+const opened: Record<QueueColumn, string | null> = { review_me: null, attention: null };
+function next(column: QueueColumn) {
+  const task = nextInQueue(queues.value[column], opened[column]);
+  if (!task) return;
+  opened[column] = task.slug;
+  emit("task", task.repo, task.slug);
+}
+
+/** A wide window's panel folded by the viewer to the narrow window's strip; the choice outlives the page. */
+const folded = ref(loadJson(FOLDED_KEY, false, (value): value is boolean => typeof value === "boolean"));
+watch(folded, (value) => saveJson(FOLDED_KEY, value));
+const foldedWide = computed(() => folded.value && !props.narrow);
+/** The panel stands as a strip: a narrow window, or folded. */
+const strip = computed(() => props.narrow || foldedWide.value);
+const root = ref<HTMLElement | null>(null);
+/** Folding moves the focus to «Развернуть панель», unfolding to the menu's button. */
+function fold(value: boolean) {
+  folded.value = value;
+  void nextTick(() => root.value?.querySelector<HTMLElement>(value ? ".console-unfold" : ".console-row .menu-button")?.focus());
+}
+
 /** On a narrow window: the wings stand open over the map. */
 const sheetOpen = ref(false);
 const moreButton = ref<HTMLButtonElement | null>(null);
-watch(
-  () => props.narrow,
-  () => {
-    sheetOpen.value = false;
-  },
-);
+watch(strip, () => {
+  sheetOpen.value = false;
+  logOpen.value = false;
+});
+
+// «Сводка дня» gives the focus back to the button that shows: the row's, or the narrow window's sheet's.
+const rowCommands = ref<InstanceType<typeof ConsoleCommands> | null>(null);
+const sheetCommands = ref<InstanceType<typeof ConsoleCommands> | null>(null);
+const summaryButton = computed(() => (props.narrow ? sheetCommands.value?.summaryButton : rowCommands.value?.summaryButton) ?? null);
+defineExpose({ summaryButton });
 /**
  * The centre's height while the narrow window's whole log stands open over the map: the open log leaves the flow, and the
  * panel's box keeps its size, so that the galaxy is not fitted anew. Read before the log opens.
@@ -72,7 +114,7 @@ const keptHeight = ref<number | null>(null);
 watch(
   logOpen,
   (open) => {
-    keptHeight.value = open && props.narrow ? (centre.value?.offsetHeight ?? null) : null;
+    keptHeight.value = open && strip.value ? (centre.value?.offsetHeight ?? null) : null;
     if (open) sheetOpen.value = false;
   },
   { flush: "pre" },
@@ -92,49 +134,82 @@ function onKey(event: KeyboardEvent) {
 
 <template>
   <section
+    ref="root"
     class="console"
-    :class="{ narrow, 'sheet-open': narrow && sheetOpen }"
+    :class="{ strip, narrow, folded: foldedWide, 'sheet-open': narrow && sheetOpen }"
     :style="{ '--frame': `url(${frame})` }"
     aria-label="Панель управления"
     @keydown="onKey"
   >
-    <div v-if="narrow" class="console-strip">
-      <ConsoleDuty :duty="duty" :portrait="dutyPortrait" compact @open="emit('openAccount', $event)" />
+    <div v-if="strip" class="console-strip">
+      <ConsoleDuty :duty="duty" :portrait="dutyPortrait" compact @open="(key, opener) => emit('openAccount', key, opener)" />
+      <ConsoleCommands mode="counters" :ready="queues.review_me.length" :alarms="queues.attention.length" :compact="narrow" @next="next" />
       <button
+        v-if="narrow"
         ref="moreButton"
         type="button"
         class="console-more"
         :aria-expanded="sheetOpen"
         aria-controls="console-sheet"
-        :aria-label="sheetOpen ? 'Скрыть подписки, машины и рефлексию' : 'Показать подписки, машины и рефлексию'"
+        :aria-label="sheetOpen ? 'Скрыть подписки, машины, рефлексию и настройки' : 'Показать подписки, машины, рефлексию и настройки'"
         @click="sheetOpen = !sheetOpen"
       >
         Ещё <span aria-hidden="true">{{ sheetOpen ? "▾" : "▴" }}</span>
       </button>
+      <button v-else type="button" class="console-more console-unfold" @click="fold(false)">Развернуть панель</button>
     </div>
-    <div v-show="!narrow || sheetOpen" id="console-sheet" class="console-sheet">
+    <div v-show="!strip || sheetOpen" id="console-sheet" class="console-sheet">
       <div class="console-wing console-left">
-        <ConsoleDuty v-if="!narrow" :duty="duty" :portrait="dutyPortrait" @open="emit('openAccount', $event)" />
+        <ConsoleDuty v-if="!narrow" :duty="duty" :portrait="dutyPortrait" @open="(key, opener) => emit('openAccount', key, opener)" />
         <i class="console-divider" aria-hidden="true"></i>
-        <ConsoleSubscriptions :rows="subscriptions" :portraits="portraits" :open="account" @open="emit('openAccount', $event)" />
+        <ConsoleSubscriptions :rows="subscriptions" :portraits="portraits" :open="account" @open="(key, opener) => emit('openAccount', key, opener)" />
       </div>
       <div class="console-wing console-right">
         <ConsoleMachines :rows="machineRows" :note="machines?.config_error || null" :open="machine" @open="(id, opener) => emit('machine', id, opener)" />
         <i class="console-divider" aria-hidden="true"></i>
         <ConsoleReflection :reflection="reflection" :research-open="researchOpen" @open="emit('openResearch')" />
       </div>
+      <ConsoleCommands
+        v-if="narrow"
+        ref="sheetCommands"
+        v-model:summary-open="summaryOpen"
+        v-model:sound="sound"
+        v-model:source-kind="sourceKind"
+        class="console-settings"
+        mode="sheet"
+        :ready="queues.review_me.length"
+        :alarms="queues.attention.length"
+        :demo="demo"
+      />
     </div>
     <div ref="centre" class="console-centre" :style="keptHeight ? { minHeight: `${keptHeight}px` } : undefined">
-      <ShipLog
-        v-model:open="logOpen"
-        :events="logEvents"
-        :error="eventsError"
-        :repo="repo"
-        :frame="frame"
-        :systems="systemNames"
-        :emblem-of="emblemOf"
-        :compact="narrow"
-        @go="emit('go', $event)"
+      <div class="console-events">
+        <ShipLog
+          v-model:open="logOpen"
+          :events="logEvents"
+          :error="eventsError"
+          :repo="repo"
+          :frame="frame"
+          :systems="systemNames"
+          :emblem-of="emblemOf"
+          :compact="strip"
+          @go="emit('go', $event)"
+        />
+      </div>
+      <ConsoleCommands
+        v-if="!strip"
+        ref="rowCommands"
+        v-model:summary-open="summaryOpen"
+        v-model:sound="sound"
+        v-model:source-kind="sourceKind"
+        class="console-row"
+        mode="row"
+        :ready="queues.review_me.length"
+        :alarms="queues.attention.length"
+        :demo="demo"
+        foldable
+        @next="next"
+        @fold="fold(true)"
       />
     </div>
   </section>
@@ -160,15 +235,23 @@ function onKey(event: KeyboardEvent) {
   --wing-height: min(max(26.5vh, min(250px, 33.8vh)), 19vw);
   --u: calc(var(--wing-height) / 560);
   --wing-width: max(calc(var(--u) * 875), min(31vw, 620px));
-  /* The centre: 62 % of the wings, its strip's rails (console-strip.png, 2126×280: rails 72 high, end caps 52 wide). */
-  --centre-height: calc(var(--wing-height) * 0.62);
-  --rail-y: calc(var(--centre-height) * 72 / 280);
-  --rail-x: calc(var(--centre-height) * 52 / 280);
   /* The centre starts under the wing's body, which ends 55 art pixels before the wing's outer edge. */
   --centre-inset: calc(var(--wing-width) - var(--u) * 87);
-  /* The room the events' list has in the centre: what the rails, the padding and its heading leave, less a foot row. */
-  --centre-foot: 0px;
-  --log-room: calc(var(--centre-height) - 2 * var(--rail-y) - 4px - 18px - var(--centre-foot));
+  /*
+   * The centre: 86 % of the wings, the events over the command row, each in a copy of the strip (console-strip.png,
+   * 2126×280: rails 72 high, end caps 52 wide). The row's strip is as low as its buttons let it be, at its own scale
+   * (--row-u, one art pixel on the screen), no larger than the centre's width allows: its fixed parts are 2026 pixels
+   * wide. The events' strip takes the rest.
+   */
+  --centre-height: calc(var(--wing-height) * 0.86);
+  --cast-height: 30px;
+  --row-u: min(calc((var(--cast-height) + 6px) / 136), calc((100vw - 2 * var(--centre-inset) - 24px) / 2100));
+  --row-height: calc(var(--row-u) * 144 + var(--cast-height) + 6px);
+  --events-height: calc(var(--centre-height) - var(--row-height));
+  --rail-y: calc(var(--events-height) * 72 / 280);
+  --rail-x: calc(var(--events-height) * 52 / 280);
+  /* The room the events' list has: what the rails, the padding and its heading leave. */
+  --log-room: calc(var(--events-height) - 2 * var(--rail-y) - 4px - 18px);
   position: absolute;
   left: 0;
   right: 0;
@@ -284,27 +367,50 @@ function onKey(event: KeyboardEvent) {
   right: calc(var(--u) * 400);
 }
 
-/* The low centre: the strip's rails and end caps keep their shape, its middle stretches; it starts under the wings. */
+/* A finger needs taller buttons: on a narrow window and on a touch screen. */
+@media (max-width: 760px), (pointer: coarse) {
+  .console {
+    --cast-height: 38px;
+  }
+}
+
+/* The lower centre, under the wings' ends: the events, and the command row under them. */
 .console-centre {
   position: absolute;
   left: var(--centre-inset);
   right: var(--centre-inset);
   bottom: 0;
   z-index: 0;
-  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   height: var(--centre-height);
-  padding: 2px 4px;
+}
+
+/*
+ * The events' strip: its rails and end caps keep their shape, its middle stretches. The wing's body and its pipe stub
+ * reach 87 art pixels into the centre's ends at the height of the heading: the text starts past them.
+ */
+.console-events {
+  flex: 1;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 2px max(4px, calc(var(--u) * 87 - var(--rail-x) + 6px));
   border-style: solid;
   border-color: transparent;
   border-width: var(--rail-y) var(--rail-x);
   border-image: url("../art/console-strip.png") 72 52 fill / var(--rail-y) var(--rail-x) round;
 }
 
-.console-centre > :deep(.log) {
+.console-centre > .console-row {
+  flex: none;
+  height: var(--row-height);
+}
+
+.console-events > :deep(.log) {
   height: 100%;
 }
 
-.console-centre > :deep(.log:not(.open)) {
+.console-events > :deep(.log:not(.open)) {
   padding: 0;
   border: 0;
   border-image: none;
@@ -312,7 +418,7 @@ function onKey(event: KeyboardEvent) {
 }
 
 /* Whole rows only: the list is as tall as the rows that fit, and the rail never cuts one. */
-.console-centre > :deep(.log:not(.open)) .l-rows {
+.console-events > :deep(.log:not(.open)) .l-rows {
   flex: none;
   height: max(var(--row), round(down, var(--log-room), var(--row)));
   min-height: 0;
@@ -322,7 +428,7 @@ function onKey(event: KeyboardEvent) {
  * «развернуть»: the long list opens over the map from the centre, up to the toolbar, clear of the wings: it starts past
  * their bodies, which reach into the centre's ends.
  */
-.console-centre > :deep(.log.open) {
+.console-events > :deep(.log.open) {
   position: absolute;
   left: calc(var(--u) * 30);
   right: calc(var(--u) * 30);
@@ -337,10 +443,10 @@ function onKey(event: KeyboardEvent) {
 }
 
 /*
- * A narrow window: a strip in the centre's rails with the duty and the newest event; the wings open over the map above
- * it, their blocks one under another.
+ * A narrow window: a strip in the centre's rails with the duty, the counters and the newest event; the wings and the
+ * settings open over the map above it, their blocks one under another.
  */
-.console.narrow {
+.console.strip {
   --strip-rail-y: 16px;
   --strip-rail-x: 12px;
   display: flex;
@@ -389,22 +495,51 @@ function onKey(event: KeyboardEvent) {
   outline-offset: 1px;
 }
 
-.console.narrow .console-centre {
+/* Folded on a wide window: one line, the duty, the newest event, the counters and «Развернуть панель». */
+.console.folded {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.console.folded .console-strip {
+  display: contents;
+}
+
+.console.folded .console-strip > :deep(.console-duty) {
+  flex: 0 1 360px;
+}
+
+.console.folded .console-centre {
+  flex: 1;
+  order: 1;
+  min-width: 0;
+}
+
+.console.folded .console-strip > :deep(.commands),
+.console.folded .console-unfold {
+  order: 2;
+}
+
+.console.strip .console-centre {
   position: relative;
   left: auto;
   right: auto;
   height: auto;
+}
+
+.console.strip .console-events {
   padding: 0;
   border: 0;
   border-image: none;
 }
 
-.console.narrow .console-centre > :deep(.log) {
+.console.strip .console-events > :deep(.log) {
   height: auto;
 }
 
 /* The narrow window's whole log opens over the map, above the strip and under the toolbar. */
-.console.narrow .console-centre > :deep(.log.open) {
+.console.strip .console-events > :deep(.log.open) {
   left: 0;
   right: 0;
   height: calc(var(--stage-height, 100vh) - var(--below-toolbar, 46px) - 8px);
@@ -454,5 +589,12 @@ function onKey(event: KeyboardEvent) {
   height: 150px;
   padding: 0;
   --window-radius: 6px;
+}
+.console.narrow .console-sheet > :deep(.console-settings) {
+  flex: none;
+  padding: 6px;
+  border: 1px solid rgba(240, 165, 70, 0.55);
+  border-radius: 6px;
+  background-color: rgba(6, 9, 16, 0.98);
 }
 </style>

@@ -39,3 +39,11 @@ export function arrivals(before: ReadonlySet<string> | null, now: ReadonlySet<st
   if (!before) return [];
   return [...now].filter((slug) => !before.has(slug));
 }
+
+/** "1 задача", "3 задачи", "6 задач". */
+export function taskCount(count: number): string {
+  const tens = count % 100;
+  const ones = count % 10;
+  const word = tens >= 11 && tens <= 14 ? "задач" : ones === 1 ? "задача" : ones >= 2 && ones <= 4 ? "задачи" : "задач";
+  return `${count} ${word}`;
+}

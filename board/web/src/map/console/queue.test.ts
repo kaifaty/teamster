@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TaskSummary } from "../../types";
 import { stars } from "../fleet";
-import { arrivals, nextInQueue, queueOf, slugsIn } from "./queue";
+import { arrivals, nextInQueue, queueOf, slugsIn, taskCount } from "./queue";
 
 const NOW = 1_800_000_000;
 const task = (slug: string, column: TaskSummary["column"], since: number | null, updated = NOW, repo = "repo") =>
@@ -43,5 +43,9 @@ describe("the command row's queues", () => {
     expect(arrivals(before, now)).toEqual(["new"]);
     expect(arrivals(null, now)).toEqual([]);
     expect(arrivals(now, now)).toEqual([]);
+  });
+
+  it("counts tasks in words for the counters' labels", () => {
+    expect([0, 1, 3, 6, 11, 21, 24].map(taskCount)).toEqual(["0 задач", "1 задача", "3 задачи", "6 задач", "11 задач", "21 задача", "24 задачи"]);
   });
 });
