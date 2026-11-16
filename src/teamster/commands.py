@@ -966,7 +966,9 @@ def send_duty_chat(cfg, order, queue):
             return threads.followup_prompt(st, order["text"], cfg, source="user")
         return threads.followup_prompt(st, "\n\n".join(item["text"] for item in orders), cfg, queued=orders)
 
-    proc = supervisor.spawn(st, prompt, **supervisor.say_turn(st, order["options"]))
+    # The turn starts from the state read under the lock: a turn that ended after st was loaded keeps its answer.
+    proc = supervisor.spawn(st, prompt, **supervisor.say_turn(st, order["options"]),
+                            refresh=lambda latest: supervisor.apply_say(latest, order["options"], cfg))
     # The held notes leave notes.json only once the turn that carries them is started and saved.
     with task_state.state_lock(duty_chat.CHAT_SLUG):
         duty_chat.release_held_notes(sent)

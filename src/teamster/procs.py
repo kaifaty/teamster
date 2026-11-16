@@ -35,21 +35,38 @@ def signal_group(proc, sig):
     return True
 
 
-def end_group(pid):
-    """Interrupt the process group of ``pid``, which is not our child, then terminate and kill it if it stays."""
-    for sig, timeout in ((signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+# The steps that end a process group: each signal, then how long the group may take to leave.
+GROUP_STEPS = ((signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5))
+
+
+def signal_pgid(pgid, sig):
+    """Send sig to the process group pgid; whether anything of it was left to receive it."""
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # macOS may reject killpg even while the leader is still alive.
         try:
-            os.killpg(pid, sig)
+            os.kill(pgid, sig)
         except ProcessLookupError:
-            return
+            return False
         except PermissionError:
-            try:
-                os.kill(pid, sig)
-            except ProcessLookupError:
-                return
+            return True
+    return True
+
+
+def end_group(pid):
+    """Interrupt the process group of ``pid``, which is not our child, then terminate and kill what stays.
+
+    Like terminate, it waits for the whole group: a tool process that ignores SIGINT outlives its leader.
+    """
+    for sig, timeout in GROUP_STEPS:
+        if not signal_pgid(pid, sig):
+            return
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if not alive(pid):
+            if not signal_pgid(pid, 0):
                 return
             time.sleep(0.05)
 
@@ -57,7 +74,7 @@ def end_group(pid):
 def terminate(proc):
     """Interrupt the entire exec group, then bound shutdown even if it ignores signals."""
 
-    for sig, timeout in ((signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+    for sig, timeout in GROUP_STEPS:
         if not signal_group(proc, sig):
             proc.wait()
             break
