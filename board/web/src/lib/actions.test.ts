@@ -15,6 +15,9 @@ describe("requestAction", () => {
     expect(quick).toEqual({ ok: true, output: "", slug: "lesson-u1", launch });
     const legacy = await requestAction("implement", { entry: "b.md U1", repo: "/r/teamster" }, async () => reply(200, { ok: true, output: "started", slug: "lesson-u1", launch: null }));
     expect(legacy).toEqual({ ok: true, output: "started", slug: "lesson-u1" });
+    // A message to the duty says whether it waits for the running turn.
+    expect(await requestAction("duty-chat", { text: "Hi" }, async () => reply(200, { ok: true, queued: true }))).toEqual({ ok: true, output: "", queued: true });
+    expect(await requestAction("duty-chat", { text: "Hi" }, async () => reply(409, { ok: false, error: "old_teamster" }))).toMatchObject({ ok: false, error: expect.stringContaining("duty chat") });
     expect(fetcher).toHaveBeenCalledWith("/api/actions/reflect", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Teamster-Board": "1" },

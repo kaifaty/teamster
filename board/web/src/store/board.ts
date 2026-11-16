@@ -2,7 +2,7 @@ import { computed, onBeforeUnmount, ref, shallowRef } from "vue";
 import type { BoardSource } from "../lib/source";
 import type { ConnectionState } from "../lib/socket";
 import { LOG_WINDOW_SECONDS, mergeEvents } from "../lib/events";
-import type { LogEvent, TaskSummary } from "../types";
+import type { LogEvent, ServerMessage, TaskSummary } from "../types";
 import { emptyState, reduce, type BoardState } from "./reduce";
 
 export function createBoard(source: BoardSource) {
@@ -10,6 +10,8 @@ export function createBoard(source: BoardSource) {
   const connection = ref<ConnectionState>("connecting");
   const retryInMs = ref<number | null>(null);
   let stop: (() => void) | null = null;
+  // Who else reads the server's messages, such as the duty chat, which reads its view again on `duty_chat`.
+  const listeners = new Set<(message: ServerMessage) => void>();
 
   // The ship's log: the last day's history, loaded when the map wants it, and the live `event` messages.
   const events = shallowRef<readonly LogEvent[]>([]);
@@ -42,6 +44,7 @@ export function createBoard(source: BoardSource) {
         // A reconnect may have missed events: once the log is open, it catches up with the new snapshot.
         if (message.type === "snapshot" && eventsWanted && state.value.loaded) void loadEvents();
         state.value = reduce(state.value, message, Date.now());
+        for (const listener of listeners) listener(message);
       },
       (next, retry) => {
         connection.value = next;
@@ -60,10 +63,17 @@ export function createBoard(source: BoardSource) {
     state.value = reduce(state.value, { type: "task", task }, Date.now());
   }
 
+  /** Calls `listener` with every server message after the board applied it; returns the unsubscribe. */
+  function subscribe(listener: (message: ServerMessage) => void) {
+    listeners.add(listener);
+    return () => void listeners.delete(listener);
+  }
+
   return {
     source,
     state,
     put,
+    subscribe,
     connection,
     retryInMs,
     tasks: computed(() => Object.values(state.value.tasks)),

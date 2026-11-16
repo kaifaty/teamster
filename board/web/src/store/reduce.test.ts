@@ -79,7 +79,16 @@ describe("reduce", () => {
     expect(reduce(after, { type: "snapshot", snapshot: snapshot([]) }, 3).machines).toBeNull();
   });
 
-  it("ping records the server time and keeps the tasks", () => {
+  it("keeps the duty chat off the board, from a snapshot and from a task message; a task it started stays", () => {
+    const started = task("fix-parser", { started_by: "duty" });
+    const state = reduce(emptyState, { type: "snapshot", snapshot: snapshot([task("duty", { kind: "duty" }), started]) }, 1);
+    expect(Object.keys(state.tasks)).toEqual(["fix-parser"]);
+    expect(state.tasks["fix-parser"]?.started_by).toBe("duty");
+    expect(reduce(state, { type: "task", task: task("duty", { kind: "duty" }) }, 2)).toBe(state);
+    expect(reduce(state, { type: "duty_chat", at: 3 }, 3)).toBe(state);
+  });
+
+    it("ping records the server time and keeps the tasks", () => {
     const state = loaded();
     const next = reduce(state, { type: "ping", at: 400 }, 1);
     expect(next.lastPing).toBe(400);
