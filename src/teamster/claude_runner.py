@@ -74,6 +74,10 @@ def stream_unavailable(event, account, model=None):
         if isinstance(info, dict):
             claude_accounts.save_limits(account, info, event.get("timestamp"), model)
             if info.get("status") == "rejected":
+                if model:
+                    # Record the limit's scope now; a stop before the caller's mark must not leave
+                    # the rejected snapshot excluding the account for every model.
+                    claude_accounts.mark_limited(account, reason="usage limit", model=model)
                 return "usage limit"
     return None
 
@@ -317,7 +321,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                                     response["raw_message"] = event["result"].replace(token, "[REDACTED]")
                         result, reason = event_result(event, response["telemetry"], token,
                                                       account["name"], reviewing, scouting, reflecting,
-                                                      model or None)
+                                                      # Later events of a failed stream do not lift its mark.
+                                                      (model or None) if response["reason"] is None else None)
                         if reason is not None:
                             response["reason"] = response["reason"] or reason
                             response["result"] = None

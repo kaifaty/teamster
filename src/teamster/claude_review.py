@@ -189,7 +189,8 @@ def _probe(cfg, account, stopped=None, token_via_fd=False):
         if not isinstance(event, dict):
             reason = reason or "request failed"
             continue
-        unavailable = event_unavailable(event, account["name"], cfg["claude"].get("model") or None)
+        unavailable = event_unavailable(event, account["name"],
+                                        (cfg["claude"].get("model") or None) if reason is None else None)
         reason = reason or unavailable
         if event.get("type") == "result":
             if event.get("is_error"):
