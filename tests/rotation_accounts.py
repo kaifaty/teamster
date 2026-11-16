@@ -674,7 +674,7 @@ else:
         self.assertEqual(worker.commands.accounts_json([], cfg)["claude"], [{
             "name": "probe", "weight": 1, "updated_at": None, "stale": True,
             "five_hour": None, "seven_day": None,
-            "limited_until": None, "token_unavailable": None, "needs_login": None}])
+            "model_limits": [], "limited_until": None, "token_unavailable": None, "needs_login": None}])
         windows = {"five_hour": {"utilization": 0.25, "resetsAt": self.reset - 3600},
                    "seven_day": {"utilization": 0.5, "resetsAt": self.reset}}
         allowed = {"type": "rate_limit_event", "rate_limit_info": {
