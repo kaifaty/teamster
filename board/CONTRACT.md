@@ -934,7 +934,9 @@ With actions and selection capability enabled, the server runs `teamster duty ti
 `BOARD_DUTY_SECONDS` (default 1800 seconds) after the previous tick finishes. Setting the interval
 to 0 disables server ticks, including the immediate one; `duty auto` itself still elects. A single
 timer serializes ticks and duty actions, so ticks never overlap. `pinned`, `off`, read-only and
-unavailable-action servers run no ticks. A failing tick is logged and exposed in
+unavailable-action servers run no ticks. Before each tick the server refreshes accounts/status,
+so a CLI pin or clear also stops automatic elections; a failed status read skips that tick.
+A failing tick is logged and exposed in
 `last_election.error`, and later timer ticks continue. The server never calls `launchctl`.
 
 The web data layer exposes the duty mode, account pin ability and `choose(account, family)`,

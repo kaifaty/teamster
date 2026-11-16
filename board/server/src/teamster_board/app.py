@@ -316,7 +316,11 @@ class Board:
                 continue
             async with self._duty_lock:
                 # A manual selection may have acquired the lock while this tick waited.
+                await self.refresh_accounts()
                 if self.settings.read_only or self._duty_mode != "auto" or self._duty_reason is not None:
+                    continue
+                if self.accounts.duty["error"] is not None:
+                    self._duty_due = time.monotonic() + self.settings.duty_seconds
                     continue
                 result = await asyncio.to_thread(self.duty.execute, ["tick"])
                 if isinstance(result, dict) and result.get("ok"):

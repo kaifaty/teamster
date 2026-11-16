@@ -119,6 +119,7 @@ export function fixtureSource(): BoardSource {
       since: target ? now : null, checked_at: body.mode === "off" ? null : now, reason: body.mode === "off" ? null : body.mode === "auto" ? "automatic election" : "manual",
       pinned_unavailable: null, last_election: { at: body.mode === "off" ? null : now, error: null } };
     push?.({ type: "accounts", accounts: patchAccounts({ ...current, fetched_at: now, error: null }) });
+    push?.({ type: "duty_chat", at: now });
     return { ok: true, output: "", warning: null };
   }
   // The station's starts and agents tell the board in the snapshot's time, which the board sees shifted to now.
@@ -135,7 +136,10 @@ export function fixtureSource(): BoardSource {
   // A subscription's sign-ins and refreshes, in the board's time.
   const logins = fixtureLogins(() => Date.now() / 1000, (message) => push?.(message), () => state.accounts);
   // The conversation with the duty, in the board's time.
-  const duty = fixtureDutyChat(() => Date.now() / 1000, (message) => push?.(message));
+  const duty = fixtureDutyChat(() => Date.now() / 1000, (message) => push?.(message), () => {
+    const current = parseDuty(state.accounts?.data);
+    return current?.account && current.family ? { account: current.account, family: current.family } : null;
+  });
   const studied = (slug: string | undefined) =>
     research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
   /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */

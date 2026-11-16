@@ -409,7 +409,7 @@ def test_duty_kind_is_absent_from_task_views(duty):
 
 
 def test_duty_choice_warnings_timeout_and_shared_capability_probe(tmp_path, monkeypatch):
-    from teamster_board import actions as actions_module
+    from teamster_board import actions as actions_module, duty as duty_module
     from teamster_board.duty import Duty
 
     home = tmp_path / "home"
@@ -441,5 +441,14 @@ def test_duty_choice_warnings_timeout_and_shared_capability_probe(tmp_path, monk
         "warning: no weekly room\nquota unavailable")
     control.write_text(json.dumps({"sleep": 30}))
     monkeypatch.setattr(actions_module, "COMMAND_TIMEOUT", 0.05)
+    run = duty_module.subprocess.run
+    timeouts = []
+
+    def record_timeout(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(duty_module.subprocess, "run", record_timeout)
     timeout = chooser.execute(["tick"])
+    assert timeouts == [actions_module.COMMAND_TIMEOUT]
     assert timeout.status_code == 504 and json.loads(timeout.body)["error"] == "timeout"

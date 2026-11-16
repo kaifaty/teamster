@@ -2319,7 +2319,7 @@ def test_duty_disabled_never_elects(duty_actions, reason, options, status):
 
 def test_duty_timer_enters_auto_serializes_and_survives_failure(duty_actions, caplog):
     start, calls, root = duty_actions
-    with start(duty_seconds=0.2) as client:
+    with start(duty_seconds=30) as client:
         board = client.app.state.board
         wait_for_account(lambda: board.accounts.duty["fetched_at"] is not None)
         ticks = lambda: [row for row in calls() if row["args"] == ["duty", "tick"]]
@@ -2327,8 +2327,11 @@ def test_duty_timer_enters_auto_serializes_and_survives_failure(duty_actions, ca
         assert not ticks()  # Off has no timer.
         (root / "tick-block").touch()
         (root / "fail-tick").touch()
+        entered_auto = time.monotonic()
         assert client.post("/api/actions/duty", json={"mode": "auto"}).status_code == 200
         wait_for_account(lambda: (root / "tick-started").exists())
+        assert time.monotonic() - entered_auto < board.settings.duty_seconds
+        board.settings.duty_seconds = 0.2
         # The first tick runs immediately; multiple elapsed intervals cannot overlap it.
         time.sleep(0.25)
         assert len(ticks()) == 1
@@ -2351,6 +2354,16 @@ def test_duty_timer_enters_auto_serializes_and_survives_failure(duty_actions, ca
         (root / "record").write_text(json.dumps({"account": None, "family": None, "pinned": False}))
         client.portal.call(board.refresh_accounts)
         wait_for_account(lambda: len(ticks()) > before)
+        # A CLI clear between polls must stop the timer rather than recreate the duty.
+        client.portal.call(board._duty_lock.acquire)
+        try:
+            (root / "record").unlink()
+            before = len(ticks())
+        finally:
+            client.portal.call(board._duty_lock.release)
+        wait_for_account(lambda: board._duty_mode == "off")
+        assert not (root / "record").exists()
+        assert len(ticks()) == before
 
 
 def test_account_login_events_snapshot_and_last_logins(account_actions):
