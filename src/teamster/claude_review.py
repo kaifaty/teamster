@@ -59,9 +59,9 @@ def worktree_snapshot(st):
     return head, status, files
 
 
-def event_unavailable(event, account):
+def event_unavailable(event, account, model=None):
     """Recognize review account errors using the shared transport parser."""
-    return claude_runner.stream_unavailable(event, account)
+    return claude_runner.stream_unavailable(event, account, model)
 
 
 def refresh_limits(cfg, stopped=None):
@@ -76,11 +76,11 @@ def refresh_limits(cfg, stopped=None):
             probe(cfg, account, stale_only=True, stopped=stopped)
 
 
-def select_account(cfg, role, exclude=(), prefer_unused=(), stopped=None, task_type=None):
-    """Choose for new work after a refresh, skipping the duty account (duty.claude_reserved)."""
+def select_account(cfg, role, exclude=(), prefer_unused=(), stopped=None, task_type=None, model=None):
+    """Choose for new work on ``model`` after a refresh, skipping the duty account (duty.claude_reserved)."""
     refresh_limits(cfg, stopped)
-    exclude = set(exclude) | duty.claude_reserved(cfg, role, exclude, task_type, stopped)
-    return claude_accounts.select(cfg, role, exclude, prefer_unused)
+    exclude = set(exclude) | duty.claude_reserved(cfg, role, exclude, task_type, stopped, model)
+    return claude_accounts.select(cfg, role, exclude, prefer_unused, model)
 
 
 def probe(cfg, account, stale_only=False, stopped=None, token_via_fd=False):
@@ -189,7 +189,7 @@ def _probe(cfg, account, stopped=None, token_via_fd=False):
         if not isinstance(event, dict):
             reason = reason or "request failed"
             continue
-        unavailable = event_unavailable(event, account["name"])
+        unavailable = event_unavailable(event, account["name"], cfg["claude"].get("model") or None)
         reason = reason or unavailable
         if event.get("type") == "result":
             if event.get("is_error"):
@@ -197,7 +197,7 @@ def _probe(cfg, account, stopped=None, token_via_fd=False):
             else:
                 answered = isinstance(event.get("result"), str) and bool(event["result"].strip())
     if reason in ("usage limit", "authentication failed"):
-        claude_accounts.mark_limited(account["name"], reason=reason)
+        claude_accounts.mark_limited(account["name"], reason=reason, model=cfg["claude"].get("model") or None)
     if timed_out:
         return "request failed"
     if reason is None and returncode == 0 and answered:

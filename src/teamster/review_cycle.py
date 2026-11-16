@@ -80,8 +80,9 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
     """Retry a limited Claude account before allowing a Codex fallback."""
     attempted = set()
     deadline = None
+    model = cfg["claude"].get("model") or None
     account = claude_review.select_account(cfg, "review", prefer_unused=used_accounts, stopped=stopped,
-                                           task_type=st.get("task_type"))
+                                           task_type=st.get("task_type"), model=model)
     while account is not None:
         name = account["name"]
         retry = False
@@ -110,10 +111,14 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
                 entry["unavailable"] = response["reason"]
                 if response["reason"] in ("usage limit", "authentication failed", "token unavailable") and not stopped():
                     entry["limited_until"] = claude_accounts.mark_limited(
-                        name, token_unavailable=response["reason"] == "token unavailable", reason=response["reason"])
+                        name, token_unavailable=response["reason"] == "token unavailable", reason=response["reason"],
+                        model=model)
+                    info = claude_accounts.read_limits().get(name, {})
+                    if not claude_accounts.limited(info) and model in claude_accounts.model_limits(info):
+                        entry["limited_model"] = model
                     account = claude_review.select_account(cfg, "review", exclude=attempted,
                                                            prefer_unused=used_accounts, stopped=stopped,
-                                                           task_type=st.get("task_type"))
+                                                           task_type=st.get("task_type"), model=model)
                     retry = account is not None
                     entry["retry_account"] = account["name"] if retry else reviewers.CLAUDE_REVIEWER.fallback
             elif response.get("reason"):

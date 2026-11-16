@@ -16,15 +16,17 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
     minutes = st["max_turn_minutes"] if reflecting else cfg["max_review_minutes"]
     deadline = clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
     settings = cfg["claude"]
+    model = st.get("task_model") or settings.get("model")
     attempted = set()
     preferred = st.get("claude_account")
     account = None
     if preferred:
         account = claude_review.select_account(
             cfg, "review", exclude={a["name"] for a in claude_accounts.accounts(cfg) if a["name"] != preferred},
-            stopped=stopped, task_type=st.get("task_type"))
+            stopped=stopped, task_type=st.get("task_type"), model=model)
     if account is None:
-        account = claude_review.select_account(cfg, "review", stopped=stopped, task_type=st.get("task_type"))
+        account = claude_review.select_account(cfg, "review", stopped=stopped, task_type=st.get("task_type"),
+                                               model=model)
     # Snapshot the whole work tree even when the inspected directory is a subdirectory.
     snapshot_state = {"worktree": procs.sh(config.GIT + ["rev-parse", "--show-toplevel"], cwd=st["worktree"])}
     while account is not None and not stopped():
@@ -56,7 +58,7 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
         try:
             response = claude_runner.run_claude(
                 account, st["worktree"], prompt, stopped, deadline,
-                st.get("task_model") or settings.get("model"), effort or settings.get("effort"),
+                model, effort or settings.get("effort"),
                 settings["max_turns"], role="reflect" if reflecting else "scout",
                 session_id=st.get("session_id") or None,
                 started=started, progress=progress,
@@ -89,9 +91,10 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
         task_state.save(st)
         if response["outcome"] != "unavailable" or reason not in LIMIT_REASONS or stopped():
             return
-        claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable", reason=reason)
+        claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable", reason=reason,
+                                     model=model)
         account = claude_review.select_account(cfg, "review", exclude=attempted, stopped=stopped,
-                                               task_type=st.get("task_type"))
+                                               task_type=st.get("task_type"), model=model)
     st["outcome"] = task_state.stop_outcome(st, stopped) or "unavailable"
     if st["outcome"] == "unavailable":
         st["error"] = (f"No available Claude account for {'reflect' if reflecting else 'scout'}"
@@ -109,6 +112,7 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
     last = directory / "last.md"
     last.unlink(missing_ok=True)
     settings = cfg["claude"]
+    model = st.get("task_model") or settings.get("model")
     if deadline is None:
         minutes = 10 if wrapup else st.get("max_turn_minutes", cfg.get("max_turn_minutes"))
         deadline = None if minutes is None else clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
@@ -144,7 +148,7 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
         response = claude_runner.run_work_turn(
             account, st["worktree"], directory, prompt, lambda: stopped() or weekly_stopped,
             session_id=st.get("session_id") or None,
-            model=st.get("task_model") or settings.get("model"),
+            model=model,
             effort=effort or settings.get("effort"),
             deadline=deadline, started=started, progress=progress,
             max_minutes=st.get("max_turn_minutes", cfg.get("max_turn_minutes")))
@@ -184,7 +188,8 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
         reason = reason or "account unavailable"
         st["error"] = f"No available Claude account: {account['name']} ({reason})"
         if reason in LIMIT_REASONS:
-            claude_accounts.mark_limited(account["name"], token_unavailable=reason == "token unavailable", reason=reason)
+            claude_accounts.mark_limited(account["name"], token_unavailable=reason == "token unavailable",
+                                         reason=reason, model=model)
             if not wrapup:
                 outcome = "limit"
     elif reason and outcome != "completed":

@@ -173,8 +173,9 @@ def wait_review_lines(st, slug):
         reviewer = reviewers.from_entry(entry)
         if "retry_account" in entry:
             reason = " (token unavailable)" if entry.get("unavailable") == "token unavailable" else ""
+            scope = f" for model {entry['limited_model']}" if entry.get("limited_model") else ""
             yield (f"== {reviewer.name} account {entry['account']} limited until "
-                   f"{config.local_time(entry.get('limited_until'))}{reason}; review by {entry['retry_account']}")
+                   f"{config.local_time(entry.get('limited_until'))}{reason}{scope}; review by {entry['retry_account']}")
         elif entry.get("unavailable"):
             yield f"== reviewer {reviewer.name} unavailable: {entry['unavailable']}; review by {reviewer.fallback}"
     reviews = [entry for entry in reviews if not entry.get("unavailable")]

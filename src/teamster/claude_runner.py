@@ -56,24 +56,29 @@ def bash_timeouts(deadline, max_minutes):
             "BASH_MAX_TIMEOUT_MS": str(maximum)}
 
 
-def stream_unavailable(event, account):
-    """Persist safe limit fields and recognize account availability errors."""
+def stream_unavailable(event, account, model=None):
+    """Persist safe limit fields and recognize account availability errors.
+
+    ``model`` is the ``--model`` of the request; its success lifts that model's limit mark.
+    """
     kind = event.get("type")
     if (kind == "result" or kind == "system" and event.get("subtype") == "api_retry"):
         if event.get("error_status", event.get("api_error_status")) in (401, 403):
             return "authentication failed"
         if kind == "result" and not event.get("is_error"):
             claude_accounts.authenticated(account)
+            stamp = event.get("timestamp")
+            claude_accounts.model_succeeded(account, model, stamp if result_schema.is_finite_number(stamp) else None)
     if kind == "rate_limit_event":
         info = event.get("rate_limit_info")
         if isinstance(info, dict):
-            claude_accounts.save_limits(account, info, event.get("timestamp"))
+            claude_accounts.save_limits(account, info, event.get("timestamp"), model)
             if info.get("status") == "rejected":
                 return "usage limit"
     return None
 
 
-def event_result(event, telemetry, token, account, reviewing=True, scouting=False, reflecting=False):
+def event_result(event, telemetry, token, account, reviewing=True, scouting=False, reflecting=False, model=None):
     """Decode selected stream fields; return (result, unavailability reason)."""
     if not isinstance(event, dict):
         return None, "invalid JSON output"
@@ -97,7 +102,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
                     telemetry.setdefault("weekly_reset_before", reset)
                     telemetry["weekly_used_after"] = used * 100
                     telemetry["weekly_reset_after"] = reset
-        return None, stream_unavailable(event, account)
+        return None, stream_unavailable(event, account, model)
     usage = event.get("usage")
     if isinstance(usage, dict):
         telemetry["usage"] = {key: usage[key] for key in
@@ -107,7 +112,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
         telemetry["cost_usd"] = event["total_cost_usd"]
     if type(event.get("num_turns")) is int:
         telemetry["num_turns"] = event["num_turns"]
-    reason = stream_unavailable(event, account)
+    reason = stream_unavailable(event, account, model)
     if reason:
         return None, reason
     if event.get("is_error"):
@@ -311,7 +316,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                                 if event["result"]:
                                     response["raw_message"] = event["result"].replace(token, "[REDACTED]")
                         result, reason = event_result(event, response["telemetry"], token,
-                                                      account["name"], reviewing, scouting, reflecting)
+                                                      account["name"], reviewing, scouting, reflecting,
+                                                      model or None)
                         if reason is not None:
                             response["reason"] = response["reason"] or reason
                             response["result"] = None

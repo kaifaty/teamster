@@ -82,7 +82,9 @@ reported reset and repeats the same review on the next available Claude account.
 one angle share its `max_review_minutes` budget; switching accounts uses only the remaining time.
 An unreported
 reset is shown as `unknown`. `wait` prints
-`== claude account <a> limited until <time>; review by <b>` once for that switch. Only when no Claude
+`== claude account <a> limited until <time>; review by <b>` once for that switch, with
+` for model <model>` before `; review by` when only `claude.model` is limited on that account
+([accounts.md](accounts.md#claude-account-pool)). Only when no Claude
 account is available does this failure fall back to an ordinary Codex review.
 The Codex fallback starts a new review with its own full `max_review_minutes` budget.
 A missing Keychain token marks that account unavailable for one hour and retries another account

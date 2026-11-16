@@ -1852,6 +1852,101 @@ class ClaudeReviewTests(RotationTestCase):
             line = next(line for line in accounts.splitlines() if line.startswith("claude " + name + ":"))
             self.assertIn("limited", line)
 
+    def model_rejection(self, weekly):
+        return {"status": "rejected", "resetsAt": self.reset,
+                "unifiedWindows": {"five_hour": {"utilization": 0, "resetsAt": self.reset - 3600},
+                                   "seven_day": {"utilization": weekly, "resetsAt": self.reset}}}
+
+    def test_claude_model_limit_moves_the_review_and_names_the_model(self):
+        self.claude_pool_fixture(runs=[{"limits": self.model_rejection(.35)}, {"reply": self.review_result(False)}])
+        settings = json.loads((self.home / "claude-accounts.json").read_text())
+        settings["claude"]["model"] = "model-a"
+        (self.home / "claude-accounts.json").write_text(json.dumps(settings))
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
+        self.start("claude-model-limit", "--review", "--reviewer", "claude")
+        output = self.wait("claude-model-limit")
+        worker = self.worker()
+        until = worker.config.local_time(self.reset)
+        self.assertIn(f"== claude account first limited until {until} for model model-a; review by second\n", output)
+        self.assertEqual([entry["account"] for entry in self.state("claude-model-limit")["reviews"]],
+                         ["first", "second"])
+        saved = worker.claude_accounts.read_limits()["first"]
+        self.assertNotIn("limited_until", saved)
+        self.assertNotIn("status", saved)
+        self.assertEqual(saved["model_limits"]["model-a"]["limited_until"], self.reset)
+        line = next(line for line in self.cli("accounts").splitlines() if line.startswith("claude first:"))
+        self.assertTrue(line.endswith(f"; limited until {until} for model model-a"), line)
+        self.assertEqual(line.count("limited"), 1)
+        reported = json.loads(self.cli("accounts", "--json"))["claude"]
+        iso = datetime.datetime.fromtimestamp(self.reset, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertEqual((reported[0]["limited_until"], reported[0]["model_limits"]),
+                         (None, [{"model": "model-a", "limited_until": iso}]))
+        self.assertEqual(reported[1]["model_limits"], [])
+
+    def test_claude_model_limit_selection_sleep_lift_and_old_limits(self):
+        self.claude_pool_fixture(names=("first",))
+        clock = self.enable_fake_clock()
+        worker = self.worker()
+        pool, cfg = worker.claude_accounts, worker.config.accounts_config()
+        cfg["claude"]["model"] = "model-b"
+        path = self.home / "claude-tasks" / "claude-limits.json"
+
+        def name(account):
+            return account["name"] if account else None
+
+        def choose(model):
+            return name(worker.account_rotation.claude_choice({"task_model": model}, cfg, lambda: False))
+
+        # A whole window at 100% still excludes the account for every model.
+        pool.save_limits("first", self.model_rejection(1))
+        pool.mark_limited("first", reason="usage limit", model="model-a")
+        self.assertEqual(pool.read_limits()["first"]["limited_until"], self.reset)
+        self.assertNotIn("model_limits", pool.read_limits()["first"])
+        self.assertEqual((choose("model-a"), choose("model-b")), (None, None))
+
+        pool.clear_limits("first")
+        pool.save_limits("first", self.model_rejection(.35))
+        pool.mark_limited("first", reason="usage limit", model="model-a")
+        marked = pool.read_limits()["first"]["model_limits"]["model-a"]
+        self.assertEqual((choose("model-a"), choose("model-b"), choose(None)), (None, "first", "first"))
+        review = worker.claude_review.select_account(cfg, "review", model=cfg["claude"]["model"])
+        self.assertEqual(name(review), "first")
+        st, slept = {"slug": "model-sleep", "task_model": "model-a", "rotations": []}, []
+        (worker.config.TASKS / "model-sleep").mkdir()
+        self.assertIsNone(worker.account_rotation.wait_for_claude_account(
+            st, cfg, "all Claude accounts unavailable", lambda: bool(slept), slept.append))
+        self.assertEqual(st["sleeping"]["account"], "first")
+        self.assertAlmostEqual(st["sleeping"]["until"], self.reset + worker.config.RESET_MARGIN, delta=1)
+
+        # Only a success on the limited model that is newer than the mark lifts it.
+        allowed = dict(self.model_rejection(.35), status="allowed")
+        pool.save_limits("first", allowed, marked["limited_at"] - 1, model="model-a")
+        pool.save_limits("first", allowed, marked["limited_at"] + 1, model="model-b")
+        success = {"type": "result", "is_error": False, "result": "OK"}
+        worker.claude_review.event_unavailable(dict(success, timestamp=marked["limited_at"] - 1), "first", "model-a")
+        worker.claude_review.event_unavailable(success, "first", "model-b")
+        self.assertIsNone(choose("model-a"))
+        worker.claude_review.event_unavailable(dict(success, timestamp=marked["limited_at"] + 1), "first", "model-a")
+        self.assertEqual(choose("model-a"), "first")
+        pool.mark_limited("first", reason="usage limit", model="model-a")
+        pool.save_limits("first", allowed, clock.time() + 1, model="model-a")
+        self.assertNotIn("model_limits", pool.read_limits()["first"])
+
+        # Files without model marks keep their meaning for every model.
+        later = clock.time() + 600
+        for limits in ({"first": {"limited_until": later, "limited_at": clock.time()}},
+                       {"first": {"status": "rejected", "resetsAt": later}}):
+            with self.subTest(limits=limits):
+                path.write_text(json.dumps(limits))
+                self.assertEqual((choose("model-a"), choose("model-b")), (None, None))
+                self.assertEqual(json.loads(self.cli("accounts", "--json"))["claude"][0]["model_limits"], [])
+        self.claude_fixture()
+        path.write_text(json.dumps({"status": "rejected", "resetsAt": later}))
+        cfg = worker.config.accounts_config()
+        self.assertIsNone(pool.select(cfg, "work", model="model-b"))
+        path.write_text(json.dumps(self.claude_limits))
+        self.assertEqual(name(pool.select(cfg, "work", model="model-b")), "default")
+
     def test_claude_pool_spreads_angles_and_lists_per_account_limits(self):
         accounts = self.claude_pool_fixture()
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])

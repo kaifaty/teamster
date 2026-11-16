@@ -57,8 +57,11 @@ def _locked_limits():
         temporary.replace(path)
 
 
-def save_limits(name, info, event_time=None):
-    """Store only documented numeric fields, never arbitrary CLI output."""
+def save_limits(name, info, event_time=None, model=None):
+    """Store only documented numeric fields, never arbitrary CLI output.
+
+    An allowance on ``model`` newer than that model's mark clears the mark.
+    """
     selected = {}
     if info.get("status") in ("allowed", "allowed_warning", "rejected"):
         selected["status"] = info["status"]
@@ -88,7 +91,57 @@ def save_limits(name, info, event_time=None):
                 and not token_marked(previous)):
             previous.pop("limited_until", None)
             previous.pop("limited_at", None)
+        if selected.get("status") in ("allowed", "allowed_warning"):
+            _clear_model_mark(previous, model, event_time)
+        _prune_model_marks(previous)
         limits[name] = previous
+
+
+def _model_marks(info):
+    marks = info.get("model_limits")
+    return marks if isinstance(marks, dict) else {}
+
+
+def _mark_active(mark, now):
+    reset = mark.get("limited_until")
+    return not result_schema.is_finite_number(reset) or reset > now
+
+
+def _prune_model_marks(info, now=None):
+    now = clock.CLOCK.time() if now is None else now
+    marks = {model: mark for model, mark in _model_marks(info).items()
+             if isinstance(mark, dict) and _mark_active(mark, now)}
+    if marks:
+        info["model_limits"] = marks
+    else:
+        info.pop("model_limits", None)
+
+
+def _clear_model_mark(info, model, event_time):
+    """Drop the mark of ``model`` when the success at ``event_time`` is newer than it."""
+    mark = _model_marks(info).get(model) if model else None
+    if (isinstance(mark, dict) and result_schema.is_finite_number(event_time)
+            and (not result_schema.is_finite_number(mark.get("limited_at")) or event_time > mark["limited_at"])):
+        del info["model_limits"][model]
+
+
+def model_limits(info, now=None):
+    """Active per-model marks of one account as ``{model: limited_until or None}``."""
+    now = clock.CLOCK.time() if now is None else now
+    return {model: mark.get("limited_until") for model, mark in sorted(_model_marks(info).items())
+            if isinstance(mark, dict) and _mark_active(mark, now)}
+
+
+def model_succeeded(name, model, event_time=None):
+    """A successful request on ``model`` newer than its mark lifts that mark only."""
+    if not model or model not in _model_marks(read_limits().get(name, {})):
+        return
+    event_time = clock.CLOCK.time() if event_time is None else event_time
+    with _locked_limits() as limits:
+        info = limits.get(name)
+        if info:
+            _clear_model_mark(info, model, event_time)
+            _prune_model_marks(info)
 
 
 def clear_limits(name):
@@ -156,15 +209,30 @@ def token_marked(info, now=None):
     return bool(info.get("token_unavailable")) and info.get("token_retry_at", 0) > now
 
 
-def limited(info, now=None):
+def limited(info, now=None, model=None):
+    """Whether the whole account, or with ``model`` that model on it, is limited."""
     now = clock.CLOCK.time() if now is None else now
     if "limited_until" in info:
         reset = info["limited_until"]
-        return not result_schema.is_finite_number(reset) or reset > now
-    if info.get("status") == "rejected":
+        if not result_schema.is_finite_number(reset) or reset > now:
+            return True
+    elif info.get("status") == "rejected":
         reset = info.get("resetsAt")
-        return not result_schema.is_finite_number(reset) or reset > now
-    return False
+        if not result_schema.is_finite_number(reset) or reset > now:
+            return True
+    return model is not None and model in model_limits(info, now)
+
+
+def limit_end(info, now=None, model=None):
+    """When the account returns for ``model``; None while not limited or the end is unknown."""
+    now = clock.CLOCK.time() if now is None else now
+    ends = [info.get("limited_until", info.get("resetsAt"))] if limited(info, now) else []
+    marks = model_limits(info, now)
+    if model is not None and model in marks:
+        ends.append(marks[model])
+    if not ends or not all(result_schema.is_finite_number(end) for end in ends):
+        return None
+    return max(ends)
 
 
 def authenticated(name):
@@ -179,18 +247,26 @@ def authenticated(name):
             info.pop("limited_at", None)
 
 
-def mark_limited(name, token_unavailable=False, reason=None):
+def mark_limited(name, token_unavailable=False, reason=None, model=None):
     """Exclude an account until its known reset, or until fresh login/limit data.
 
     A missing token excludes it for TOKEN_RETRY_SECONDS; the next selection
-    after that reads the token again.
+    after that reads the token again. A usage limit on ``model`` while every
+    known window of the account is below 100% excludes the account for that
+    model only.
     """
     now = clock.CLOCK.time()
     with _locked_limits() as limits:
         info = limits.setdefault(name, {})
+        windows = info.get("unifiedWindows") if isinstance(info.get("unifiedWindows"), dict) else {}
+        windows = {key: window for key, window in windows.items() if isinstance(window, dict)}
+        model_only = (not token_unavailable and reason == "usage limit" and bool(model)
+                      and any(result_schema.is_finite_number(window.get("utilization"))
+                              for window in windows.values())
+                      and all(window_used(window, now) < 100 for window in windows.values()))
         if token_unavailable:
             info["reason"] = "token unavailable"
-        elif reason in ("authentication failed", "usage limit"):
+        elif reason in ("authentication failed", "usage limit") and not model_only:
             info["reason"] = reason
         if token_unavailable:
             until = now + TOKEN_RETRY_SECONDS
@@ -202,15 +278,20 @@ def mark_limited(name, token_unavailable=False, reason=None):
             info.update(token_unavailable=True, token_retry_at=now + TOKEN_RETRY_SECONDS,
                         limited_until=until, limited_at=now)
             return until
-        windows = info.get("unifiedWindows") or {}
-        depleted = [window.get("resetsAt") for window in windows.values()
-                    if isinstance(window, dict) and window_used(window, now) >= 100]
+        depleted = [window.get("resetsAt") for window in windows.values() if window_used(window, now) >= 100]
         depleted = [reset for reset in depleted if result_schema.is_finite_number(reset) and reset > now]
-        resets = [window.get("resetsAt") for window in windows.values() if isinstance(window, dict)]
+        resets = [window.get("resetsAt") for window in windows.values()]
         resets = [reset for reset in resets if result_schema.is_finite_number(reset) and reset > now]
         reset = info.get("resetsAt")
         if not result_schema.is_finite_number(reset) or reset <= now:
             reset = max(depleted) if depleted else min(resets, default=None)
+        if model_only:
+            # The rejected snapshot belongs to this model; other models keep the account.
+            if info.get("status") == "rejected":
+                info.pop("status")
+            _prune_model_marks(info, now)
+            info.setdefault("model_limits", {})[model] = {"limited_until": reset, "limited_at": now}
+            return reset
         if token_marked(info, now) and (not result_schema.is_finite_number(reset)
                                         or reset < info["token_retry_at"]):
             reset = info["token_retry_at"]
@@ -219,11 +300,11 @@ def mark_limited(name, token_unavailable=False, reason=None):
         return reset
 
 
-def select(cfg, role, exclude=(), prefer_unused=()):
-    """Choose the weighted weekly headroom that must be spent fastest."""
+def select(cfg, role, exclude=(), prefer_unused=(), model=None):
+    """Choose the weighted weekly headroom that must be spent fastest, skipping limits on ``model``."""
     limits, now = read_limits(), clock.CLOCK.time()
     choices = [account for account in accounts(cfg) if account["name"] not in exclude
-               and not limited(limits.get(account["name"], {}), now)]
+               and not limited(limits.get(account["name"], {}), now, model)]
     thresholds = (cfg.get("soft_switch_at", cfg["switch_at"]), cfg["switch_at"])
     if role == "work":
         # Work keeps the top of each account's week in reserve for reviews.
