@@ -1,7 +1,7 @@
 // The board's actions: the board server runs `teamster lesson`, `say`, `reflect`, `verdict`, `review`, `stop` and
 // `clean`, and starts a lesson's implementation (POST /api/actions/*), for the science station's buttons and the orders
-// on a ship's bridge; and it signs in to a subscription and refreshes its data, for the subscription's screen. The board
-// tab's task card only copies commands.
+// on a ship's bridge; it signs in to a subscription and refreshes its data, for the subscription's screen; and it sends
+// a message to the duty chat (`teamster duty chat`). The board tab's task card only copies commands.
 
 import type { ActionsOff, Launch, Login, TaskSummary } from "../types";
 import type { Verdict } from "./commands";
@@ -18,7 +18,8 @@ export type ActionRoute =
   | "login"
   | "login/input"
   | "login/cancel"
-  | "account-refresh";
+  | "account-refresh"
+  | "duty-chat";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -113,6 +114,11 @@ export interface LoginCancelBody {
   id: string;
 }
 
+/** A message to the duty: 1–8000 characters once trimmed. */
+export interface DutyChatBody {
+  text: string;
+}
+
 export interface ActionBodies {
   lesson: LessonBody;
   say: SayBody;
@@ -126,14 +132,17 @@ export interface ActionBodies {
   "login/input": LoginInputBody;
   "login/cancel": LoginCancelBody;
   "account-refresh": AccountBody;
+  "duty-chat": DutyChatBody;
 }
 
 /**
  * `launch`: a newer server answers `implement` and `reflect` at once and runs the start in the background, whose steps
  * then come as `launch` messages; an older one answers once the task has started, without it. `task`: a verdict's answer
- * carries the task with the verdict recorded.
+ * carries the task with the verdict recorded. `queued`: a message to the duty waits for the end of the running turn.
  */
-export type ActionResult = { ok: true; output: string; slug?: string; launch?: Launch; login?: Login; task?: TaskSummary } | { ok: false; error: string };
+export type ActionResult =
+  | { ok: true; output: string; slug?: string; launch?: Launch; login?: Login; task?: TaskSummary; queued?: boolean }
+  | { ok: false; error: string };
 
 export type ActionSender = <R extends ActionRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
 
@@ -143,6 +152,7 @@ const CODES: Record<string, string> = {
   no_teamster: "Команда teamster не найдена",
   forbidden: "Сервер доски отклонил запрос",
   timeout: "teamster не ответил вовремя",
+  old_teamster: "Установленный teamster не знает duty chat: обнови его",
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
@@ -194,6 +204,7 @@ export async function requestAction<R extends ActionRoute>(
     if (isLaunch(data.launch)) result.launch = data.launch;
     if (isLogin(data.login)) result.login = data.login;
     if (isTask(data.task)) result.task = data.task;
+    if (typeof data.queued === "boolean") result.queued = data.queued;
     return result;
   }
   if (isRecord(data) && typeof data.error === "string" && data.error.trim()) {

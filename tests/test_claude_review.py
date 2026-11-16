@@ -961,6 +961,36 @@ class ClaudeReviewTests(RotationTestCase):
         output = self.cli("clean", "duty")
         self.assertFalse((self.home / "claude-tasks" / "duty").exists())
 
+    def test_duty_chat_sender_that_loaded_before_a_turn_ended_keeps_that_turn(self):
+        release = self.root / "release-second-turn"
+        self.claude_pool_fixture(runs=[{"reply": self.duty_answer("One.")},
+                                       {"reply": self.duty_answer("Two."), "gate": str(release)},
+                                       {"reply": self.duty_answer("Three.")}])
+        self.put_duty("first")
+        self.cli("duty", "chat", "First.", timeout=60)
+        self.assertIn("sent to duty (turn 2), pid ", self.cli("say", "duty", "Second."))
+        worker = self.worker()
+        load = worker.task_state.load
+        snapshots = []
+
+        def held_load(slug):
+            st = load(slug)
+            if not snapshots:
+                # The sender holds its first snapshot, taken while turn 2 runs, until turn 2 has ended.
+                snapshots.append(len(st["duty_turns"]))
+                release.touch()
+                self.until(lambda: self.chat_settled(2) and not worker.procs.alive(st["pid"]), timeout=60)
+            return st
+
+        message = {"at": time.time(), "text": "Third.", "options": {}, "source": "user"}
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.task_state, "load", side_effect=held_load):
+            _, proc = worker.commands.send_duty_chat(worker.config.accounts_config(), message, False)
+        self.assertEqual(snapshots, [1])
+        proc.wait(timeout=60)
+        self.assertEqual([(turn["turn"], turn["reply"]) for turn in self.state("duty")["duty_turns"]],
+                         [(1, "One."), (2, "Two."), (3, "Three.")])
+
     def started_by_duty(self, slug, *command):
         """Start a task (or the given command) as a duty turn would, wait for it and check its provenance."""
         self.env["TEAMSTER_STARTED_BY"] = "duty"

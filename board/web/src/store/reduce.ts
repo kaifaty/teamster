@@ -31,6 +31,9 @@ export const emptyState: BoardState = {
   logins: {},
 };
 
+/** The duty chat is a conversation, not a ship: a server that still sends it as a task does not put it on the board. */
+const onBoard = (task: TaskSummary) => task.kind !== "duty";
+
 function without<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
   const next = { ...record };
   delete next[key];
@@ -45,7 +48,7 @@ export function reduce(state: BoardState, message: ServerMessage, now: number): 
   switch (message.type) {
     case "snapshot": {
       const tasks: Record<string, TaskSummary> = {};
-      for (const task of message.snapshot.tasks) tasks[task.slug] = task;
+      for (const task of message.snapshot.tasks) if (onBoard(task)) tasks[task.slug] = task;
       return {
         loaded: true,
         generatedAt: message.snapshot.generated_at,
@@ -61,6 +64,7 @@ export function reduce(state: BoardState, message: ServerMessage, now: number): 
     }
     case "task": {
       const task = message.task;
+      if (!onBoard(task)) return state;
       return {
         ...state,
         tasks: { ...state.tasks, [task.slug]: task },

@@ -123,7 +123,7 @@ interface Events {
 
 interface TaskSummary {
   slug: string;
-  kind: "work" | "review" | "scout" | "reflect" | "session";
+  kind: "work" | "review" | "scout" | "reflect" | "duty" | "session"; // "duty" only in GET /api/tasks/duty
   title: string | null;       // desktop session title; null for tasks
   link: string | null;        // claude://claude.ai/epitaxy/<sessionId>; null for tasks
   repo: string;               // repository basename; see session mapping below
@@ -159,6 +159,7 @@ interface TaskSummary {
   // The lead's verdict on the task's last turn (see "Lead verdict"); null for sessions.
   lead_verdict: "accepted" | "revised" | "redone" | "dropped" | null;
   lead_verdict_at: number | null; // the verdict's journal `at`
+  started_by: string | null;  // state.json `started_by`: "duty" for a task the duty chat started; null for sessions
 }
 
 interface TaskDetail extends TaskSummary {
@@ -475,6 +476,32 @@ interface FeedItem {
   kind: "message" | "thinking" | "command" | "edit" | "tool";
   text: string;
 }
+
+interface DutyChatView {
+  actions: { enabled: boolean; reason: "read_only" | "no_teamster" | null }; // same as ResearchView.actions
+  available: boolean;         // reason === null: a message can be sent
+  reason: "no_duty" | "codex_duty" | "old_teamster" | "read_only" | "no_teamster" | null;
+  duty: { account: string; family: "codex" | "claude" } | null; // accounts.data.duty
+  busy: boolean;              // a turn of the conversation runs: state.json `pid` is alive
+  turn_started_at: number | null; // state.json `turn_started` while busy, else null
+  messages: DutyChatMessage[]; // the conversation in ascending `at`, the newest 200
+  queued: { at: number; from: "user" | "note"; text: string }[]; // accepted, not delivered yet; ascending `at`
+  last_error: { at: number; text: string } | null; // a refusal or failure after the send was answered
+}
+
+interface DutyChatMessage {
+  id: string;                 // stable between reads: "m<byte offset in messages.jsonl>" or "d<index in duty_turns>"
+  at: number;
+  from: "user" | "duty" | "note";
+  text: string;               // ≤ 8000 chars; the duty's `reply`
+  turn: number | null;        // the turn that carried the message, or the turn of the answer
+  // duty only:
+  status?: "answered" | "needs_decision" | "started";
+  question?: string | null;   // the one decision asked; null when empty
+  options?: string[];         // 2–4 short answers to `question`, or [] for a free answer; each ≤ 200 chars
+  started?: string[];         // slugs of the tasks the turn started; each ≤ 200 chars
+  account?: string | null;    // the Claude account that answered
+}
 ```
 
 ### Machine configuration and probes
@@ -694,7 +721,7 @@ what waits for the next batch, including its planned schedule. Material and less
   `.codex/checks/<repo>/<token>` or `.codex/checks/<token>`. Deduplicate in first-appearance order,
   target places before proposal tokens, retaining at most 10 paths.
 - `repos`: `state.json`'s `repo` from all live task and archive directories, excluding `kind: "scout"`,
-  `kind: "reflect"` and the archive directory itself. A missing `kind` counts as work.
+  `kind: "reflect"`, `kind: "duty"` and the archive directory itself. A missing `kind` counts as work.
   Only existing repositories whose common git directory's `config` contains a `[remote "origin"]`
   section with a nonempty `url` remain, so they can be used by `teamster start`.
   A linked worktree's `.git` file supplies `gitdir: <path>` (relative paths start at the worktree).
@@ -729,7 +756,8 @@ what waits for the next batch, including its planned schedule. Material and less
   batch's `through` and at most its own.
 - Records are directories `<slug>-<stamp>` with `stamp` like `20261107T051647Z`. A record's repository is the
   last path component of `state.json`'s `repo`, or `"(unknown)"`. Records with `kind: "reflect"` are studies,
-  excluded from `batch.records`, `batch.repos`, `pending` and all material signals. Only `state.json` is used for signals:
+  excluded from `batch.records`, `batch.repos`, `pending` and all material signals. Records with `kind: "duty"`
+  (archived duty chats) are skipped entirely. Only `state.json` is used for signals:
   - `blocked`, `needs_decision`: `result.status`; `refused`: `result.status` or `outcome` is `refused`;
   - `escalate`: `auto_fix_stop` is `escalate`; `round_cap`: `auto_fix_stop` is `rounds_exhausted`,
     `check <outcome>` or `base conflict` (the round cap reached while the check failed or the base branch
@@ -1012,6 +1040,70 @@ Tasks are store records, distinct from desktop sessions. Archived tasks use thei
 in requests; the command receives that name without the `-YYYYMMDDTHHMMSSZ` suffix.
 There is no merge endpoint for ordinary tasks.
 
+#### Duty chat
+
+teamster's duty chat (`teamster duty chat`, 1.86.0 and later; see `src/teamster/docs/duty-chat.md`) is one
+long-lived task, slug `duty` and kind `duty`, in the tasks directory. The board reads it from four files of
+`tasks/duty/`, each through the safe task-file lookup that never follows symbolic links:
+
+- `state.json`: `kind` must be `"duty"`, otherwise there is no conversation. Each entry of `duty_turns`
+  (`{at, turn, account, status, reply, question, options, started}`) with a finite `at`, an integer `turn`,
+  a string `reply` and a known `status` is one `from: "duty"` message with `id: "d<index>"`, its index in
+  `duty_turns`, which only grows; other entries are skipped. `pid` alive makes `busy`; `turn_started` gives
+  `turn_started_at`.
+- `messages.jsonl`, read backwards by 1 MiB chunks until it gave 200 rows or ended: rows with `source: "user"` or
+  `source: "note"`, a finite `at` and a string `text` are messages from `user` or `note`, with
+  `id: "m<byte offset of the line>"`. Other sources (the lead's orders) are not part of the chat. A message's
+  `turn` is `state.turns` when it is not older than `turn_started`, otherwise the turn of the first answer
+  at or after it, otherwise `state.turns`.
+- `queue.json` `waiting` (messages accepted while a turn runs) and `notes.json` `held` (task notes held by the
+  hourly cap or for the next user message): rows with a finite `at` and a string `text` are `queued`, `from`
+  `note` for `source: "note"` and `user` otherwise.
+
+`messages` merge the two sources by `at`, a message before an answer with the same `at`, and keep the newest
+200. Texts are cut to 8000 characters. Without `state.json`, or with another kind, `messages` and `queued`
+are empty and `busy` is false.
+
+`available` is true when `reason` is null. `reason` is the first that applies: `read_only` or `no_teamster`
+(as `actions.reason`), `old_teamster` when the installed `teamster --version` is older than 1.86.0 (asked once,
+by the same probe as `TaskDetail.actions.queue`), `no_duty` when `accounts.data.duty` names no account (or
+the accounts are not read yet), `codex_duty` when its family is `codex`. `duty` is `{account, family}` from
+`accounts.data.duty`, or null.
+
+`POST /api/actions/duty-chat` with `{text: string}` sends a message to the duty. It has the same origin,
+header, body and `--read-only` protections as every other action (403 `forbidden`, 403 `read_only` or
+`no_teamster`, 413). Trimmed text must contain 1–8000 characters (400 `Invalid text`); an installed teamster
+without `duty chat` gets 409 `old_teamster`. The duty account is not checked here: teamster refuses
+itself. The text is written to a temporary file, never an argv word, and the server runs
+`teamster duty chat --file <temporary file>`, adding `--queue` when a turn runs (`busy`) or the server's own
+previous `duty chat` command has not returned yet. As other commands, it has no shell, stdin closed and the
+user's home as cwd, and logs its argv and exit code once it returns.
+
+The command waits for the end of the turn; the endpoint does not. Sends run one at a time: the next send
+waits until the previous one was answered, so two posts at once never start two conversations (the second
+gets `--queue`). The server polls every 50 ms for at most 2 seconds and answers `{ok: true, queued: boolean}`
+(200) as soon as the message is accepted: the command exited 0 (`queued` is true when `--queue` was given
+and no new turn started), or `state.json` shows a new turn or a new conversation (`queued: false`), or the
+2 seconds passed (`queued` is whether `--queue` was given). A nonzero exit within that window is teamster's
+refusal (no duty account, a Codex duty, a busy turn without `--queue`): 422 with the last 2000 characters of
+trimmed stderr, stdout if empty. After the answer the command goes on in a background thread without a
+timeout; a nonzero exit then, a late refusal or a failed turn, sets `last_error` to `{at, text}` with the
+same text. The next accepted message clears it. The temporary file is deleted when the command returns.
+`last_error` and the running command are held only until the server restarts.
+
+The running turn's live activity is the task feed of slug `duty`: while `busy`, a page reads
+`GET /api/tasks/duty/feed?after=<cursor>` (the Claude turn writes `claude-events.jsonl`), as the station
+reads an agent's feed. `GET /api/tasks/duty` also works and carries `activity_log`.
+
+Everywhere else the conversation is not a task: `Snapshot.tasks` and the `task`, `task_removed` and
+`activity` WebSocket messages leave out `kind: "duty"` records, live or archived, and the research leaves
+them out of studies, material and repositories. `teamster report` (`GET /api/report`) still counts the
+conversation, slug `duty` with its room `room` as the repository; the page's day summary takes its tasks, turns
+and active minutes off the totals, counts its executor's group again from the report's other tasks (`tasks`,
+the share with `result_status: "done"` and the median `active_minutes`), and leaves it out of the costly tasks.
+Tasks the duty started (`started_by: "duty"`) stay
+ordinary tasks.
+
 ### Automatic lesson landing
 
 With actions enabled and without `--no-land`, the server finishes only lesson tasks identified by the
@@ -1195,6 +1287,7 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   A replaced or truncated file, or an invalid cursor, sets `reset: true` and returns an initial feed;
   otherwise `reset: false` (also on an initial request).
 - `GET /api/research` → `ResearchView`; other methods get 405.
+- `GET /api/duty-chat` → `DutyChatView`; `POST /api/actions/duty-chat` → the duty chat send above.
 - `POST /api/actions/lesson`, `/api/actions/implement`, `/api/actions/say`, `/api/actions/reflect`,
   `/api/actions/verdict`, `/api/actions/review`, `/api/actions/stop`, `/api/actions/clean`
   → the task and science station actions above.
@@ -1224,6 +1317,10 @@ Server → client only; the server ignores client messages. Every message is one
 - `{"type": "research", "research": ResearchView}` — a lesson landing stage or text changed,
   including the current `lesson.implementation.landing` fields.
 - `{"type": "login", "login": Login}` — every change to a sign-in, first and final states included.
+- `{"type": "duty_chat", "at": number}` — the duty chat changed: `tasks/duty/`'s `state.json`,
+  `messages.jsonl`, `queue.json` or `notes.json` (inode, mtime or size), whether its turn runs, the duty
+  account, or the server's own send state (an accepted send, its command returning, `last_error`). Sent from
+  the task polling cycle, at most once per poll; `at` is the server time. Pages re-read `GET /api/duty-chat`.
 - `{"type": "event", "event": LogEvent}` — a newly read completed event, from the same polling cycle
   as tasks. Cursor resets rebuild history without resending previously published event content.
   History is fetched through `/api/events`; it is not added to `Snapshot`.

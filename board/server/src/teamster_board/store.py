@@ -559,6 +559,7 @@ class Store:
             "scheduled": None,
             "lead_verdict": verdict,
             "lead_verdict_at": verdict_at,
+            "started_by": text(state.get("started_by")),
             **cargo_summary(state),
         }
 
@@ -700,7 +701,7 @@ class Store:
         for slug in list(self.records):
             if slug not in present:
                 record = self.records.pop(slug)
-                if not record.archived:
+                if not record.archived and record.summary.get("kind") != "duty":
                     messages.append({"type": "task_removed", "slug": slug})
         for path, archived in paths:
             slug = path.name
@@ -728,6 +729,10 @@ class Store:
             if summary != record.summary:
                 old_activity = record.summary.get("activity")
                 record.summary = summary
+                if summary["kind"] == "duty":
+                    # The duty chat is not a ship: its changes reach pages as duty_chat messages.
+                    self.records[slug] = record
+                    continue
                 messages.append({"type": "task", "task": summary})
                 if summary["activity"] is not None and summary["activity"] != old_activity:
                     messages.append({"type": "activity", "slug": slug, "activity": summary["activity"]})
@@ -954,7 +959,7 @@ class Store:
             "updated_at": updated_at, "activity": record.activity if is_alive else None,
             "scheduled": state.get("scheduledTaskId"),
             "check": None, "review": None, "findings_left": 0, "stop": None, "left": 0,
-            "lead_verdict": None, "lead_verdict_at": None,
+            "lead_verdict": None, "lead_verdict_at": None, "started_by": None,
         }
 
     def _poll_sessions(self):
@@ -995,7 +1000,9 @@ class Store:
 
     def summaries(self):
         with self.lock:
-            rows = [record.summary.copy() for _, record in sorted(self.records.items())]
+            # The duty chat is a conversation, not a task of the map.
+            rows = [record.summary.copy() for _, record in sorted(self.records.items())
+                    if record.summary.get("kind") != "duty"]
             rows.extend(record.summary.copy() for _, record in sorted(self.session_records.items()))
             closed = sorted((row for row in rows if row["column"] == "closed"),
                             key=lambda row: (row["updated_at"], row["slug"]), reverse=True)[:50]

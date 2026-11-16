@@ -30,6 +30,8 @@ LAUNCH_POLL_SECONDS = 0.05
 VERSION_TIMEOUT = 10
 # teamster 1.60.0 added `say --queue`: an order to a busy task waits for the end of its cycle.
 QUEUE_VERSION = (1, 60, 0)
+# teamster 1.86.0 added `duty chat`.
+DUTY_CHAT_VERSION = (1, 86, 0)
 VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")
 SAY_KINDS = ("work", "review", "reflect")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
@@ -179,7 +181,7 @@ class Actions:
         self.reason = "read_only" if read_only else "no_teamster" if not command else None
         self.lock = threading.Lock()
         self.version_lock = threading.Lock()
-        self._queue = None
+        self._version = None
         self.publish = publish or (lambda launch: None)
         self.worktrees_path = worktrees_path or research.tasks_path.parent / "worktrees"
         self.launch_lock = threading.RLock()
@@ -194,23 +196,31 @@ class Actions:
 
     def queue(self):
         """Whether the installed teamster queues orders to a busy task; its version is asked once, when first needed."""
+        return self._supports(QUEUE_VERSION)
+
+    def duty_chat(self):
+        """Whether the installed teamster has `duty chat`, by the same single version probe."""
+        return self._supports(DUTY_CHAT_VERSION)
+
+    def _supports(self, version):
         if self.reason is not None:
             return False
         with self.version_lock:
-            if self._queue is None:
-                self._queue = self._queue_version()
-            return self._queue
+            if self._version is None:
+                self._version = self._probe_version()
+            return self._version >= version
 
-    def _queue_version(self):
+    def _probe_version(self):
+        """The installed teamster's version as a tuple; () when it cannot be told."""
         try:
             result = subprocess.run([self.command, "--version"], stdin=subprocess.DEVNULL, capture_output=True,
                                     encoding="utf-8", errors="replace", timeout=VERSION_TIMEOUT, cwd=Path.home())
         except (OSError, subprocess.TimeoutExpired) as exc:
             LOGGER.info("teamster --version failed: %s", exc)
-            return False
+            return ()
         match = VERSION.search(result.stdout) if result.returncode == 0 else None
         LOGGER.info("teamster --version: %s", match.group(0) if match else f"exit={result.returncode}, no version")
-        return match is not None and tuple(int(part) for part in match.groups()) >= QUEUE_VERSION
+        return tuple(int(part) for part in match.groups()) if match else ()
 
     def launches(self):
         with self.launch_lock:

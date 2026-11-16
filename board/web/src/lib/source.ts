@@ -1,5 +1,6 @@
 import type { ActionSender } from "./actions";
 import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
+import type { DutyChatView } from "../dutyChatTypes";
 import { connectSocket, type ConnectionState } from "./socket";
 
 /** Where the board gets its data: the real server, or the fixtures in `dev:fixture` mode. */
@@ -22,6 +23,8 @@ export interface BoardSource {
   fetchConstellations(): Promise<Constellations>;
   /** What the reflection learned; null when the server has no such route yet (404). */
   fetchResearch(): Promise<ResearchView | null>;
+  /** The conversation with the duty; null when the server has no such route yet (404). Absent from sources without it. */
+  fetchDutyChat?(): Promise<DutyChatView | null>;
   /** Completed phases and verdicts between two Unix times, both inclusive. */
   fetchEvents(since: number, until: number): Promise<Events>;
   /** `teamster report` from the local date `since` (YYYY-MM-DD), grouped by `by` (e.g. "executor"). */
@@ -66,6 +69,10 @@ export function serverSource(): BoardSource {
     async fetchResearch() {
       const response = await get("/api/research");
       return response ? ((await response.json()) as ResearchView) : null;
+    },
+    async fetchDutyChat() {
+      const response = await get("/api/duty-chat");
+      return response ? ((await response.json()) as DutyChatView) : null;
     },
     async fetchEvents(since, until) {
       const response = await get(`/api/events?since=${Math.floor(since)}&until=${Math.ceil(until)}`);

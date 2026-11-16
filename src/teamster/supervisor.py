@@ -23,10 +23,14 @@ def require_startable():
                   f"this command has layout {config.data_layout()}; run {config.COMMAND} again")
 
 
-def spawn(st, prompt, effort=None, current_message=False, kind="work", review_after=False, fix_rounds=0):
+def spawn(st, prompt, effort=None, current_message=False, kind="work", review_after=False, fix_rounds=0,
+          refresh=None):
     """Start the next turn of st, the state this command loaded, and return its supervisor.
 
     prompt is the text, or a callable that builds it once no other turn has started (say journals its message then).
+    refresh, when given, makes the turn start from the state re-read under the lock instead: st takes its
+    fields, so that what a turn that ended after st was loaded saved stays, and refresh(st) applies this
+    command's changes to it again.
     """
     # Until the pid is saved, prune and data layout upgrades wait. Refuse before touching
     # the task, so a refused start leaves its files and state as they were.
@@ -46,6 +50,10 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
                 if busy is not None:
                     procs.die(busy)
                 drop_dead_queue(st["slug"])
+                if refresh is not None:
+                    st.clear()
+                    st.update(latest)
+                    refresh(st)
             return launch(st, prompt, effort, current_message, kind, review_after, fix_rounds)
 
 

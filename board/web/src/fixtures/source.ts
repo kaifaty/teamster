@@ -12,6 +12,7 @@ import type { ActionSender } from "../lib/actions";
 import { fixtureActions, fixtureResearch, type StationRoute } from "./research";
 import { fixtureShips, type ShipRoute } from "./ships";
 import { fixtureLogins, type LoginRoute } from "./logins";
+import { fixtureDutyChat } from "./dutyChat";
 
 interface FixtureDetail {
   timeline: { at: number; text: string }[];
@@ -91,12 +92,18 @@ export function fixtureSource(): BoardSource {
   );
   // A subscription's sign-ins and refreshes, in the board's time.
   const logins = fixtureLogins(() => Date.now() / 1000, (message) => push?.(message), () => state.accounts);
+  // The conversation with the duty, in the board's time.
+  const duty = fixtureDutyChat(() => Date.now() / 1000, (message) => push?.(message));
   const studied = (slug: string | undefined) =>
     research.studies.some((study) => study.slug === slug) || research.lessons.some((lesson) => lesson.implementation?.slug === slug);
   /** A say to a study or a lesson's implementation goes to the station; every other say and order goes to the ship. */
   const act: ActionSender = async (route, body) => {
     const study = route === "say" && studied((body as { slug?: string }).slug);
     if (route === "lesson" || route === "implement" || route === "reflect" || study) return station.act(route as StationRoute, body as never);
+    if (route === "duty-chat") {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return duty.act(body as never);
+    }
     if (route === "login" || route === "login/input" || route === "login/cancel" || route === "account-refresh") {
       await new Promise((resolve) => setTimeout(resolve, 250));
       return logins.act(route as LoginRoute, body as never);
@@ -201,6 +208,9 @@ export function fixtureSource(): BoardSource {
     },
     async fetchResearch() {
       return shiftTimes(research, anchor);
+    },
+    async fetchDutyChat() {
+      return duty.view();
     },
     async fetchEvents(since, until) {
       return demoEvents(FIXTURE_EVENTS, origin, since, until);

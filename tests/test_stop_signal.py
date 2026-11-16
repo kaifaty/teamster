@@ -2,19 +2,32 @@
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 
 # Isolated Python omits the script directory from its import path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from worker_loader import SCRIPT
+from worker_loader import SCRIPT, load_worker
 
 
 CHILD = Path(__file__).resolve().with_name("stop_signal_child.py")
+# A group leader that SIGINT ends, with a child that ignores SIGINT and SIGTERM.
+GROUP = r"""import subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-I", "-c", "import signal, time; "
+                          "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+                          "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                          "print('ready', flush=True); time.sleep(60)"], stdout=subprocess.PIPE, text=True)
+assert child.stdout.readline() == "ready\n"
+print(child.pid, flush=True)
+time.sleep(60)
+"""
 
 
 class StopSignalTests(unittest.TestCase):
@@ -75,6 +88,38 @@ class StopSignalTests(unittest.TestCase):
         # The supervisor's real handler and sleep, with the turn replaced by one sleep:
         # a deadlocked handler ends the child with a faulthandler traceback.
         self.assert_sweep(self.scenario("supervisor_sweep"), outcome="stopped")
+
+
+    def test_end_group_waits_for_a_child_that_outlives_its_leader(self):
+        directory = tempfile.TemporaryDirectory(prefix="codex-end-group-")
+        self.addCleanup(directory.cleanup)
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("TEAMSTER_")}
+        environment["CODEX_TASK_HOME"] = directory.name
+        worker = load_worker(environment, clear=True)
+        leader = subprocess.Popen([sys.executable, "-I", "-c", GROUP], stdout=subprocess.PIPE, text=True,
+                                  start_new_session=True)
+        child = int(leader.stdout.readline())
+        leader.stdout.close()
+
+        def kill_child():
+            try:
+                os.kill(child, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        self.addCleanup(kill_child)
+        os.kill(child, 0)
+        # The leader is not end_group's child in teamster: reap it here as its parent would.
+        reaper = threading.Thread(target=leader.wait, daemon=True)
+        reaper.start()
+        with mock.patch.object(worker.procs, "GROUP_STEPS",
+                               ((signal.SIGINT, 2), (signal.SIGTERM, 1), (signal.SIGKILL, 10))):
+            worker.procs.end_group(leader.pid)
+        reaper.join(10)
+        self.assertIsNotNone(leader.returncode)
+        # end_group returns only once SIGKILL has ended the child as well.
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(leader.pid, 0)
 
 
 if __name__ == "__main__":

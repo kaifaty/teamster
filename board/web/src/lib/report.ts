@@ -61,6 +61,21 @@ export function dayVerdicts(events: readonly LogEvent[], since: number): Record<
   return counts;
 }
 
+/**
+ * The duty chat's row: teamster's report counts the conversation (slug `duty`, its room as the repository) as a task,
+ * the board does not. Its tasks, turns and minutes come off the totals; its executor's group is counted again from the
+ * report's other tasks.
+ */
+const isDutyChat = (task: Json) => task.slug === "duty" && task.repo === "room";
+const executorsOf = (task: Json): unknown[] => (Array.isArray(task.executors) && task.executors.length ? task.executors : ["codex"]);
+
+function median(values: number[]): number | null {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  if (!sorted.length) return null;
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+}
+
 /** The summary to show, or null when the day has nothing in it. */
 export function daySummary(data: unknown, events: readonly LogEvent[], since: number): DaySummary | null {
   const report = object(data);
@@ -69,18 +84,28 @@ export function daySummary(data: unknown, events: readonly LogEvent[], since: nu
   const ci = object(summary.ci);
   const reviews = object(summary.reviews);
   const verdicts = dayVerdicts(events, since);
+  const rows = (Array.isArray(report.tasks) ? report.tasks : []).map(object);
+  const duty = rows.filter(isDutyChat);
   const roundsToClean = Object.entries(object(summary.fix_rounds_to_clean))
     .map(([rounds, tasks]) => [Number(rounds), count(tasks)] as [number, number])
     .filter(([rounds, tasks]) => Number.isInteger(rounds) && tasks > 0)
     .sort((a, b) => a[0] - b[0]);
-  const executors = (Array.isArray(report.groups) ? report.groups : []).map(object).map((group) => ({
-    name: typeof group.executor === "string" ? group.executor : "unknown",
-    tasks: count(group.tasks),
-    donePercent: percent(group.done_fraction),
-    medianMinutes: number(group.median_active_minutes),
-  }));
-  const costly = (Array.isArray(report.tasks) ? report.tasks : [])
-    .map(object)
+  const executors = (Array.isArray(report.groups) ? report.groups : []).map(object).map((group) => {
+    const name = typeof group.executor === "string" ? group.executor : "unknown";
+    if (!duty.some((task) => executorsOf(task).includes(group.executor))) {
+      return { name, tasks: count(group.tasks), donePercent: percent(group.done_fraction), medianMinutes: number(group.median_active_minutes) };
+    }
+    // The group without the conversation, as the report counts a group: its tasks, the done share and the median.
+    const members = rows.filter((task) => !isDutyChat(task) && executorsOf(task).includes(group.executor));
+    return {
+      name,
+      tasks: members.length,
+      donePercent: members.length ? percent(members.filter((task) => task.result_status === "done").length / members.length) : null,
+      medianMinutes: median(members.map((task) => count(task.active_minutes))),
+    };
+  }).filter((group) => group.tasks > 0);
+  const costly = rows
+    .filter((task) => !isDutyChat(task))
     .map((task) => ({
       slug: typeof task.slug === "string" ? task.slug : "?",
       repo: typeof task.repo === "string" ? task.repo : "",
@@ -91,9 +116,9 @@ export function daySummary(data: unknown, events: readonly LogEvent[], since: nu
     .sort((a, b) => b.minutes - a.minutes)
     .slice(0, 5);
   const result: DaySummary = {
-    tasks: count(summary.tasks),
-    turns: count(summary.turns),
-    activeHours: count(summary.active_hours),
+    tasks: Math.max(0, count(summary.tasks) - duty.length),
+    turns: Math.max(0, count(summary.turns) - duty.reduce((sum, task) => sum + count(task.turns), 0)),
+    activeHours: Math.max(0, count(summary.active_hours) - duty.reduce((sum, task) => sum + count(task.active_minutes), 0) / 60),
     verdicts,
     checkPercent: percent(checks.pass_fraction),
     checks: count(checks.total),

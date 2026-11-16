@@ -28,6 +28,7 @@ export const KINDS: Record<TaskSummary["kind"], string> = {
   review: "ревью",
   scout: "разведка",
   reflect: "исследование",
+  duty: "дежурный",
   session: "сессия",
 };
 

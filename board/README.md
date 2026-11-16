@@ -19,7 +19,8 @@ Open http://localhost:8787. The server listens on `127.0.0.1` by default; CLI op
 WebSocket Origins, when present, must also be localhost. The server reads task files and machine
 metrics and listens on localhost; it has no task control endpoints except science station actions:
 lesson decisions, lesson implementation (`implement`), `say` to reflection or implementation tasks,
-and new `reflect` orders. These run the installed `teamster`
+new `reflect` orders, and messages to the duty chat (`POST /api/actions/duty-chat`, read with
+`GET /api/duty-chat`). These run the installed `teamster`
 command, found on `PATH` at startup; `--teamster PATH` selects its executable explicitly, and
 `--read-only` disables all actions, including account login and refresh. They require a matching same-origin `Origin`,
 `Content-Type: application/json` and `X-Teamster-Board: 1`. Ordinary task stop, clean, verdict and

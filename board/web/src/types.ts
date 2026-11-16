@@ -51,7 +51,7 @@ export interface Report {
 
 export interface TaskSummary {
   slug: string;
-  kind: "work" | "review" | "scout" | "reflect" | "session";
+  kind: "work" | "review" | "scout" | "reflect" | "duty" | "session"; // "duty": the duty chat, never on the board
   title: string | null; // desktop session title; null for tasks
   link: string | null; // claude://claude.ai/epitaxy/<sessionId>; null for tasks
   repo: string; // repository basename; see the session mapping in the contract
@@ -87,6 +87,7 @@ export interface TaskSummary {
   // The lead's verdict on the last turn, from `teamster verdict`; null without one, after a new turn and for sessions.
   lead_verdict: LeadVerdict | null;
   lead_verdict_at: number | null; // when the verdict was written
+  started_by?: string | null; // "duty" for a task the duty chat started; absent from older servers
 }
 
 export type LeadVerdict = "accepted" | "revised" | "redone" | "dropped";
@@ -495,4 +496,5 @@ export type ServerMessage =
   | { type: "machines"; machines: Machines }
   | { type: "launch"; launch: Launch }
   | { type: "login"; login: Login }
+  | { type: "duty_chat"; at: number } // the duty chat changed: GET /api/duty-chat again
   | { type: "ping"; at: number };

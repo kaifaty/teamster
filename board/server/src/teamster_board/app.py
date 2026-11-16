@@ -19,6 +19,7 @@ from .accounts import Accounts, Reports, probe
 from .actions import Actions, action_body, error
 from .art import MEDIA_TYPES, art_file, art_index
 from .constellations import read_constellations
+from .duty_chat import DutyChat
 from .logins import Logins
 from .machines import Machines
 from .research import Research
@@ -161,6 +162,7 @@ class Board:
                                publish=self.publish_launch, worktrees_path=settings.path("worktrees"),
                                no_land=settings.no_land, publish_research=self.publish_research)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
+        self.duty_chat = DutyChat(settings.path("tasks"), self.actions, lambda: self.accounts.value)
         self.reports = Reports(settings.teamster)
         self.machines = Machines(settings.machines_file or settings.path("board_machines"),
                                  settings.ssh_command)
@@ -196,6 +198,8 @@ class Board:
             messages = await asyncio.to_thread(self.store.poll)
             for message in messages:
                 self.publish(message)
+            if await asyncio.to_thread(self.duty_chat.changed):
+                self.publish({"type": "duty_chat", "at": time.time()})
             if self.store.take_logins():
                 self.request_accounts()
             self.actions.landing.poll()
@@ -377,6 +381,17 @@ def create_app(settings=None):
     async def research():
         return {**await asyncio.to_thread(board.research.view), "actions": board.actions.value,
                 "launches": await asyncio.to_thread(board.actions.launches)}
+
+    @app.get("/api/duty-chat")
+    async def duty_chat():
+        return await asyncio.to_thread(board.duty_chat.view)
+
+    @app.post("/api/actions/duty-chat")
+    async def duty_chat_action(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        return await asyncio.to_thread(board.duty_chat.send, data)
 
     @app.post("/api/actions/lesson")
     @app.post("/api/actions/implement")

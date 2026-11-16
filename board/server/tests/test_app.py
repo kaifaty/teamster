@@ -32,7 +32,7 @@ SUMMARY_FIELDS = {
     "model", "effort", "column", "phase", "phase_started_at", "alive", "turn", "fix_round",
     "outcome", "result_status", "summary", "pr", "ci", "sleeping_until", "created", "updated_at",
     "activity", "title", "link", "scheduled", "check", "review", "findings_left", "stop", "left",
-    "lead_verdict", "lead_verdict_at",
+    "lead_verdict", "lead_verdict_at", "started_by",
 }
 
 
