@@ -5,6 +5,7 @@ Layer 0:
     reviewers (implemented): reviewer contract, registry and state-only policies.
     procs (implemented): process execution, signals, and termination.
     result_schema (implemented): result schemas, parsing, and output lines.
+    terminal_screen (implemented): a terminal screen model for reading redrawn tool output.
 Layer 1:
     config (implemented): paths, settings, binaries, and account configuration.
 Layer 2:
@@ -64,7 +65,7 @@ namespaces. Only config.py and __main__.py may use __file__; usage text stays in
 The executors and reviewers registries share the register, get and names API.
 """
 
-__version__ = "1.84.0"
+__version__ = "1.85.2"
 # Raised by a release whose supervisors cannot run beside those of a different value;
 # upgrade --yes then refuses while a supervisor of another data layout is alive.
 DATA_LAYOUT = 1

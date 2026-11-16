@@ -50,8 +50,8 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
   }
 
   function finishClaude(id: string, from: number) {
-    later(id, from, () => ({ stage: "saving", prompt: false, output: ["✓ Long-lived authentication token created successfully!", "Your OAuth token (valid for 1 year): [token hidden]"] }));
-    later(id, from + 1600, () => ({ stage: "checking" }));
+    later(id, from, () => ({ stage: "checking", prompt: false, output: ["✓ Long-lived authentication token created successfully!", "Your OAuth token (valid for 1 year): [token hidden]"] }));
+    later(id, from + 2200, () => ({ stage: "saving" }));
     later(id, from + 3800, () => ({ stage: "done", status: "ok", ok: true, message: "" }));
   }
 

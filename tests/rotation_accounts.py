@@ -1,7 +1,9 @@
 """Account authentication, reset waits and monitor tests."""
+import fcntl
 import io
 import json
 import os
+import re
 import signal
 import socketserver
 import subprocess
@@ -66,6 +68,14 @@ class AccountAuthTests(RotationTestCase):
         self.assertEqual([row["argv"] for row in self.trace() if row["command"] == "login"],
                          [["--device-auth"]] * 4 + [[]])
 
+    # setup-token's sign-in frame, then its result frame drawn over it; TOKEN is the token.
+    DIFF_FRAMES = (["Browser didn't open? Use the url below to sign in (c to copy)", "",
+                    "https://login.example.test/claude", "", "Paste code here if prompted >"],
+                   ["\u2713 Long-lived authentication token created successfully!", "",
+                    "Your OAuth token (valid for 1 year):", "", "TOKEN", "",
+                    "Store this token securely. You won't be able to see it again.", "",
+                    "Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>"])
+
     @contextmanager
     def claude_event_fixture(self):
         """Keep the fake Keychain secret in memory, including across processes."""
@@ -107,6 +117,11 @@ if Path(sys.argv[0]).name == 'security':
         request = {'save': args[-1]}
     else:
         assert sys.argv[1:] == ['find-generic-password', '-s', 'codex-worker-claude-events', '-a', 'fixture-user', '-w']
+        if os.environ.get('OLDER_PROBE_LOOKUP'):
+            # An older probe's lookup that finds no token once its gate opens.
+            while not Path(fixture['lookup_gate']).exists():
+                time.sleep(0.01)
+            sys.exit(44)
     with socket.create_connection(ADDRESS) as connection:
         connection.sendall(json.dumps(request).encode() + b'\n')
         result = json.loads(connection.makefile('rb').readline())
@@ -125,6 +140,10 @@ elif sys.argv[1:] == ['setup-token']:
             trace(child=True)
         while True: time.sleep(0.1)
     tty.setraw(0)
+    # Like Node's raw mode, keep translating output newlines to CR LF.
+    attributes = termios.tcgetattr(0)
+    attributes[1] |= termios.OPOST | termios.ONLCR
+    termios.tcsetattr(0, termios.TCSANOW, attributes)
     def read_code():
         code = b''
         while True:
@@ -133,6 +152,36 @@ elif sys.argv[1:] == ['setup-token']:
                 trace(input=(code + chunk).decode())
                 return
             code += chunk.replace(b'\r', b'').replace(b'\n', b'')
+    if fixture.get('diff'):
+        # Draw like a diff renderer: the second frame writes only the cells that changed,
+        # jumping over unchanged ones with CUP, then alternately CUF and CHA.
+        first, second = DIFF_FRAMES
+        second = [row.replace('TOKEN', token) for row in second]
+        os.write(1, ('\x1b[H\x1b[2J' + '\r\n'.join(first)).encode())
+        read_code()
+        out, jumps = [], 0
+        for y, new in enumerate(second):
+            old = first[y] if y < len(first) else ''
+            x = None
+            for column in range(max(len(old), len(new))):
+                if column >= len(new):
+                    if x is None:
+                        out.append('\x1b[%d;%dH' % (y + 1, column + 1))
+                    elif column > x:
+                        out.append('\x1b[%dG' % (column + 1))
+                    out.append('\x1b[K')
+                    break
+                if column < len(old) and old[column] == new[column] or column >= len(old) and new[column] == ' ':
+                    continue
+                if x is None:
+                    out.append('\x1b[%d;%dH' % (y + 1, column + 1))
+                elif column > x:
+                    jumps += 1
+                    out.append('\x1b[%dC' % (column - x) if jumps % 2 else '\x1b[%dG' % (column + 1))
+                out.append(new[column])
+                x = column + 1
+        os.write(1, ''.join(out).encode())
+        sys.exit(0)
     if fixture.get('redraw'):
         for frame in range(50):
             spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[frame % 10]
@@ -145,25 +194,41 @@ elif sys.argv[1:] == ['setup-token']:
     for attempt in range(attempts):
         read_code()
         if attempt + 1 < attempts:
-            print('\r\nPaste code here: ', end='', flush=True)
+            # An invalid code replaces the prompt row with an error and prompts below it.
+            print('\r\x1b[2KInvalid code\r\nPaste code here: ' if fixture.get('invalid_code')
+                  else '\r\nPaste code here: ', end='', flush=True)
     if not fixture.get('no_token'):
         if fixture.get('split_token'):
             print('\r\nPaste code here: ' + token[:20], end='', flush=True)
             read_code()
             print(token[20:], flush=True)
         else:
+            if fixture.get('scrolled_token'):
+                print('\r\nExample: sk-ant-' + 'oat01-' + 'decoy', end='')
             print('\r\nToken: \x1b[32m' + token + '\x1b[0m', flush=True)
+            if fixture.get('scrolled_token'):
+                # Push the token, and the decoy before it, off the top of the screen.
+                print('\n'.join('line %d' % number for number in range(30)), flush=True)
     sys.exit(fixture.get('exit', 0))
 else:
     fd = int(os.environ['CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR'])
     assert os.read(fd, 4096).decode() == token
     trace(probe=True)
-    print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed'}}))
+    if fixture.get('probe_status'):
+        print(json.dumps({'type': 'result', 'api_error_status': fixture['probe_status'], 'is_error': True}))
+        sys.exit(1)
+    if fixture.get('probe_limit'):
+        print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'rejected', 'resetsAt': 4102444800}}))
+        print(json.dumps({'type': 'result', 'result': '', 'is_error': True}))
+        sys.exit(1)
+    print(json.dumps({'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed', 'unifiedWindows': {
+        'five_hour': {'utilization': 0.25, 'resetsAt': 4102444800}}}}))
     print(json.dumps({'type': 'result', 'result': 'OK', 'is_error': False}))
     print(token, file=sys.stderr)
 '''
             source = source.replace("FIXTURE", repr(str(fixture))).replace("TRACE", repr(str(trace)))
             source = source.replace("ADDRESS", repr(server.server_address))
+            source = source.replace("DIFF_FRAMES", repr(self.DIFF_FRAMES))
             for name in ("claude", "security"):
                 path = self.root / name
                 path.write_text("#!" + PYTHON + "\n" + source)
@@ -175,7 +240,7 @@ else:
                 server.shutdown()
                 thread.join(timeout=5)
 
-    def run_claude_event_login(self, *arguments, cancel_saving=False, codes=None):
+    def run_claude_event_login(self, *arguments, cancel_saving=False, codes=None, on_saving=None):
         proc = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "claude-login", "events", "--events", *arguments],
                                 env=self.env, cwd=self.root, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -186,6 +251,8 @@ else:
             for line in proc.stdout:
                 output.append(line)
                 event = json.loads(line)
+                if on_saving and event == {"event": "stage", "stage": "saving"}:
+                    on_saving()
                 if cancel_saving and event == {"event": "stage", "stage": "saving"}:
                     proc.terminate()
                     (self.root / "save-gate").touch()
@@ -214,7 +281,8 @@ else:
             events = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual(events[-1]["status"], "ok")
             self.assertTrue(events[-1]["ok"])
-            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["saving", "checking"])
+            # The token is checked before it is saved, and checked once.
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking", "saving"])
             self.assertEqual([e for e in events if e["event"] == "open"],
                              [{"event": "open", "url": "https://login.example.test/claude"}])
             self.assertEqual(sum(e["event"] == "prompt" for e in events), 2)
@@ -223,8 +291,11 @@ else:
             self.assertEqual([row["input"] for row in rows if "input" in row], ["page-code\r", "\r"])
             lookup = ["find-generic-password", "-s", "codex-worker-claude-events", "-a", "fixture-user", "-w"]
             self.assertEqual([row["argv"] for row in rows if row["command"] == "security"],
-                             [["-i"], lookup, lookup])
-            self.assertTrue(rows[-1]["probe"])
+                             [["-i"], lookup])
+            probes = [index for index, row in enumerate(rows) if row.get("probe")]
+            saves = [index for index, row in enumerate(rows) if row["argv"] == ["-i"]]
+            self.assertEqual(len(probes), 1)
+            self.assertLess(probes[0], saves[0])
             self.assertEqual(len(values), 1)
             token = values[0]
             self.assertIn("[token hidden]", result.stdout)
@@ -233,6 +304,54 @@ else:
                 if path.is_file():
                     self.assertNotIn(token.encode(), path.read_bytes(), str(path))
             self.assertEqual(self.telemetry_journal()[-1]["status"], "ok")
+            # The check's answer is the account's probe: its limits and time are kept.
+            limits = self.worker().claude_accounts.read_limits()["events"]
+            self.assertEqual(limits["unifiedWindows"], {"five_hour": {"utilization": 0.25, "resetsAt": 4102444800}})
+            self.assertEqual(limits["status"], "allowed")
+            self.assertIn("probe_attempted_at", limits)
+            self.assertIn("5h 25%", events[-1]["message"])
+
+    def test_claude_login_events_prompt_again_after_an_invalid_code(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"invalid_code": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertIn({"event": "output", "text": "Invalid code"}, events)
+            self.assertEqual(sum(event["event"] == "prompt" for event in events), 2)
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual([row["input"] for row in rows if "input" in row], ["page-code\r", "\r"])
+
+    def test_claude_login_events_take_the_last_token_from_scrollback(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"scrolled_token": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(values, ["sk-ant-" + "oat01-" + "event-secret-1234567890"])
+            self.assertNotIn("decoy", result.stdout)
+            self.assertIn({"event": "output", "text": "line 29"},
+                          [json.loads(line) for line in result.stdout.splitlines()])
+
+    def test_claude_login_events_record_the_check_after_an_older_probe(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            worker = self.worker()
+            settings = self.home / "codex-worker.json"
+            worker.config.TASKS.mkdir(parents=True, exist_ok=True)
+            with (worker.config.TASKS / "claude-probe-events.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+
+                def older_probe_answers():
+                    # A probe of the replaced token holds the lock and is rejected after the save.
+                    self.until(lambda: settings.exists() and "claude-events" in settings.read_text())
+                    time.sleep(0.5)
+                    worker.claude_accounts.mark_limited("events", reason="authentication failed")
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+
+                result = self.run_claude_event_login(on_saving=older_probe_answers)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            limits = worker.claude_accounts.read_limits()["events"]
+            self.assertNotIn("reason", limits)
+            self.assertFalse(worker.claude_accounts.limited(limits), limits)
 
     def test_claude_login_events_submit_queued_codes_with_separate_return(self):
         with self.claude_event_fixture() as (fixture, trace, values):
@@ -274,10 +393,114 @@ else:
             events = [json.loads(line) for line in result.stdout.splitlines()]
             lines = [event["text"] for event in events if event["event"] == "output"]
             self.assertLessEqual(len(lines), 15)
-            self.assertEqual(sum("Opening browser to sign in" in line for line in lines), 10)
+            self.assertEqual(len(lines), len(set(lines)))
+            # A burst of redraws is read once the output pauses: whole rows, ending with the last frame.
+            spinners = [line for line in lines if "Opening browser to sign in" in line]
+            self.assertTrue(all(re.fullmatch("[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Opening browser to sign in…", line)
+                                for line in spinners), spinners)
+            self.assertIn("⠏ Opening browser to sign in…", spinners)
+            self.assertIn("Waiting for sign-in…", lines)
             self.assertEqual([event for event in events if event["event"] == "open"],
                              [{"event": "open", "url": "https://login.example.test/claude"}])
             self.assertEqual(sum(event["event"] == "prompt" for event in events), 2)
+
+    def test_claude_login_events_read_a_diff_rendered_screen(self):
+        token = "sk-ant-" + "oat01-" + "event-secret-1234567890"
+        first, second = self.DIFF_FRAMES
+        # The token row is drawn over a row that already holds some of its characters.
+        self.assertTrue(any(old == new for old, new in zip(first[4], token)))
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"diff": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(events[-1]["status"], "ok")
+            self.assertEqual(values, [token])
+            expected = [row.replace("TOKEN", "[token hidden]") for row in first + second if row]
+            self.assertEqual([event["text"] for event in events if event["event"] == "output"], expected)
+            self.assertEqual(sum(event["event"] == "prompt" for event in events), 1)
+            self.assertEqual([event for event in events if event["event"] == "open"],
+                             [{"event": "open", "url": "https://login.example.test/claude"}])
+            self.assertNotIn(token, result.stdout + result.stderr)
+
+    def test_claude_login_events_keep_a_rejected_token_out_of_keychain(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            account = {"name": "events", "config_dir": str(self.root / ".claude-accounts" / "events"),
+                       "token_keychain": "codex-worker-claude-events"}
+            settings = self.home / "codex-worker.json"
+            settings.write_text(json.dumps({"language": "en", "claude": {"accounts": [account]}}))
+            before = settings.read_bytes()
+            for status, reason in ((401, "authentication failed"), (500, "request failed")):
+                with self.subTest(reason=reason):
+                    trace.unlink(missing_ok=True)
+                    fixture.write_text(json.dumps({"probe_status": status}))
+                    result = self.run_claude_event_login()
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    events = [json.loads(line) for line in result.stdout.splitlines()]
+                    self.assertEqual((events[-1]["event"], events[-1]["ok"], events[-1]["status"]),
+                                     ("result", False, reason))
+                    self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking"])
+                    rows = [json.loads(line) for line in trace.read_text().splitlines()]
+                    self.assertEqual(sum(bool(row.get("probe")) for row in rows), 1)
+                    self.assertFalse(any(row["command"] == "security" for row in rows), "no add-generic-password")
+                    self.assertEqual(values, [])
+                    self.assertEqual(settings.read_bytes(), before)
+                    # The saved token may still work: the account is not marked as needing a sign-in.
+                    self.assertNotIn("events", self.worker().claude_accounts.read_limits())
+                    self.assertEqual(self.telemetry_journal()[-1]["status"], reason)
+
+    def test_claude_login_events_save_a_usage_limited_token(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            fixture.write_text(json.dumps({"probe_limit": True}))
+            result = self.run_claude_event_login()
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            # A usage limit proves the token authenticates: it is saved and the limit is reported.
+            self.assertEqual(events[-1], {"event": "result", "ok": False, "status": "usage limit",
+                                         "message": "Claude account events: usage limit"})
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking", "saving"])
+            self.assertEqual(values, ["sk-ant-" + "oat01-" + "event-secret-1234567890"])
+            settings = json.loads((self.home / "codex-worker.json").read_text())
+            self.assertIn("events", [account["name"] for account in settings["claude"]["accounts"]])
+            rows = [json.loads(line) for line in trace.read_text().splitlines()]
+            self.assertEqual(sum(bool(row.get("probe")) for row in rows), 1)
+            pool = self.worker().claude_accounts
+            limits = pool.read_limits()["events"]
+            self.assertEqual((limits["reason"], limits["limited_until"]), ("usage limit", 4102444800))
+            self.assertTrue(pool.limited(limits))
+            self.assertEqual(self.telemetry_journal()[-1]["status"], "usage limit")
+
+    def test_claude_login_events_clear_a_late_missing_token_mark(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            worker = self.worker()
+            account = {"name": "events", "config_dir": str(self.root / ".claude-accounts" / "events"),
+                       "token_keychain": "codex-worker-claude-events"}
+            (self.home / "codex-worker.json").write_text(json.dumps({"claude": {"accounts": [account]}}))
+            gate = self.root / "lookup-gate"
+            fixture.write_text(json.dumps({"lookup_gate": str(gate)}))
+            # A supervisor's background probe holds the probe lock (not the home lock); its Keychain
+            # lookup finds no token only after the new sign-in has cleared the account's limits.
+            with mock.patch.dict(os.environ, dict(self.env, OLDER_PROBE_LOOKUP="1"), clear=True), \
+                    ThreadPoolExecutor(1) as pool:
+                older = pool.submit(worker.claude_review.probe, worker.config.accounts_config(), account)
+                try:
+                    self.until(lambda: trace.exists() and any(
+                        json.loads(line)["env"].get("OLDER_PROBE_LOOKUP") for line in trace.read_text().splitlines()),
+                        timeout=20)
+
+                    def older_lookup_finds_nothing():
+                        self.until(lambda: "events" not in worker.claude_accounts.read_limits(), timeout=20)
+                        gate.touch()
+
+                    result = self.run_claude_event_login(on_saving=older_lookup_finds_nothing)
+                finally:
+                    gate.touch()
+                self.assertEqual(older.result(timeout=20), "token unavailable")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout.splitlines()[-1])["status"], "ok")
+            limits = worker.claude_accounts.read_limits()["events"]
+            self.assertNotIn("token_unavailable", limits)
+            self.assertFalse(worker.claude_accounts.limited(limits), limits)
 
     def test_claude_login_events_preserve_split_tokens_across_stdin(self):
         with self.claude_event_fixture() as (fixture, trace, values):
@@ -319,12 +542,15 @@ else:
             events = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual(events[-1], {"event": "result", "ok": False, "status": "failed",
                                          "message": "Claude login cancelled after saving account settings"})
-            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["saving"])
+            self.assertEqual([e["stage"] for e in events if e["event"] == "stage"], ["checking", "saving"])
             self.assertEqual(len(values), 1)
             settings = json.loads((self.home / "codex-worker.json").read_text())
             self.assertIn("events", [account["name"] for account in settings["claude"]["accounts"]])
             rows = [json.loads(line) for line in trace.read_text().splitlines()]
-            self.assertFalse(any(row.get("probe") for row in rows))
+            # The only probe is the check before saving; nothing probes after the cancellation.
+            probes = [index for index, row in enumerate(rows) if row.get("probe")]
+            self.assertEqual(len(probes), 1)
+            self.assertLess(probes[0], [row["argv"] for row in rows].index(["-i"]))
 
     def test_claude_login_events_reject_missing_token_failed_setup_and_readback_mismatch(self):
         with self.claude_event_fixture() as (fixture, trace, values):

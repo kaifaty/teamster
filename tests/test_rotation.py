@@ -53,6 +53,7 @@ import test_executors
 import test_lead_role
 import test_versions
 import test_stop_signal
+import test_terminal_screen
 from test_runner import RunnerTests
 from test_stress_selection import StressSelectionTests
 from test_process_cleanup import ProcessCleanupTests
@@ -70,6 +71,7 @@ from test_executors import ExecutorTests
 from test_lead_role import LeadRoleTests
 from test_versions import PinnedTaskTests, VersionInstallTests
 from test_stop_signal import StopSignalTests
+from test_terminal_screen import TerminalScreenTests
 from rotation_prompts import PromptTests
 from rotation_support import PYTHON, SCRIPT
 
@@ -134,7 +136,7 @@ TEST_MODULES = (tuple(sys.modules[cls.__module__] for cls in RotationTests.__bas
                    test_clock, test_module_layout, test_worker_loader,
                    test_compare_module_split, test_compare_rotation_assertions,
                    test_compare_cli_help, test_executors, test_lead_role, test_versions,
-                   test_stop_signal))
+                   test_stop_signal, test_terminal_screen))
 
 
 if __name__ == "__main__":

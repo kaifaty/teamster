@@ -1966,7 +1966,7 @@ class ClaudeReviewTests(RotationTestCase):
         def reject(weekly, short=0):
             pool.clear_limits("first")
             event = {"type": "rate_limit_event", "rate_limit_info": self.model_rejection(weekly, short)}
-            self.assertEqual(worker.claude_review.event_unavailable(event, "first", "model-a"), "usage limit")
+            self.assertEqual(worker.claude_review.event_unavailable(event, "first", model="model-a"), "usage limit")
             pool.mark_limited("first", reason="usage limit", model="model-a")
 
         # Any window at 100% still excludes the account for every model.
@@ -1999,15 +1999,15 @@ class ClaudeReviewTests(RotationTestCase):
         pool.save_limits("first", allowed, marked["limited_at"] + 1, model="model-b")
         success = {"type": "result", "is_error": False, "result": "OK"}
         for stamp in (marked["limited_at"] - 1, marked["limited_at"]):
-            worker.claude_review.event_unavailable(dict(success, timestamp=stamp), "first", "model-a")
-        worker.claude_review.event_unavailable(success, "first", "model-b")
+            worker.claude_review.event_unavailable(dict(success, timestamp=stamp), "first", model="model-a")
+        worker.claude_review.event_unavailable(success, "first", model="model-b")
         self.assertIsNone(choose("model-a"))
         clock.sleep(1)
-        worker.claude_review.event_unavailable(success, "first", "model-a")
+        worker.claude_review.event_unavailable(success, "first", model="model-a")
         self.assertEqual(choose("model-a"), "first")
         pool.mark_limited("first", reason="usage limit", model="model-a")
         marked = pool.read_limits()["first"]["model_limits"]["model-a"]
-        worker.claude_review.event_unavailable(dict(success, timestamp=marked["limited_at"] + 1), "first", "model-a")
+        worker.claude_review.event_unavailable(dict(success, timestamp=marked["limited_at"] + 1), "first", model="model-a")
         self.assertEqual(choose("model-a"), "first")
         pool.mark_limited("first", reason="usage limit", model="model-a")
         pool.save_limits("first", allowed, clock.time() + 1, model="model-a")

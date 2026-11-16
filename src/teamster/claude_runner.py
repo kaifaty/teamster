@@ -16,13 +16,19 @@ BASH_FLOOR_SECONDS = 600
 BASH_UNBOUNDED_SECONDS = 2 * 60 * 60
 
 
-def account_environment(account, timeout):
-    """Read an isolated account's token without exposing credential output."""
+def isolated_environment(account):
+    """The account's cleaned environment, without any credential."""
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(("CLAUDE", "ANTHROPIC"))}
     environment["CLAUDE_CONFIG_DIR"] = str(Path(account["config_dir"]).expanduser())
     environment["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
     environment["COPYFILE_DISABLE"] = "1"
+    return environment
+
+
+def account_environment(account, timeout):
+    """Read an isolated account's token without exposing credential output."""
+    environment = isolated_environment(account)
     try:
         credential = subprocess.run(
             ["security", "find-generic-password", "-s", account["token_keychain"],
@@ -56,23 +62,25 @@ def bash_timeouts(deadline, max_minutes):
             "BASH_MAX_TIMEOUT_MS": str(maximum)}
 
 
-def stream_unavailable(event, account, model=None):
+def stream_unavailable(event, account, record=True, model=None):
     """Persist safe limit fields and recognize account availability errors.
 
+    With record false, only recognize them: nothing about the account is stored.
     ``model`` is the ``--model`` of the request; its success lifts that model's limit mark.
     """
     kind = event.get("type")
     if (kind == "result" or kind == "system" and event.get("subtype") == "api_retry"):
         if event.get("error_status", event.get("api_error_status")) in (401, 403):
             return "authentication failed"
-        if kind == "result" and not event.get("is_error"):
+        if kind == "result" and not event.get("is_error") and record:
             claude_accounts.authenticated(account)
             stamp = event.get("timestamp")
             claude_accounts.model_succeeded(account, model, stamp if result_schema.is_finite_number(stamp) else None)
     if kind == "rate_limit_event":
         info = event.get("rate_limit_info")
         if isinstance(info, dict):
-            claude_accounts.save_limits(account, info, event.get("timestamp"), model)
+            if record:
+                claude_accounts.save_limits(account, info, event.get("timestamp"), model)
             if info.get("status") == "rejected":
                 return "usage limit"
     return None
@@ -102,7 +110,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
                     telemetry.setdefault("weekly_reset_before", reset)
                     telemetry["weekly_used_after"] = used * 100
                     telemetry["weekly_reset_after"] = reset
-        return None, stream_unavailable(event, account, model)
+        return None, stream_unavailable(event, account, model=model)
     usage = event.get("usage")
     if isinstance(usage, dict):
         telemetry["usage"] = {key: usage[key] for key in
@@ -112,7 +120,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
         telemetry["cost_usd"] = event["total_cost_usd"]
     if type(event.get("num_turns")) is int:
         telemetry["num_turns"] = event["num_turns"]
-    reason = stream_unavailable(event, account, model)
+    reason = stream_unavailable(event, account, model=model)
     if reason:
         return None, reason
     if event.get("is_error"):

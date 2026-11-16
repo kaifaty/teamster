@@ -34,44 +34,73 @@ match the ordinary commands; `result.ok` is true exactly when the command exits 
 
 The event protocol is:
 
-- `{"event":"output","text":"…"}`: each nonempty tool output line, with ANSI and other control
-  sequences removed (cursor-forward escapes become spaces), truncated to 500 characters.
-  Each cleaned line is emitted at most once per sign-in.
+- `{"event":"output","text":"…"}`: for Codex, each nonempty output line with ANSI and other
+  control sequences removed (cursor-forward escapes become spaces). For Claude, each nonempty row of
+  setup-token's screen as a person would see it, right-stripped (see below). Text is truncated to
+  500 characters, and each text is emitted at most once per sign-in.
   Claude tokens are replaced with `[token hidden]` before output.
-- `{"event":"open","url":"https://…"}`: the first HTTPS link in the output, once.
+- `{"event":"open","url":"https://…"}`: the first HTTPS link in the output lines or screen rows, once.
 - `{"event":"code","code":"ABCD-EFGHI","expires_at":1900000900}`: Codex's device code;
   codes contain 6–16 uppercase ASCII letters/digits in hyphen-separated groups and appear on a
   separate line after `Enter this one-time code` (for example `ABCD-EFGH` or `ABCD-EFGHI`).
   `expires_at` is Unix seconds when received plus 900. Codex uses `--device-auth` unless `--browser`
   is also passed; its stdin is `/dev/null`, and both output streams are captured.
-- `{"event":"prompt"}`: Claude printed `Paste code here`. Send a newline-terminated code (or an
+- `{"event":"prompt"}`: Claude's screen shows `Paste code here`. Send a newline-terminated code (or an
   empty line for Enter) to teamster's stdin. Lines up to 512 characters with no control characters
   are forwarded as text, followed 0.5 seconds later by a separate `\r` write; other lines are
   silently ignored. Further lines are queued in order, with each Enter kept separate from adjacent
-  text. Tool output continues to be read during the pauses. A new prompt after input emits another event.
-- `{"event":"stage","stage":"saving"}`: Claude obtained its token and is saving it to Keychain.
-- `{"event":"stage","stage":"checking"}`: sign-in completed; teamster is checking the account.
+  text. Tool output continues to be read during the pauses. After input, `Paste code here` on a
+  screen row that did not show it before (rows keep their place as they scroll), such as a prompt
+  drawn below an error, emits another event; a redraw of the same prompt row does not.
+- `{"event":"stage","stage":"checking"}`: for Claude, setup-token issued a token and teamster is
+  checking it, before anything is saved; for Codex, sign-in completed and teamster is checking the account.
+- `{"event":"stage","stage":"saving"}`: Claude's token passed the check and is being saved to
+  Keychain. Claude sends `checking` before `saving`; Codex sends only `checking`.
 - `{"event":"result","ok":true,"status":"available","message":""}`: always the last event.
   Codex statuses are `available`, `exhausted`, `not_logged_in`, `duplicate`, `unknown`, or `failed`
   if `codex login` failed. Claude statuses are `ok`, `token unavailable`, `authentication failed`,
   `usage limit`, `request failed`, or `failed`. The message is the ordinary command's explanation
   in the configured language, or empty.
 
-Claude setup runs in a pseudo-terminal at least 1000 columns wide. teamster extracts its token
-in memory, writes it using `security -i` and `add-generic-password -U`, and verifies it using the
-same Keychain lookup as tasks before saving account settings. The probe receives the token through
+Claude setup runs in a pseudo-terminal of 24 rows and 1000 columns. setup-token redraws only the
+cells that changed since its previous frame and moves the cursor over the others, so teamster reads
+its output through a terminal screen model rather than line by line. The model keeps the grid, the
+cursor and up to 1000 rows that scrolled off the top, and applies printable characters (East Asian
+wide characters take two cells, combining marks join the previous one, autowrap at the last column),
+`\r`, `\n`, backspace and tab, the CSI cursor moves and positions `A B C D E F G H f d`, erase
+`J K` (modes 0–2), `X P @`, scrolling `S T`, scroll regions `r`, cursor save and restore (`CSI s`/`u`,
+`ESC 7`/`8`), `ESC M`/`D`/`E`, and the alternate screen (`?1049`, `?1047`, `?47`, cleared on each
+switch). Attributes and every other sequence are ignored; OSC, DCS, SOS, PM and APC strings are
+removed, keeping the text of OSC 8 links. Changed rows are emitted once the output has been quiet for
+0.1 seconds, after one second of output without a pause (outside a `?2026` synchronized frame), and
+when setup-token exits, so half-drawn frames are not shown.
+
+teamster takes the token, in memory, from the final screen and its scrollback when setup-token
+exits: the last whole `sk-ant-oat01-…` match. It then checks the token before saving anything: the
+probe (the same request as `claude-probe`) receives it through
 `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, containing only a descriptor number in the environment.
+The token is saved when the check proves that it authenticates: on success and on `usage limit`.
+On any other reason (`authentication failed`, `request failed`, including timeouts and probe
+errors) the sign-in ends with `result` `ok: false` and that reason as `status`; the Keychain item,
+the account settings and the account's cached limits stay as they were, so a rejected token never
+replaces one that still works, and the journal row records the reason. A token that is saved is
+written using `security -i` and `add-generic-password -U`, read back with the same Keychain lookup
+as tasks, and only then are the account settings saved; the check's answer is recorded as the
+account's limits and probe time, so the account is not probed a second time. The answer is recorded
+under the account's probe lock, after any probe of the replaced token still running, and first
+clears a missing-token mark such a probe may have left. A usage-limited token then ends the sign-in
+with `result` `ok: false` and `status` `usage limit`, as `claude-probe` would report it.
 The token never enters process arguments, child environments, events, files or logs. Failed setup
 or missing output tokens leave settings and Keychain unchanged. A readback mismatch fails without
 saving settings. SIGINT and SIGTERM stop the sign-in tool and its children; cancellation during
-setup saves neither the token nor account settings. Cancellation sends TERM to the tool's process
-group, then KILL after one second if it is still running; repeated cancellation signals during
-cleanup are ignored. From `stage saving` through the Keychain write, readback and settings write,
-cancellation is deferred: teamster finishes saving both the token and the account settings, then
-exits unsuccessfully with `result failed`, without probing the account. In events mode, Keychain
-service and user values containing control characters, double quotes or backslashes are rejected
-before launching a tool. stdin never flushes an unfinished tool output line, so a token arriving
-in multiple reads stays intact and is hidden as a whole.
+setup or the check saves neither the token nor account settings. Cancellation sends TERM to the
+tool's process group, then KILL after one second if it is still running; repeated cancellation
+signals during cleanup are ignored. From `stage saving` through the Keychain write, readback,
+settings write and limits, cancellation is deferred: teamster finishes saving the token, the account
+settings and the check's result, then exits unsuccessfully with `result failed`. In events mode,
+Keychain service and user values containing control characters, double quotes or backslashes are
+rejected before launching a tool. A token drawn over several reads stays intact: rows are read from
+the screen only after the output pauses, and a partly drawn token is hidden too.
 
 When the user has chosen multiple subscriptions, the settings can contain:
 
@@ -120,7 +149,8 @@ watches its input with kqueue);
 the tool does not copy the issued token into its own output, arguments, settings, state, or logs.
 
 After saving, `claude-login` runs the same check as `claude-probe <name>`. A failed probe prints its
-reason and exits nonzero; the account remains saved. Either way, it appends an `account_login` row
+reason and exits nonzero; the account remains saved. (With `--events`, the check runs before saving
+instead; see [Sign-in without a terminal](#sign-in-without-a-terminal).) Either way, it appends an `account_login` row
 with the probe's outcome to the [journal](telemetry.md#the-journal). Signing in to an existing account updates its
 login fields and preserves the other account settings, including `weight`.
 
