@@ -16,13 +16,19 @@ BASH_FLOOR_SECONDS = 600
 BASH_UNBOUNDED_SECONDS = 2 * 60 * 60
 
 
-def account_environment(account, timeout):
-    """Read an isolated account's token without exposing credential output."""
+def isolated_environment(account):
+    """The account's cleaned environment, without any credential."""
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(("CLAUDE", "ANTHROPIC"))}
     environment["CLAUDE_CONFIG_DIR"] = str(Path(account["config_dir"]).expanduser())
     environment["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
     environment["COPYFILE_DISABLE"] = "1"
+    return environment
+
+
+def account_environment(account, timeout):
+    """Read an isolated account's token without exposing credential output."""
+    environment = isolated_environment(account)
     try:
         credential = subprocess.run(
             ["security", "find-generic-password", "-s", account["token_keychain"],
@@ -56,18 +62,22 @@ def bash_timeouts(deadline, max_minutes):
             "BASH_MAX_TIMEOUT_MS": str(maximum)}
 
 
-def stream_unavailable(event, account):
-    """Persist safe limit fields and recognize account availability errors."""
+def stream_unavailable(event, account, record=True):
+    """Persist safe limit fields and recognize account availability errors.
+
+    With record false, only recognize them: nothing about the account is stored.
+    """
     kind = event.get("type")
     if (kind == "result" or kind == "system" and event.get("subtype") == "api_retry"):
         if event.get("error_status", event.get("api_error_status")) in (401, 403):
             return "authentication failed"
-        if kind == "result" and not event.get("is_error"):
+        if kind == "result" and not event.get("is_error") and record:
             claude_accounts.authenticated(account)
     if kind == "rate_limit_event":
         info = event.get("rate_limit_info")
         if isinstance(info, dict):
-            claude_accounts.save_limits(account, info, event.get("timestamp"))
+            if record:
+                claude_accounts.save_limits(account, info, event.get("timestamp"))
             if info.get("status") == "rejected":
                 return "usage limit"
     return None

@@ -5,6 +5,7 @@ Layer 0:
     reviewers (implemented): reviewer contract, registry and state-only policies.
     procs (implemented): process execution, signals, and termination.
     result_schema (implemented): result schemas, parsing, and output lines.
+    terminal_screen (implemented): a terminal screen model for reading redrawn tool output.
 Layer 1:
     config (implemented): paths, settings, binaries, and account configuration.
 Layer 2:

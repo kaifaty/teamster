@@ -20,7 +20,7 @@ import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, installs, procs, prompts, reflection, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads
+from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, installs, procs, prompts, reflection, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, terminal_screen, threads
 
 
 def main_repo(path):
@@ -824,6 +824,14 @@ def cmd_reset_credit(a):
 
 
 CLAUDE_LOGIN_ENTER_DELAY = 0.5
+# setup-token's pseudo-terminal: wide enough that the token and the sign-in link never wrap.
+CLAUDE_LOGIN_ROWS, CLAUDE_LOGIN_COLUMNS = 24, 1000
+# Screen rows are emitted once the output has paused this long, so half-drawn frames stay unseen,
+CLAUDE_LOGIN_QUIET = 0.1
+# or after this long without a pause, outside a synchronized frame.
+CLAUDE_LOGIN_LATEST = 1.0
+CLAUDE_TOKEN = r"sk-ant-oat01-[A-Za-z0-9_-]+"
+CLAUDE_PROMPT = "Paste code here"
 
 
 class LoginEvents:
@@ -836,6 +844,8 @@ class LoginEvents:
         self.code_expected = False
         self.code_sent = False
         self.prompted = False
+        self.prompt_rows = set()
+        self.scrolled = 0
         self.token = ""
         self.finished = False
         self.cancelled = None
@@ -857,9 +867,6 @@ class LoginEvents:
     def line(self, text):
         text = self.clean(text)
         if self.claude:
-            found = re.search(r"sk-ant-oat01-[A-Za-z0-9_-]+", text)
-            if found:
-                self.token = found.group()
             text = re.sub(r"sk-ant-oat01-[A-Za-z0-9_-]*", "[token hidden]", text)
         if not text.strip():
             return
@@ -878,6 +885,22 @@ class LoginEvents:
                     self.code_sent = True
             if "Enter this one-time code" in text:
                 self.code_expected = True
+
+    def screen(self, screen):
+        """Emit the screen rows, with those that scrolled off since the last call, and a
+        prompt when `Paste code here` appears on a row that did not show it before."""
+        fresh = min(screen.scrolled - self.scrolled, len(screen.scrollback))
+        first = screen.scrolled - fresh
+        rows = screen.scrollback[len(screen.scrollback) - fresh:] + screen.lines()
+        self.scrolled = screen.scrolled
+        for row in rows:
+            self.line(row)
+        # Rows are numbered from the first output row, so they keep their numbers as they scroll.
+        shown = {first + index for index, row in enumerate(rows) if CLAUDE_PROMPT in row}
+        if shown - self.prompt_rows and not self.prompted:
+            self.send("prompt")
+            self.prompted = True
+        self.prompt_rows = shown
 
     def result(self, status, message="", code=0):
         self.finished = True
@@ -949,7 +972,8 @@ def claude_login_events(environment, events):
     master, slave = pty.openpty()
     proc = None
     try:
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 1000, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", CLAUDE_LOGIN_ROWS, CLAUDE_LOGIN_COLUMNS, 0, 0))
         attributes = termios.tcgetattr(slave)
         attributes[3] &= ~termios.ECHO
         termios.tcsetattr(slave, termios.TCSANOW, attributes)
@@ -957,39 +981,42 @@ def claude_login_events(environment, events):
                                 stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
         os.close(slave)
         slave = None
+        # setup-token redraws only changed cells and moves the cursor over the rest,
+        # so its output reads correctly only on a screen.
+        screen = terminal_screen.Screen(CLAUDE_LOGIN_ROWS, CLAUDE_LOGIN_COLUMNS)
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         input_decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        pending, incoming, oversized, prompt_count = "", "", False, 0
+        incoming, oversized = "", False
         queued, enter_pending, input_deadline = [], False, 0.0
+        changed, last_output = None, 0.0
         with selectors.DefaultSelector() as selector:
             selector.register(master, selectors.EVENT_READ)
             selector.register(sys.stdin, selectors.EVENT_READ)
             while True:
                 timeout = 0.2
+                if changed is not None:
+                    timeout = min(timeout, max(0, last_output + CLAUDE_LOGIN_QUIET - time.monotonic()))
                 if (enter_pending or queued) and proc.poll() is None:
                     timeout = min(timeout, max(0, input_deadline - time.monotonic()))
+                output = False
                 for key, _ in selector.select(timeout):
                     if key.fileobj == master:
+                        output = True
                         try:
                             chunk = os.read(master, 65536)
                         except OSError as exc:
                             if exc.errno != errno.EIO:
                                 raise
                             chunk = b""
-                        pending += decoder.decode(chunk, final=not chunk)
-                        lines = re.split(r"[\r\n]", pending)
-                        pending = lines.pop()
-                        for index, line in enumerate(lines + [pending]):
-                            if index < len(lines):
-                                events.line(line)
-                            count = events.clean(line).count("Paste code here")
-                            if count > prompt_count and not events.prompted:
-                                events.send("prompt")
-                                events.prompted = True
-                            prompt_count = count if index == len(lines) else 0
+                        screen.feed(decoder.decode(chunk, final=not chunk))
                         if not chunk:
-                            events.line(pending)
+                            events.screen(screen)
+                            # The last whole token on the final screen, never a partial frame's.
+                            tokens = re.findall(CLAUDE_TOKEN, screen.text())
+                            events.token = tokens[-1] if tokens else ""
                             return proc.wait()
+                        last_output = time.monotonic()
+                        changed = last_output if changed is None else changed
                     else:
                         chunk = os.read(sys.stdin.fileno(), 4096)
                         if not chunk:
@@ -1006,6 +1033,12 @@ def claude_login_events(environment, events):
                                 incoming += char
                                 if len(incoming) > 513:
                                     incoming, oversized = "", True
+                now = time.monotonic()
+                if changed is not None and (
+                        not output and now - last_output >= CLAUDE_LOGIN_QUIET
+                        or now - changed >= CLAUDE_LOGIN_LATEST and not screen.synchronized):
+                    events.screen(screen)
+                    changed = None
                 if (enter_pending or queued) and time.monotonic() >= input_deadline and proc.poll() is None:
                     if enter_pending:
                         os.write(master, b"\r")
@@ -1164,23 +1197,18 @@ def cmd_claude_probe(a):
     probe_claude_account(a.name)
 
 
-def probe_claude_account(name, login=False, events=None):
+def probe_claude_account(name, login=False):
     cfg = config.accounts_config()
     account = next((item for item in claude_accounts.accounts(cfg) if item["name"] == name), None)
     if account is None:
         procs.die(f"Claude account {name!r} does not exist")
-    reason = (claude_review.probe(cfg, account, token_via_fd=True, stopped=lambda: False) if events
-              else claude_review.probe(cfg, account))
+    reason = claude_review.probe(cfg, account)
     if login:
         record_login("claude", name, reason or "ok")
     if reason:
-        if events:
-            return events.result(reason, f"Claude account {name}: {reason}", code=1)
         print(f"Claude account {name}: {reason}")
         raise SystemExit(1)
     windows = claude_accounts.format_windows(claude_accounts.read_limits().get(name, {}))
-    if events:
-        return events.result("ok", f"Claude account {name}: token ok; {windows}")
     print(f"Claude account {name}: token ok; {windows}")
 
 
@@ -1214,6 +1242,15 @@ def _cmd_claude_login(a, events=None):
         code = claude_login_events(environment, events)
         if code or not events.token:
             return events.result("failed", "Claude login failed; account settings were not changed", code=1)
+        # Check the captured token before it can replace a saved one that still works.
+        events.send("stage", stage="checking")
+        reason, record = claude_review.check_token(cfg, account, events.token, stopped=lambda: False)
+        # A usage limit also proves that the token authenticates: save it and report the limit.
+        if reason not in (None, "usage limit"):
+            with config.home_lock():
+                record_login("claude", a.name, reason)
+            return events.result(reason, f"Claude account {a.name}: {reason}; "
+                                 "the Keychain item and account settings were not changed", code=1)
         events.saving = True
         events.send("stage", stage="saving")
         # security's interactive command parser reads the password from a pipe,
@@ -1253,19 +1290,23 @@ def _cmd_claude_login(a, events=None):
             previous.update(account)
         claude_accounts.clear_limits(a.name)
     if events:
+        # The check already answered for the saved token: book it instead of probing again.
+        # Like the probe, it must not run while the home moves.
+        with config.home_lock():
+            record()
+            record_login("claude", a.name, reason or "ok")
         events.saving = False
         if events.cancelled is not None:
             return events.result("failed", "Claude login cancelled after saving account settings",
                                  code=128 + events.cancelled)
-        events.send("stage", stage="checking")
-    else:
-        print(f"Claude account {a.name} saved")
+        if reason:
+            return events.result(reason, f"Claude account {a.name}: {reason}", code=1)
+        windows = claude_accounts.format_windows(claude_accounts.read_limits().get(a.name, {}))
+        return events.result("ok", f"Claude account {a.name}: token ok; {windows}")
+    print(f"Claude account {a.name} saved")
     # The probe writes cached limits; like claude-probe, it must not run while the home moves.
     with config.home_lock():
-        if events:
-            probe_claude_account(a.name, login=True, events=events)
-        else:
-            probe_claude_account(a.name, login=True)
+        probe_claude_account(a.name, login=True)
 
 
 def cmd_docs(a):
