@@ -96,32 +96,40 @@ export function withMode(view: DutyChatView, mode: string | null, now: number): 
 }
 
 /** `clock`: Unix seconds now; `emit` tells the page that the conversation changed. */
-export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessage) => void, mode: string | null = null): FixtureDutyChat {
+/** `currentDuty`: the duty account the board's accounts name now; `mode`: the page's `?duty=`. */
+export function fixtureDutyChat(
+  clock: () => number,
+  emit: (message: ServerMessage) => void,
+  currentDuty?: () => DutyChatView["duty"],
+  mode: string | null = null,
+): FixtureDutyChat {
   const view = withMode(fixtureConversation(clock()), mode, clock());
   let timer: ReturnType<typeof setTimeout> | null = null;
   let answers = 0;
   let asked = false;
   let lastId = 0;
   const changed = () => emit({ type: "duty_chat", at: clock() });
+  const selectedDuty = () => currentDuty ? currentDuty() : view.duty;
 
   /** The running turn answers in a few seconds; the first waiting message then starts the next. */
-  function runTurn() {
+  function runTurn(account = view.duty?.account ?? null) {
     timer = setTimeout(() => {
       timer = null;
       const turn = (view.messages.at(-1)?.turn ?? 0) || 1;
       const ask = !asked && !view.queued.length;
       asked ||= ask;
       const answer: DutyChatMessage = {
-        id: `d-fixture-${++lastId}`, at: clock(), from: "duty", turn, account: view.duty?.account ?? null, started: [],
+        id: `d-fixture-${++lastId}`, at: clock(), from: "duty", turn, account, started: [],
         ...(ask ? QUESTION : ANSWERS[Math.min(answers++, ANSWERS.length - 1)]!),
       };
       view.messages = [...view.messages, answer].slice(-200);
       const [next, ...rest] = view.queued;
-      if (next) {
+      const duty = selectedDuty();
+      if (next && duty?.family === "claude") {
         view.queued = rest;
         view.messages = [...view.messages, { id: `m-fixture-${++lastId}`, at: clock(), from: next.from, text: next.text, turn: turn + 1 }];
         view.turn_started_at = clock();
-        runTurn();
+        runTurn(duty.account);
       } else {
         view.busy = false;
         view.turn_started_at = null;
@@ -134,12 +142,18 @@ export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessa
     view() {
       // The running turn of the fixture goes on once someone looks at it.
       if (view.busy && timer === null) runTurn();
-      return structuredClone(view);
+      const duty = selectedDuty();
+      const reason = duty === null ? "no_duty" : duty.family === "codex" ? "codex_duty" : null;
+      // A reason the page asked for stands over the accounts' duty.
+      return structuredClone(withMode({ ...view, duty, reason, available: reason === null }, mode && REASONS.has(mode) ? mode : null, clock()));
     },
     act({ text }) {
       const message = text.trim();
       if (!message) return { ok: false, error: "Invalid text" };
       if (mode === "refuse") return { ok: false, error: "teamster: no duty account (duty.json is absent or names no account)" };
+      const duty = selectedDuty();
+      if (!duty) return { ok: false, error: "No duty account" };
+      if (duty.family !== "claude") return { ok: false, error: "The duty chat needs a Claude duty account" };
       if (view.busy) {
         view.queued = [...view.queued, { at: clock(), from: "user", text: message }];
         changed();
@@ -150,7 +164,7 @@ export function fixtureDutyChat(clock: () => number, emit: (message: ServerMessa
       view.busy = true;
       view.turn_started_at = clock();
       view.last_error = null;
-      runTurn();
+      runTurn(duty.account);
       changed();
       return { ok: true, output: "", queued: false };
     },

@@ -20,7 +20,7 @@ WebSocket Origins, when present, must also be localhost. The server reads task f
 metrics and listens on localhost; it has no task control endpoints except science station actions:
 lesson decisions, lesson implementation (`implement`), `say` to reflection or implementation tasks,
 new `reflect` orders, and messages to the duty chat (`POST /api/actions/duty-chat`, read with
-`GET /api/duty-chat`). These run the installed `teamster`
+`GET /api/duty-chat`), plus duty account selection (`POST /api/actions/duty`). These run the installed `teamster`
 command, found on `PATH` at startup; `--teamster PATH` selects its executable explicitly, and
 `--read-only` disables all actions, including account login and refresh. They require a matching same-origin `Origin`,
 `Content-Type: application/json` and `X-Teamster-Board: 1`. Ordinary task stop, clean, verdict and
@@ -77,6 +77,23 @@ containing active sign-ins and those finished within 10 minutes, held only until
 Success requests an accounts refresh within 5 seconds. The snapshot's `accounts` and all
 `{"type":"accounts","accounts":...}` messages include `last_logins`: the latest journal
 `account_login` per account, `[{family, account, at, status}]`, including rows present at startup.
+
+`POST /api/actions/duty` accepts exactly `{account, family}` to pin a known account,
+`{mode: "auto"}` to remove the pin and elect, or `{mode: "off"}` to clear the duty. It waits for
+`teamster duty set <account> --family <family>`, `teamster duty auto` or `teamster duty clear`,
+with the same action protections and a 120-second timeout. Success returns
+`{ok: true, warning: string | null}` and refreshes accounts; a refusal returns 422 with the CLI's
+text. Installed teamster 1.87.0 or later is required, checked by the existing cached version probe.
+`accounts.data.duty` exposes the mode, `pinned_unavailable`, last election time/error and
+`choosable`/`reason_disabled`; each account includes `pinnable`/`pin_reason`. Accounts that need a
+login cannot be pinned. The web data layer and fixture sources support these actions; the
+selection control is separate work. See [CONTRACT.md](CONTRACT.md) for the full shapes.
+
+While the duty is automatic and actions are enabled, the server runs `teamster duty tick` on
+entering automatic mode and every 30 minutes after a tick finishes. `BOARD_DUTY_SECONDS` changes
+the interval; `0` disables all server ticks. Pinned and off modes run none. Ticks never overlap,
+and failures appear in the duty's `last_election.error` while the timer continues. A read-only
+server runs no duty actions or ticks. The server does not call `launchctl` to manage elections.
 
 The frontend builds into `board/web/dist`, which the server serves with an SPA fallback:
 
@@ -377,6 +394,7 @@ The map's code in `board/web/src/map/`:
 | `TEAMSTER_HOME`, `CODEX_TASK_HOME` | `~/.teamster` | The worker's data home, found by the worker's rules (`teamster docs settings`). Read tasks from `tasks/` and archives from `tasks/.archive/` (`claude-tasks/` in a legacy home in `~/.codex`). Snapshots include at most 50 closed records together, ranked by state mtime. |
 | `BOARD_POLL_SECONDS` | `1.0` | Interval between file mtime and size polls, in seconds. |
 | `BOARD_ACCOUNTS_SECONDS` | `300` | Minimum interval between account subprocess calls, in seconds. A new `account_login` journal row from `teamster login` or `claude-login` refreshes accounts at once, at most once per 5 seconds; rows already in the journal at startup do not. |
+| `BOARD_DUTY_SECONDS` | `1800` | Interval in seconds after a server duty tick finishes, only in automatic mode with actions enabled and a compatible installed teamster. Entering automatic mode also ticks immediately; `0` disables server ticks. |
 | `BOARD_MACHINES_FILE` | `<data home>/board-machines.json` | Machine configuration; reread when mtime or size changes. Missing means no machines; invalid files preserve the last valid list and expose `config_error`. |
 | `BOARD_MACHINES_SECONDS` | `30` | Interval between parallel machine and optional physical host probe cycles, in seconds. |
 | `BOARD_STALE_DAYS` | `7` | Close non-alive tasks older than this many days by state mtime. Non-alive scouts are always closed; alive tasks are exempt from the age rule. |
@@ -386,7 +404,7 @@ The map's code in `board/web/src/map/`:
 | `BOARD_SESSION_STALE_HOURS` | `48` | Close inactive sessions older than this many hours by `lastActivityAt`. Busy sessions and sessions awaiting a person take precedence. |
 | `BOARD_RESEARCH_SECONDS` | `30` | Minimum interval between rebuilds of `GET /api/research` from `tasks/.archive/`, in seconds; unchanged record states are not read again. |
 | `BOARD_REFLECTION_TASK` | `codex-batch-reflection` | Scheduled task id of the Claude Desktop sessions that run the batch reflection, returned as `reflection_task`. |
-| `BOARD_TEAMSTER_COMMAND` (fallback `BOARD_CODEX_TASK`) | Repository `src/teamster/__main__.py` | Script called as `python3 -I <script> accounts --json`, without `--refresh`, with a 60-second timeout. |
+| `BOARD_TEAMSTER_COMMAND` (fallback `BOARD_CODEX_TASK`) | Repository `src/teamster/__main__.py` | Script called as `python3 -I <script> accounts --json` (without `--refresh`), and `duty status --json` when duty selection is enabled, with a 60-second timeout. |
 
 Account calls run outside the event loop. Errors preserve the previous account data and expose an
 error string. A malformed or partially written state file preserves its last successfully read state.

@@ -406,3 +406,49 @@ def test_duty_kind_is_absent_from_task_views(duty):
         assert research["studies"] == []
         # The running turn's activity stays readable through the task feed.
         assert client.get("/api/tasks/duty/feed").status_code == 200
+
+
+def test_duty_choice_warnings_timeout_and_shared_capability_probe(tmp_path, monkeypatch):
+    from teamster_board import actions as actions_module, duty as duty_module
+    from teamster_board.duty import Duty
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    control, calls = tmp_path / "control", tmp_path / "calls"
+    control.write_text("{}")
+    command = tmp_path / "teamster"
+    command.write_text(
+        f"#!{sys.executable}\nimport json,os,sys,time\nfrom pathlib import Path\n"
+        f"control=json.loads(Path({str(control)!r}).read_text())\n"
+        f"with Path({str(calls)!r}).open('a') as stream:\n"
+        "    stream.write(json.dumps({'argv':sys.argv[1:],'cwd':os.getcwd(),'stdin':sys.stdin.read()})+'\\n')\n"
+        "if sys.argv[1:] == ['--version']:\n    print('teamster 1.87.0')\n    sys.exit(0)\n"
+        "time.sleep(control.get('sleep',0))\n"
+        "print(control.get('stdout','duty changed'))\n"
+        "print(control.get('stderr',''),file=sys.stderr)\n"
+        "sys.exit(control.get('code',0))\n"
+    )
+    command.chmod(0o755)
+    settings = Settings(tmp_path, tmp_path / "unused.py", action_teamster=str(command))
+    actions = create_app(settings).state.board.actions
+    chooser = Duty(actions)
+    assert chooser.execute(["set", "pool", "--family", "claude"]) == {"ok": True, "warning": None}
+    assert actions.queue() and actions.duty_chat() and actions.duty_choose()
+    assert len(calls.read_text().splitlines()) == 2  # The same probe serves all three capabilities.
+    control.write_text(json.dumps({"stdout": "duty pinned\nwarning: no weekly room", "stderr": "quota unavailable"}))
+    assert chooser.execute(["set", "pool", "--family", "claude"])["warning"] == (
+        "warning: no weekly room\nquota unavailable")
+    control.write_text(json.dumps({"sleep": 30}))
+    monkeypatch.setattr(actions_module, "COMMAND_TIMEOUT", 0.05)
+    run = duty_module.subprocess.run
+    timeouts = []
+
+    def record_timeout(*args, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(duty_module.subprocess, "run", record_timeout)
+    timeout = chooser.execute(["tick"])
+    assert timeouts == [actions_module.COMMAND_TIMEOUT]
+    assert timeout.status_code == 504 and json.loads(timeout.body)["error"] == "timeout"

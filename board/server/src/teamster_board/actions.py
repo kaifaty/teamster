@@ -32,6 +32,8 @@ VERSION_TIMEOUT = 10
 QUEUE_VERSION = (1, 60, 0)
 # teamster 1.86.0 added `duty chat`.
 DUTY_CHAT_VERSION = (1, 86, 0)
+# teamster 1.87.0 added `duty set` and `duty auto`.
+DUTY_CHOOSE_VERSION = (1, 87, 0)
 VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")
 SAY_KINDS = ("work", "review", "reflect")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
@@ -201,6 +203,10 @@ class Actions:
     def duty_chat(self):
         """Whether the installed teamster has `duty chat`, by the same single version probe."""
         return self._supports(DUTY_CHAT_VERSION)
+
+    def duty_choose(self):
+        """Whether the installed teamster supports choosing a duty account."""
+        return self._supports(DUTY_CHOOSE_VERSION)
 
     def _supports(self, version):
         if self.reason is not None:
