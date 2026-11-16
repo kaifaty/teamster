@@ -3,8 +3,9 @@
 // subscriptions, in the lower centre the events over the command row, on the right wing the machines and the reflection.
 // The command row starts with the duty chat's field, and the conversation opens over the events. The galaxy and a system are laid out above it. On a narrow window it folds to a strip, the duty, the counters and the
 // newest event, and the wings open over the map on demand; on a wide one the viewer may fold it to the same strip.
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { loadJson, saveJson } from "../../lib/storage";
+import type { DutyHost } from "../../store/duty";
 import type { DutyChatHost } from "../../store/dutyChat";
 import type { Machines, LogEvent, TaskSummary } from "../../types";
 import type { Star, Tank } from "../fleet";
@@ -14,6 +15,7 @@ import ConsoleChat from "./ConsoleChat.vue";
 import ConsoleChatField from "./ConsoleChatField.vue";
 import ConsoleCommands from "./ConsoleCommands.vue";
 import ConsoleDuty from "./ConsoleDuty.vue";
+import ConsoleDutyPick from "./ConsoleDutyPick.vue";
 import ConsoleMachines from "./ConsoleMachines.vue";
 import ConsoleReflection from "./ConsoleReflection.vue";
 import ConsoleSubscriptions from "./ConsoleSubscriptions.vue";
@@ -21,6 +23,8 @@ import { PORTRAIT_URLS } from "./portraits";
 import { nextInQueue, queueOf, type QueueColumn } from "./queue";
 import { dutyBlock, machineRow, portraitNames, reflectionNote, subscriptionRow } from "./texts";
 import { useConsoleChat } from "./useConsoleChat";
+import { withShownDuty } from "./dutyPick";
+import { useDutyPick } from "./useDutyPick";
 
 /** Whether the viewer folded the wide window's panel to a strip. */
 const FOLDED_KEY = "codex-board.console-folded.v1";
@@ -51,8 +55,8 @@ const props = defineProps<{
   tasks: readonly TaskSummary[];
   /** `dev:fixture`: the map's source can be switched from the menu. */
   demo: boolean;
-  /** The map's source, whose duty chat the command row's field writes to. */
-  chatHost: DutyChatHost;
+  /** The map's source: its duty chat, which the command row's field writes to, and its duty's choice. */
+  host: DutyChatHost & DutyHost;
 }>();
 const emit = defineEmits<{
   go: [event: LogEvent];
@@ -68,7 +72,9 @@ const summaryOpen = defineModel<boolean>("summaryOpen", { required: true });
 const sound = defineModel<boolean>("sound", { required: true });
 const sourceKind = defineModel<"board" | "scenario">("sourceKind", { required: true });
 
-const duty = computed(() => dutyBlock(props.tanks, props.stars, props.now));
+// The duty's choice shows in the wing at once, before the accounts confirm it.
+const pick = useDutyPick(() => props.host);
+const duty = computed(() => dutyBlock(withShownDuty(props.tanks, pick.pending.value), props.stars, props.now));
 const subscriptions = computed(() => props.tanks.map((tank) => subscriptionRow(tank, props.now)));
 const machineRows = computed(() => (props.machines?.items ?? []).map((machine) => machineRow(machine, props.now)));
 const reflection = computed(() => reflectionNote(props.station));
@@ -135,7 +141,7 @@ watch(sheetOpen, (open) => {
 // which the whole log and the conversation share.
 const chatOpen = ref(loadJson(CHAT_OPEN_KEY, false, (value): value is boolean => typeof value === "boolean"));
 watch(chatOpen, (value) => saveJson(CHAT_OPEN_KEY, value));
-const chat = useConsoleChat(() => props.chatHost, () => props.now, () => props.tasks, () => (props.narrow ? sheetOpen.value : chatOpen.value && !strip.value));
+const chat = useConsoleChat(() => props.host, () => props.now, () => props.tasks, () => (props.narrow ? sheetOpen.value : chatOpen.value && !strip.value));
 const { draft, unavailable: chatOff } = chat;
 const chatShown = computed(() => chatOpen.value && !strip.value && !chatOff.value);
 const chatPanel = computed(() => ({
@@ -161,6 +167,36 @@ function closeChat() {
   void nextTick(() => rowField.value?.focusQuietly());
 }
 
+// The duty's choice: a panel over the left wing, or the narrow window's sheet; it gives the focus back to its opener.
+const pickOpen = ref(false);
+const sheetPick = ref<InstanceType<typeof ConsoleDutyPick> | null>(null);
+const pickPanel = computed(() => ({
+  choices: pick.choices.value, mode: pick.shown.value?.mode ?? null, line: pick.line.value, off: pick.off.value,
+  error: pick.error.value, warning: pick.warning.value, electionError: pick.duty.value?.last_election.error ?? null,
+}));
+let pickOpener: HTMLElement | null = null;
+function openPick(opener: HTMLElement | null) {
+  pickOpener = opener ?? root.value?.querySelector<HTMLElement>(".console-duty") ?? null;
+  if (props.narrow) {
+    sheetOpen.value = true;
+    void nextTick(() => sheetPick.value?.focusInside());
+  } else pickOpen.value = !pickOpen.value;
+}
+function closePick(focus = true) {
+  pickOpen.value = false;
+  if (focus) void nextTick(() => (pickOpener?.isConnected ? pickOpener : root.value?.querySelector<HTMLElement>(".console-duty"))?.focus());
+}
+/** A press outside the panel and the duty's block folds the panel and leaves the focus where it went. */
+function onPressAway(event: PointerEvent) {
+  const target = event.target as Element | null;
+  if (!target?.closest(".duty-pick, .console-left > .console-duty, .pick-duty")) closePick(false);
+}
+watch(pickOpen, (open) => (open ? document.addEventListener : document.removeEventListener)("pointerdown", onPressAway, true));
+watch(strip, () => closePick(false));
+onBeforeUnmount(() => document.removeEventListener("pointerdown", onPressAway, true));
+/** The chat cannot work without a Claude duty: its field offers the choice. */
+const chatNeedsDuty = computed(() => chat.view.value?.reason === "no_duty" || chat.view.value?.reason === "codex_duty");
+
 /** Escape folds what the strip opened before the map hears it. */
 function onKey(event: KeyboardEvent) {
   if (event.key === "Escape" && chatShown.value) {
@@ -185,7 +221,7 @@ function onKey(event: KeyboardEvent) {
     @keydown="onKey"
   >
     <div v-if="strip" class="console-strip">
-      <ConsoleDuty :duty="duty" :portrait="dutyPortrait" compact @open="(key, opener) => emit('openAccount', key, opener)" />
+      <ConsoleDuty :duty="duty" :portrait="dutyPortrait" :line="pick.line.value" compact @pick="openPick" />
       <ConsoleCommands mode="counters" :ready="queues.review_me.length" :alarms="queues.attention.length" :compact="narrow" @next="next" />
       <button
         v-if="narrow"
@@ -202,12 +238,14 @@ function onKey(event: KeyboardEvent) {
       <button v-else type="button" class="console-more console-unfold" @click="fold(false)">Развернуть панель</button>
     </div>
     <div v-show="!strip || sheetOpen" id="console-sheet" class="console-sheet">
+      <ConsoleDutyPick v-if="narrow" ref="sheetPick" v-bind="pickPanel" inline class="console-pick" @pick="pick.pick" @auto="pick.setAuto" />
       <div v-if="narrow" class="console-chat">
         <ConsoleChat v-if="!chatOff" v-bind="chatPanel" sheet @choose="chat.send" @task="(repo, slug) => emit('task', repo, slug)" @retry="chat.retry" @dismiss="chat.dismiss" />
-        <ConsoleChatField v-model="draft" sheet open :unavailable="chatOff" :busy="chat.busy.value" @send="chat.sendDraft" />
+        <ConsoleChatField v-model="draft" sheet open :unavailable="chatOff" :pick-duty="chatNeedsDuty" :busy="chat.busy.value" @send="chat.sendDraft" @pick-duty="openPick" />
       </div>
       <div class="console-wing console-left">
-        <ConsoleDuty v-if="!narrow" :duty="duty" :portrait="dutyPortrait" @open="(key, opener) => emit('openAccount', key, opener)" />
+        <ConsoleDuty v-if="!narrow" :duty="duty" :portrait="dutyPortrait" :line="pick.line.value" :expanded="pickOpen" @pick="openPick" />
+        <ConsoleDutyPick v-if="pickOpen && !narrow" v-bind="pickPanel" @pick="pick.pick" @auto="pick.setAuto" @close="closePick()" />
         <i class="console-divider" aria-hidden="true"></i>
         <ConsoleSubscriptions :rows="subscriptions" :portraits="portraits" :open="account" @open="(key, opener) => emit('openAccount', key, opener)" />
       </div>
@@ -271,6 +309,7 @@ function onKey(event: KeyboardEvent) {
           ref="rowField"
           v-model="draft"
           :unavailable="chatOff"
+          :pick-duty="chatNeedsDuty"
           :busy="chat.busy.value"
           :open="chatShown"
           @send="sendChat"
@@ -278,6 +317,7 @@ function onKey(event: KeyboardEvent) {
           @close="closeChat"
           @toggle="chatShown ? closeChat() : (chatOpen = true)"
           @grow="fieldGrow = $event"
+          @pick-duty="openPick"
         />
       </ConsoleCommands>
     </div>

@@ -1,44 +1,45 @@
 <script setup lang="ts">
 // The duty block: the subscription teamster keeps for the orchestrator, its portrait in an amber-edged window and over
-// its foot what is left in it, since when it is on duty and how many tasks are live. A click opens the subscription's
-// screen. Compact, on a narrow window, it is one line of the panel's strip with a small portrait.
+// its foot what is left in it, how it was chosen, since when it is on duty and how many tasks are live. A click opens
+// the duty's choice. Compact, on a narrow window, it is one line of the panel's strip with a small portrait.
 import type { DutyBlock } from "./texts";
 
 defineProps<{
   duty: DutyBlock;
   /** The duty's portrait, or null. */
   portrait: string | null;
+  /** How the duty was chosen, in a quiet line under its name; `alarm` when a pinned duty cannot work now. */
+  line?: { text: string; alarm: boolean } | null;
+  /** The duty's choice stands open. */
+  expanded?: boolean;
   compact?: boolean;
 }>();
-/** `opener`: the pressed element, to give the focus back to when the screen closes. */
-const emit = defineEmits<{ open: [key: string, opener: HTMLElement] }>();
+/** `opener`: the pressed element, to give the focus back to when the choice closes. */
+const emit = defineEmits<{ pick: [opener: HTMLElement] }>();
 </script>
 
 <template>
   <button
-    v-if="duty.key"
     type="button"
     class="console-block console-duty c-press"
-    :class="[duty.executor, { compact, off: duty.off }]"
-    :title="duty.title"
-    :aria-label="duty.label ?? undefined"
-    :data-account="duty.key"
-    @click="emit('open', duty.key, $event.currentTarget as HTMLElement)"
+    :class="[duty.executor, { compact, off: duty.off, none: !duty.key }]"
+    :title="duty.key ? `${duty.title}\nВыбрать дежурного` : 'Выбрать дежурного'"
+    :aria-label="`${duty.label ?? (line ? 'Дежурный не выбран' : duty.heading)}. Выбрать дежурного`"
+    aria-haspopup="dialog"
+    :aria-expanded="expanded"
+    @click="emit('pick', $event.currentTarget as HTMLElement)"
   >
-    <img v-if="portrait" class="duty-portrait" :src="portrait" alt="" />
+    <img v-if="portrait && duty.key" class="duty-portrait" :src="portrait" alt="" />
     <span class="d-caption">
-      <span class="d-head c-name">Дежурный · <span class="d-name">{{ duty.name }}</span></span>
-      <span class="d-line c-text"><template v-if="!compact"><span class="d-family">{{ duty.family }}</span> · </template><span class="num">{{ duty.info }}</span></span>
+      <span v-if="duty.key" class="d-head c-name">Дежурный · <span class="d-name">{{ duty.name }}</span></span>
+      <span v-else class="d-head c-name">{{ line ? "Дежурный" : duty.heading }}</span>
+      <span v-if="line && !compact" class="d-mode c-text" :class="{ alarm: line.alarm }">{{ line.text }}</span>
+      <span v-if="duty.key" class="d-line c-text"><template v-if="!compact"><span class="d-family">{{ duty.family }}</span> · </template><span class="num">{{ duty.info }}</span></span>
       <span v-if="duty.since && !compact" class="d-line c-text c-muted num">{{ duty.since }}</span>
       <span v-if="!compact" class="d-live c-text num"><template v-for="(part, i) in duty.live.split(' · ')" :key="i"><template v-if="i"> · </template><span class="d-part">{{ part }}</span></template></span>
+      <span v-else-if="!duty.key" class="d-mode c-text">{{ line?.text ?? "" }}</span>
     </span>
   </button>
-  <div v-else class="console-block console-duty none" :class="{ compact }" :title="duty.title">
-    <span class="d-caption">
-      <span class="d-head c-name">{{ duty.heading }}</span>
-      <span class="d-live c-text num">{{ duty.live }}</span>
-    </span>
-  </div>
 </template>
 
 <style scoped src="./console.css"></style>
@@ -120,6 +121,19 @@ const emit = defineEmits<{ open: [key: string, opener: HTMLElement] }>();
   text-overflow: ellipsis;
   vertical-align: bottom;
   white-space: nowrap;
+}
+
+.d-mode {
+  max-width: 100%;
+  color: #b8ad98;
+  font-size: 11px;
+  font-style: italic;
+  white-space: normal;
+}
+
+.d-mode.alarm {
+  color: #ff8d7a;
+  font-style: normal;
 }
 
 .d-line,

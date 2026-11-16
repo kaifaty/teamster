@@ -120,9 +120,9 @@ export function unavailableText(view: DutyChatView | null, state: { read: boolea
   if (view.available) return null;
   switch (view.reason) {
     case "no_duty":
-      return "Дежурный не выбран: назначь аккаунт Claude командой teamster duty set";
+      return "Дежурный не выбран: чату нужна подписка Claude на дежурстве";
     case "codex_duty":
-      return `Дежурный${view.duty ? ` ${view.duty.account}` : ""} — аккаунт Codex; чат работает только с Claude (teamster duty set)`;
+      return `Дежурный${view.duty ? ` ${view.duty.account}` : ""} — подписка Codex, а чат работает только с Claude`;
     case "old_teamster":
       return "teamster старше 1.86.0 и не умеет чат с дежурным: обнови teamster";
     case "read_only":

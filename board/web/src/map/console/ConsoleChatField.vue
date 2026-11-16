@@ -17,8 +17,10 @@ const props = defineProps<{
   open: boolean;
   /** The narrow window's sheet: the conversation always shows there, without its toggle. */
   sheet?: boolean;
+  /** The chat needs a Claude duty: the sentence offers the duty's choice. */
+  pickDuty?: boolean;
 }>();
-const emit = defineEmits<{ send: []; open: []; close: []; toggle: []; grow: [extra: number] }>();
+const emit = defineEmits<{ send: []; open: []; close: []; toggle: []; grow: [extra: number]; pickDuty: [opener: HTMLElement | null] }>();
 const text = defineModel<string>({ required: true });
 
 const field = ref<HTMLTextAreaElement | null>(null);
@@ -79,6 +81,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="chat-field" :class="{ sheet, off: !!unavailable }">
     <p v-if="unavailable" class="chat-off" :title="unavailable">{{ unavailable }}</p>
+    <button v-if="unavailable && pickDuty" type="button" class="pick-duty" aria-haspopup="dialog" @click="emit('pickDuty', null)">Выбрать дежурного</button>
     <template v-else>
       <button
         type="button"
@@ -157,6 +160,34 @@ onBeforeUnmount(() => {
   line-height: 15px;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+/* «Выбрать дежурного»: a small cast bronze button after the sentence. */
+.pick-duty {
+  flex: none;
+  height: calc(var(--cast-height, 30px) - 2px);
+  padding: 0 10px;
+  border: 1px solid #1f1205;
+  border-radius: 5px;
+  background: linear-gradient(to bottom, #9a6a2c 0%, #6b4316 9%, #45290c 52%, #2f1b07 90%, #7a501c 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 220, 160, 0.5),
+    inset 0 0 0 1px rgba(214, 150, 70, 0.55);
+  color: #f6dfb0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pick-duty:hover {
+  filter: brightness(1.18);
+}
+
+.pick-duty:focus-visible {
+  outline: 2px solid #f3c64e;
+  outline-offset: 2px;
 }
 
 .chat-field.sheet .chat-off {

@@ -159,3 +159,8 @@
   border-radius: 6px;
   background-color: rgba(6, 9, 16, 0.98);
 }
+
+/* The duty's choice heads the sheet, a block of its own. */
+.console.narrow .console-pick {
+  flex: none;
+}

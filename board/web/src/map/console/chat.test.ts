@@ -80,8 +80,8 @@ describe("the duty chat's plain texts", () => {
       unavailableText(withMode(fixtureConversation(NOW), mode, NOW), { read: true, readError: null }),
     );
     expect(texts).toEqual([
-      "Дежурный не выбран: назначь аккаунт Claude командой teamster duty set",
-      "Дежурный codex-main — аккаунт Codex; чат работает только с Claude (teamster duty set)",
+      "Дежурный не выбран: чату нужна подписка Claude на дежурстве",
+      "Дежурный codex-main — подписка Codex, а чат работает только с Claude",
       "teamster старше 1.86.0 и не умеет чат с дежурным: обнови teamster",
       "Доска запущена с --read-only: писать дежурному нельзя",
       "Доска не нашла команду teamster: писать дежурному нельзя",
