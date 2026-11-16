@@ -33,7 +33,7 @@ const emit = defineEmits<{ pick: [opener: HTMLElement] }>();
     <span class="d-caption">
       <span v-if="duty.key" class="d-head c-name">Дежурный · <span class="d-name">{{ duty.name }}</span></span>
       <span v-else class="d-head c-name">{{ line ? "Дежурный" : duty.heading }}</span>
-      <span v-if="line && !compact" class="d-mode c-text" :class="{ alarm: line.alarm }">{{ line.text }}</span>
+      <span v-if="line && !compact" class="d-mode c-text" :class="{ alarm: line.alarm }" :title="line.text">{{ line.text }}</span>
       <span v-if="duty.key" class="d-line c-text"><template v-if="!compact"><span class="d-family">{{ duty.family }}</span> · </template><span class="num">{{ duty.info }}</span></span>
       <span v-if="duty.since && !compact" class="d-line c-text c-muted num">{{ duty.since }}</span>
       <span v-if="!compact" class="d-live c-text num"><template v-for="(part, i) in duty.live.split(' · ')" :key="i"><template v-if="i"> · </template><span class="d-part">{{ part }}</span></template></span>
@@ -123,12 +123,17 @@ const emit = defineEmits<{ pick: [opener: HTMLElement] }>();
   white-space: nowrap;
 }
 
+/* At most two lines: a long reason stays whole in the title, and the portrait keeps its face. */
 .d-mode {
+  display: -webkit-box;
   max-width: 100%;
   color: #b8ad98;
   font-size: 11px;
   font-style: italic;
   white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .d-mode.alarm {

@@ -120,14 +120,14 @@ export function fixtureSource(): BoardSource {
     if (target && !target.pinnable) return { ok: false, error: "Account needs a login" };
     if (pickMode === "refuse") return { ok: false, error: "duty.json is locked by another teamster command; try again" };
     // teamster pins an exhausted account, with a warning and the reason it cannot work now.
-    const spent = body.mode === undefined && target?.bad ? `${target.name}: weekly limit exhausted` : null;
+    const spent = body.mode === undefined && target?.bad ? "weekly limit exhausted" : null;
     const now = Date.now() / 1000;
     selectedDuty = { ...previous, mode: body.mode ?? "pinned", account: target?.name ?? null, family: target?.executor ?? null,
       since: target ? now : null, checked_at: body.mode === "off" ? null : now, reason: body.mode === "off" ? null : body.mode === "auto" ? "automatic election" : "manual",
       pinned_unavailable: spent, last_election: { at: body.mode === "off" ? null : now, error: null } };
     push?.({ type: "accounts", accounts: patchAccounts({ ...current, fetched_at: now, error: null }) });
     push?.({ type: "duty_chat", at: now });
-    return { ok: true, output: "", warning: spent && `${spent}; pinned anyway, the duty waits until it recovers` };
+    return { ok: true, output: "", warning: spent && `${target!.name}: ${spent}; pinned anyway, the duty waits until it recovers` };
   }
   // The station's starts and agents tell the board in the snapshot's time, which the board sees shifted to now.
   const station = fixtureActions(research, () => Date.now() / 1000 - anchor, (message) => push?.(shiftTimes(message, anchor)));

@@ -144,10 +144,12 @@ function onKey(event: KeyboardEvent) {
   border-radius: 6px;
 }
 
+/* The title and the close button on one line, how the duty was chosen under them. */
 .pick-head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
 }
 
 .pick-title {
@@ -158,9 +160,11 @@ function onKey(event: KeyboardEvent) {
 }
 
 .pick-line {
-  flex: 1;
+  order: 3;
+  flex: 1 0 100%;
   min-width: 0;
   color: #a89c86;
+  overflow-wrap: anywhere;
 }
 
 .pick-line.alarm,
@@ -169,7 +173,7 @@ function onKey(event: KeyboardEvent) {
 }
 
 .pick-close {
-  align-self: center;
+  margin-left: auto;
   display: grid;
   place-items: center;
   width: 26px;

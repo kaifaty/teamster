@@ -153,14 +153,27 @@ order (`duty-claude-1…3.jpg`, `duty-codex-1…2.jpg`, round again past the las
 logged-out subscription's portrait is greyed out. «Дежурный» is the duty account, the one teamster keeps for the
 orchestrator and new tasks skip: its portrait large in an amber-edged window, and over its foot «Дежурный · <name>», its family, the week left and the time to the refill
 («83% · ↻ 5 д»), since when it is on duty, the reason in its title, and «в работе N · ждут тебя M» over the live tasks,
-counted as the systems' labels count them; without one it says «Дежурный не назначен». «Подписки» lists every
+counted as the systems' labels count them; without one it says «Дежурный не назначен». Under the name a quiet line says
+how the duty was chosen (`accounts.data.duty.mode`): «выбран автоматически», «закреплён вручную», or «дежурный не
+выбран»; a pin that cannot work now (`pinned_unavailable`) gives its reason there in the alarm colour. A click on the
+duty opens its choice (`ConsoleDutyPick.vue`, `console/dutyPick.ts`, `console/useDutyPick.ts` over `store/duty.ts`), a
+small dialog over the left wing: «Выбирать автоматически» (on: `{mode: "auto"}`, off: `{mode: "off"}`, no duty) and
+every account of both families, Claude first, with its week left and its state and the duty marked; choosing one pins
+it (`{account, family}`) and turns the automatic choice off. An account that needs a login is shown off with the
+reason. The choice shows at once in the panel and the wing, is rolled back with teamster's text on a refusal, and
+teamster's warning stays in the panel; when `choosable` is false everything is shown switched off under the reason
+(`--read-only`, no teamster, teamster older than 1.87.0). Arrows and Tab walk the accounts, Escape or a press elsewhere
+closes it and Escape gives the focus back to the duty. The duty chat's «Дежурный не выбран» and Codex-duty sentences
+offer «Выбрать» for the same choice. On a phone the choice heads the «Ещё» sheet, and the strip's duty opens it. In
+`dev:fixture`, `?pick=<anything>` answers the choice after 0.7 s, `?pick=refuse` refuses it, and `?pick=read_only`,
+`no_teamster` or `old_teamster` switch it off; pinning the exhausted Codex account gets a warning. «Подписки» lists every
 subscription as a row: its small portrait, its name, a bar of the week's limit left in the family's colour, red at 20% or less and grey
 when exhausted, limited or logged out, the share left, the time to the refill (the weekly reset, or the end of the limit
 that ran out) and a spare cell for every free reset of a Codex account; the duty's row stands out, and a row's title has
 the five-hour window, the reset times and when the free resets expire. On a phone the panel folds to a strip in the centre's
 rails with the duty, both counters and the newest event, and «Ещё» opens the subscriptions, the machines, the reflection,
 «Сводка дня» and the settings over the map.
-A click on the duty or a subscription's row opens the subscription's own screen (`board/web/src/map/account/`), over the
+A click on a subscription's row opens the subscription's own screen (`board/web/src/map/account/`), over the
 map like a ship's bridge. «Сейчас» says the state in plain words — works and how much of the week is left, little left, the week
 spent or a limit until when, no data, or a sign-in needed (a Codex account logged out or signed in to the same ChatGPT
 account as another, a Claude token missing or refused: `needs_login`) — with «Войти заново» as the main button when
