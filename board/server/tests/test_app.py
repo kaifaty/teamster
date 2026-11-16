@@ -3400,14 +3400,29 @@ def test_landing_forgejo_land_script_repairs_once_and_retries(forgejo_landing, f
         assert "CI did not pass" in task["lesson"](actions)["implementation"]["landing"]["text"]
 
 
-def test_landing_forgejo_land_script_reports_other_errors(forgejo_landing):
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_landing_forgejo_land_script_reports_other_errors(forgejo_landing, landing_clock, unavailable):
     task = forgejo_landing
     task["script"]("land.py")
-    task["configure"](script_results=[{"code": 1, "output": "fatal: push was rejected"}])
+    output = ("land.py: CI did not pass (exit 75), #42 is left open" if unavailable
+              else "fatal: push was rejected")
+    task["configure"](script_results=[{"code": 1, "output": output}, {"code": 0, "output": "merged #42"}])
     actions = task["make"]()
     task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "failed")
-    assert "push was rejected" in task["lesson"](actions)["implementation"]["landing"]["text"]
+    assert output in task["lesson"](actions)["implementation"]["landing"]["text"]
     assert task["records"]("teamster") == []
+    assert len(task["records"]("land.py")) == 1
+    if unavailable:
+        assert "CI не читается:" in task["lesson"](actions)["implementation"]["landing"]["text"]
+        assert not any(row.get("forgejo_job") for row in actions.landing.receipts.values())
+        actions.landing.run_once()
+        assert len(task["records"]("land.py")) == 1
+        landing_clock[0] += 31
+        actions.landing.run_once()
+        task["drive"](actions, lambda: task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed")
+        assert len(task["records"]("land.py")) == 2
+        assert not [row for row in task["records"]("teamster") if row[0] == "say"]
+        assert task["lesson"](actions)["status"] == "applied"
 
 
 @pytest.mark.parametrize("waiter,code,existing,second_failure,head_race", [

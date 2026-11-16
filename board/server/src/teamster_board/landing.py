@@ -547,7 +547,8 @@ class Landing:
                 self._stage(receipt, "waiting", f"Жду CI {label} на Forgejo")
                 return
             if code:
-                if job["kind"] == "waiter" and code == 75:
+                if ((job["kind"] == "waiter" and code == 75)
+                        or (job["kind"] == "land" and "CI did not pass (exit 75)" in output)):
                     receipt.pop("forgejo_job")
                     self._stage(receipt, "failed", f"CI не читается: {output[-1000:]}")
                     self._save()

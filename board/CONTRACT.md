@@ -1067,6 +1067,8 @@ If it reports that main advanced or that there is a conflict, the board sends on
 merge `origin/main`, run checks and push. A CI failure sends one repair `say` with the output tail,
 asking the task to fix CI, run checks and push. Landing retries after the repair cycle; a second
 failure or any other error produces `failed` with the output tail.
+If `land.py` reports `CI did not pass (exit 75)`, landing reports «CI не читается: …» and
+retries the script after 30 seconds without sending a repair order.
 
 Without `land.py`, the board reuses an open PR for the task branch or creates one through
 `tea api --login forgejo /repos/kaifaty/<origin repository>/pulls`, using the task branch and base and
