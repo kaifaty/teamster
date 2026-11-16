@@ -82,7 +82,7 @@ def archived_records(archive, after=None):
             continue
         if after is not None and match.group(2) <= after:
             continue
-        if record_kind(path) == "reflect":
+        if record_kind(path) in ("reflect", "duty"):
             continue
         records.append((match.group(2), path.name, match.group(1)))
     records.sort()
@@ -160,11 +160,16 @@ def build_room(room, archive, records):
                     continue
                 target.mkdir(parents=True, exist_ok=True)
                 copy_room_file(source, target / entry)
+    commit_room(room, "Reading room")
+
+
+def commit_room(room, message):
+    """Make the directory ``room`` a one-commit repository of its files; the duty chat's room starts empty."""
     git = config.GIT + ["-c", "core.excludesFile=/dev/null", "-c", "commit.gpgsign=false",
                         "-c", "user.name=teamster", "-c", "user.email=teamster@localhost"]
     procs.sh(git + ["init", "-q"], cwd=room)
     procs.sh(git + ["add", "-A", "-f", "."], cwd=room)
-    procs.sh(git + ["commit", "-q", "--allow-empty", "-m", "Reading room"], cwd=room)
+    procs.sh(git + ["commit", "-q", "--allow-empty", "-m", message], cwd=room)
 
 
 @contextmanager

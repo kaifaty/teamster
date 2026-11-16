@@ -75,6 +75,17 @@ REFLECT_SCHEMA = object_schema({
                 "items": {"type": "array", "items": {"type": "string"}}},
 })
 
+# One answer of the duty chat: plain text for the user, an optional choice, and the tasks it started.
+DUTY_SCHEMA = object_schema({
+    "status": {"type": "string", "enum": ["answered", "needs_decision", "started"]},
+    "reply": {"type": "string", "description": "Plain text for the user."},
+    "question": {"type": "string", "description": "The one decision the user must make, or empty."},
+    "options": {"type": "array", "items": {"type": "string"},
+                "description": "2-4 short answers to question, or empty for a free answer or no question."},
+    "started": {"type": "array", "items": {"type": "string"},
+                "description": "Slugs of the teamster tasks started in this turn."},
+})
+
 
 def matches_schema(value, schema):
     """Validate the small JSON Schema subset used by our output contracts."""
@@ -96,6 +107,14 @@ def valid_reflect_result(value):
     """The reflect schema, plus one options entry of none or 2-4 answers per question."""
     return (matches_schema(value, REFLECT_SCHEMA) and len(value["options"]) == len(value["questions"])
             and all(len(answers) in (0, 2, 3, 4) for answers in value["options"]))
+
+
+def valid_duty_result(value):
+    """The duty schema; options need a question, needs_decision a question and started a task."""
+    return (matches_schema(value, DUTY_SCHEMA) and len(value["options"]) in (0, 2, 3, 4)
+            and bool(value["question"].strip() or not value["options"])
+            and (value["status"] != "needs_decision" or bool(value["question"].strip()))
+            and (value["status"] != "started" or bool(value["started"])))
 
 
 def parse_result(message, reviewing=False, reflecting=False):

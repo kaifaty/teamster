@@ -8,6 +8,7 @@ import os
 import plistlib
 import runpy
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -81,6 +82,7 @@ trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(),
        "disable_background_tasks": os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"),
        "copyfile_disable": os.environ.get("COPYFILE_DISABLE"),
        "bash_timeouts": [os.environ.get("BASH_DEFAULT_TIMEOUT_MS"), os.environ.get("BASH_MAX_TIMEOUT_MS")],
+       "started_by": os.environ.get("TEAMSTER_STARTED_BY"),
        "inherited_provider_keys": sorted(key for key in os.environ
            if (key.startswith("CLAUDE") or key.startswith("ANTHROPIC"))
            and key not in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
@@ -368,6 +370,193 @@ class ClaudeReviewTests(RotationTestCase):
                 else:
                     self.assertIn(expected, reason.getvalue())
 
+    def duty_hook(self, room, tool, tool_input):
+        """The duty guard's exit status and reason for one tool call from the room."""
+        hook = runpy.run_path(str(SCRIPT.with_name("bash_guard.py")))["main"]
+        event = json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": str(room)})
+        with mock.patch.object(sys, "argv", ["bash_guard.py", "--duty-room", str(room)]), \
+                mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(event.encode()))), \
+                contextlib.redirect_stderr(io.StringIO()) as reason:
+            return hook(), reason.getvalue()
+
+    def test_duty_guard_allows_only_the_allowlist_and_writes_in_the_room(self):
+        room = self.root / "duty-room"
+        room.mkdir()
+        outside = self.root / "outside"
+        outside.mkdir()
+        # A link inside the room to a directory outside it.
+        (room / "linked").symlink_to(outside)
+        git = "git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null"
+        flags = "--no-ext-diff --no-textconv --no-show-signature --submodule=short"
+        allowed = (
+            "teamster start fix-parser --brief %s/fix-parser.md --repo /work/repo --review --fix-rounds 2" % room,
+            "teamster start fix-parser --brief=b.md --ci --ci-rounds 1 --check-timeout 60 --parallel",
+            "teamster say fix-parser 'Also cover the empty line.' --queue", "teamster say fix-parser '- a dash first'",
+            "teamster scout where 'Who reads it?' --repo /r", "teamster review fix-parser --review-angles tests",
+            "teamster stop fix-parser", "teamster status", "teamster wait fix-parser --timeout 60",
+            "teamster report --since 7d --json", "teamster docs lead-guide", "teamster accounts --json",
+            "teamster duty status --json", "teamster start x --brief - -h",
+            git + " -C /work/repo log " + flags + " --oneline -5",
+            git + " log " + flags + " -p --format=%h%x20%s", git + " show " + flags + " --format=fuller HEAD~1",
+            git + " -C /work/repo diff " + flags + " --stat=80 origin/main...HEAD --", git + " diff " + flags + " A B -- src",
+            git + " diff " + flags + " --cached", git + " diff " + flags + " -U3 --name-only A...B --",
+            "git -P -c core.hookspath=/dev/null -c core.fsmonitor=false log --pretty " + flags,
+            git + " log --pretty=format:%h " + flags,
+            git + " ls-files -z --stage src", git + " grep -n parse HEAD -- src",
+            "gh pr view 12 --repo fixture/repo", "gh pr diff 12", "gh pr checks 12", "gh pr list",
+            "gh run view 7 --log-failed", "gh run list", "ls -la /work/repo", "cat README.md", "head -n 5 a.md",
+            "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src",
+            # Compound commands pass when every part does; output may go to the room or /dev/null.
+            "teamster status && " + git + " log " + flags + " --oneline -1; teamster accounts",
+            git + " log " + flags + " --oneline | head -3 | wc -l", "(teamster status; ls)",
+            git + " diff " + flags + " A...B -- 2>&1 | tail -n 40", "rg -n x src 2>/dev/null",
+            "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room, "cat a.md > brief.md",
+        )
+        refused = (
+            "gh pr merge 12", "gh pr merge 12 --squash", "gh api repos/x", "gh pr checkout 12", "gh run rerun 7",
+            "git push", "git commit -m x", "git merge main", "git rebase main", "git reset --hard",
+            "git checkout -b x", git + " push", git + " commit -m x", git + " merge main", git + " rebase main",
+            git + " reset --hard", git + " checkout -b x",
+            # Programs the repository's config can start: external diff, textconv, gpg, pager, fsmonitor, hooks, filters.
+            "git -C /work/repo diff A...B", "git -C /work/repo log", git + " diff --no-ext-diff A...B",
+            git + " diff --no-textconv --no-ext-diff --no-show-signature A...B",
+            git + " log " + flags + " --ext-diff", git + " log " + flags + " --textc", git + " show " + flags + " --ext",
+            git + " log " + flags + " --show-signature", git + " log " + flags + " --format=%G?",
+            git + " log " + flags + " --output=/tmp/x", git + " log " + flags + " --out=/tmp/x",
+            git + " diff " + flags + " --submodule=diff A...B", git + " diff " + flags,
+            git + " diff " + flags + " HEAD", git + " diff " + flags + " HEAD README.md", git + " diff " + flags + " --no-index a b",
+            # An option value is not a revision: these compare HEAD with the working tree and run its clean filters.
+            git + " diff " + flags + " --stat-width 80 HEAD --", git + " diff " + flags + " -O ../order --",
+            git + " diff " + flags + " A...B", git + " diff " + flags + " -U 3 A...B --",
+            # Without its own format, log and show take format.pretty from the config, which may run gpg.
+            git + " log " + flags, git + " show " + flags + " HEAD", git + " log " + flags + " --format=mine",
+            git + " log " + flags + " --format %h", git + " show " + flags + " --pretty=signed",
+            git + " grep -O x", git + " grep -nO x", git + " grep --open-files x", git + " grep --textconv x",
+            git + " grep --recurse-submodules x", git + " ls-files -m", git + " ls-files --others",
+            git + " status", "git status", git + " fetch origin", "git fetch origin",
+            "git --no-pager -c core.fsmonitor=false log " + flags, "git -c core.fsmonitor=false -c core.hooksPath=/dev/null log " + flags,
+            "git --no-pager -c core.pager=sh -c core.fsmonitor=false -c core.hooksPath=/dev/null log " + flags,
+            "git --no-pager -c core.fsmonitor=true -c core.hooksPath=/dev/null log " + flags,
+            git + " --git-dir=/x log " + flags, git + " -C %s/planted log %s" % (room, flags),
+            "teamster clean fix-parser", "teamster verdict fix-parser accepted", "teamster login a",
+            "teamster claude-login a", "teamster duty tick", "teamster duty clear", "teamster lesson x applied",
+            "teamster say duty 'Talk to yourself'", "teamster stop duty", "teamster --version",
+            # Shell commands the supervisor would run, by their full names and by argparse abbreviations.
+            "teamster start x --brief b.md --check 'gh pr merge 1'", "teamster say x hi --ci-command=sh",
+            "teamster start x --brief b.md --check-loaded make", "teamster start sample --brief b.md --ci-comm='gh pr merge 1'",
+            "teamster start x --brief b.md --ch=make", "teamster say x hi --check-l make", "teamster start x --bri b.md",
+            "teamster wait x --check y",
+            "scripts/bump_version.py minor --commit", "python3 scripts/bump_version.py patch", "./teamster status",
+            "npm install", "pip install x", "uv tool install x", "brew install x", "curl https://example.test",
+            "rm -rf build", "rg --pre=sh x .", "echo hi", "PATH=/tmp teamster status", "cd /work && teamster status",
+            # Compound commands: one forbidden part refuses the whole text.
+            "teamster status; rm -rf build", "teamster status && git push", "teamster status || git push",
+            "cat a | sh", "echo $(git push)", "ls `git push`", "ls $HOME", "ls *.md", "ls {a,b}",
+            "cat <<EOF > %s/b.md\n$(git push)\nEOF" % room, "teamster status &", "if true; then ls; fi",
+            # ANSI-C quoting hides a path the guard would not decode.
+            "cat /dev/null > $'..\\x2foutside'", "cat $'a.md'",
+            "cat a.md > /tmp/out", "cat a.md >> ../out", "cat a.md > .git/config", "cat a.md > %s/.git/HEAD" % room,
+            "cat a.md > linked/brief.md", "cat a.md > %s/linked/brief.md" % room,
+            "cat a.md > .claude/settings.json", "cat README.md &> ../outside", "cat README.md &>> ../outside",
+            "cat README.md <> ../outside", "cat README.md >| ../outside", "cat README.md >&../outside",
+        )
+        # Each required switch is required on its own.
+        required = ["--no-pager", "-c core.fsmonitor=false", "-c core.hooksPath=/dev/null"]
+        for command in ("log --oneline", "show --oneline HEAD", "diff A...B --"):
+            subcommand, _, rest = command.partition(" ")
+            for missing in required + flags.split():
+                prefix = "git " + " ".join(item for item in required if item != missing)
+                switches = " ".join(flag for flag in flags.split() if flag != missing)
+                refused += (prefix + " " + subcommand + " " + switches + " " + rest,)
+        for command, expected in [(command, 0) for command in allowed] + [(command, 2) for command in refused]:
+            with self.subTest(command=command):
+                status, reason = self.duty_hook(room, "Bash", {"command": command})
+                self.assertEqual(status, expected, reason)
+                self.assertEqual(bool(reason), bool(expected))
+                if expected:
+                    self.assertIn("Blocked by teamster", reason)
+        writes = ((("Write", "file_path", str(room / "fix-parser.md")), 0), (("Edit", "file_path", "notes.md"), 0),
+                  (("Write", "file_path", str(self.root / "outside.md")), 2), (("Edit", "file_path", "../x.md"), 2),
+                  (("Write", "file_path", str(room / ".git" / "config")), 2),
+                  (("Write", "file_path", str(room / "linked" / "brief.md")), 2),
+                  (("Edit", "file_path", "linked/brief.md"), 2),
+                  (("Write", "file_path", str(room / ".claude" / "settings.json")), 2),
+                  (("NotebookEdit", "notebook_path", "/tmp/n.ipynb"), 2), (("Write", "file_path", ""), 2))
+        for (tool, key, path), expected in writes:
+            with self.subTest(tool=tool, path=path):
+                self.assertEqual(self.duty_hook(room, tool, {key: path})[0], expected)
+        # The duty guard fails closed on input it cannot read.
+        hook = runpy.run_path(str(SCRIPT.with_name("bash_guard.py")))["main"]
+        with mock.patch.object(sys, "argv", ["bash_guard.py", "--duty-room", str(room)]), \
+                mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"not json"))), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(hook(), 2)
+
+    def test_duty_guard_git_commands_run_no_program_from_the_repository_config(self):
+        room = self.root / "duty-room"
+        room.mkdir()
+        trap = self.root / "trap.sh"
+        marker = self.root / "trap-ran"
+        trap.write_text("#!/bin/sh\necho \"$0 $*\" >> %s\n" % shlex.quote(str(marker)))
+        trap.chmod(0o700)
+        repo = self.root / "trapped"
+        repo.mkdir()
+        # Without GIT_PAGER the repository's core.pager would apply.
+        environment = {key: value for key, value in self.env.items() if key != "GIT_PAGER"}
+
+        def git(*args, stdin=None):
+            return subprocess.run(["git", *args], cwd=repo, env=environment, check=True, capture_output=True,
+                                  input=stdin, text=True).stdout.strip()
+
+        git("init", "-q")
+        (repo / ".gitattributes").write_text("* diff=trap filter=trap\n")
+        (repo / "a.txt").write_text("one\n")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one")
+        (repo / "a.txt").write_text("two\n")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "two")
+        # A signed commit on top: showing its signature runs gpg.program.
+        signed = git("hash-object", "-t", "commit", "-w", "--stdin", stdin=(
+            "tree %s\nparent %s\nauthor t <t@t> 1700000000 +0000\ncommitter t <t@t> 1700000000 +0000\n"
+            "gpgsig -----BEGIN PGP SIGNATURE-----\n \n fixture\n -----END PGP SIGNATURE-----\n\nsigned\n"
+            % (git("rev-parse", "HEAD^{tree}"), git("rev-parse", "HEAD"))))
+        git("update-ref", "HEAD", signed)
+        (repo / "a.txt").write_text("three\n")
+        git("add", "a.txt")
+        # The working tree differs from the index, so comparing with it runs the clean filter.
+        (repo / "a.txt").write_text("four\n")
+        for key, value in (("diff.external", trap), ("diff.trap.textconv", trap), ("diff.trap.command", trap),
+                           ("filter.trap.clean", trap), ("core.fsmonitor", trap), ("core.pager", trap),
+                           ("core.hooksPath", self.root), ("log.showSignature", "true"), ("gpg.program", trap),
+                           ("format.pretty", "format:%h %G? %s"), ("pretty.signed", "format:%G? %s")):
+            git("config", key, str(value))
+        prefix = "git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null -C %s " % shlex.quote(str(repo))
+        flags = " --no-ext-diff --no-textconv --no-show-signature --submodule=short"
+
+        def run(command):
+            return subprocess.run(command, shell=True, cwd=room, env=environment, capture_output=True, text=True,
+                                  timeout=60, stdin=subprocess.DEVNULL)
+
+        commands = (prefix + "log -p --oneline" + flags, prefix + "show --format=fuller" + flags,
+                    prefix + "log --format=%h%x20%s" + flags, prefix + "diff" + flags + " --stat=80 HEAD~2...HEAD --",
+                    prefix + "diff" + flags + " --cached", prefix + "ls-files --stage", prefix + "grep -n two HEAD")
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(self.duty_hook(room, "Bash", {"command": command}), (0, ""))
+                result = run(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
+        # The traps are armed: each of these runs one, and the guard refuses each.
+        for command in ("git -C %s diff HEAD~2...HEAD" % shlex.quote(str(repo)),
+                        prefix + "diff" + flags + " --stat-width 80 HEAD --",
+                        prefix + "log -1" + flags, prefix + "show" + flags + " HEAD"):
+            with self.subTest(armed=command):
+                self.assertEqual(self.duty_hook(room, "Bash", {"command": command})[0], 2)
+                run(command)
+                self.assertTrue(marker.exists())
+                marker.unlink()
+
     def test_bash_timeouts_round_the_remaining_budget_to_the_millisecond(self):
         worker = self.worker()
         runner = worker.claude_review.claude_runner
@@ -605,12 +794,426 @@ class ClaudeReviewTests(RotationTestCase):
     def claude_invocations(self):
         return [entry for entry in self.claude_trace() if entry["command"] == "review"]
 
-    def claude_pool_fixture(self, runs=None, names=("first", "second")):
+    def claude_pool_fixture(self, runs=None, names=("first", "second"), **settings):
         accounts = [{"name": name, "config_dir": str(self.root / ("claude-" + name)),
                      "token_keychain": "codex-worker-claude-" + name}
                     for name in names]
-        self.claude_fixture(runs=runs, claude={"accounts": accounts})
+        self.claude_fixture(runs=runs, claude={"accounts": accounts}, **settings)
         return accounts
+
+    def duty_answer(self, reply, status="answered", question="", options=(), started=()):
+        return {"status": status, "reply": reply, "question": question, "options": list(options),
+                "started": list(started)}
+
+    def put_duty(self, account, family="claude"):
+        now = time.time()
+        (self.home / "duty.json").write_text(json.dumps({
+            "account": account, "family": family, "since": now, "checked_at": now, "reason": "fixture",
+            "rooms": {family: {account: 10}}}))
+
+    def chat_messages(self):
+        path = self.home / "claude-tasks" / "duty" / "messages.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def chat_settled(self, answers):
+        st = self.state("duty")
+        if st.get("pid"):
+            self.extra_pids.add(st["pid"])
+        return len(st.get("duty_turns", [])) == answers and not st.get("pid")
+
+    def test_duty_chat_runs_on_the_duty_account_resumes_and_moves_with_the_duty(self):
+        replies = [self.duty_answer("I need a decision.", "needs_decision", "Which repository?",
+                                    ["parser-repo", "billing-repo"]),
+                   self.duty_answer("Started fix-parser.", "started", started=["fix-parser"]),
+                   self.duty_answer("fix-parser is still running."),
+                   # needs_decision without a question breaks the duty rules.
+                   self.duty_answer("Decide for me.", "needs_decision")]
+        accounts = self.claude_pool_fixture(runs=[{"reply": reply} for reply in replies])
+        worker = self.worker()
+        for family, expected in ((None, "no duty account"), ("codex", "the duty chat needs a Claude duty account")):
+            if family:
+                self.put_duty("main", family)
+            refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Fix the parser."], cwd=self.repo,
+                                     env=self.env, text=True, capture_output=True, timeout=60)
+            self.assertEqual(refused.returncode, 1, refused.stderr)
+            self.assertIn(expected, refused.stderr)
+            self.assertFalse((self.home / "claude-tasks" / "duty").exists())
+            self.assertEqual(self.claude_invocations(), [])
+        # Known repositories come from task records; the user's duty rules join the system prompt.
+        record = self.home / "claude-tasks" / ".archive" / "old-task-20260101T000000Z"
+        record.mkdir(parents=True)
+        (record / "state.json").write_text(json.dumps({"slug": "old-task", "kind": "work", "repo": str(self.repo)}))
+        for name, git in (("scouted-repo", True), ("plain-directory", False)):
+            directory = self.root / name
+            (directory / ".git" if git else directory).mkdir(parents=True)
+            scout = self.home / "claude-tasks" / ".archive" / (name + "-20260102T000000Z")
+            scout.mkdir()
+            (scout / "state.json").write_text(json.dumps({"slug": name, "kind": "scout", "repo": str(directory)}))
+        (self.home / "duty-rules.md").write_text("Never touch the billing repository.\n")
+        self.put_duty("first")
+        # A creation cut short before its state.json left a room behind: the next command makes it again.
+        room = self.home / "claude-tasks" / "duty" / "room"
+        room.mkdir(parents=True)
+        (room / "partial.txt").write_text("cut short\n")
+        output = self.cli("duty", "chat", "Fix the parser.", timeout=60)
+        self.assertIn("== result: NEEDS DECISION\nI need a decision.\nQuestion: Which repository?\n   - parser-repo\n"
+                      "   - billing-repo", output)
+        self.assertTrue((room / ".git").is_dir())
+        self.assertFalse((room / "partial.txt").exists())
+        st = self.state("duty")
+        self.assertEqual((st["kind"], st["executor"], st["claude_account"], st["worktree"]),
+                         ("duty", "claude", "first", str(room)))
+        first = self.claude_invocations()[-1]
+        argv = first["argv"]
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
+        self.assertNotIn("bypassPermissions", argv)
+        self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read,Grep,Glob,Bash,Write,Edit")
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        # An account or room setting must not turn the guard off.
+        self.assertIs(settings["disableAllHooks"], False)
+        hook, = settings["hooks"]["PreToolUse"]
+        self.assertEqual(hook["matcher"], "Bash|Write|Edit|MultiEdit|NotebookEdit")
+        self.assertEqual(hook["hooks"][0]["command"], shlex.join(
+            [sys.executable, "-I", str(worker.config.BASH_GUARD), "--duty-room", str(room)]))
+        self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]), worker.result_schema.DUTY_SCHEMA)
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
+        self.assertNotIn("--resume", argv)
+        self.assertIn("Fix the parser.", argv[1])
+        self.assertEqual((first["config_dir"], first["cwd"], first["started_by"]),
+                         (accounts[0]["config_dir"], str(room), "duty"))
+        for text in ("# Lead guide", "# On duty", "Never touch the billing repository.",
+                     "- repo: " + str(self.repo), "- scouted-repo: " + str(self.root / "scouted-repo"),
+                     "## Your room\n\n" + str(room)):
+            self.assertIn(text, first["system_prompt"])
+        self.assertNotIn("plain-directory", first["system_prompt"])
+        # The next message resumes the same session, as say does.
+        self.assertIn("== result: started\nStarted fix-parser.\nStarted: fix-parser",
+                      self.cli("duty", "chat", "1", timeout=60))
+        second = self.claude_invocations()[-1]
+        self.assertEqual(second["argv"][1], "1")
+        self.assertEqual(second["argv"][second["argv"].index("--resume") + 1], st["session_id"])
+        # A new duty account takes the conversation over by the rotation handoff.
+        self.put_duty("second")
+        self.assertIn("fix-parser is still running.", self.cli("duty", "chat", "Any news?", timeout=60))
+        third = self.claude_invocations()[-1]
+        self.assertNotIn("--resume", third["argv"])
+        self.assertEqual(third["config_dir"], accounts[1]["config_dir"])
+        # The new account sees the earlier question and its options, so that the answer "1" stays readable.
+        for text in ("The duty moved to another account", "I need a decision.\nQuestion: Which repository?\n"
+                     "1. parser-repo\n2. billing-repo", "Started fix-parser.\nStarted: fix-parser", "Any news?"):
+            self.assertIn(text, third["argv"][1])
+        st = self.state("duty")
+        self.assertEqual([(rotation["from"], rotation["to"]) for rotation in st["rotations"]], [("first", "second")])
+        self.assertEqual([(turn["status"], turn["account"]) for turn in st["duty_turns"]],
+                         [("needs_decision", "first"), ("started", "first"), ("answered", "second")])
+        self.assertEqual(st["duty_turns"][1]["started"], ["fix-parser"])
+        self.assertEqual([(row["source"], row["text"]) for row in self.chat_messages()],
+                         [("user", "Fix the parser."), ("user", "1"), ("user", "Any news?")])
+        self.assertIn("room " + str(room) + "\nanswers 3\nresult answered: fix-parser is still running.",
+                      self.cli("status", "duty"))
+        self.assertIn("== result: answered\nfix-parser is still running.", self.cli("wait", "duty"))
+        self.assertIn("== Claude duty", self.cli("stats", "duty"))
+        invalid = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Decide."], cwd=self.repo, env=self.env,
+                                 text=True, capture_output=True, timeout=60)
+        self.assertEqual(invalid.returncode, 1, invalid.stdout)
+        self.assertIn("the duty gave no answer (outcome failed): invalid structured output", invalid.stderr)
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 3)
+        self.assertNotIn("telemetry unavailable", (self.home / "claude-tasks" / "duty" / "stderr.log").read_text())
+        # A next turn that cannot start keeps the task notes of the queue: they wait for the next duty turn.
+        worker = self.worker()
+        note = {"at": time.time(), "text": "Task note: queued ended turn 1 with outcome completed.", "options": {},
+                "source": "note", "task": "queued"}
+        worker.task_state.write_queue("duty", {"waiting": [note], "dropped": []})
+        st = worker.task_state.load("duty")
+        # A pid other than the saved one: no stop request applies, so the end sends the queue.
+        st.update(pid=-1, outcome="completed", turn_finished=time.time())
+        with mock.patch.object(worker.supervisor, "send_queue",
+                               side_effect=SystemExit("teamster: Claude Code CLI was not found")):
+            self.assertIsNone(worker.supervisor.finish_cycle(st))
+        self.assertEqual(json.loads((self.home / "claude-tasks" / "duty" / "notes.json").read_text())["held"], [note])
+        self.assertEqual(worker.task_state.read_queue("duty"), {"waiting": [], "dropped": []})
+        notes = self.home / "claude-tasks" / "duty" / "notes.json"
+        notes.write_text(json.dumps({"held": []}))
+        worker.task_state.write_queue("duty", {"waiting": [note], "dropped": []})
+        # An exception finish_cycle does not catch stands in for the process dying inside start_process.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            worker.supervisor.finish_cycle(dict(st, pid=-1, outcome="completed"))
+        self.assertEqual(worker.task_state.read_queue("duty")["waiting"], [])
+        self.assertEqual(json.loads(notes.read_text())["held"], [note])
+        # clean waits for the state lock that note delivery holds while it starts a duty turn.
+        with (self.home / "claude-tasks" / "duty" / "state.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            cleaning = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "clean", "duty"], cwd=self.repo, env=self.env,
+                                        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertRaises(subprocess.TimeoutExpired, cleaning.wait, timeout=5)
+            self.assertTrue((room / ".git").is_dir())
+            # A turn starts while clean waits (this process stands in for its supervisor).
+            path = self.home / "claude-tasks" / "duty" / "state.json"
+            path.write_text(json.dumps(dict(json.loads(path.read_text()), pid=os.getpid())))
+        output, errors = cleaning.communicate(timeout=60)
+        self.assertEqual(cleaning.returncode, 1, output)
+        self.assertIn("still running; stop it first", errors)
+        self.assertTrue((room / ".git").is_dir())
+        path.write_text(json.dumps(dict(json.loads(path.read_text()), pid=None)))
+        output = self.cli("clean", "duty")
+        self.assertFalse((self.home / "claude-tasks" / "duty").exists())
+
+    def started_by_duty(self, slug, *command):
+        """Start a task (or the given command) as a duty turn would, wait for it and check its provenance."""
+        self.env["TEAMSTER_STARTED_BY"] = "duty"
+        try:
+            if command:
+                self.cli(*command)
+            else:
+                self.start(slug)
+        finally:
+            self.env.pop("TEAMSTER_STARTED_BY")
+        output = self.wait(slug)
+        self.assertEqual(self.state(slug)["started_by"], "duty")
+        return output
+
+    def test_duty_started_task_notes_the_chat_under_the_hourly_cap(self):
+        self.enable_fake_clock(auto_advance=False)
+        release = self.root / "release-user-turn"
+        news = self.root / "release-news-turn"
+        runs = [{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 7)]
+        runs[2]["gate"] = str(release)
+        runs[3]["gate"] = str(news)
+        runs[5]["mode"] = "hold"
+        self.claude_pool_fixture(runs=runs, duty={"chat_auto_turns_per_hour": 1})
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
+        self.put_duty("first")
+        self.cli("duty", "chat", "Start the parser fix.", timeout=60)
+        # The duty is idle: the end of the task's cycle starts one note-driven turn with the whole wait report.
+        report = self.started_by_duty("noted")
+        self.until(lambda: self.chat_settled(2), timeout=60)
+        note = self.chat_messages()[-1]
+        self.assertEqual(note["source"], "note")
+        self.assertEqual(note["text"], "Task note: noted ended turn 1 with outcome completed. Report it to the user, "
+                                       "or send it a follow-up.\n\n" + report.strip())
+        self.assertIn("== result: done\nImplemented the typed final result.\n"
+                      "- python3 -I tests/test_rotation.py: passed — 3 tests passed, 0 failed", note["text"])
+        self.assertIn("Task note: noted", self.claude_invocations()[-1]["argv"][1])
+        first_mark, = self.state("duty")["duty_auto_turns"]
+        # 3599 seconds later the hourly cap is still reached: the next note waits for the user's next message.
+        self.advance_fake_clock(3599)
+        self.started_by_duty("held-note")
+        notes = self.home / "claude-tasks" / "duty" / "notes.json"
+        self.until(lambda: notes.exists() and len(json.loads(notes.read_text())["held"]) == 1)
+        self.assertEqual((len(self.claude_invocations()), len(self.state("duty")["duty_turns"])), (2, 2))
+        # A message that fails before it is journaled leaves the held note in place.
+        worker = self.worker()
+        message = {"at": time.time(), "text": "Lost?", "options": {}, "source": "user"}
+        # The fixture's environment names the fake Claude CLI; this process's may name none.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.threads, "journal_followups", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            worker.commands.send_duty_chat(worker.config.accounts_config(), message, False)
+        self.assertEqual(len(json.loads(notes.read_text())["held"]), 1)
+        self.assertEqual(self.state("duty")["turns"], 2)
+        # So does a supervisor that cannot start, though the message and the note are journaled by then.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process", side_effect=OSError("fork failed")), \
+                self.assertRaises(OSError):
+            worker.commands.send_duty_chat(worker.config.accounts_config(), message, False)
+        self.assertEqual([note["task"] for note in json.loads(notes.read_text())["held"]], ["held-note"])
+        self.assertEqual(self.state("duty")["turns"], 2)
+        # say delivers it with the user's next message, as duty chat does.
+        self.assertIn("sent to duty (turn 3), pid ", self.cli("say", "duty", "What happened?"))
+        self.until(lambda: len(self.claude_invocations()) == 3, timeout=60)
+        prompt = self.claude_invocations()[-1]["argv"][1]
+        self.assertLess(prompt.index("Task note: held-note"), prompt.index("What happened?"))
+        self.assertEqual(json.loads(notes.read_text())["held"], [])
+        # A note queued while that user turn runs waits too: the cap's one turn this hour is spent.
+        queue = self.home / "claude-tasks" / "duty" / "queue.json"
+        self.started_by_duty("queued-note")
+        self.until(lambda: queue.exists() and len(json.loads(queue.read_text())["waiting"]) == 1, timeout=60)
+        release.touch()
+        self.until(lambda: self.chat_settled(3), timeout=60)
+        self.assertEqual(len(self.claude_invocations()), 3)
+        self.assertEqual([note["task"] for note in json.loads(notes.read_text())["held"]], ["queued-note"])
+        # The failed start journaled the note and the message once more; the note was not lost.
+        self.assertEqual([row["source"] for row in self.chat_messages()], ["user", "note", "note", "user", "note", "user"])
+        # Once the hour has passed, the next user turn takes the held note; a note queued while it runs starts a
+        # note-driven turn when it ends, that turn spends the cap, and the expired mark is gone.
+        self.advance_fake_clock(2)
+        self.assertIn("sent to duty (turn 4), pid ", self.cli("say", "duty", "Any news?"))
+        self.until(lambda: len(self.claude_invocations()) == 4, timeout=60)
+        self.assertLess(self.claude_invocations()[-1]["argv"][1].index("Task note: queued-note"),
+                        self.claude_invocations()[-1]["argv"][1].index("Any news?"))
+        self.started_by_duty("scouted", "scout", "scouted", "Where is tracked.txt read?", "--repo", str(self.repo))
+        self.until(lambda: queue.exists() and len(json.loads(queue.read_text())["waiting"]) == 1, timeout=60)
+        news.touch()
+        self.until(lambda: self.chat_settled(5), timeout=60)
+        self.assertIn("Task note: scouted ended turn 1", self.claude_invocations()[-1]["argv"][1])
+        mark, = self.state("duty")["duty_auto_turns"]
+        self.assertGreaterEqual(mark, first_mark + 3600)
+        self.started_by_duty("capped")
+        self.until(lambda: [note["task"] for note in json.loads(notes.read_text())["held"]] == ["capped"])
+        self.assertEqual(len(self.claude_invocations()), 5)
+        self.assertEqual([row["source"] for row in self.chat_messages()].count("note"), 5)
+        # The note carries every section wait prints: result, checks, review, CI and PR.
+        worker = self.worker()
+        st = worker.task_state.load("noted")
+        now = worker.clock.CLOCK.time()
+        st.update(review_start=0, reviews=[{"account": "main", "thread": "review-thread", "started": now - 60,
+                                            "finished": now, "outcome": "completed", "result": self.review_result()}],
+                  ci={"sha": "abcdef1234567", "outcome": "passed", "reason": "", "seconds": 120,
+                      "checks": [{"name": "unit", "bucket": "pass", "link": ""}]},
+                  publish={"at": now, "sha": "", "pushed": True, "pr": "https://github.com/fixture/repo/pull/7",
+                           "action": "created", "error": ""})
+        worker.task_state.save(st)
+        delivered = []
+        with mock.patch.object(worker.supervisor, "deliver_duty_note", side_effect=delivered.append):
+            worker.supervisor.queue_duty_note(st)
+        body = delivered[0]["text"].split("\n\n", 1)[1]
+        self.assertEqual(body, self.cli("wait", "noted").strip())
+        for text in ("== result: done", "- python3 -I tests/test_rotation.py: passed", "== review by main",
+                     "Found two defects.", "[P2] F1 src/parser.py:12", "== CI abcdef1: passed (1/1, 2.0 min)",
+                     "PR: https://github.com/fixture/repo/pull/7"):
+            self.assertIn(text, body)
+        # A note that cannot be queued is lost, never the task's cycle: neither an error nor procs.die escapes.
+        errors = io.StringIO()
+        with mock.patch.object(worker.supervisor, "deliver_duty_note",
+                               side_effect=SystemExit("teamster: settings must be a JSON object")), \
+                contextlib.redirect_stderr(errors):
+            self.assertIsNone(worker.supervisor.queue_duty_note(st))
+        self.assertIn("could not queue the duty note: settings must be a JSON object", errors.getvalue())
+        self.assertEqual(worker.task_state.load("noted")["outcome"], "completed")
+        notes.unlink()
+        notes.mkdir()
+        self.started_by_duty("lost-note")
+        stderr = self.home / "claude-tasks" / "lost-note" / "stderr.log"
+        self.until(lambda: "could not queue the duty note" in stderr.read_text())
+        self.assertNotIn("Traceback", stderr.read_text())
+        self.assertEqual(self.state("lost-note")["outcome"], "completed")
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 5)
+        # A turn that holds ends at duty.chat_max_minutes (20) on the turn's clock.
+        notes.rmdir()
+        holding = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Hold on."], cwd=self.repo,
+                                   env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.until(lambda: any(entry["command"] == "holding" for entry in self.claude_trace()), timeout=60)
+        self.extra_pids.add(self.state("duty")["pid"])
+        self.advance_fake_clock(20 * 60 + 1)
+        output, errors = holding.communicate(timeout=60)
+        self.assertEqual(holding.returncode, 1, output)
+        self.assertIn("the duty gave no answer (outcome budget_exhausted): the duty chat turn reached its time "
+                      "budget (20 minutes)", errors)
+        self.assertTrue(any(entry["command"] == "signal" for entry in self.claude_trace()))
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 5)
+
+    def test_duty_chat_queued_notes_keep_the_cap_one_per_cycle_and_survive_a_crash(self):
+        release = self.root / "release-duty"
+        self.claude_pool_fixture(runs=[{"reply": self.duty_answer("First answer."), "gate": str(release)},
+                                       {"reply": self.duty_answer("Never sent."), "mode": "hold"},
+                                       {"reply": self.duty_answer("Third answer.")}],
+                                 duty={"chat_auto_turns_per_hour": 0})
+        finish = self.root / "finish-first-cycle"
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "delay_gate": str(finish), "reply": "First cycle done"},
+            {"mode": "complete", "reply": "Second cycle done"}, {"mode": "complete", "reply": "Late cycle done"}])
+        self.put_duty("first")
+        queue = self.home / "claude-tasks" / "duty" / "queue.json"
+        notes = self.home / "claude-tasks" / "duty" / "notes.json"
+
+        def chat(text):
+            return subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "chat", text], cwd=self.repo, env=self.env,
+                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        def waiting():
+            return json.loads(queue.read_text())["waiting"] if queue.exists() else []
+
+        first = chat("Start the parser fix.")
+        self.until(lambda: len(self.claude_invocations()) == 1, timeout=60)
+        self.extra_pids.add(self.state("duty")["pid"])
+        # While the duty turn runs, a task it started ends two cycles, the second for its queued order: two notes.
+        self.env["TEAMSTER_STARTED_BY"] = "duty"
+        try:
+            self.start("noted")
+        finally:
+            self.env.pop("TEAMSTER_STARTED_BY")
+        self.until(lambda: len(self.invocations()) == 1)
+        self.cli("say", "noted", "Follow up.", "--queue")
+        finish.touch()
+        self.wait("noted")
+        self.until(lambda: len(waiting()) == 2, timeout=60)
+        self.assertEqual([order["text"].split(". ", 1)[0] for order in waiting()],
+                         ["Task note: noted ended turn 1 with outcome completed",
+                          "Task note: noted ended turn 2 with outcome completed"])
+        self.assertIn("First cycle done", waiting()[0]["text"])
+        self.assertIn("Second cycle done", waiting()[1]["text"])
+        # The turn ends with notes alone in its queue: under a cap of 0 they wait, and no turn starts.
+        release.touch()
+        output, errors = first.communicate(timeout=60)
+        self.assertEqual(first.returncode, 0, errors)
+        self.assertIn("First answer.", output)
+        self.until(lambda: self.chat_settled(1))
+        self.assertEqual((len(self.claude_invocations()), waiting()), (1, []))
+        self.assertEqual(len(json.loads(notes.read_text())["held"]), 2)
+        # The next message takes both notes. While its turn runs, another task's note joins the queue; then
+        # the supervisor is killed: duty chat does not wait on its zombie, and the next turn still gets the note.
+        second = chat("What finished?")
+        self.until(lambda: len(self.claude_invocations()) == 2 and self.state("duty").get("claude_pid"), timeout=60)
+        prompt = self.claude_invocations()[-1]["argv"][1]
+        for text in ("Task note: noted ended turn 1", "Task note: noted ended turn 2", "What finished?"):
+            self.assertIn(text, prompt)
+        self.assertEqual(json.loads(notes.read_text())["held"], [])
+        self.started_by_duty("late")
+        self.until(lambda: len(waiting()) == 1, timeout=60)
+        # say duty checks its options before it queues the message, as say does.
+        rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", "duty", "Continue", "--effort", "ultra", "--queue"],
+                                  cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("Invalid Claude effort", rejected.stderr)
+        self.assertEqual(len(waiting()), 1)
+        st = self.state("duty")
+        self.extra_pids.update((st["pid"], st["claude_pid"]))
+        os.kill(st["pid"], signal.SIGKILL)
+        output, errors = second.communicate(timeout=30)
+        self.assertEqual(second.returncode, 1, output)
+        self.assertIn("the duty gave no answer (outcome running)", errors)
+        # Its Claude outlived the supervisor and still holds the session: no second Claude joins it.
+        refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "And now?"], cwd=self.repo, env=self.env,
+                                 text=True, capture_output=True, timeout=60)
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("Claude process %d of the previous duty turn outlived its supervisor" % st["claude_pid"],
+                      refused.stderr)
+        self.assertIn("end it with teamster stop duty", refused.stderr)
+        worker = self.worker()
+        stale = {key: value for key, value in worker.task_state.load("duty").items() if key != "claude_pid"}
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process") as start, \
+                self.assertRaises(SystemExit) as refusal:
+            worker.supervisor.spawn(stale, "Never sent.", current_message=True, kind="duty")
+        self.assertIn("outlived its supervisor", str(refusal.exception))
+        start.assert_not_called()
+        self.assertEqual(len(waiting()), 1)
+        self.assertEqual(len(self.claude_invocations()), 2)
+        # clean refuses to take the room from it; stop duty ends it.
+        refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "clean", "duty"], cwd=self.repo, env=self.env,
+                                 text=True, capture_output=True, timeout=60)
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("Claude process %d of the last duty turn is still running; end it with teamster stop duty"
+                      % st["claude_pid"], refused.stderr)
+        self.assertTrue((self.home / "claude-tasks" / "duty" / "room" / ".git").is_dir())
+        self.assertEqual(self.cli("stop", "duty", timeout=60),
+                         "stopped duty: ended Claude process %d\n" % st["claude_pid"])
+        self.assertNotIn("claude_pid", self.state("duty"))
+
+        def gone():
+            try:
+                os.kill(st["claude_pid"], 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        self.until(gone, timeout=30)
+        self.assertIn("Third answer.", self.cli("duty", "chat", "And now?", timeout=60))
+        prompt = self.claude_invocations()[-1]["argv"][1]
+        self.assertLess(prompt.index("Task note: late ended turn 1"), prompt.index("And now?"))
+        self.assertFalse(any(order.get("source") == "note" for order in json.loads(queue.read_text())["dropped"]))
 
     def test_claude_scout_read_only_session_output_telemetry_and_clean(self):
         answers = ["The entry point reads tracked.txt.", "Its caller passes the current directory."]
@@ -2128,7 +2731,9 @@ class ClaudeReviewTests(RotationTestCase):
         duty, cfg, now = worker.duty, worker.config.accounts_config(), time.time()
         settings = cfg["duty"]
         self.assertEqual(settings, {"relative_margin": 25, "absolute_margin": 100,
-                                    "claude_only_task_types": ["visual", "layout"]})
+                                    "claude_only_task_types": ["visual", "layout"],
+                                    "chat_model": None, "chat_effort": "high", "chat_max_minutes": 20,
+                                    "chat_auto_turns_per_hour": 12})
 
         def candidate(name, room, family="claude", unavailable=None):
             return {"family": family, "name": name, "room": room, "unavailable": unavailable}

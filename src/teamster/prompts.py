@@ -76,6 +76,18 @@ def scout_prompt(question, cfg=None):
     return question.rstrip() + "\n\n" + rules
 
 
+def duty_chat_brief(cfg=None):
+    """The opening of the duty conversation; the system prompt carries the duty's role and limits."""
+    cfg = config.accounts_config() if cfg is None else cfg
+    if cfg.get("language", "en") == "ru":
+        return ("Это разговор с пользователем: ты дежурный teamster. Ниже — его сообщения и заметки "
+                "(«Task note: …») о задачах, которые ты запустил. Каждый ход заканчивай JSON по схеме дежурного; "
+                "reply пиши на языке пользователя.")
+    return ("This is a conversation with the user: you are teamster's duty. Their messages and the notes "
+            "(\"Task note: …\") about tasks you started follow. End every turn with JSON by the duty schema; "
+            "write reply in the user's language.")
+
+
 def reflect_prompt(order, records, through, cfg=None):
     cfg = config.accounts_config() if cfg is None else cfg
     taken = "".join(f"- records/{name}/\n" for name in records)

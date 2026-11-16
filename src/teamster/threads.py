@@ -154,17 +154,22 @@ def followup_messages(st):
     return [json.loads(line) for line in messages.read_text().splitlines()] if messages.exists() else []
 
 
-def followup_prompt(st, message, cfg, source="lead", queued=()):
-    """Journal follow-ups before dispatch so rotation includes the current request.
-
-    queued holds the say --queue orders that message joins: each is journaled as its own lead message.
-    """
+def journal_followups(st, message, source="lead", queued=()):
+    """Append the message, or each queued order with its own source (lead by default), to messages.jsonl."""
     at = clock.CLOCK.time()
-    rows = ([{"at": at, "text": order["text"], "source": "lead", "queued_at": order["at"]} for order in queued]
-            or [{"at": at, "text": message, "source": source}])
+    rows = ([{"at": at, "text": order["text"], "source": order.get("source", "lead"), "queued_at": order["at"]}
+             for order in queued] or [{"at": at, "text": message, "source": source}])
     with (config.TASKS / st["slug"] / "messages.jsonl").open("a", encoding="utf-8") as stream:
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def followup_prompt(st, message, cfg, source="lead", queued=()):
+    """Journal follow-ups before dispatch so rotation includes the current request.
+
+    queued holds the say --queue orders that message joins: each is journaled as its own message.
+    """
+    journal_followups(st, message, source, queued)
     if st.get("thread") or executors.from_state(st).cursor(st):
         switch = st.get("base_switch")
         if switch:
@@ -265,12 +270,18 @@ def handoff(st, current_message=False, cfg=None):
     """Continuation brief for a new Codex thread or Claude session on another account."""
     cfg = config.accounts_config() if cfg is None else cfg
     ru = cfg.get("language", "en") == "ru"
-    scouting = st.get("kind") in ("scout", "reflect")
+    chatting = st.get("kind") == "duty"
+    scouting = st.get("kind") in ("scout", "reflect", "duty")
     d = config.TASKS / st["slug"]
     prompt = (d / "brief.md").read_text().rstrip() + ("\n\n## Продолжение\n\n" if ru else "\n\n## Continuation\n\n")
     executor = executors.for_turn(st)
     has_threads = executor.has_history(st)
-    if has_threads and scouting:
+    if has_threads and chatting:
+        prompt += (("Дежурство перешло на другой аккаунт. Продолжи разговор с пользователем "
+                    "с учётом сообщений и своих прежних ответов ниже.\n\n") if ru else
+                   ("The duty moved to another account. Continue the conversation with the user "
+                    "using the messages and your earlier replies below.\n\n"))
+    elif has_threads and scouting:
         prompt += (("Предыдущий разведчик остановился из-за лимита подписки. "
                     "Продолжи изучение вопроса с учётом его сообщений ниже.\n\n") if ru else
                    ("The previous scout stopped because its subscription reached its limit. "
@@ -282,7 +293,11 @@ def handoff(st, current_message=False, cfg=None):
                    ("The previous worker stopped partway through the task because its subscription reached its limit.\n"
                     "Its commits and uncommitted changes in this worktree are your starting point. "
                     "Continue the existing work without starting over or reverting it.\n\n"))
-    prompt += "Сообщения от ведущего и ревью по порядку:\n" if ru else "Messages from the lead and review, in order:\n"
+    if chatting:
+        prompt += ("Сообщения пользователя и заметки о задачах по порядку:\n" if ru else
+                   "Messages from the user and task notes, in order:\n")
+    else:
+        prompt += "Сообщения от ведущего и ревью по порядку:\n" if ru else "Messages from the lead and review, in order:\n"
     messages = followup_messages(st)
     # The current message is the last one, or every queued order sent with it in one turn.
     current = 1 if current_message and messages else 0
@@ -304,7 +319,20 @@ def handoff(st, current_message=False, cfg=None):
                        f"(skipped: filter driver {driver} is configured)")
         else:
             prompt += procs.sh(config.GIT + ["status", "--short"], cwd=st["worktree"], check=False) or ("(чисто)" if ru else "(clean)")
-    if has_threads:
+    if has_threads and chatting:
+        replies = []
+        for turn in st.get("duty_turns", [])[-10:]:
+            reply = turn["reply"]
+            if turn.get("question"):
+                # The user may answer only "the first option": keep the question and its choices.
+                reply += ("\nВопрос: " if ru else "\nQuestion: ") + turn["question"]
+                reply += "".join(f"\n{number}. {option}" for number, option in enumerate(turn.get("options", []), 1))
+            if turn.get("started"):
+                reply += ("\nЗапущены: " if ru else "\nStarted: ") + ", ".join(turn["started"])
+            replies.append(reply)
+        prompt += (("\n\nТвои прежние ответы, по порядку:\n" if ru else "\n\nYour earlier replies, in order:\n")
+                   + "\n\n".join(replies)[-6000:])
+    elif has_threads:
         label = (("Последние сообщения предыдущего разведчика" if ru else "Latest messages from the previous scout")
                  if scouting else ("Последние сообщения предыдущего исполнителя" if ru else "Latest messages from the previous worker"))
         messages = []

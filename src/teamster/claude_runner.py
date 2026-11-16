@@ -50,6 +50,19 @@ def bash_hook_settings():
         {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}})
 
 
+# The tools of a duty chat turn; its hook narrows Bash and the file tools.
+DUTY_TOOLS = "Read,Grep,Glob,Bash,Write,Edit"
+DUTY_GUARDED_TOOLS = "Bash|Write|Edit|MultiEdit|NotebookEdit"
+
+
+def duty_hook_settings(room):
+    """Settings that run the duty guard before every Bash command and file write of a duty chat turn."""
+    command = shlex.join([sys.executable, "-I", str(config.BASH_GUARD), "--duty-room", str(room)])
+    # Explicit false: settings from the account or the room must not turn this hook off.
+    return json.dumps({"disableAllHooks": False, "hooks": {"PreToolUse": [
+        {"matcher": DUTY_GUARDED_TOOLS, "hooks": [{"type": "command", "command": command}]}]}})
+
+
 def bash_timeouts(deadline, max_minutes):
     """Let a foreground command run to the end of the turn's remaining budget."""
     limit = (BASH_UNBOUNDED_SECONDS if deadline is None
@@ -92,8 +105,8 @@ def stream_unavailable(event, account, record=True, model=None, limit=None):
     return None
 
 
-def event_result(event, telemetry, token, account, reviewing=True, scouting=False, reflecting=False, model=None,
-                 limit=None):
+def event_result(event, telemetry, token, account, reviewing=True, scouting=False, reflecting=False, chatting=False,
+                 model=None, limit=None):
     """Decode selected stream fields; return (result, unavailability reason)."""
     if not isinstance(event, dict):
         return None, "invalid JSON output"
@@ -132,7 +145,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
         return None, reason
     if event.get("is_error"):
         return None, ("review failed" if reviewing else "scout failed" if scouting
-                      else "reflect failed" if reflecting else "work turn failed")
+                      else "reflect failed" if reflecting else "duty turn failed" if chatting else "work turn failed")
     if scouting:
         answer = event.get("result")
         if not isinstance(answer, str) or not answer.strip():
@@ -141,6 +154,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
     result = event.get("structured_output")
     schema = result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA
     if not (result_schema.valid_reflect_result(result) if reflecting
+            else result_schema.valid_duty_result(result) if chatting
             else result_schema.matches_schema(result, schema)):
         return None, "invalid structured output"
     # A tool may echo its environment. Even a schema-valid answer must not
@@ -182,6 +196,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     """Execute and drain one stream; callers own role-specific lifecycle state."""
     scouting = role == "scout"
     reflecting = role == "reflect"
+    # A duty chat turn writes only in its room and runs only allowed commands (bash_guard.py --duty-room).
+    chatting = role == "duty"
     read_only = reviewing or scouting or reflecting
     response = {"outcome": "unavailable", "result": None, "reason": None, "deadline": deadline,
                 "telemetry": {"usage": {}, "cost_usd": None, "session_id": None,
@@ -199,13 +215,18 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         response["reason"] = "Claude CLI was not found"
         return response
     schema = (result_schema.REVIEW_SCHEMA if reviewing else result_schema.REFLECT_SCHEMA if reflecting
-              else result_schema.RESULT_SCHEMA)
+              else result_schema.DUTY_SCHEMA if chatting else result_schema.RESULT_SCHEMA)
     args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if not scouting:
         args += ["--json-schema", json.dumps(schema)]
     if read_only:
         args += ["--permission-mode", "dontAsk", "--allowedTools", "Read,Grep,Glob,Bash",
                  "--disallowedTools", "Edit,Write,NotebookEdit"]
+    elif chatting:
+        # Never bypassPermissions: only these tools run, and the hook judges every command and write.
+        args += ["--permission-mode", "dontAsk", "--allowedTools", DUTY_TOOLS, "--disallowedTools", "NotebookEdit",
+                 "--strict-mcp-config", "--append-system-prompt-file", str(system_prompt),
+                 "--settings", duty_hook_settings(worktree)]
     else:
         # The hook rejects background launches and pattern kills, which end the turn early.
         args += ["--permission-mode", "bypassPermissions", "--strict-mcp-config",
@@ -238,6 +259,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         return response
     if not read_only:
         environment.update(bash_timeouts(deadline, max_minutes))
+    if chatting:
+        environment[config.STARTED_BY] = "duty"
     try:
         proc = subprocess.Popen(args, cwd=worktree, env=environment,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -249,7 +272,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     buffer, eof, termination = b"", False, None
     events_failed = False
     failure = ("review failed" if reviewing else "scout failed" if scouting
-               else "reflect failed" if reflecting else "work turn failed")
+               else "reflect failed" if reflecting else "duty turn failed" if chatting else "work turn failed")
     try:
         if started is not None:
             started(proc)
@@ -275,10 +298,10 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                             response["reason"] = "invalid structured output"
                         else:
                             response["outcome"] = "completed"
-                    if not read_only and response["reason"] in (
+                    if not read_only and not chatting and response["reason"] in (
                             "invalid structured output", "invalid JSON output", failure):
                         response.update(outcome="unknown", result=None)
-                    elif (scouting or reflecting) and response["reason"] in (
+                    elif (scouting or reflecting or chatting) and response["reason"] in (
                             "invalid structured output", "invalid JSON output", "invalid scout output", failure):
                         response.update(outcome="failed", result=None)
                     break
@@ -336,8 +359,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                         # the caller returns must not leave the account excluded for every model,
                         # and the caller does not mark again over a later success on this model.
                         result, reason = event_result(event, response["telemetry"], token,
-                                                      account["name"], reviewing, scouting, reflecting,
-                                                      stream_model, limit=response)
+                                                      account["name"], reviewing, scouting, reflecting, chatting,
+                                                      model=stream_model, limit=response)
                         if reason is not None:
                             response["reason"] = response["reason"] or reason
                             response["result"] = None

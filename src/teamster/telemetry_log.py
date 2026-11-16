@@ -19,8 +19,8 @@ def claude_work_rows(st):
             return [row for row in config.ROLLOUT["read_events"](stream)
                     if isinstance(row, dict) and row.get("slug") == st["slug"]
                     and row.get("created") == st.get("created")
-                    and row.get("provider") == "claude" and row.get("kind") in ("work", "scout", "reflect")
-                    and row.get("phase") in ("work", "fix", "wrapup", "scout", "reflect")]
+                    and row.get("provider") == "claude" and row.get("kind") in ("work", "scout", "reflect", "duty")
+                    and row.get("phase") in ("work", "fix", "wrapup", "scout", "reflect", "duty")]
     except FileNotFoundError:
         return []
 
@@ -230,7 +230,7 @@ class PhaseTelemetry:
     def add_claude_usage(self, telemetry, account, weekly_before=None, weekly_after=None, weekly_spent=0):
         self.reviewer = reviewers.CLAUDE_REVIEWER.name
         cost = telemetry.get("cost_usd")
-        if self.kind in ("scout", "reflect"):
+        if self.kind in ("scout", "reflect", "duty"):
             if cost is not None:
                 self.cost_usd = (self.cost_usd or 0) + cost
         else:
@@ -249,7 +249,7 @@ class PhaseTelemetry:
                  "model": self.model, "reasoning_effort": self.reasoning_effort,
                  "weekly_used_before": weekly_before, "weekly_used_after": weekly_after,
                  "weekly_spent": weekly_spent}
-        if self.kind in ("work", "scout", "reflect"):
+        if self.kind in ("work", "scout", "reflect", "duty"):
             self.provider = "claude"
             entry.update(provider="claude", session_id=telemetry.get("session_id"), cost_usd=cost)
         self.usage.append(entry)

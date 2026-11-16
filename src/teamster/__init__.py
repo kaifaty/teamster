@@ -23,6 +23,7 @@ Layer 3:
     budgets (implemented): weekly and elapsed-time budget monitoring.
 Layer 4:
     task_state (implemented): task state fields, persistence, and locks.
+    duty_chat (implemented): the duty conversation's account, room, system prompt, turns and held task notes.
 Layer 5:
     claude_review (implemented): isolated Claude Code review execution and limits.
     telemetry_log (implemented): journal rows and phase telemetry.
@@ -53,8 +54,9 @@ Entrypoints:
     directly by path with isolated Python.
 Standalone files:
     rollout.py, task_report.py, codex_stats.py, turn_log.py, wait_turn.py and
-    bash_guard.py (the Bash hook of writable Claude turns) run by path and never
-    import the package; rules.md and rules.ru.md are the standing rules.
+    bash_guard.py (the Bash hook of writable Claude turns and the duty chat's guard) run by
+    path and never import the package; rules.md and rules.ru.md are the standing rules, and
+    duty-role.md is the duty chat's role.
 
 Import own modules as whole modules at module top, using ``from . import name``
 in the package and ``from teamster import name`` in the entrypoints. Access

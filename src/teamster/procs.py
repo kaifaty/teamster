@@ -35,6 +35,25 @@ def signal_group(proc, sig):
     return True
 
 
+def end_group(pid):
+    """Interrupt the process group of ``pid``, which is not our child, then terminate and kill it if it stays."""
+    for sig, timeout in ((signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                return
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not alive(pid):
+                return
+            time.sleep(0.05)
+
+
 def terminate(proc):
     """Interrupt the entire exec group, then bound shutdown even if it ignores signals."""
 

@@ -30,14 +30,14 @@ LAYOUTS = {
                "settings_lock": "codex-worker.lock", "telemetry": "codex-worker-log.jsonl",
                "resets": "codex-worker-resets.jsonl", "rules": "codex-worker-rules.md",
                "duty": "duty.json", "duty_log": "duty-log.jsonl", "duty_lock": "duty.lock",
-               "duty_launchd_log": "duty-launchd.log",
+               "duty_launchd_log": "duty-launchd.log", "duty_rules": "duty-rules.md",
                "board_machines": "board-machines.json", "board_log": "board-server.log"},
     "new": {"tasks": "tasks", "worktrees": "worktrees",
             "settings": "config.json", "settings_fallback": None,
             "settings_lock": "config.lock", "telemetry": "log.jsonl",
             "resets": "resets.jsonl", "rules": "rules.md",
             "duty": "duty.json", "duty_log": "duty-log.jsonl", "duty_lock": "duty.lock",
-            "duty_launchd_log": "duty-launchd.log",
+            "duty_launchd_log": "duty-launchd.log", "duty_rules": "duty-rules.md",
             "board_machines": "board-machines.json", "board_log": "board-server.log"},
 }
 # A Codex home holding this file names the data home that replaced its legacy data.
@@ -171,6 +171,13 @@ RESET_RETRY_SECONDS = 15 * 60
 MAX_RESET_WAIT_SECONDS = 8 * 24 * 60 * 60
 TOKEN_FIELDS = ROLLOUT["TOKEN_FIELDS"]
 GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
+# A duty chat turn sets it to "duty" for the teamster commands it runs; start and scout record it.
+STARTED_BY = "TEAMSTER_STARTED_BY"
+
+
+def started_by():
+    """The value "duty" when a duty chat turn runs this command, else None."""
+    return "duty" if os.environ.get(STARTED_BY) == "duty" else None
 
 
 def plugin_version():
@@ -297,9 +304,23 @@ def accounts_config():
     duty_settings.setdefault("relative_margin", 25)
     duty_settings.setdefault("absolute_margin", 100)
     duty_settings.setdefault("claude_only_task_types", ["visual", "layout"])
+    duty_settings.setdefault("chat_model", None)
+    duty_settings.setdefault("chat_effort", "high")
+    duty_settings.setdefault("chat_max_minutes", 20)
+    duty_settings.setdefault("chat_auto_turns_per_hour", 12)
     for key in ("relative_margin", "absolute_margin"):
         if not result_schema.is_finite_number(duty_settings[key]) or duty_settings[key] < 0:
             procs.die("duty." + key + " must be a finite nonnegative number")
+    if duty_settings["chat_model"] is not None and (
+            not isinstance(duty_settings["chat_model"], str) or not duty_settings["chat_model"]):
+        procs.die("duty.chat_model must be a nonempty string or null")
+    if duty_settings["chat_effort"] not in ("low", "medium", "high", "xhigh", "max"):
+        procs.die("duty.chat_effort must be low, medium, high, xhigh or max")
+    if not result_schema.is_finite_number(duty_settings["chat_max_minutes"]) or duty_settings["chat_max_minutes"] <= 0:
+        procs.die("duty.chat_max_minutes must be a positive finite number")
+    hourly = duty_settings["chat_auto_turns_per_hour"]
+    if type(hourly) is not int or hourly < 0:
+        procs.die("duty.chat_auto_turns_per_hour must be a nonnegative integer")
     task_types = duty_settings["claude_only_task_types"]
     if not isinstance(task_types, list) or not all(
             isinstance(label, str) and re.fullmatch(r"[a-z0-9-]{1,32}", label) for label in task_types):

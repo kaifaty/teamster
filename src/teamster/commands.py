@@ -20,7 +20,7 @@ import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, executors, installs, procs, prompts, reflection, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, terminal_screen, threads
+from . import accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, terminal_screen, threads, wait_view
 
 
 def main_repo(path):
@@ -109,6 +109,8 @@ def cmd_start(a):
           "weekly_used_percent": 0,
           "created": clock.CLOCK.time(), "turns": 0, "plugin_version": config.plugin_version(),
           "parallel": bool(a.parallel)}
+    if config.started_by():
+        st["started_by"] = config.started_by()
     task_state.save(st)
     proc = supervisor.spawn(st, prompt, a.effort, review_after=a.review, fix_rounds=a.fix_rounds or 0)
     for _ in range(300):
@@ -154,6 +156,8 @@ def cmd_scout(a):
           "executor": executor.name, "effort": a.effort,
           "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "created": clock.CLOCK.time(), "turns": 0}
+    if config.started_by():
+        st["started_by"] = config.started_by()
     task_state.save(st)
     proc = supervisor.spawn(st, prompt, a.effort, kind="scout")
     for _ in range(300):
@@ -225,6 +229,16 @@ def cmd_lesson(a):
     print(reflection.set_lesson_status(config.TASKS / ".archive", a.entry, a.status, a.note))
 
 
+# say's options that only work tasks take.
+WORK_SAY_OPTIONS = ("check", "check_loaded", "review", "check_timeout", "fix_rounds", "no_base_check", "review_angles",
+                    "reviewer", "review_model", "ci", "no_ci", "ci_command", "no_ci_command", "ci_rounds")
+
+
+def refuse_work_options(st, options):
+    if any(name in options for name in WORK_SAY_OPTIONS):
+        procs.die(f"{st['kind']} is read-only; say --check, --check-loaded, --check-timeout, --review, --reviewer, --review-model, --review-angles, --fix-rounds, --ci, --no-ci, --ci-command, --no-ci-command, --ci-rounds and --no-base-check are not supported")
+
+
 # say's arguments that are not options it saves or passes to the turn.
 SAY_CALL_ARGUMENTS = ("cmd", "slug", "message", "file", "queue", "upgrade")
 
@@ -241,15 +255,16 @@ def cmd_say(a):
     if queued and getattr(a, "upgrade", False):
         procs.die("say --queue cannot be combined with --upgrade, which moves the task when say runs; "
                   "send the message with say --upgrade once the current cycle ends")
+    if st.get("kind") == duty_chat.CHAT_KIND:
+        # The duty conversation takes say exactly as duty chat: on the duty account, with the held task notes.
+        return say_duty_chat(a)
     move = installs.follow_pin(st, upgrade=getattr(a, "upgrade", False))
     options = say_options(a)
-    scouting = st.get("kind") in ("scout", "reflect")
+    scouting = st.get("kind") in ("scout", "reflect", "duty")
     if st.get("no_push") and (options.get("ci") or options.get("ci_command") is not None):
         procs.die("--no-push task cannot enable --ci or --ci-command; CI requires a published branch")
-    if scouting and any(name in options for name in (
-            "check", "check_loaded", "review", "check_timeout", "fix_rounds", "no_base_check", "review_angles", "reviewer",
-            "review_model", "ci", "no_ci", "ci_command", "no_ci_command", "ci_rounds")):
-        procs.die(f"{st['kind']} is read-only; say --check, --check-loaded, --check-timeout, --review, --reviewer, --review-model, --review-angles, --fix-rounds, --ci, --no-ci, --ci-command, --no-ci-command, --ci-rounds and --no-base-check are not supported")
+    if scouting:
+        refuse_work_options(st, options)
     if not queued:
         require_idle(st, queue_hint=True)
     msg = Path(a.file).read_text() if a.file else a.message
@@ -277,7 +292,7 @@ def cmd_say(a):
 def cmd_review(a):
     st = task_state.load(a.slug)
     move = installs.follow_pin(st)
-    if st.get("kind") in ("scout", "reflect"):
+    if st.get("kind") in ("scout", "reflect", "duty"):
         procs.die(f"{st['kind']} is read-only; review is not supported")
     require_idle(st)
     cfg = config.accounts_config()
@@ -331,7 +346,7 @@ def describe(st, detail):
     else:
         state = "running" if supervisor_alive else "idle"
     reviewing = st.get("kind") == "review"
-    scouting = st.get("kind") in ("scout", "reflect")
+    scouting = st.get("kind") in ("scout", "reflect", "duty")
     executor = executors.from_state(st)
     account, thread = executor.status_account(st), executor.cursor(st)
     if reviewing:
@@ -343,7 +358,7 @@ def describe(st, detail):
     label = "  " + st["kind"] if scouting else ("  review" if reviewing else "")
     line = (f"{st['slug']:24} {state:8} turns {st.get('turns', 0)}  {location}  "
             f"executor {executor.name}  account {account}  {'thread' if reviewing else executor.cursor_label} {thread[:13]}" + label
-            + "  sandbox " + ("read-only" if scouting else st.get("sandbox", "off")))
+            + "  sandbox " + ("room" if st.get("kind") == "duty" else "read-only" if scouting else st.get("sandbox", "off")))
     if st.get("no_push"):
         line += "  push disabled (--no-push)"
     queued = len(task_state.locked_queue(st["slug"])["waiting"])
@@ -370,6 +385,10 @@ def describe(st, detail):
         if st.get("reflect_file"):
             lines.append(f"{reflection.file_kind(st)} {Path(st['repo']) / st['reflect_file']}")
         return "\n".join(lines)
+    if st.get("kind") == "duty":
+        result = st.get("result")
+        return "\n".join([line, f"room {st['worktree']}", f"answers {len(st.get('duty_turns', []))}",
+                          f"result {result['status']}: {result['reply']}" if result else "result: none"])
     if scouting:
         return line + "\nlast message:\n" + (threads.last_message(st) or "(none)")
     pr = st.get("publish", {}).get("pr", "")
@@ -439,7 +458,7 @@ def print_claude_work_stats(st):
               for key in ("active_seconds", "cost_usd", "weekly_spent")}
     totals["tokens"] = {key: total((row.get("tokens") or {}).get(key) for row in rows)
                         for key in token_fields}
-    print("== Claude " + (st["kind"] if st.get("kind") in ("scout", "reflect") else "work"), flush=True)
+    print("== Claude " + (st["kind"] if st.get("kind") in ("scout", "reflect", "duty") else "work"), flush=True)
     print(f"{'start (UTC)':20} {'min':>6} {'account':16} {'session':13} {'model':24} {'effort':7} "
           f"{'input':>10} {'output':>10} {'cached':>10} {'cost $':>10} {'weekly %':>8}")
     for row in rows + [totals]:
@@ -475,7 +494,15 @@ def cmd_stop(a):
         st = task_state.load(a.slug)
         pid = st.get("pid")
         if not procs.alive(pid):
-            print("not running")
+            orphan = st.get("claude_pid") if st.get("kind") == duty_chat.CHAT_KIND else None
+            if not procs.alive(orphan):
+                print("not running")
+                return
+            # The duty's supervisor died before its Claude, which still holds the session.
+            procs.end_group(orphan)
+            st.pop("claude_pid", None)
+            task_state.write_state(st)
+            print(f"stopped {a.slug}: ended Claude process {orphan}")
             return
         st["stop_request"] = {"at": clock.CLOCK.time(), "pid": pid}
         task_state.write_state(st)
@@ -498,9 +525,21 @@ def cmd_stop(a):
 
 def cmd_clean(a):
     st = task_state.load(a.slug)
+    if st.get("kind") == duty_chat.CHAT_KIND:
+        # A task note may start a duty turn at any moment: check and archive under the lock that delivery takes.
+        with task_state.state_lock(a.slug):
+            st = task_state.load(a.slug)
+            if not procs.alive(st.get("pid")) and procs.alive(st.get("claude_pid")):
+                procs.die(f"Claude process {st['claude_pid']} of the last duty turn is still running; "
+                          f"end it with {config.COMMAND} stop duty, then clean")
+            return clean_task(a, st)
+    return clean_task(a, st)
+
+
+def clean_task(a, st):
     if procs.alive(st.get("pid")):
         procs.die("still running; stop it first")
-    if st.get("kind") == "reflect":
+    if st.get("kind") in ("reflect", "duty"):
         shutil.rmtree(config.TASKS / a.slug / "room", ignore_errors=True)
     elif st.get("kind") != "scout":
         repo, wt = st["repo"], st["worktree"]
@@ -526,7 +565,7 @@ def cmd_clean(a):
     except OSError as exc:
         procs.die(f"could not archive task record to {archive}: {exc}; record kept at {record}")
     print(f"cleaned {a.slug}; record in {archive}")
-    if st.get("kind") in ("scout", "reflect"):
+    if st.get("kind") in ("scout", "reflect", "duty"):
         return
     try:
         # Use the report's own matching so the reminder agrees with `report`.
@@ -799,9 +838,144 @@ def cmd_duty_plist(a):
     sys.stdout.write(plistlib.dumps(duty_launchd_plist(a.minutes)).decode("utf-8"))
 
 
+def cmd_duty_chat(a):
+    text = Path(a.file).read_text(encoding="utf-8") if a.file else a.text
+    if not text or not text.strip():
+        procs.die("empty message")
+    with config.home_lock():
+        sent = send_to_duty(text, {}, a.queue)
+    if sent is None:
+        return
+    st, proc, account = sent
+    turn = st["turns"]
+    print(f"sent to the duty {account} (turn {turn}), pid {st['pid']}\n"
+          f"  wait: {config.COMMAND} wait {duty_chat.CHAT_SLUG}", flush=True)
+    # Poll this command's own child: a supervisor killed before it cleared its pid stays a zombie until reaped.
+    while proc.poll() is None:
+        if task_state.load(duty_chat.CHAT_SLUG).get("turns", 0) != turn:
+            break
+        time.sleep(config.WAIT_POLL_SECONDS)
+    st = task_state.load(duty_chat.CHAT_SLUG)
+    answer = next((entry for entry in reversed(st.get("duty_turns", [])) if entry["turn"] == turn), None)
+    if answer is None:
+        procs.die(f"the duty gave no answer (outcome {st.get('outcome')})"
+                  + (f": {st['error']}" if st.get("error") and st.get("turns") == turn else ""))
+    for line in wait_view.wait_duty_lines({"result": answer}, ""):
+        print(line)
+
+
+def say_duty_chat(a):
+    options = say_options(a)
+    refuse_work_options({"kind": duty_chat.CHAT_KIND}, options)
+    text = Path(a.file).read_text() if a.file else a.message
+    if not text or not text.strip():
+        procs.die("empty message")
+    sent = send_to_duty(text, options, a.queue)
+    if sent is not None:
+        st = sent[0]
+        print(f"sent to {duty_chat.CHAT_SLUG} (turn {st['turns']}), pid {st['pid']}")
+
+
+def send_to_duty(text, options, queue):
+    """Send the user's message to the duty conversation, creating it first; the caller holds the home lock.
+
+    Returns (state, the turn's supervisor, the duty account), or None when the message was queued.
+    """
+    cfg = config.accounts_config()
+    account, refusal = duty_chat.chat_account(cfg)
+    if account is None:
+        procs.die(refusal)
+    config.require_claude()
+    order = {"at": clock.CLOCK.time(), "text": text, "options": options, "source": "user"}
+    if not task_state.state_path(duty_chat.CHAT_SLUG).exists():
+        opened = open_duty_chat(cfg, account, order)
+        if opened is not None:
+            return opened + (account["name"],)
+    sent = send_duty_chat(cfg, order, queue)
+    return None if sent is None else sent + (account["name"],)
+
+
+def open_duty_chat(cfg, account, order):
+    """Create the duty conversation and start its first turn; return (state, supervisor), or None when it exists.
+
+    Creation holds spawn_lock and the state lock, so a creation an interruption cut short, which left no
+    state.json, is removed and made again, and two commands never both create it.
+    """
+    d = duty_chat.chat_dir()
+    with installs.spawn_lock():
+        supervisor.require_startable()
+        d.mkdir(parents=True, exist_ok=True)
+        with task_state.state_lock(duty_chat.CHAT_SLUG):
+            if task_state.state_path(duty_chat.CHAT_SLUG).exists():
+                return None
+            duty_chat.clear_partial_chat()
+            room = duty_chat.chat_room()
+            duty_chat.build_chat_room(room)
+            brief = prompts.duty_chat_brief(cfg)
+            (d / "brief.md").write_text(brief, encoding="utf-8")
+            st = {"slug": duty_chat.CHAT_SLUG, "kind": duty_chat.CHAT_KIND, "repo": str(room), "worktree": str(room),
+                  "branch": "", "executor": "claude", "effort": None, "claude_account": account["name"],
+                  "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
+                  "rotations": [], "reviews": [], "checks": [], "created": clock.CLOCK.time(), "turns": 0,
+                  "plugin_version": config.plugin_version(), "duty_turns": [], "duty_auto_turns": []}
+            supervisor.apply_say(st, order["options"], cfg)
+            task_state.save(st)
+
+            sent = []
+
+            def prompt():
+                sent.extend(duty_chat.held_notes())
+                orders = sent + [order]
+                threads.journal_followups(st, order["text"], "user", orders if len(orders) > 1 else ())
+                return brief + "\n\n" + "\n\n".join(item["text"] for item in orders)
+
+            turn = supervisor.say_turn(st, order["options"])
+            proc = supervisor.launch(st, prompt, turn["effort"], True, duty_chat.CHAT_KIND, False, 0)
+            # The held notes leave notes.json only once the turn that carries them is started and saved.
+            duty_chat.release_held_notes(sent)
+    return st, proc
+
+
+def send_duty_chat(cfg, order, queue):
+    """Send a later message to the duty conversation as say does; return (state, supervisor), or None when queued."""
+    st = task_state.load(duty_chat.CHAT_SLUG)
+    duty_chat.require_chat_task(st)
+    # The conversation outlives versions: it follows the version that runs this command.
+    move = installs.follow_pin(st, upgrade=True)
+    if move:
+        print(move)
+    # Checked before queueing, as say does: a bad option must not reach the queue.
+    supervisor.apply_say(st, order["options"], cfg)
+    if queue:
+        waiting = task_state.enqueue(duty_chat.CHAT_SLUG, order)
+        if waiting is not None:
+            print(f"queued for the duty: {waiting} waiting; sent when the current turn ends")
+            return None
+        st = task_state.load(duty_chat.CHAT_SLUG)
+    else:
+        # spawn checks again under the lock, on the state as it is then.
+        require_idle(st, queue_hint=True)
+    supervisor.apply_say(st, order["options"], cfg)
+    sent = []
+
+    def prompt():
+        # Read under the state lock: the notes held for this message go out with it.
+        sent.extend(duty_chat.held_notes())
+        orders = sent + [order]
+        if len(orders) == 1:
+            return threads.followup_prompt(st, order["text"], cfg, source="user")
+        return threads.followup_prompt(st, "\n\n".join(item["text"] for item in orders), cfg, queued=orders)
+
+    proc = supervisor.spawn(st, prompt, **supervisor.say_turn(st, order["options"]))
+    # The held notes leave notes.json only once the turn that carries them is started and saved.
+    with task_state.state_lock(duty_chat.CHAT_SLUG):
+        duty_chat.release_held_notes(sent)
+    return st, proc
+
+
 def cmd_duty(a):
     {"tick": cmd_duty_tick, "status": cmd_duty_status, "clear": cmd_duty_clear,
-     "plist": cmd_duty_plist}[a.duty_command](a)
+     "plist": cmd_duty_plist, "chat": cmd_duty_chat}[a.duty_command](a)
 
 
 def cmd_reset_credit(a):

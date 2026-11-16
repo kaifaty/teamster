@@ -27,4 +27,4 @@ packages = ["teamster"]
 version = {attr = "teamster.__version__"}
 
 [tool.setuptools.package-data]
-teamster = ["rules*.md", "docs/*.md"]
+teamster = ["rules*.md", "duty-role.md", "docs/*.md"]
