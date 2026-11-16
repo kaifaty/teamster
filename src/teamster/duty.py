@@ -273,7 +273,7 @@ def codex_available(cfg, stopped=None):
     return accounts.available(accounts.snapshots(cfg, stopped or (lambda: False)), cfg) is not None
 
 
-def claude_reserved(cfg, role, exclude=(), task_type=None, stopped=None):
+def claude_reserved(cfg, role, exclude=(), task_type=None, stopped=None, model=None):
     """The Claude duty account as a set when new work must skip it, else an empty set.
 
     It takes new work only when no other Claude account can, and either the
@@ -283,8 +283,8 @@ def claude_reserved(cfg, role, exclude=(), task_type=None, stopped=None):
     duty account's return), so duty.json is read right before the choice.
     """
     exclude = set(exclude)
-    best = claude_accounts.select(cfg, role, exclude)
-    alone = best is None or claude_accounts.select(cfg, role, exclude | {best["name"]}) is None
+    best = claude_accounts.select(cfg, role, exclude, model=model)
+    alone = best is None or claude_accounts.select(cfg, role, exclude | {best["name"]}, model=model) is None
     codex = (alone and task_type not in cfg["duty"]["claude_only_task_types"]
              and duty_path().exists() and codex_available(cfg, stopped))
     name = duty_account("claude")

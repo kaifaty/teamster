@@ -670,6 +670,8 @@ def accounts_json(infos, cfg):
                        "five_hour": window(windows.get("five_hour"), claude=True),
                        "seven_day": window(windows.get("seven_day"), claude=True),
                        "limited_until": iso_time(limited_until),
+                       "model_limits": [{"model": model, "limited_until": iso_time(until)}
+                                        for model, until in claude_accounts.model_limits(info).items()],
                        "token_unavailable": True if claude_accounts.token_marked(info) else None,
                        "needs_login": True if (claude_accounts.token_marked(info) or
                                                 info.get("reason") == "authentication failed") else None})

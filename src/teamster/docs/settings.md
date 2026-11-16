@@ -64,9 +64,10 @@ All timestamps below are UTC ISO 8601 strings; unknown values are `null`.
 | `codex[].credits` | Object with `balance`, `has_credits`, `unlimited`, and `spendable` (balance minus the active floor, at least 0); unknown fields are `null` |
 | `codex[].reset_credits` | Object with `available_count` and `expires_at` (list of expiry timestamps); unknown fields are `null` |
 | `codex[].status` | `available`, `exhausted`, `duplicate`, `not_logged_in`, or `null` when unknown |
-| `claude` | List of pool accounts with `name`, `five_hour`, `seven_day`, `limited_until`, and `token_unavailable` |
+| `claude` | List of pool accounts with `name`, `five_hour`, `seven_day`, `limited_until`, `model_limits`, and `token_unavailable` |
 | `claude[].five_hour`, `claude[].seven_day` | Window object with `used_percent` and `resets_at`, or `null` when unknown |
-| `claude[].limited_until` | Active account cooldown timestamp, or `null` |
+| `claude[].limited_until` | Active account cooldown timestamp, or `null` (also while only a model is limited) |
+| `claude[].model_limits` | List of active model limits on the account, each `{"model": ..., "limited_until": <timestamp or null>}`; empty without them ([accounts.md](accounts.md)) |
 | `claude[].token_unavailable` | `true` while a missing Keychain token excludes the account (one hour from the failure), otherwise `null` |
 | `thresholds` | Object with configured `soft_switch_at` and `switch_at` used-percentage thresholds |
 | `credits_floor` | Active credit floor: the configured value, or `0` after `credits_floor_until` |

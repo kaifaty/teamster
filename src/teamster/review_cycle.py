@@ -80,8 +80,9 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
     """Retry a limited Claude account before allowing a Codex fallback."""
     attempted = set()
     deadline = None
+    model = cfg["claude"].get("model") or None
     account = claude_review.select_account(cfg, "review", prefer_unused=used_accounts, stopped=stopped,
-                                           task_type=st.get("task_type"))
+                                           task_type=st.get("task_type"), model=model)
     while account is not None:
         name = account["name"]
         retry = False
@@ -109,11 +110,18 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
             if response["outcome"] == "unavailable":
                 entry["unavailable"] = response["reason"]
                 if response["reason"] in ("usage limit", "authentication failed", "token unavailable") and not stopped():
-                    entry["limited_until"] = claude_accounts.mark_limited(
-                        name, token_unavailable=response["reason"] == "token unavailable", reason=response["reason"])
+                    if "limited_until" in response:  # The stream has already marked its own rejection.
+                        until, limited_model = response["limited_until"], response["limited_model"]
+                    else:
+                        until, limited_model = claude_accounts.mark_scope(
+                            name, token_unavailable=response["reason"] == "token unavailable",
+                            reason=response["reason"], model=model)
+                    entry["limited_until"] = until
+                    if limited_model:
+                        entry["limited_model"] = limited_model
                     account = claude_review.select_account(cfg, "review", exclude=attempted,
                                                            prefer_unused=used_accounts, stopped=stopped,
-                                                           task_type=st.get("task_type"))
+                                                           task_type=st.get("task_type"), model=model)
                     retry = account is not None
                     entry["retry_account"] = account["name"] if retry else reviewers.CLAUDE_REVIEWER.fallback
             elif response.get("reason"):

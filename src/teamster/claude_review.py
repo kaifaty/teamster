@@ -59,9 +59,9 @@ def worktree_snapshot(st):
     return head, status, files
 
 
-def event_unavailable(event, account, record=True):
+def event_unavailable(event, account, record=True, model=None, limit=None):
     """Recognize review account errors using the shared transport parser."""
-    return claude_runner.stream_unavailable(event, account, record)
+    return claude_runner.stream_unavailable(event, account, record, model, limit)
 
 
 def refresh_limits(cfg, stopped=None):
@@ -76,11 +76,11 @@ def refresh_limits(cfg, stopped=None):
             probe(cfg, account, stale_only=True, stopped=stopped)
 
 
-def select_account(cfg, role, exclude=(), prefer_unused=(), stopped=None, task_type=None):
-    """Choose for new work after a refresh, skipping the duty account (duty.claude_reserved)."""
+def select_account(cfg, role, exclude=(), prefer_unused=(), stopped=None, task_type=None, model=None):
+    """Choose for new work on ``model`` after a refresh, skipping the duty account (duty.claude_reserved)."""
     refresh_limits(cfg, stopped)
-    exclude = set(exclude) | duty.claude_reserved(cfg, role, exclude, task_type, stopped)
-    return claude_accounts.select(cfg, role, exclude, prefer_unused)
+    exclude = set(exclude) | duty.claude_reserved(cfg, role, exclude, task_type, stopped, model)
+    return claude_accounts.select(cfg, role, exclude, prefer_unused, model)
 
 
 def _probe_lock(name):
@@ -123,7 +123,7 @@ def _probe(cfg, account, stopped=None):
         claude_accounts.mark_limited(account["name"], token_unavailable=True)
         return "token unavailable"
     claude_accounts.token_available(account["name"])
-    return _answer(account["name"], _ask(cfg, environment, stopped))
+    return _answer(account["name"], _ask(cfg, environment, stopped), model=cfg["claude"].get("model") or None)
 
 
 def check_token(cfg, account, token, stopped=None):
@@ -144,7 +144,7 @@ def check_token(cfg, account, token, stopped=None):
             claude_accounts.mark_probe_attempt(account["name"])
             # The saved token is there now, whatever an older probe failed to read.
             claude_accounts.token_available(account["name"])
-            _answer(account["name"], answer)
+            _answer(account["name"], answer, model=cfg["claude"].get("model") or None)
 
     return reason, record
 
@@ -217,12 +217,15 @@ def _ask(cfg, environment, stopped=None, token=None):
     return output, returncode, timed_out
 
 
-def _answer(name, answer, record=True):
-    """The probe's failure reason, or None; with record, store what it says about the account."""
+def _answer(name, answer, record=True, model=None):
+    """The probe's failure reason, or None; with record, store what it says about the account.
+
+    ``model`` is the probe's ``--model`` (``claude.model``).
+    """
     if answer is None:
         return "request failed"
     output, returncode, timed_out = answer
-    reason, answered = None, False
+    reason, answered, limit = None, False, {}
     for line in output.splitlines():
         if not line.strip():
             continue
@@ -234,15 +237,16 @@ def _answer(name, answer, record=True):
         if not isinstance(event, dict):
             reason = reason or "request failed"
             continue
-        unavailable = event_unavailable(event, name, record)
+        # Later events of a failed probe do not lift its mark.
+        unavailable = event_unavailable(event, name, record, model if reason is None else None, limit)
         reason = reason or unavailable
         if event.get("type") == "result":
             if event.get("is_error"):
                 reason = reason or "request failed"
             else:
                 answered = isinstance(event.get("result"), str) and bool(event["result"].strip())
-    if reason in ("usage limit", "authentication failed") and record:
-        claude_accounts.mark_limited(name, reason=reason)
+    if reason in ("usage limit", "authentication failed") and record and "limited_until" not in limit:
+        claude_accounts.mark_limited(name, reason=reason, model=model)
     if timed_out:
         return "request failed"
     if reason is None and returncode == 0 and answered:

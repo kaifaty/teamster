@@ -218,7 +218,7 @@ brief, the current message, the branch's `git log` and `git status`, and the sum
 one, and `wait` prints `== rotated <a> → <b>: <reason>, new thread <session>`.
 
 When no other account is available, the task sleeps until the earliest of the pool's limit ends
-(`limited_until`, or the rejected reset) and, for accounts without an active limit, their window
+(`limited_until`, the rejected reset, or the end of a limit on the task's model) and, for accounts without an active limit, their window
 resets, plus the reset margin. Sleep uses the same `sleeping` state, `all accounts at limit;
 auto-continue at ...` line, `wait --through-sleep`, `stop` and `say` behavior and 8-day cap as
 Codex, and `wait_for_reset: false` pauses with `exhausted` instead. After waking it prefers the
@@ -263,7 +263,22 @@ an earlier weekly reset still wins.
 A rejected rate limit or 401/403 marks that account unavailable until its reported reset and retries
 the same review on another available account. A late allowance snapshot does not clear an active
 limit marker. The reset is shown as `unknown` when none was reported. `wait` prints one line per switch:
-`== claude account <a> limited until <time>; review by <b>`. Once no Claude account is available,
+`== claude account <a> limited until <time>; review by <b>`, or
+`== claude account <a> limited until <time> for model <model>; review by <b>` for a model limit.
+
+A `usage limit` can belong to one model rather than to the account: a model's own weekly limit
+rejects requests while the account's windows are far from full. The model is the string teamster
+passed as `--model` for that request: the task's `--model` or `claude.model` for work, scouts and
+reflection, `claude.model` for reviews and probes, compared exactly without resolving aliases. When
+the model is known, the account has saved windows and no window that has not reset yet is at 100%,
+the limit excludes the account only for that model, until the same reset the account limit would
+use; every other model, including reviews on a different `claude.model`, still chooses the account,
+and the rejected snapshot does not exclude it. A task on the limited model rotates past the account
+and, when no account is left, sleeps until that model limit ends. Duty elections ignore model
+limits. In every other case (a window at 100%, unknown windows, no model, `authentication failed`,
+`token unavailable`) the whole account is excluded as before. A model limit ends at its reset, or
+when a request on the same model (work, review or probe) succeeds on that account after the limit
+was recorded; a success on another model leaves it, and the account limit keeps its own rules. Once no Claude account is available,
 the review falls back to Codex. See [review-cycle.md](review-cycle.md#review-provider) for other
 fallback causes and cancellation behavior.
 
@@ -271,7 +286,9 @@ fallback causes and cancellation behavior.
 utilization percentages, local reset times, snapshot time (`as of ...`), `stale` when the snapshot
 needs refreshing, and any limit marker; a missing Keychain token adds
 `(token unavailable)` for the hour it excludes the account. Without recorded windows it prints
-`no requests yet; run claude-probe <name>`. `accounts --json` includes each Claude account's numeric
+`no requests yet; run claude-probe <name>`. Each active model limit adds
+`limited until <time> for model <model>` without marking the whole account limited.
+`accounts --json` includes each Claude account's numeric
 `weight`, UTC ISO `updated_at` timestamp (or `null`) and boolean `stale`, alongside its existing
 window and availability fields. `accounts --refresh` first refreshes only stale, unblocked Claude
 accounts using the same locking and failure rules as selection, then prints; it can be combined with
@@ -288,7 +305,12 @@ claude second: weight 20; 5h 4% (reset ...); 7d 13% (reset ...); as of 2026-11-0
 
 The cache
 `~/.teamster/tasks/claude-limits.json` stores a dictionary by account name;
-an older unnamed cache is read as `default`. Every Claude review record and journal row carries its
+an older unnamed cache is read as `default`. An account's top-level `limited_until` and `limited_at`
+mark the whole account; the optional `model_limits` maps a model to
+`{"limited_until": <timestamp or null>, "limited_at": <timestamp>}`. Files without `model_limits`
+keep their meaning. Every write takes the `claude-limits.lock` file lock and rereads the file, so a
+model limit and a concurrent snapshot update never overwrite each other. A rejection on a known model is
+saved together with its scope, so no reader sees it as an account limit first. Every Claude review record and journal row carries its
 account name; `report --json` includes it in each task's `reviews` list. Claude review costs and tokens remain separate from Codex.
 
 ## Duty account
