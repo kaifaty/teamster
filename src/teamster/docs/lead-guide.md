@@ -15,6 +15,7 @@ Reference detail lives in the package docs. Read any file below with `teamster d
 | [settings.md](settings.md) | brief language, standing-rules override, default caps, `config.toml` trust |
 | [sandbox.md](sandbox.md) | the user wants `--sandbox workspace`, or `wait` prints `== sandbox: workspace` |
 | [accounts.md](accounts.md) | subscriptions and rotation, credits and their floor, `auto-continue at`, `needs login`, reset credits, the duty account |
+| [duty-chat.md](duty-chat.md) | the user talks to the duty (`duty chat`), or a task's state has `started_by: "duty"` |
 | [notifications.md](notifications.md) | the user asks about task notifications |
 | [telemetry.md](telemetry.md) | `report`, or deciding whether fix rounds or review angles pay off |
 | [reflection.md](reflection.md) | after `clean` of a task whose fix cycle did not converge or that ended `blocked`; the weekly batch; before changing `AGENTS.md` or standing rules |

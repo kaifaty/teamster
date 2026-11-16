@@ -2118,7 +2118,9 @@ class ClaudeReviewTests(RotationTestCase):
         duty, cfg, now = worker.duty, worker.config.accounts_config(), time.time()
         settings = cfg["duty"]
         self.assertEqual(settings, {"relative_margin": 25, "absolute_margin": 100,
-                                    "claude_only_task_types": ["visual", "layout"]})
+                                    "claude_only_task_types": ["visual", "layout"],
+                                    "chat_model": None, "chat_effort": "high", "chat_max_minutes": 20,
+                                    "chat_auto_turns_per_hour": 12})
 
         def candidate(name, room, family="claude", unavailable=None):
             return {"family": family, "name": name, "room": room, "unavailable": unavailable}

@@ -27,6 +27,10 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `duty.relative_margin` | `25` | finite number ≥ 0; the duty account moves within a family only to a room at least this many percent larger ([accounts.md](accounts.md#duty-account)) |
 | `duty.absolute_margin` | `100` | finite number ≥ 0; the same move also needs a room at least this many units larger |
 | `duty.claude_only_task_types` | `["visual", "layout"]` | task types (`--task-type`) that a Claude duty account still takes when it is the only Claude account left |
+| `duty.chat_model` | `claude.model` | model of the [duty chat](duty-chat.md) turns, a nonempty string or null |
+| `duty.chat_effort` | `"high"` | effort of the duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
+| `duty.chat_max_minutes` | `20` | positive number; active time budget of one duty chat turn |
+| `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; duty chat turns that task notes may start in an hour; the other notes wait for the next user message |
 
 Load reruns use the saved check command or the alternative saved with `start --check-loaded CMD`.
 `say` inherits the alternative, `say --check-loaded CMD` replaces it, and `say --no-check` removes
@@ -132,7 +136,8 @@ does not enable CI. Waiting and repair mechanics are in [ci.md](ci.md).
 
 `start` appends `src/teamster/rules.md` or `src/teamster/rules.ru.md` to the brief, following `language`.
 `~/.teamster/rules.md`, if present, replaces either file: use it for another language or your
-own rules. `{branch}` and `{base}` in it are replaced with the task's branch and PR target. Scouts use
+own rules. `~/.teamster/duty-rules.md`, if present, is appended to the [duty chat](duty-chat.md)'s
+system prompt as your standing rules for the duty. `{branch}` and `{base}` in it are replaced with the task's branch and PR target. Scouts use
 their own read-only instructions instead of task rules.
 At `start`, known non-GitHub `origin` hosts (including local paths and SSH aliases resolved with
 `ssh -G`) replace the standard PR publication sentence in both languages and workspace rules:
