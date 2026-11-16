@@ -320,12 +320,13 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                         result, reason = event_result(event, response["telemetry"], token,
                                                       account["name"], reviewing, scouting, reflecting,
                                                       stream_model)
-                        if reason == "usage limit" and stream_model:
-                            # Mark once, now: a stop before the caller returns must not leave the
-                            # rejected snapshot excluding the account for every model, and a later
-                            # success on this model must not be undone by a second mark.
+                        limit_model = stream_model or response.get("limited_model")
+                        if reason == "usage limit" and limit_model:
+                            # Mark each rejection now: a stop before the caller returns must not leave
+                            # the rejected snapshot excluding the account for every model, and the
+                            # caller does not mark again over a later success on this model.
                             response["limited_until"], response["limited_model"] = claude_accounts.mark_scope(
-                                account["name"], reason=reason, model=stream_model)
+                                account["name"], reason=reason, model=limit_model)
                         if reason is not None:
                             response["reason"] = response["reason"] or reason
                             response["result"] = None

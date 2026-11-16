@@ -111,7 +111,8 @@ if mode == "auth_error":
     sys.exit(1)
 limits = run.get("limits", fixture.get("limits"))
 if limits and mode != "rejected_buffered":
-    emit({"type": "rate_limit_event", "rate_limit_info": limits})
+    for repeat in range(run.get("limit_events", 1)):
+        emit({"type": "rate_limit_event", "rate_limit_info": limits})
 if run.get("gate_after_limits"):
     while not Path(run["gate_after_limits"]).exists():
         time.sleep(0.01)
@@ -1916,6 +1917,20 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual((entry["limited_until"], entry["limited_model"]), (self.reset, "model-a"))
         self.assertNotIn("model_limits", worker.claude_accounts.read_limits()["first"])
 
+    def test_claude_work_rotates_past_an_account_limited_for_its_model(self):
+        self.claude_pool_fixture(runs=[{"limits": self.model_rejection(.35), "limit_events": 2},
+                                       {"reply": self.work_result()}])
+        self.start("claude-model-work", "--executor", "claude", "--model", "model-a")
+        self.wait("claude-model-work")
+        state = self.state("claude-model-work")
+        self.assertEqual((state["outcome"], state["claude_account"]), ("completed", "second"))
+        self.assertEqual([(entry["from"], entry["to"]) for entry in state["rotations"] if "from" in entry],
+                         [("first", "second")])
+        saved = self.worker().claude_accounts.read_limits()["first"]
+        # A repeated rejection in the stream keeps the limit on the model, not on the account.
+        self.assertEqual((saved.get("status"), saved.get("limited_until"), list(saved["model_limits"])),
+                         (None, None, ["model-a"]))
+
     def test_claude_review_takes_an_account_limited_for_the_task_model(self):
         self.claude_pool_fixture(names=("first",))
         settings = json.loads((self.home / "claude-accounts.json").read_text())
@@ -1938,7 +1953,7 @@ class ClaudeReviewTests(RotationTestCase):
         clock = self.enable_fake_clock()
         worker = self.worker()
         pool, cfg = worker.claude_accounts, worker.config.accounts_config()
-        cfg["claude"]["model"] = "model-b"
+        cfg["claude"].update(model="model-b", limits_max_age_minutes=10 ** 6)
         path = self.home / "claude-tasks" / "claude-limits.json"
 
         def name(account):
@@ -1966,6 +1981,9 @@ class ClaudeReviewTests(RotationTestCase):
         marked = pool.read_limits()["first"]["model_limits"]["model-a"]
         self.assertEqual((choose("model-a"), choose("model-b"), choose(None)), (None, "first", "first"))
         self.assertEqual((choose("model-a", "first"), choose("model-b", "first")), (None, "first"))
+        cfg["claude"]["model"] = "model-a"
+        self.assertEqual((choose(None), choose(None, "first")), (None, None))
+        cfg["claude"]["model"] = "model-b"
         review = worker.claude_review.select_account(cfg, "review", model=cfg["claude"]["model"])
         self.assertEqual(name(review), "first")
         st, slept = {"slug": "model-sleep", "task_model": "model-a", "rotations": []}, []
@@ -1988,8 +2006,17 @@ class ClaudeReviewTests(RotationTestCase):
         worker.claude_review.event_unavailable(success, "first", "model-a")
         self.assertEqual(choose("model-a"), "first")
         pool.mark_limited("first", reason="usage limit", model="model-a")
+        marked = pool.read_limits()["first"]["model_limits"]["model-a"]
+        worker.claude_review.event_unavailable(dict(success, timestamp=marked["limited_at"] + 1), "first", "model-a")
+        self.assertEqual(choose("model-a"), "first")
+        pool.mark_limited("first", reason="usage limit", model="model-a")
         pool.save_limits("first", allowed, clock.time() + 1, model="model-a")
         self.assertNotIn("model_limits", pool.read_limits()["first"])
+        # The mark ends at its reset.
+        pool.mark_limited("first", reason="usage limit", model="model-a")
+        self.assertIsNone(choose("model-a"))
+        clock.sleep(self.reset - clock.time() + 1)
+        self.assertEqual(choose("model-a"), "first")
 
         # Files without model marks keep their meaning for every model.
         later = clock.time() + 600
@@ -2000,9 +2027,12 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual((choose("model-a"), choose("model-b")), (None, None))
                 self.assertEqual(json.loads(self.cli("accounts", "--json"))["claude"][0]["model_limits"], [])
         self.claude_fixture()
-        path.write_text(json.dumps({"status": "rejected", "resetsAt": later}))
         cfg = worker.config.accounts_config()
-        self.assertIsNone(pool.select(cfg, "work", model="model-b"))
+        for limits in ({"status": "rejected", "resetsAt": later}, {"status": "allowed", "limited_until": later}):
+            with self.subTest(limits=limits):
+                path.write_text(json.dumps(limits))
+                self.assertEqual((pool.select(cfg, "work", model="model-a"),
+                                  pool.select(cfg, "work", model="model-b")), (None, None))
         path.write_text(json.dumps(self.claude_limits))
         self.assertEqual(name(pool.select(cfg, "work", model="model-b")), "default")
 

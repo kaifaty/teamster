@@ -188,10 +188,10 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
     if outcome == "unavailable":
         reason = reason or "account unavailable"
         st["error"] = f"No available Claude account: {account['name']} ({reason})"
-        if reason in LIMIT_REASONS and "limited_until" not in response:
-            # The stream has already marked its own rejection.
-            claude_accounts.mark_limited(account["name"], token_unavailable=reason == "token unavailable",
-                                         reason=reason, model=model)
+        if reason in LIMIT_REASONS:
+            if "limited_until" not in response:  # The stream has already marked its own rejection.
+                claude_accounts.mark_limited(account["name"], token_unavailable=reason == "token unavailable",
+                                             reason=reason, model=model)
             if not wrapup:
                 outcome = "limit"
     elif reason and outcome != "completed":
