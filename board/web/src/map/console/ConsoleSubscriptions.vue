@@ -11,7 +11,8 @@ defineProps<{
   /** The subscription whose screen is open, or null. */
   open: string | null;
 }>();
-const emit = defineEmits<{ open: [key: string] }>();
+/** `opener`: the pressed element, to give the focus back to when the screen closes. */
+const emit = defineEmits<{ open: [key: string, opener: HTMLElement] }>();
 </script>
 
 <template>
@@ -27,7 +28,7 @@ const emit = defineEmits<{ open: [key: string] }>();
           :title="row.title"
           :aria-label="row.label"
           :data-account="row.key"
-          @click="emit('open', row.key)"
+          @click="emit('open', row.key, $event.currentTarget as HTMLElement)"
         >
           <img v-if="portraits.get(row.key)" class="s-portrait" :src="portraits.get(row.key)" alt="" />
           <span class="s-line">

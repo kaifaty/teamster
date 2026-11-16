@@ -10,7 +10,8 @@ defineProps<{
   portrait: string | null;
   compact?: boolean;
 }>();
-const emit = defineEmits<{ open: [key: string] }>();
+/** `opener`: the pressed element, to give the focus back to when the screen closes. */
+const emit = defineEmits<{ open: [key: string, opener: HTMLElement] }>();
 </script>
 
 <template>
@@ -22,7 +23,7 @@ const emit = defineEmits<{ open: [key: string] }>();
     :title="duty.title"
     :aria-label="duty.label ?? undefined"
     :data-account="duty.key"
-    @click="emit('open', duty.key)"
+    @click="emit('open', duty.key, $event.currentTarget as HTMLElement)"
   >
     <img v-if="portrait" class="duty-portrait" :src="portrait" alt="" />
     <span class="d-caption">
