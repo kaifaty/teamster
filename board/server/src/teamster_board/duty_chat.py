@@ -32,6 +32,8 @@ ACCEPT_SECONDS = 2.0
 ACCEPT_POLL_SECONDS = 0.05
 STATUSES = ("answered", "needs_decision", "started")
 FILES = ("state.json", "messages.jsonl", "queue.json", "notes.json")
+# A state.json that cannot be read at the moment: it tells nothing about a new turn.
+UNREADABLE = object()
 LOGGER = logging.getLogger("uvicorn.error")
 
 
@@ -157,6 +159,7 @@ class DutyChat:
         self._error = None
         self._revision = 0
         self._signature = None
+        self._state_file = (None, None)  # (state.json's signature, the pid it names)
 
     def _reason(self):
         if self.actions.reason is not None:
@@ -189,21 +192,26 @@ class DutyChat:
             except OSError:
                 metadata = None
             files.append(None if metadata is None else (metadata.st_ino, metadata.st_mtime_ns, metadata.st_size))
-        state = read_object(Store._file(self.directory, "state.json"), STATE_BYTES) if files[0] else None
+        if files[0] != self._state_file[0]:
+            state = read_object(Store._file(self.directory, "state.json"), STATE_BYTES) if files[0] else None
+            self._state_file = (files[0], state.get("pid") if state else None)
         with self.state_lock:
             revision = self._revision
-        signature = (tuple(files), alive(state.get("pid")) if state else False, revision,
+        signature = (tuple(files), alive(self._state_file[1]), revision,
                      json.dumps(duty_account(self.accounts()), sort_keys=True))
         changed = signature != self._signature
         self._signature = signature
         return changed
 
     def _turn(self):
-        """(created, turns) of the conversation, or None before it exists."""
-        state = read_object(Store._file(self.directory, "state.json"), STATE_BYTES)
-        if state is None or state.get("kind") != KIND:
+        """(created, turns) of the conversation, None before it exists, or UNREADABLE."""
+        path = Store._file(self.directory, "state.json")
+        if path is None:
             return None
-        return state.get("created"), state.get("turns")
+        state = read_object(path, STATE_BYTES)
+        if state is None:
+            return UNREADABLE
+        return (state.get("created"), state.get("turns")) if state.get("kind") == KIND else None
 
     def _bump(self):
         self._revision += 1
@@ -241,7 +249,8 @@ class DutyChat:
             deadline = time.monotonic() + ACCEPT_SECONDS
             while True:
                 job["done"].wait(ACCEPT_POLL_SECONDS)
-                started = self._turn() != before
+                current = self._turn()
+                started = current is not UNREADABLE and current != before
                 with self.state_lock:
                     if job["returncode"] is not None:
                         self._bump()
