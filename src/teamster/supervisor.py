@@ -410,6 +410,8 @@ def deliver_duty_note(order):
     with installs.spawn_lock():
         with task_state.state_lock(slug):
             chat = task_state.load(slug)
+            if chat.get("kind") != duty_chat.CHAT_KIND:
+                return None
             if procs.alive(chat.get("pid")):
                 queue = task_state.read_queue(slug)
                 queue["waiting"].append(order)

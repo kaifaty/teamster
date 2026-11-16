@@ -761,6 +761,11 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(st["duty_turns"][1]["started"], ["fix-parser"])
         self.assertEqual([(row["source"], row["text"]) for row in self.chat_messages()],
                          [("user", "Fix the parser."), ("user", "repo"), ("user", "Any news?")])
+        self.assertIn("room " + str(room) + "\nanswers 3\nresult answered: fix-parser is still running.",
+                      self.cli("status", "duty"))
+        self.assertIn("== result: answered\nfix-parser is still running.", self.cli("wait", "duty"))
+        self.assertIn("== Claude duty", self.cli("stats", "duty"))
+        self.assertNotIn("telemetry unavailable", (self.home / "claude-tasks" / "duty" / "stderr.log").read_text())
 
     def test_duty_started_task_notes_the_chat_under_the_hourly_cap(self):
         self.claude_pool_fixture(runs=[{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 6)],
