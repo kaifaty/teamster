@@ -43,10 +43,12 @@ A hook enforces them; a refused command is not an error to work around.
   fsmonitor hook, gpg, filters), so it takes a fixed form. Start every git command with
   `git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null -C <path>` (`-C` in place of `cd`),
   then one of `log`, `show`, `diff`, `ls-files` or `grep`; `log`, `show` and `diff` also take
-  `--no-ext-diff --no-textconv --no-show-signature --submodule=short`. `diff` compares commits
-  (`A...B`, or `A B --`) or the index (`--cached`), never the working tree; `ls-files` takes only
-  `-z`, `-s`/`--stage`, `--cached`, `--full-name` and `--error-unmatch`. For example:
-  `git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null -C <path> diff --no-ext-diff --no-textconv --no-show-signature --submodule=short origin/main...<branch>`.
+  `--no-ext-diff --no-textconv --no-show-signature --submodule=short`. `log` and `show` name their
+  format: `--oneline`, `--pretty`, `--format=%h %s` or a built-in name. `diff` compares two commits
+  written before `--` (`A...B --` or `A B --`) or the index (`--cached`), never the working tree, and
+  takes no option with a separate value (write `--stat=80`, `-U3`); `ls-files` takes only `-z`,
+  `-s`/`--stage`, `--cached`, `--full-name` and `--error-unmatch`. For example:
+  `git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null -C <path> diff --no-ext-diff --no-textconv --no-show-signature --submodule=short --stat origin/main...<branch> --`.
   `git status` and `git fetch` are refused; `teamster status <slug>` shows a task's commits.
 - Refused, among everything else: `gh pr merge`, `git push|commit|merge|rebase|reset|checkout`,
   `teamster clean|verdict|login|claude-login|duty tick|duty clear`, version bumps, package managers,

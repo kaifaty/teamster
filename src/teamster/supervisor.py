@@ -359,10 +359,9 @@ def finish_cycle(st):
                     sending = True
                     continue
                 st["pid"] = None
-                if orders and st.get("kind") == duty_chat.CHAT_KIND:
-                    # Task notes wait out the hourly cap or a failed turn; the user's messages go as for say.
-                    orders = (duty_chat.cycle_orders(st, orders) if outcome is None
-                              else duty_chat.drop_chat_orders(orders))
+                if orders and outcome is None and st.get("kind") == duty_chat.CHAT_KIND:
+                    # Task notes wait out the hourly cap; the user's messages go as for say.
+                    orders = duty_chat.cycle_orders(st, orders)
                     if not orders:
                         task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"]})
                 if not orders:
@@ -385,6 +384,12 @@ def finish_cycle(st):
                                                      "next_turn": following["turns"], "count": len(orders),
                                                      "report": report}, ensure_ascii=False) + "\n")
                         return {"orders": orders, "sent": following, "report": report}
+                # Task notes of a failed or stopped duty turn, or of a next turn that could not start, wait.
+                orders = duty_chat.drop_chat_orders(orders)
+                if not orders:
+                    task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"]})
+                    task_state.save(st)
+                    return None
                 task_state.write_queue(slug, {"waiting": [], "dropped": queue["dropped"] + [
                     dict(order, dropped_at=st["turn_finished"], outcome=outcome) for order in orders]})
                 with task_state.queue_dropped_path(slug).open("a", encoding="utf-8") as stream:
@@ -421,6 +426,9 @@ def deliver_duty_note(order):
         return None
     with installs.spawn_lock():
         with task_state.state_lock(slug):
+            # clean may have archived the conversation while this waited for its lock.
+            if not task_state.state_path(slug).exists():
+                return None
             chat = task_state.load(slug)
             if chat.get("kind") != duty_chat.CHAT_KIND:
                 return None
@@ -431,7 +439,8 @@ def deliver_duty_note(order):
                 return "queued"
             cfg = config.accounts_config()
             now = clock.CLOCK.time()
-            if not duty_chat.auto_turn_allowed(chat, cfg, now) or duty_chat.chat_account(cfg)[0] is None:
+            if (not duty_chat.auto_turn_allowed(chat, cfg, now) or duty_chat.chat_account(cfg)[0] is None
+                    or procs.alive(chat.get("claude_pid"))):
                 duty_chat.hold_notes([order])
                 return "held"
             orders = duty_chat.take_held_notes() + [order]

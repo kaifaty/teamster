@@ -517,6 +517,14 @@ def cmd_stop(a):
 
 def cmd_clean(a):
     st = task_state.load(a.slug)
+    if st.get("kind") == duty_chat.CHAT_KIND:
+        # A task note may start a duty turn at any moment: check and archive under the lock that delivery takes.
+        with task_state.state_lock(a.slug):
+            return clean_task(a, task_state.load(a.slug))
+    return clean_task(a, st)
+
+
+def clean_task(a, st):
     if procs.alive(st.get("pid")):
         procs.die("still running; stop it first")
     if st.get("kind") in ("reflect", "duty"):
@@ -900,8 +908,11 @@ def open_duty_chat(cfg, account, order):
             task_state.save(st)
 
             def prompt():
-                orders = duty_chat.take_held_notes() + [order]
+                held = duty_chat.held_notes()
+                orders = held + [order]
                 threads.journal_followups(st, order["text"], "user", orders if len(orders) > 1 else ())
+                if held:
+                    duty_chat.write_held_notes([])
                 return brief + "\n\n" + "\n\n".join(item["text"] for item in orders)
 
             turn = supervisor.say_turn(st, order["options"])
@@ -917,6 +928,8 @@ def send_duty_chat(cfg, order, queue):
     move = installs.follow_pin(st, upgrade=True)
     if move:
         print(move)
+    # Checked before queueing, as say does: a bad option must not reach the queue.
+    supervisor.apply_say(st, order["options"], cfg)
     if queue:
         waiting = task_state.enqueue(duty_chat.CHAT_SLUG, order)
         if waiting is not None:
@@ -925,14 +938,20 @@ def send_duty_chat(cfg, order, queue):
         st = task_state.load(duty_chat.CHAT_SLUG)
     elif task_state.busy_message(st) is not None:
         procs.die(task_state.busy_message(st) + "; or queue the message with --queue")
+    if not procs.alive(st.get("pid")) and procs.alive(st.get("claude_pid")):
+        procs.die(f"Claude process {st['claude_pid']} of the previous duty turn outlived its supervisor and still "
+                  f"holds the session; end it (kill {st['claude_pid']}), then send the message again")
     supervisor.apply_say(st, order["options"], cfg)
 
     def prompt():
-        # Read under the state lock: the notes held for this message go out with it.
-        orders = duty_chat.take_held_notes() + [order]
+        # Read under the state lock: the notes held for this message go out with it, cleared once journaled.
+        held = duty_chat.held_notes()
+        orders = held + [order]
         if len(orders) == 1:
             return threads.followup_prompt(st, order["text"], cfg, source="user")
-        return threads.followup_prompt(st, "\n\n".join(item["text"] for item in orders), cfg, queued=orders)
+        text = threads.followup_prompt(st, "\n\n".join(item["text"] for item in orders), cfg, queued=orders)
+        duty_chat.write_held_notes([])
+        return text
 
     proc = supervisor.spawn(st, prompt, **supervisor.say_turn(st, order["options"]))
     return st, proc

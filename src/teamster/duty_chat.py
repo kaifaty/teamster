@@ -63,7 +63,7 @@ def build_chat_room(room):
 
 
 def known_repositories():
-    """(name, path) of every existing repository of a work task, live or archived, sorted by name."""
+    """(name, path) of every existing repository of a work task or scout, live or archived, sorted by name."""
     found = {}
     for root in (config.TASKS, config.TASKS / ".archive"):
         for path in sorted(root.glob("*/state.json")):
@@ -72,8 +72,9 @@ def known_repositories():
             except (OSError, ValueError):
                 continue
             repo = st.get("repo") if isinstance(st, dict) else None
-            if (isinstance(repo, str) and repo and st.get("kind") not in ("scout", "reflect", CHAT_KIND)
-                    and Path(repo).is_dir()):
+            # A scout's directory counts when it is the top of a git work tree.
+            if (isinstance(repo, str) and repo and st.get("kind") not in ("reflect", CHAT_KIND) and Path(repo).is_dir()
+                    and (st.get("kind") != "scout" or (Path(repo) / ".git").exists())):
                 found.setdefault(repo, Path(repo).name)
     return sorted(((name, repo) for repo, name in found.items()), key=lambda item: (item[0], item[1]))
 

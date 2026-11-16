@@ -58,7 +58,8 @@ DUTY_GUARDED_TOOLS = "Bash|Write|Edit|MultiEdit|NotebookEdit"
 def duty_hook_settings(room):
     """Settings that run the duty guard before every Bash command and file write of a duty chat turn."""
     command = shlex.join([sys.executable, "-I", str(config.BASH_GUARD), "--duty-room", str(room)])
-    return json.dumps({"hooks": {"PreToolUse": [
+    # Explicit false: settings from the account or the room must not turn this hook off.
+    return json.dumps({"disableAllHooks": False, "hooks": {"PreToolUse": [
         {"matcher": DUTY_GUARDED_TOOLS, "hooks": [{"type": "command", "command": command}]}]}})
 
 

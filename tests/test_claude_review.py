@@ -393,17 +393,19 @@ class ClaudeReviewTests(RotationTestCase):
             "teamster report --since 7d --json", "teamster docs lead-guide", "teamster accounts --json",
             "teamster duty status --json", "teamster start x --brief - -h",
             git + " -C /work/repo log " + flags + " --oneline -5",
-            git + " log " + flags + " -p --format=%h%x20%s", git + " show " + flags + " HEAD~1",
-            git + " -C /work/repo diff " + flags + " origin/main...HEAD", git + " diff " + flags + " A B -- src",
-            git + " diff " + flags + " --cached", "git -P -c core.hookspath=/dev/null -c core.fsmonitor=false log " + flags,
+            git + " log " + flags + " -p --format=%h%x20%s", git + " show " + flags + " --format=fuller HEAD~1",
+            git + " -C /work/repo diff " + flags + " --stat=80 origin/main...HEAD --", git + " diff " + flags + " A B -- src",
+            git + " diff " + flags + " --cached", git + " diff " + flags + " -U3 --name-only A...B --",
+            "git -P -c core.hookspath=/dev/null -c core.fsmonitor=false log --pretty " + flags,
+            git + " log --pretty=format:%h " + flags,
             git + " ls-files -z --stage src", git + " grep -n parse HEAD -- src",
             "gh pr view 12 --repo fixture/repo", "gh pr diff 12", "gh pr checks 12", "gh pr list",
             "gh run view 7 --log-failed", "gh run list", "ls -la /work/repo", "cat README.md", "head -n 5 a.md",
             "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src",
             # Compound commands pass when every part does; output may go to the room or /dev/null.
-            "teamster status && " + git + " log " + flags + " -1; teamster accounts",
+            "teamster status && " + git + " log " + flags + " --oneline -1; teamster accounts",
             git + " log " + flags + " --oneline | head -3 | wc -l", "(teamster status; ls)",
-            git + " diff " + flags + " A...B 2>&1 | tail -n 40", "rg -n x src 2>/dev/null",
+            git + " diff " + flags + " A...B -- 2>&1 | tail -n 40", "rg -n x src 2>/dev/null",
             "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room, "cat a.md > brief.md",
         )
         refused = (
@@ -419,6 +421,12 @@ class ClaudeReviewTests(RotationTestCase):
             git + " log " + flags + " --output=/tmp/x", git + " log " + flags + " --out=/tmp/x",
             git + " diff " + flags + " --submodule=diff A...B", git + " diff " + flags,
             git + " diff " + flags + " HEAD", git + " diff " + flags + " HEAD README.md", git + " diff " + flags + " --no-index a b",
+            # An option value is not a revision: these compare HEAD with the working tree and run its clean filters.
+            git + " diff " + flags + " --stat-width 80 HEAD --", git + " diff " + flags + " -O ../order --",
+            git + " diff " + flags + " A...B", git + " diff " + flags + " -U 3 A...B --",
+            # Without its own format, log and show take format.pretty from the config, which may run gpg.
+            git + " log " + flags, git + " show " + flags + " HEAD", git + " log " + flags + " --format=mine",
+            git + " log " + flags + " --format %h", git + " show " + flags + " --pretty=signed",
             git + " grep -O x", git + " grep -nO x", git + " grep --open-files x", git + " grep --textconv x",
             git + " grep --recurse-submodules x", git + " ls-files -m", git + " ls-files --others",
             git + " status", "git status", git + " fetch origin", "git fetch origin",
@@ -445,7 +453,16 @@ class ClaudeReviewTests(RotationTestCase):
             "cat /dev/null > $'..\\x2foutside'", "cat $'a.md'",
             "cat a.md > /tmp/out", "cat a.md >> ../out", "cat a.md > .git/config", "cat a.md > %s/.git/HEAD" % room,
             "cat a.md > linked/brief.md", "cat a.md > %s/linked/brief.md" % room,
+            "cat a.md > .claude/settings.json",
         )
+        # Each required switch is required on its own.
+        required = ["--no-pager", "-c core.fsmonitor=false", "-c core.hooksPath=/dev/null"]
+        for command in ("log --oneline", "show --oneline HEAD", "diff A...B --"):
+            subcommand, _, rest = command.partition(" ")
+            for missing in required + flags.split():
+                prefix = "git " + " ".join(item for item in required if item != missing)
+                switches = " ".join(flag for flag in flags.split() if flag != missing)
+                refused += (prefix + " " + subcommand + " " + switches + " " + rest,)
         for command, expected in [(command, 0) for command in allowed] + [(command, 2) for command in refused]:
             with self.subTest(command=command):
                 status, reason = self.duty_hook(room, "Bash", {"command": command})
@@ -458,6 +475,7 @@ class ClaudeReviewTests(RotationTestCase):
                   (("Write", "file_path", str(room / ".git" / "config")), 2),
                   (("Write", "file_path", str(room / "linked" / "brief.md")), 2),
                   (("Edit", "file_path", "linked/brief.md"), 2),
+                  (("Write", "file_path", str(room / ".claude" / "settings.json")), 2),
                   (("NotebookEdit", "notebook_path", "/tmp/n.ipynb"), 2), (("Write", "file_path", ""), 2))
         for (tool, key, path), expected in writes:
             with self.subTest(tool=tool, path=path):
@@ -481,9 +499,9 @@ class ClaudeReviewTests(RotationTestCase):
         # Without GIT_PAGER the repository's core.pager would apply.
         environment = {key: value for key, value in self.env.items() if key != "GIT_PAGER"}
 
-        def git(*args):
-            subprocess.run(["git", *args], cwd=repo, env=environment, check=True, capture_output=True,
-                           stdin=subprocess.DEVNULL)
+        def git(*args, stdin=None):
+            return subprocess.run(["git", *args], cwd=repo, env=environment, check=True, capture_output=True,
+                                  input=stdin, text=True).stdout.strip()
 
         git("init", "-q")
         (repo / ".gitattributes").write_text("* diff=trap filter=trap\n")
@@ -493,29 +511,46 @@ class ClaudeReviewTests(RotationTestCase):
         (repo / "a.txt").write_text("two\n")
         git("add", "-A")
         git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "two")
+        # A signed commit on top: showing its signature runs gpg.program.
+        signed = git("hash-object", "-t", "commit", "-w", "--stdin", stdin=(
+            "tree %s\nparent %s\nauthor t <t@t> 1700000000 +0000\ncommitter t <t@t> 1700000000 +0000\n"
+            "gpgsig -----BEGIN PGP SIGNATURE-----\n \n fixture\n -----END PGP SIGNATURE-----\n\nsigned\n"
+            % (git("rev-parse", "HEAD^{tree}"), git("rev-parse", "HEAD"))))
+        git("update-ref", "HEAD", signed)
         (repo / "a.txt").write_text("three\n")
         git("add", "a.txt")
+        # The working tree differs from the index, so comparing with it runs the clean filter.
+        (repo / "a.txt").write_text("four\n")
         for key, value in (("diff.external", trap), ("diff.trap.textconv", trap), ("diff.trap.command", trap),
                            ("filter.trap.clean", trap), ("core.fsmonitor", trap), ("core.pager", trap),
-                           ("core.hooksPath", self.root), ("log.showSignature", "true"), ("gpg.program", trap)):
+                           ("core.hooksPath", self.root), ("log.showSignature", "true"), ("gpg.program", trap),
+                           ("format.pretty", "format:%h %G? %s"), ("pretty.signed", "format:%G? %s")):
             git("config", key, str(value))
         prefix = "git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null -C %s " % shlex.quote(str(repo))
         flags = " --no-ext-diff --no-textconv --no-show-signature --submodule=short"
-        commands = (prefix + "log -p" + flags, prefix + "show" + flags, prefix + "diff" + flags + " HEAD~1...HEAD",
+
+        def run(command):
+            return subprocess.run(command, shell=True, cwd=room, env=environment, capture_output=True, text=True,
+                                  timeout=60, stdin=subprocess.DEVNULL)
+
+        commands = (prefix + "log -p --oneline" + flags, prefix + "show --format=fuller" + flags,
+                    prefix + "log --format=%h%x20%s" + flags, prefix + "diff" + flags + " --stat=80 HEAD~2...HEAD --",
                     prefix + "diff" + flags + " --cached", prefix + "ls-files --stage", prefix + "grep -n two HEAD")
         for command in commands:
             with self.subTest(command=command):
                 self.assertEqual(self.duty_hook(room, "Bash", {"command": command}), (0, ""))
-                result = subprocess.run(command, shell=True, cwd=room, env=environment, capture_output=True,
-                                        text=True, timeout=60, stdin=subprocess.DEVNULL)
+                result = run(command)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(marker.exists(), marker.read_text() if marker.exists() else "")
-        # The trap is armed: the same diff without the switches runs it, and the guard refuses that command.
-        bare = "git -C %s diff HEAD~1...HEAD" % shlex.quote(str(repo))
-        self.assertEqual(self.duty_hook(room, "Bash", {"command": bare})[0], 2)
-        subprocess.run(bare, shell=True, cwd=room, env=environment, capture_output=True, timeout=60,
-                       stdin=subprocess.DEVNULL)
-        self.assertTrue(marker.exists())
+        # The traps are armed: each of these runs one, and the guard refuses each.
+        for command in ("git -C %s diff HEAD~2...HEAD" % shlex.quote(str(repo)),
+                        prefix + "diff" + flags + " --stat-width 80 HEAD --",
+                        prefix + "log -1" + flags, prefix + "show" + flags + " HEAD"):
+            with self.subTest(armed=command):
+                self.assertEqual(self.duty_hook(room, "Bash", {"command": command})[0], 2)
+                run(command)
+                self.assertTrue(marker.exists())
+                marker.unlink()
 
     def test_bash_timeouts_round_the_remaining_budget_to_the_millisecond(self):
         worker = self.worker()
@@ -801,6 +836,12 @@ class ClaudeReviewTests(RotationTestCase):
         record = self.home / "claude-tasks" / ".archive" / "old-task-20260101T000000Z"
         record.mkdir(parents=True)
         (record / "state.json").write_text(json.dumps({"slug": "old-task", "kind": "work", "repo": str(self.repo)}))
+        for name, git in (("scouted-repo", True), ("plain-directory", False)):
+            directory = self.root / name
+            (directory / ".git" if git else directory).mkdir(parents=True)
+            scout = self.home / "claude-tasks" / ".archive" / (name + "-20260102T000000Z")
+            scout.mkdir()
+            (scout / "state.json").write_text(json.dumps({"slug": name, "kind": "scout", "repo": str(directory)}))
         (self.home / "duty-rules.md").write_text("Never touch the billing repository.\n")
         self.put_duty("first")
         # A creation cut short before its state.json left a room behind: the next command makes it again.
@@ -820,7 +861,10 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
         self.assertNotIn("bypassPermissions", argv)
         self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read,Grep,Glob,Bash,Write,Edit")
-        hook, = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"]
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        # An account or room setting must not turn the guard off.
+        self.assertIs(settings["disableAllHooks"], False)
+        hook, = settings["hooks"]["PreToolUse"]
         self.assertEqual(hook["matcher"], "Bash|Write|Edit|MultiEdit|NotebookEdit")
         self.assertEqual(hook["hooks"][0]["command"], shlex.join(
             [sys.executable, "-I", str(worker.config.BASH_GUARD), "--duty-room", str(room)]))
@@ -831,8 +875,10 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual((first["config_dir"], first["cwd"], first["started_by"]),
                          (accounts[0]["config_dir"], str(room), "duty"))
         for text in ("# Lead guide", "# On duty", "Never touch the billing repository.",
-                     "- repo: " + str(self.repo), "## Your room\n\n" + str(room)):
+                     "- repo: " + str(self.repo), "- scouted-repo: " + str(self.root / "scouted-repo"),
+                     "## Your room\n\n" + str(room)):
             self.assertIn(text, first["system_prompt"])
+        self.assertNotIn("plain-directory", first["system_prompt"])
         # The next message resumes the same session, as say does.
         self.assertIn("== result: started\nStarted fix-parser.\nStarted: fix-parser",
                       self.cli("duty", "chat", "1", timeout=60))
@@ -861,6 +907,29 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertIn("== result: answered\nfix-parser is still running.", self.cli("wait", "duty"))
         self.assertIn("== Claude duty", self.cli("stats", "duty"))
         self.assertNotIn("telemetry unavailable", (self.home / "claude-tasks" / "duty" / "stderr.log").read_text())
+        # A next turn that cannot start keeps the task notes of the queue: they wait for the next duty turn.
+        worker = self.worker()
+        note = {"at": time.time(), "text": "Task note: queued ended turn 1 with outcome completed.", "options": {},
+                "source": "note", "task": "queued"}
+        worker.task_state.write_queue("duty", {"waiting": [note], "dropped": []})
+        st = worker.task_state.load("duty")
+        st.update(pid=None, outcome="completed", turn_finished=time.time())
+        with mock.patch.object(worker.supervisor, "send_queue",
+                               side_effect=SystemExit("teamster: Claude Code CLI was not found")):
+            self.assertIsNone(worker.supervisor.finish_cycle(st))
+        self.assertEqual(json.loads((self.home / "claude-tasks" / "duty" / "notes.json").read_text())["held"], [note])
+        self.assertEqual(worker.task_state.read_queue("duty"), {"waiting": [], "dropped": []})
+        # clean waits for the state lock that note delivery holds while it starts a duty turn.
+        with (self.home / "claude-tasks" / "duty" / "state.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            cleaning = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "clean", "duty"], cwd=self.repo, env=self.env,
+                                        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertRaises(subprocess.TimeoutExpired, cleaning.wait, timeout=5)
+            self.assertTrue((room / ".git").is_dir())
+        output, errors = cleaning.communicate(timeout=60)
+        self.assertEqual(cleaning.returncode, 0, errors)
+        self.assertIn("cleaned duty", output)
+        self.assertFalse((self.home / "claude-tasks" / "duty").exists())
 
     def started_by_duty(self, slug, *command):
         """Start a task (or the given command) as a duty turn would, wait for it and check its provenance."""
@@ -878,8 +947,10 @@ class ClaudeReviewTests(RotationTestCase):
 
     def test_duty_started_task_notes_the_chat_under_the_hourly_cap(self):
         self.enable_fake_clock(auto_advance=False)
-        self.claude_pool_fixture(runs=[{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 7)],
-                                 duty={"chat_auto_turns_per_hour": 1})
+        release = self.root / "release-user-turn"
+        runs = [{"reply": self.duty_answer("Answer %d." % number)} for number in range(1, 7)]
+        runs[2]["gate"] = str(release)
+        self.claude_pool_fixture(runs=runs, duty={"chat_auto_turns_per_hour": 1})
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
         self.put_duty("first")
         self.cli("duty", "chat", "Start the parser fix.", timeout=60)
@@ -894,26 +965,45 @@ class ClaudeReviewTests(RotationTestCase):
                       "- python3 -I tests/test_rotation.py: passed — 3 tests passed, 0 failed", note["text"])
         self.assertIn("Task note: noted", self.claude_invocations()[-1]["argv"][1])
         first_mark, = self.state("duty")["duty_auto_turns"]
-        # The hourly cap is reached: the next note waits for the user's next message, which say delivers too.
+        # 3599 seconds later the hourly cap is still reached: the next note waits for the user's next message.
+        self.advance_fake_clock(3599)
         self.started_by_duty("held-note")
         notes = self.home / "claude-tasks" / "duty" / "notes.json"
         self.until(lambda: notes.exists() and len(json.loads(notes.read_text())["held"]) == 1)
         self.assertEqual((len(self.claude_invocations()), len(self.state("duty")["duty_turns"])), (2, 2))
+        # A message that fails before it is journaled leaves the held note in place.
+        worker = self.worker()
+        message = {"at": time.time(), "text": "Lost?", "options": {}, "source": "user"}
+        with mock.patch.object(worker.threads, "journal_followups", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            worker.commands.send_duty_chat(worker.config.accounts_config(), message, False)
+        self.assertEqual(len(json.loads(notes.read_text())["held"]), 1)
+        self.assertEqual(self.state("duty")["turns"], 2)
+        # say delivers it with the user's message, as duty chat does.
         self.assertIn("sent to duty (turn 3), pid ", self.cli("say", "duty", "What happened?"))
-        self.until(lambda: self.chat_settled(3), timeout=60)
+        self.until(lambda: len(self.claude_invocations()) == 3, timeout=60)
         prompt = self.claude_invocations()[-1]["argv"][1]
         self.assertLess(prompt.index("Task note: held-note"), prompt.index("What happened?"))
         self.assertEqual(json.loads(notes.read_text())["held"], [])
+        # A note queued while that user turn runs waits too: the cap's one turn this hour is spent.
+        queue = self.home / "claude-tasks" / "duty" / "queue.json"
+        self.started_by_duty("queued-note")
+        self.until(lambda: queue.exists() and len(json.loads(queue.read_text())["waiting"]) == 1, timeout=60)
+        release.touch()
+        self.until(lambda: self.chat_settled(3), timeout=60)
+        self.assertEqual(len(self.claude_invocations()), 3)
+        self.assertEqual([note["task"] for note in json.loads(notes.read_text())["held"]], ["queued-note"])
         self.assertEqual([row["source"] for row in self.chat_messages()], ["user", "note", "note", "user"])
-        # An hour later the cap has room again: a scout the duty started starts the next note-driven turn,
-        # and the expired mark is gone.
-        self.advance_fake_clock(3601)
+        # Once the hour has passed the cap has room again: a scout the duty started starts the next note-driven
+        # turn, which takes the held note too, and the expired mark is gone.
+        self.advance_fake_clock(2)
         self.started_by_duty("scouted", "scout", "scouted", "Where is tracked.txt read?", "--repo", str(self.repo))
         self.until(lambda: self.chat_settled(4), timeout=60)
-        self.assertIn("Task note: scouted ended turn 1", self.claude_invocations()[-1]["argv"][1])
+        prompt = self.claude_invocations()[-1]["argv"][1]
+        self.assertLess(prompt.index("Task note: queued-note"), prompt.index("Task note: scouted ended turn 1"))
         mark, = self.state("duty")["duty_auto_turns"]
         self.assertGreaterEqual(mark, first_mark + 3600)
-        self.assertEqual([row["source"] for row in self.chat_messages()].count("note"), 3)
+        self.assertEqual([row["source"] for row in self.chat_messages()].count("note"), 4)
         # The note carries every section wait prints: result, checks, review, CI and PR.
         worker = self.worker()
         st = worker.task_state.load("noted")
@@ -1009,13 +1099,35 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(json.loads(notes.read_text())["held"], [])
         self.started_by_duty("late")
         self.until(lambda: len(waiting()) == 1, timeout=60)
+        # say duty checks its options before it queues the message, as say does.
+        rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", "duty", "Continue", "--effort", "ultra", "--queue"],
+                                  cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("Invalid Claude effort", rejected.stderr)
+        self.assertEqual(len(waiting()), 1)
         st = self.state("duty")
-        for pid in (st["pid"], st["claude_pid"]):
-            self.extra_pids.add(pid)
-            os.kill(pid, signal.SIGKILL)
+        self.extra_pids.update((st["pid"], st["claude_pid"]))
+        os.kill(st["pid"], signal.SIGKILL)
         output, errors = second.communicate(timeout=30)
         self.assertEqual(second.returncode, 1, output)
         self.assertIn("the duty gave no answer (outcome running)", errors)
+        # Its Claude outlived the supervisor and still holds the session: no second Claude joins it.
+        refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "And now?"], cwd=self.repo, env=self.env,
+                                 text=True, capture_output=True, timeout=60)
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("Claude process %d of the previous duty turn outlived its supervisor" % st["claude_pid"],
+                      refused.stderr)
+        self.assertEqual(len(self.claude_invocations()), 2)
+        os.kill(st["claude_pid"], signal.SIGKILL)
+
+        def gone():
+            try:
+                os.kill(st["claude_pid"], 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        self.until(gone, timeout=30)
         self.assertIn("Third answer.", self.cli("duty", "chat", "And now?", timeout=60))
         prompt = self.claude_invocations()[-1]["argv"][1]
         self.assertLess(prompt.index("Task note: late ended turn 1"), prompt.index("And now?"))

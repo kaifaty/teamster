@@ -36,7 +36,8 @@ the room's path.
 
 The turn never uses `bypassPermissions`: it runs with `--permission-mode dontAsk`, the tools `Read`,
 `Grep`, `Glob`, `Bash`, `Write` and `Edit`, and a PreToolUse hook (`bash_guard.py --duty-room ROOM`)
-on `Bash`, `Write`, `Edit`, `MultiEdit` and `NotebookEdit`. The hook fails closed and allows:
+on `Bash`, `Write`, `Edit`, `MultiEdit` and `NotebookEdit`; the same `--settings` set `disableAllHooks: false`,
+so no account or project setting turns the hook off. The hook fails closed and allows:
 
 - `teamster start|say|scout|review|stop|status|wait|report|docs|accounts` and `teamster duty status`,
   except `say`, `stop`, `review` and `wait` on the duty conversation itself. Each takes only the exact
@@ -47,9 +48,13 @@ on `Bash`, `Write`, `Edit`, `MultiEdit` and `NotebookEdit`. The hook fails close
   option, and `-C` outside the room), then `log`, `show`, `diff`, `ls-files` or `grep`. `log`, `show`
   and `diff` also need `--no-ext-diff --no-textconv --no-show-signature --submodule=short` and refuse
   `--ext-diff`, `--textconv`, `--show-signature`, `--output`, other `--submodule` values, `%G`
-  placeholders and every abbreviation of these. `diff` compares commits (an argument with `..`, or two
-  revisions before `--`) or the index (`--cached`), never the working tree, whose clean filters it would
-  run; `--no-index` is refused. `ls-files` takes only `-z`, `-s`/`--stage`, `--cached`, `--full-name` and
+  placeholders and every abbreviation of these. `log` and `show` name their format (`--oneline`,
+  `--pretty`, a built-in name, or a `--format=`/`--pretty=` string), so that `format.pretty` from the
+  config, which can show signatures and so run `gpg.program`, never applies. `diff` compares two
+  commits written before `--` (`A...B --` or `A B --`) or the index (`--cached`), never the working tree,
+  whose clean filters it would run; it takes only options without a separate value (the required
+  switches, `--cached`, `--staged`, `--merge-base`, the stat and name formats, `-p`, `-w`, `--no-color`,
+  and `--stat=`, `--unified=`, `--diff-filter=`, `-U` with their values attached). `ls-files` takes only `-z`, `-s`/`--stage`, `--cached`, `--full-name` and
   `--error-unmatch`; `grep` refuses `-O`/`--open-files-in-pager`, `--textconv`, `--no-index` and
   `--recurse-submodules`. `git status` (clean filters) and `git fetch` (credential helpers, ssh commands,
   proxies, upload-pack and hooks from the config) are refused;
@@ -62,7 +67,7 @@ managers, `curl` and `rm`. Commands run by path and variable assignments are ref
 command (`;`, `&&`, `||`, `|`, a subshell) is judged by every part; shell expansions (`$VAR`, `$(…)`,
 backticks, ANSI-C quoting `$'…'`, arithmetic, globs, braces, the body of an unquoted heredoc that
 expands) and control keywords are refused. Redirections and the file tools may write only inside the
-room and outside its `.git`, with every symbolic link resolved (`/dev/null` and `2>&1` are fine). The duty never merges, releases or accepts work: that stays
+room and outside its `.git` and `.claude` (project settings), with every symbolic link resolved (`/dev/null` and `2>&1` are fine). The duty never merges, releases or accepts work: that stays
 with the user.
 
 ## The answer

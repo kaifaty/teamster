@@ -442,6 +442,13 @@ DUTY_GIT_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv", "--no-show-signature", 
 DUTY_GIT_REFUSED = ("--ext-diff", "--textconv", "--show-signature", "--output", "--open-files-in-pager", "--no-index",
                     "--submodule", "--recurse-submodules")
 DUTY_GIT_LS_FILES = frozenset({"-z", "-s", "--stage", "--cached", "--full-name", "--error-unmatch", "--"})
+# diff takes only options without a separate value, so every other word before -- is a revision.
+DUTY_GIT_DIFF_OPTIONS = frozenset(DUTY_GIT_DIFF_FLAGS) | {
+    "--cached", "--staged", "--merge-base", "--stat", "--numstat", "--shortstat", "--name-only", "--name-status",
+    "--summary", "-p", "--patch", "-w", "--ignore-all-space", "--no-color"}
+DUTY_GIT_DIFF_VALUES = ("--stat=", "--unified=", "--diff-filter=", "-U")
+# log and show name their format, so that format.pretty from the config (with %G, which runs gpg) never applies.
+DUTY_GIT_FORMATS = frozenset({"oneline", "short", "medium", "full", "fuller", "reference", "raw"})
 DUTY_GH = {"pr": frozenset({"view", "diff", "checks", "list"}), "run": frozenset({"view", "list"})}
 DUTY_READERS = frozenset({"ls", "cat", "head", "tail", "wc", "rg"})
 # Options that make rg run another program.
@@ -451,7 +458,8 @@ FILE_TOOLS = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path
 DUTY_ALLOWED = (
     "`teamster start|say|scout|review|stop|status|wait|report|docs|accounts` and `teamster duty status` "
     "with their exact option names; `" + DUTY_GIT_PREFIX + " [-C <path>] log|show|diff|ls-files|grep`, where "
-    "log, show and diff also take `" + " ".join(DUTY_GIT_DIFF_FLAGS) + "`; `gh pr view|diff|checks|list` and "
+    "log, show and diff also take `" + " ".join(DUTY_GIT_DIFF_FLAGS) + "`, log and show a format (`--oneline` or "
+    "`--format=…`), and diff two commits before `--` (`A...B --`); `gh pr view|diff|checks|list` and "
     "`gh run view|list`; `ls`, `cat`, `head`, `tail`, `wc` and `rg`")
 
 
@@ -468,12 +476,15 @@ def has_option(words, options):
 
 
 def inside_room(path, room, cwd):
-    """Whether ``path`` resolves inside ``room`` and outside its .git, following every symbolic link."""
+    """Whether ``path`` resolves inside ``room`` and outside its .git and .claude, following every symbolic link.
+
+    .claude/settings.json in the room would be the turn's project settings: hooks, env and permissions.
+    """
     root = os.path.realpath(room)
     target = os.path.realpath(os.path.join(cwd, os.path.expanduser(path)))
     if os.path.commonpath([root, target]) != root:
         return False
-    return ".git" not in os.path.relpath(target, root).split(os.sep)
+    return not {".git", ".claude"} & set(os.path.relpath(target, root).split(os.sep))
 
 
 def teamster_denial(arguments):
@@ -523,7 +534,7 @@ def git_denial(arguments, room, cwd):
     command, rest = (arguments[index], arguments[index + 1:]) if index < len(arguments) else ("", [])
     if command == "status":
         return ("`git status` is refused: it can run the repository's clean filters; compare commits with "
-                f"`{DUTY_GIT_PREFIX} -C <path> diff {' '.join(DUTY_GIT_DIFF_FLAGS)} A...B`, or ask "
+                f"`{DUTY_GIT_PREFIX} -C <path> diff {' '.join(DUTY_GIT_DIFF_FLAGS)} A...B --`, or ask "
                 "`teamster status <slug>`")
     if command == "fetch":
         return ("`git fetch` is refused: the repository's config can make it run credential helpers, ssh commands, "
@@ -543,15 +554,27 @@ def git_denial(arguments, room, cwd):
             return "`git grep -O` is refused: it opens a pager"
         if command in ("log", "show") and "%G" in word:
             return "signature placeholders (`%G…`) are refused: they run gpg.program"
+        if command in ("log", "show") and name in ("--format", "--pretty") and "=" in word and not (
+                word.partition("=")[2] in DUTY_GIT_FORMATS or word.partition("=")[2].startswith(("format:", "tformat:"))
+                or "%" in word):
+            return f"`{word}` is refused: a format name may come from the repository's config"
+        if command == "diff" and word.startswith("-") and word not in DUTY_GIT_DIFF_OPTIONS and not any(
+                word.startswith(prefix) and len(word) > len(prefix) for prefix in DUTY_GIT_DIFF_VALUES):
+            return (f"the git diff option `{word}` is refused: diff takes only "
+                    + ", ".join(f"`{option}`" for option in sorted(DUTY_GIT_DIFF_OPTIONS))
+                    + ", and " + ", ".join(f"`{prefix}…`" for prefix in DUTY_GIT_DIFF_VALUES))
     if command in ("log", "show", "diff") and not set(DUTY_GIT_DIFF_FLAGS) <= set(options):
         return (f"`git {command}` needs `{' '.join(DUTY_GIT_DIFF_FLAGS)}`: otherwise the repository's config can "
                 "run an external diff, textconv, gpg or a submodule diff")
-    if command == "diff":
+    if command in ("log", "show") and not any(
+            word in ("--oneline", "--pretty") or word.startswith(("--format=", "--pretty=")) for word in options):
+        return (f"`git {command}` needs its format, such as `--oneline` or `--format=%h %s`: the repository's "
+                "format.pretty could show signatures, which runs gpg.program")
+    if command == "diff" and not {"--cached", "--staged"} & set(options):
         revisions = [word for word in options if not word.startswith("-")]
-        if not ({"--cached", "--staged"} & set(options) or any(".." in word for word in revisions)
-                or (len(revisions) >= 2 and "--" in rest)):
+        if "--" not in rest or not (len(revisions) == 2 or len(revisions) == 1 and ".." in revisions[0]):
             return ("`git diff` against the working tree is refused: it runs the repository's clean filters; "
-                    "compare commits (`A...B`, or `A B --`) or use `--cached`")
+                    "compare commits, written `A...B --` or `A B --`, or the index with `--cached`")
     if command == "ls-files" and any(word not in DUTY_GIT_LS_FILES for word in options if word.startswith("-")):
         return ("`git ls-files` takes only " + ", ".join(f"`{option}`" for option in sorted(DUTY_GIT_LS_FILES))
                 + ": the others compare the working tree through filters")
