@@ -142,6 +142,7 @@ describe("a machine's row", () => {
     const row = machineRow(machine({ role: "сборка" }), NOW);
     expect(row).toMatchObject({ id: "m1", name: "gpu-box", line: "CPU 13 % · RAM 24 ГБ", level: "ok", dim: false });
     expect(row.title.split("\n").slice(0, 2)).toEqual(["gpu-box · сборка", "свободна"]);
+    expect(row.title.split("\n").slice(2)).toEqual(["CPU занят на 13 %; нагрузка 4 за 1 мин, 4 за 5 мин, ядер 32", "Память: свободно 24 ГБ из 64 ГБ (занято 63 %)"]);
     expect(machineRow(machine({ status: "busy", reasons: ["cpu"] }), NOW)).toMatchObject({ level: "warn" });
   });
 

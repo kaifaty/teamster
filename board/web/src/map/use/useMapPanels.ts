@@ -94,19 +94,25 @@ export function useMapPanels({ props, sources, model, host, fleetPanel, summaryB
    * A subscription's screen, from the control panel; a task's bridge opened from it stands on top, and closing it returns
    * there.
    */
-  function openAccount(key: string) {
+  function openAccount(key: string, opener: HTMLElement | null = null) {
     selected.value = null;
     shipOpen.value = false;
     researchOpen.value = false;
     account.value = key;
+    accountOpener = opener;
     onPanel();
   }
+  /** The element that opened the subscription's screen, to give the focus back to: the duty's window or the list's row. */
+  let accountOpener: HTMLElement | null = null;
 
   function closeAccount() {
     const key = account.value;
+    const opener = accountOpener;
     account.value = null;
+    accountOpener = null;
     void nextTick(() => {
-      const row = key ? visibleIn(`[data-account="${CSS.escape(key)}"]`) : null;
+      const back = opener?.isConnected && opener.offsetParent !== null ? opener : null;
+      const row = back ?? (key ? visibleIn(`[data-account="${CSS.escape(key)}"]`) : null);
       (row ?? host.value?.querySelector<HTMLElement>("canvas"))?.focus();
     });
   }
@@ -192,16 +198,20 @@ export function useMapPanels({ props, sources, model, host, fleetPanel, summaryB
 
   // Ship's log and the day's summary.
 
-  /** To the event's system, with its ship selected while the ship is still on the map. */
-  function goTo(event: LogEvent) {
-    if (!event.repo) return;
-    repo.value = event.repo;
-    const ship = event.slug ? systemTasks(sources.tasks.value, event.repo).shown.find((task) => task.slug === event.slug) : undefined;
+  /** To a task's system, with its ship's bridge open while the ship is shown on the map. */
+  function openTask(name: string, slug: string | null) {
+    repo.value = name;
+    const ship = slug ? systemTasks(sources.tasks.value, name).shown.find((task) => task.slug === slug) : undefined;
     if (ship) open(ship.slug);
     else {
       selected.value = null;
       shipOpen.value = false;
     }
+  }
+
+  /** To the event's system, with its ship selected while the ship is still on the map. */
+  function goTo(event: LogEvent) {
+    if (event.repo) openTask(event.repo, event.slug);
   }
 
   const summaryOpen = ref(false);
@@ -270,7 +280,7 @@ export function useMapPanels({ props, sources, model, host, fleetPanel, summaryB
   return {
     repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openShip, openResearch, closeResearch, close, showOnMap, openMachine,
     account, openAccount, closeAccount,
-    flying, enter, leave, goTo, summaryOpen, closeSummary, narrow,
+    flying, enter, leave, goTo, openTask, summaryOpen, closeSummary, narrow,
     logOpen, fleetVisible, toggleFleet, showStation,
   };
 }

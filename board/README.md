@@ -94,14 +94,25 @@ evenly, clear of the toolbar; a star keeps its place while it fits there (`galax
 `board/web/src/map/layout/stars.ts`).
 The control panel runs along the bottom of the map across its whole width, the same over the galaxy and over a system
 (`board/web/src/map/console/`, its texts in `texts.ts`). It stands in a cast bronze frame: two wings drawn by
-`art/console-wing.png` (the right one is the same picture mirrored) and a lower strip, `art/console-strip.png`, between
-them at 62% of their height. The wings stand about 26.5% of the window's height, and at least 250 px while that stays
+`art/console-wing.png` (the right one is the same picture mirrored) and a lower centre between them at 86% of their
+height: the events in `art/console-strip.png`, and under them the command row in a second, lower copy of the same strip. The wings stand about 26.5% of the window's height, and at least 250 px while that stays
 within about 34% of it; each is about 31% of the window's width, no wider than 620 px. A wider wing stretches only the
 plain rail at x 612–616 of its picture through `border-image`, so the shoulder, the step, the lamps, the rivets and the
-corners keep their proportions; the strip's rails and end caps keep theirs the same way. The blocks stand inside the
+corners keep their proportions; the strip's rails and end caps keep theirs the same way, and the command row's strip
+stretches only the plain pipe at x 430–530 of its rails, so its end caps, lamps and rivets keep their shape. The blocks stand inside the
 frame's dark compartments, placed in the picture's pixels from the wing's edges, with thin amber dividers between them.
 The events' list in the centre is a whole number of rows; «развернуть» opens it over the map clear of the wings. The left
-wing holds «Дежурный» and «Подписки», the centre «События», the right wing «Машины» and «Рефлексия». Every subscription has a portrait, the next one of its family in
+wing holds «Дежурный» and «Подписки», the centre «События» and the command row, the right wing «Машины» and «Рефлексия».
+The command row has cast bronze buttons: «Ждут тебя · N» and «Тревоги · N» count the tasks in `review_me` and in
+`attention` over every repository, the same tasks the systems' badges count, and each press opens the next of them as a
+log line does (its system, and its ship's bridge while the ship is on the map), the one that has waited longest first
+(`phase_started_at`, else `updated_at`) and round again (`queueOf`, `nextInQueue` in `console/queue.ts`); at zero the
+button stays, switched off. «Сводка дня» shows today's `teamster report --by executor` and the day's verdicts. The menu
+«≡» drops up with «Свернуть панель», which folds a wide window's panel to the phone's strip with both counters and
+«Развернуть панель» (kept in `localStorage` as `codex-board.console-folded.v1`; the galaxy is fitted anew above the
+strip), «Звук уведомлений», off by default (`codex-board.console-sound.v1`): a short quiet chime made by Web Audio,
+lower for an alarm, when a task comes into `review_me` or `attention` (not at the page's first snapshot; the browser lets
+it sound after your first press or key), and in `dev:fixture` the map's source, «доска» or «сценарий». Every subscription has a portrait, the next one of its family in
 order (`duty-claude-1…3.jpg`, `duty-codex-1…2.jpg`, round again past the last; `portraitNames`); an exhausted, limited or
 logged-out subscription's portrait is greyed out. «Дежурный» is the duty account, the one teamster keeps for the
 orchestrator and new tasks skip: its portrait large in an amber-edged window, and over its foot «Дежурный · <name>», its family, the week left and the time to the refill
@@ -111,7 +122,8 @@ subscription as a row: its small portrait, its name, a bar of the week's limit l
 when exhausted, limited or logged out, the share left, the time to the refill (the weekly reset, or the end of the limit
 that ran out) and a spare cell for every free reset of a Codex account; the duty's row stands out, and a row's title has
 the five-hour window, the reset times and when the free resets expire. On a phone the panel folds to a strip in the centre's
-rails with the duty and the newest event, and «Ещё» opens the subscriptions, the machines and the reflection over the map.
+rails with the duty, both counters and the newest event, and «Ещё» opens the subscriptions, the machines, the reflection,
+«Сводка дня» and the settings over the map.
 A click on the duty or a subscription's row opens the subscription's own screen (`board/web/src/map/account/`), over the
 map like a ship's bridge. «Сейчас» says the state in plain words — works and how much of the week is left, little left, the week
 spent or a limit until when, no data, or a sign-in needed (a Codex account logged out or signed in to the same ChatGPT
@@ -316,22 +328,23 @@ plays the orders on its own tasks.
 The log «События» in the control panel's centre tells the last day's completed phases and lead verdicts (`GET /api/events`
 and live `event` messages) in plain words, newest first; in a system it shows only that system. «развернуть» opens the
 long list over the map; on a phone the log folds to its newest line and opens over the map on demand. A line leads to its
-system and selects the ship while it is still there. «Сводка дня» shows today's `teamster report --by executor` and
-the day's verdicts. The map always shows the current fleet. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
+system and selects the ship while it is still there. «Сводка дня» opens from the control panel's command row. The map always shows the current fleet. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
 (`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them. Above the commands
 stands the order the task's state calls for, one reason and one command, and the other commands fold under «Все команды».
 A finished task shows its «Груз» above the commands (the saved check, the review and its findings, why the fix loop stopped, CI, the base merge, what is left and the questions), and on the roadstead «вернуть на доработку» puts all of it into one `say` text, while «принять» goes back to the verdict.
-`npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map that takes three demo ships through
+`npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map (in the command row's menu) that takes three demo ships through
 every station; both fixture sources include a day of log events, with a ship that reaches the sun, one turned back at the gate and one in trouble, and a day's report.
 
 The map's code in `board/web/src/map/`:
 - `layout/` — the geometry, one module per subject: the stars, the systems' stations and parking, the camera.
 - `scene/` — the Pixi scene: its camera, its input and its layers, `galaxy/` and `system/`; to add an object to the map,
   see the comment at the top of `scene/layer.ts`.
-- `use/` — the composables `MapView.vue` is made of: the sources, the model, the panels, the labels, the scene.
+- `use/` — the composables `MapView.vue` is made of: the sources, the model, the panels, the labels, the scene and the
+  notification sound (`useArrivalChime.ts`).
 - `console/` — the control panel under the map: `MapConsole.vue` with its left wing (`.console-left`: `ConsoleDuty.vue`,
-  `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue`) and right wing (`.console-right`:
-  `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts, `portraits.ts` finds the subscriptions'
+  `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue` and the command row, `ConsoleCommands.vue`) and
+  right wing (`.console-right`: `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts,
+  `queue.ts` the command row's queues, `portraits.ts` finds the subscriptions'
   pictures, and `console.css` holds what the blocks share.
 - `overlay/` — the labels over the canvas: the `.ts` builders make their texts and places, and a component for each
   kind draws one (`StarLabel.vue`, `StationPlate.vue`…), with its own styles; `overlay.css` holds what they share. A new

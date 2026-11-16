@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// The map's toolbar: the way back to the galaxy, the system's picker, the demo's source, the day's summary, the ships'
-// list, the legend and the hint.
-import { ref } from "vue";
+// The map's toolbar: the way back to the galaxy, the system's picker, the ships' list, the legend and the hint. The day's
+// summary and the demo's source are in the control panel's command row.
 import type { ShipEntry } from "./scene";
 import type { GalaxyModel } from "./use/useGalaxyModel";
 
@@ -11,7 +10,6 @@ defineProps<{
   emblemOf: (name: string | null) => string | null;
   starList: GalaxyModel["starList"]["value"];
   pickerGroups: GalaxyModel["pickerGroups"]["value"];
-  demo: boolean;
   fleetVisible: boolean;
   /** The open system's ships. */
   entries: readonly ShipEntry[];
@@ -19,12 +17,6 @@ defineProps<{
 const emit = defineEmits<{ leave: []; toggleFleet: [] }>();
 /** The picked system, "" for the whole galaxy. */
 const repoModel = defineModel<string>("repoModel", { required: true });
-const sourceKind = defineModel<"board" | "scenario">("sourceKind", { required: true });
-const summaryOpen = defineModel<boolean>("summaryOpen", { required: true });
-
-/** The day's summary gives the focus back to its button when it closes. */
-const summaryButton = ref<HTMLButtonElement | null>(null);
-defineExpose({ summaryButton });
 
 const hideImage = (event: Event) => {
   (event.target as HTMLElement).hidden = true;
@@ -45,11 +37,6 @@ const hideImage = (event: Event) => {
         <option v-for="star in pickerGroups.rest" :key="star.repo" :value="star.repo">{{ star.repo }} · {{ star.live }}</option>
       </select>
     </label>
-    <div v-if="demo" class="seg" role="group" aria-label="Источник карты">
-      <button type="button" class="btn" :aria-pressed="sourceKind === 'board'" @click="sourceKind = 'board'">Доска</button>
-      <button type="button" class="btn" :aria-pressed="sourceKind === 'scenario'" @click="sourceKind = 'scenario'">Сценарий</button>
-    </div>
-    <button ref="summaryButton" type="button" class="btn" :aria-expanded="summaryOpen" @click="summaryOpen = true">Сводка дня</button>
     <button
       v-if="repo"
       type="button"
@@ -111,24 +98,6 @@ const hideImage = (event: Event) => {
   padding: 1px 6px;
   text-overflow: ellipsis;
   font-weight: 400;
-}
-
-.seg {
-  display: inline-flex;
-}
-
-.seg .btn {
-  border-radius: 0;
-  margin-left: -1px;
-}
-
-.seg .btn:first-child {
-  border-radius: var(--radius) 0 0 var(--radius);
-  margin-left: 0;
-}
-
-.seg .btn:last-child {
-  border-radius: 0 var(--radius) var(--radius) 0;
 }
 
 .legend {
