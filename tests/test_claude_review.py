@@ -81,6 +81,7 @@ trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(),
        "disable_background_tasks": os.environ.get("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"),
        "copyfile_disable": os.environ.get("COPYFILE_DISABLE"),
        "bash_timeouts": [os.environ.get("BASH_DEFAULT_TIMEOUT_MS"), os.environ.get("BASH_MAX_TIMEOUT_MS")],
+       "started_by": os.environ.get("TEAMSTER_STARTED_BY"),
        "inherited_provider_keys": sorted(key for key in os.environ
            if (key.startswith("CLAUDE") or key.startswith("ANTHROPIC"))
            and key not in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
@@ -363,6 +364,70 @@ class ClaudeReviewTests(RotationTestCase):
                     self.assertEqual(reason.getvalue(), "")
                 else:
                     self.assertIn(expected, reason.getvalue())
+
+    def test_duty_guard_allows_only_the_allowlist_and_writes_in_the_room(self):
+        hook = runpy.run_path(str(SCRIPT.with_name("bash_guard.py")))["main"]
+        room = self.root / "duty-room"
+        room.mkdir()
+        allowed = (
+            "teamster start fix-parser --brief %s/fix-parser.md --repo /work/repo" % room,
+            "teamster say fix-parser 'Also cover the empty line.'", "teamster scout where 'Who reads it?' --repo /r",
+            "teamster review fix-parser", "teamster stop fix-parser", "teamster status", "teamster wait fix-parser",
+            "teamster report --since 7d", "teamster docs lead-guide", "teamster accounts --json",
+            "teamster duty status --json",
+            "git log --oneline -5", "git -C /work/repo diff origin/main...HEAD", "git show HEAD~1", "git status",
+            "git fetch origin", "git ls-files src", "git grep -n parse", "git --no-pager log -1",
+            "gh pr view 12 --repo fixture/repo", "gh pr diff 12", "gh pr checks 12", "gh pr list",
+            "gh run view 7 --log-failed", "gh run list", "ls -la /work/repo", "cat README.md", "head -n 5 a.md",
+            "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src",
+            # Compound commands pass when every part does; output may go to the room or /dev/null.
+            "git status && git log -1; teamster status", "git log --oneline | head -3 | wc -l",
+            "(git status; ls)", "git diff 2>&1 | tail -n 40", "rg -n x src 2>/dev/null",
+            "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room, "git diff > brief.diff",
+        )
+        refused = (
+            "gh pr merge 12", "gh pr merge 12 --squash", "gh api repos/x", "gh pr checkout 12", "gh run rerun 7",
+            "git push", "git commit -m x", "git merge main", "git rebase main", "git reset --hard",
+            "git checkout -b x", "git -c core.pager=sh log", "git log --output=/tmp/x", "git grep -O x",
+            "git fetch --upload-pack=sh origin", "git -C %s/planted status" % room,
+            "teamster clean fix-parser", "teamster verdict fix-parser accepted", "teamster login a",
+            "teamster claude-login a", "teamster duty tick", "teamster duty clear", "teamster lesson x applied",
+            "teamster say duty 'Talk to yourself'", "teamster stop duty",
+            "scripts/bump_version.py minor --commit", "python3 scripts/bump_version.py patch", "./teamster status",
+            "npm install", "pip install x", "uv tool install x", "brew install x", "curl https://example.test",
+            "rm -rf build", "rg --pre=sh x .", "echo hi", "PATH=/tmp teamster status", "cd /work && git log",
+            # Compound commands: one forbidden part refuses the whole text.
+            "git status; rm -rf build", "git log && git push", "git log || git push", "cat a | sh",
+            "echo $(git push)", "git log `git push`", "ls $HOME", "ls *.md", "git log {a,b}",
+            "cat <<EOF > %s/b.md\n$(git push)\nEOF" % room, "git log &", "if true; then git log; fi",
+            "cat a.md > /tmp/out", "cat a.md >> ../out", "git diff > .git/config", "cat a.md > %s/.git/HEAD" % room,
+        )
+        for command, expected in [(command, 0) for command in allowed] + [(command, 2) for command in refused]:
+            with self.subTest(command=command):
+                event = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(room)})
+                with mock.patch.object(sys, "argv", ["bash_guard.py", "--duty-room", str(room)]), \
+                        mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(event.encode()))), \
+                        contextlib.redirect_stderr(io.StringIO()) as reason:
+                    self.assertEqual(hook(), expected, reason.getvalue())
+                self.assertEqual(bool(reason.getvalue()), bool(expected))
+                if expected:
+                    self.assertIn("Blocked by teamster", reason.getvalue())
+        writes = ((("Write", "file_path", str(room / "fix-parser.md")), 0), (("Edit", "file_path", "notes.md"), 0),
+                  (("Write", "file_path", str(self.root / "outside.md")), 2), (("Edit", "file_path", "../x.md"), 2),
+                  (("Write", "file_path", str(room / ".git" / "config")), 2),
+                  (("NotebookEdit", "notebook_path", "/tmp/n.ipynb"), 2), (("Write", "file_path", ""), 2))
+        for (tool, key, path), expected in writes:
+            with self.subTest(tool=tool, path=path):
+                event = json.dumps({"tool_name": tool, "tool_input": {key: path}, "cwd": str(room)})
+                with mock.patch.object(sys, "argv", ["bash_guard.py", "--duty-room", str(room)]), \
+                        mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(event.encode()))), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(hook(), expected)
+        # The duty guard fails closed on input it cannot read.
+        with mock.patch.object(sys, "argv", ["bash_guard.py", "--duty-room", str(room)]), \
+                mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"not json"))), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(hook(), 2)
 
     def test_bash_timeouts_round_the_remaining_budget_to_the_millisecond(self):
         worker = self.worker()

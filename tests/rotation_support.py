@@ -799,7 +799,7 @@ class RotationTestCase(unittest.TestCase):
                          "command: %s\nstdout:\n%s\nstderr:\n%s" % (args, result.stdout, result.stderr))
         # Keep supervisors after their final save clears state['pid']; wait
         # returns as soon as that idle state is visible, before process exit.
-        if args and args[0] in ("start", "scout", "say", "review"):
+        if args and args[0] in ("start", "scout", "say", "review", "duty"):
             for line in result.stdout.splitlines():
                 pid = line.rpartition(", pid ")[2]
                 if pid.isdigit():

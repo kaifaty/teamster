@@ -823,8 +823,8 @@ def cmd_duty_chat(a):
         else:
             st = open_duty_chat(cfg, account, order)
     turn = st["turns"]
-    print(f"sent to the duty {account['name']} (turn {turn}), pid {st['pid']}; "
-          f"follow it with: {config.COMMAND} wait {duty_chat.CHAT_SLUG}", flush=True)
+    print(f"sent to the duty {account['name']} (turn {turn}), pid {st['pid']}\n"
+          f"  wait: {config.COMMAND} wait {duty_chat.CHAT_SLUG}", flush=True)
     while True:
         st = task_state.load(duty_chat.CHAT_SLUG)
         if st.get("turns", 0) != turn or not procs.alive(st.get("pid")):
