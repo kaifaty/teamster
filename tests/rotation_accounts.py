@@ -376,7 +376,7 @@ else:
             self.assertEqual(events[-1]["status"], "ok")
 
     def test_login_events_clean_preserves_cursor_forward_spaces(self):
-        events = self.worker().commands.LoginEvents()
+        events = self.worker().account_commands.LoginEvents()
         for prefix in ("\x1b[", "\x9b"):
             with self.subTest(prefix=repr(prefix)):
                 self.assertEqual(events.clean("left" + prefix + "Cright"), "left right")
@@ -695,10 +695,10 @@ else:
         custom = self.root / "custom-claude"
         with mock.patch.dict(os.environ, environment, clear=True), \
                 mock.patch.object(worker.claude_review, "probe", return_value=None), \
-                mock.patch.object(worker.commands.os, "ttyname", return_value="/dev/fixture-tty"), \
-                mock.patch.object(worker.commands, "open", create=True,
+                mock.patch.object(worker.account_commands.os, "ttyname", return_value="/dev/fixture-tty"), \
+                mock.patch.object(worker.account_commands, "open", create=True,
                                   side_effect=lambda path, mode, **kwargs: terminal.open(mode, **kwargs)) as opened_terminal, \
-                mock.patch.object(worker.commands.subprocess, "run", wraps=worker.commands.subprocess.run) as launched, \
+                mock.patch.object(worker.account_commands.subprocess, "run", wraps=worker.account_commands.subprocess.run) as launched, \
                 capture_descriptors():
             for arguments in (("claude-login", "second"),
                               ("claude-login", "third", "--config-dir", str(custom),
@@ -747,7 +747,7 @@ else:
         path.write_text(json.dumps({"claude": {"model": "fixture-model"}}))
         with mock.patch.dict(os.environ, environment, clear=True), \
                 mock.patch.object(worker.claude_review, "probe", return_value=None), \
-                mock.patch.object(worker.commands, "open", create=True,
+                mock.patch.object(worker.account_commands, "open", create=True,
                                   side_effect=lambda path, mode, **kwargs: terminal.open(mode, **kwargs)), \
                 mock.patch.object(worker.cli.sys, "argv", ["teamster", "claude-login", "second"]), \
                 capture_descriptors():
@@ -769,12 +769,12 @@ else:
         terminal.touch()
         directory = str(self.root / "new-claude")
         with mock.patch.object(worker.config, "claude_binary", return_value="fixture-claude"), \
-                mock.patch.object(worker.commands.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                mock.patch.object(worker.account_commands.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
                 mock.patch.object(worker.claude_review, "probe", return_value=None), \
-                mock.patch.object(worker.commands, "open", create=True,
+                mock.patch.object(worker.account_commands, "open", create=True,
                                   side_effect=lambda path, mode, **kwargs: terminal.open(mode, **kwargs)), \
                 redirect_stdout(io.StringIO()):
-            worker.commands.cmd_claude_login(SimpleNamespace(
+            worker.account_commands.cmd_claude_login(SimpleNamespace(
                 name="large", config_dir=directory, keychain="fixture-new-service"))
         self.assertEqual(json.loads(path.read_text())["claude"]["accounts"], [
             dict(account, config_dir=directory, token_keychain="fixture-new-service")])
@@ -787,10 +787,10 @@ else:
                 raise OSError(25, "Inappropriate ioctl for device")
             return f"/dev/fixture-tty{descriptor}"
 
-        with mock.patch.object(worker.commands.os, "ttyname", side_effect=ttyname):
-            self.assertEqual(worker.commands.terminal_device(), "/dev/fixture-tty1")
-        with mock.patch.object(worker.commands.os, "ttyname", side_effect=OSError(25, "not a terminal")):
-            self.assertEqual(worker.commands.terminal_device(), "/dev/tty")
+        with mock.patch.object(worker.account_commands.os, "ttyname", side_effect=ttyname):
+            self.assertEqual(worker.account_commands.terminal_device(), "/dev/fixture-tty1")
+        with mock.patch.object(worker.account_commands.os, "ttyname", side_effect=OSError(25, "not a terminal")):
+            self.assertEqual(worker.account_commands.terminal_device(), "/dev/tty")
 
     def test_concurrent_claude_logins_merge_the_latest_settings_after_interaction(self):
         worker = self.worker()
@@ -816,17 +816,17 @@ else:
         environment = dict(self.env, HOME=str(self.root), USER="fixture-user", CODEX_TASK_CLAUDE=str(claude))
         with mock.patch.dict(os.environ, environment, clear=True), \
                 mock.patch.object(worker.claude_review, "probe", return_value=None), \
-                mock.patch.object(worker.commands, "open", create=True,
+                mock.patch.object(worker.account_commands, "open", create=True,
                                   side_effect=lambda path, mode, **kwargs: terminal.open(mode, **kwargs)), \
                 mock.patch("builtins.print"), ThreadPoolExecutor(max_workers=1) as executor:
-            first = executor.submit(worker.commands.cmd_claude_login,
+            first = executor.submit(worker.account_commands.cmd_claude_login,
                                     SimpleNamespace(name="first", config_dir=None, keychain=None))
             try:
                 self.until(ready.exists)
                 settings["switch_at"] = 87
                 settings["claude"]["model"] = "fixture-updated-model"
                 path.write_text(json.dumps(settings))
-                worker.commands.cmd_claude_login(SimpleNamespace(name="third", config_dir=None, keychain=None))
+                worker.account_commands.cmd_claude_login(SimpleNamespace(name="third", config_dir=None, keychain=None))
                 self.assertFalse(first.done(), "interactive login must not hold the settings lock")
             finally:
                 release.touch()
@@ -1079,7 +1079,7 @@ else:
                                                            "result": token if failure else "OK"}]}))
                 output, errors = io.StringIO(), io.StringIO()
                 with mock.patch.dict(os.environ, self.env, clear=True), \
-                        mock.patch.object(worker.commands, "open", create=True,
+                        mock.patch.object(worker.account_commands, "open", create=True,
                                           side_effect=lambda path, mode, **kwargs: terminal.open(mode, **kwargs)), \
                         mock.patch.object(worker.cli.sys, "argv", ["teamster", "claude-login", "probe"]), \
                         redirect_stdout(output), redirect_stderr(errors):
@@ -2131,8 +2131,8 @@ else:
         worker.claude_accounts.save_limits("second", {"status": "rejected", "resetsAt": self.reset})
         retained_limits = worker.claude_accounts.read_limits()["second"]
         with mock.patch.object(worker.cli.sys, "argv", ["teamster", "claude-remove", "first"]), \
-                mock.patch.object(worker.commands.subprocess, "run") as launched, \
-                mock.patch.object(worker.commands.subprocess, "Popen") as spawned, \
+                mock.patch.object(worker.account_commands.subprocess, "run") as launched, \
+                mock.patch.object(worker.account_commands.subprocess, "Popen") as spawned, \
                 mock.patch("builtins.print") as output:
             worker.cli.main()
         launched.assert_not_called()
