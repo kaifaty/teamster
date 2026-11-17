@@ -224,7 +224,7 @@ def codex_duty_catalog(account, path):
             try:
                 models = json.loads(source.read_text(encoding="utf-8"))["models"]
                 break
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 if attempt == 2:
                     raise
                 time.sleep(0.05)
@@ -236,13 +236,28 @@ def codex_duty_catalog(account, path):
         if (not isinstance(models, list) or not models
                 or any(not isinstance(info, dict)
                        or any(type(info.get(key)) is not expected for key, expected in required.items())
-                       or not info["slug"]
-                       or not (isinstance(info.get("base_instructions"), str)
-                               or isinstance(info.get("model_messages"), dict)
-                               and isinstance(info["model_messages"].get("instructions_template"), str))
-                       for info in models)
+                       or not info["slug"] for info in models)
                 or not any(info.get("visibility") == "list" for info in models)):
             raise ValueError("unusable models")
+        for info in models:
+            truncation = info["truncation_policy"]
+            messages, legacy = info.get("model_messages"), info.get("base_instructions")
+            template = messages.get("instructions_template") if isinstance(messages, dict) else None
+            if (info["shell_type"] not in ("unified_exec", "disabled", "default", "local", "shell_command")
+                    or info["visibility"] not in ("list", "hide", "none")
+                    or not -(2 ** 31) <= info["priority"] < 2 ** 31
+                    or truncation.get("mode") not in ("bytes", "tokens")
+                    or type(truncation.get("limit")) is not int
+                    or not -(2 ** 63) <= truncation["limit"] < 2 ** 63
+                    or any(not isinstance(level, dict) or not isinstance(level.get("effort"), str)
+                           or not level["effort"] or not isinstance(level.get("description"), str)
+                           for level in info["supported_reasoning_levels"])
+                    or any(not isinstance(tool, str) for tool in info["experimental_supported_tools"])
+                    or messages is not None and not isinstance(messages, dict)
+                    or template is not None and not isinstance(template, str)
+                    or legacy is not None and not isinstance(legacy, str)
+                    or template is None and legacy is None):
+                raise ValueError("unusable models")
     except (OSError, ValueError, TypeError, KeyError):
         raise ValueError("Codex duty needs a usable " + str(source)
                          + "; an ordinary Codex work turn creates it.") from None

@@ -1178,12 +1178,41 @@ class ClaudeReviewTests(RotationTestCase):
             finally:
                 finish.set()
                 writer.result(timeout=5)
+        source.write_bytes(b'{"models":[{"slug":"\xd0')
+        reads.clear()
+
+        def read_torn_utf8(path, *args, **kwargs):
+            if path == source:
+                reads.append(path)
+            try:
+                return read_text(path, *args, **kwargs)
+            except UnicodeDecodeError:
+                source.write_text(original)
+                raise
+
+        with mock.patch.object(Path, "read_text", read_torn_utf8):
+            models = worker.turns.codex_duty.codex_duty_catalog({"home": str(self.home)}, directory / "models.json")
+        self.assertEqual(len(reads), 2)
+        self.assertEqual([info["slug"] for info in models],
+                         [info["slug"] for info in json.loads(original)["models"]])
         incomplete = json.loads(original)
         del incomplete["models"][0]["display_name"]
+        first = json.loads(original)["models"][0]
+        malformed = [json.dumps({"models": [dict(first, **{field: value})]}) for field, value in (
+            ("truncation_policy", {}),
+            ("truncation_policy", {"mode": "unknown", "limit": 1000}),
+            ("truncation_policy", {"mode": "tokens", "limit": True}),
+            ("supported_reasoning_levels", [{"effort": "high"}]),
+            ("experimental_supported_tools", [False]),
+            ("shell_type", "unknown"),
+            ("priority", 2 ** 31),
+            ("model_messages", {"instructions_template": False}))]
         for content in (None, '{"models": []}', '{"models": [{"slug": "fixture", "visibility": "list"}]}',
-                        json.dumps(incomplete)):
+                        json.dumps(incomplete), b'\xd0', *malformed):
             if content is None:
                 source.unlink()
+            elif isinstance(content, bytes):
+                source.write_bytes(content)
             else:
                 source.write_text(content)
             with self.subTest(content=content), mock.patch.dict(os.environ, self.env, clear=True):
