@@ -47,7 +47,8 @@ def duty_provider_models():
                                 "tools": {"code_mode": {"exec": {"description": "Fixture exec guidance"}}}},
              "support_verbosity": False, "default_verbosity": None,
              "truncation_policy": {"mode": "bytes", "limit": 10000}, "context_window": 128000,
-             "experimental_supported_tools": [], "input_modalities": ["text", "image"]}
+             "experimental_supported_tools": ["send_user_message_async"] if name == "gpt-6.1-sol" else [],
+             "input_modalities": ["text", "image"]}
             for index, name in enumerate(names)]
 
 
@@ -398,7 +399,8 @@ def duty_turn(request, thread, model, models):
             trace({"command": "duty-child", "child_pid": child.pid})
         if item is not None:
             emit({"method": "item/completed", "params": {
-                  "threadId": thread["id"], "turnId": turn, "item": dict(item, status="completed")}})
+                  "threadId": thread["id"], "turnId": turn,
+                  "item": dict(item, status="failed" if item.get("exitCode") not in (None, 0) else "completed")}})
     if run.get("child"):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
                                  env=duty_command_environment(), start_new_session=True)
@@ -432,6 +434,16 @@ def app_server():
     catalog_path = duty_config().get("model_catalog_json")
     # A configured catalog is loaded at process startup and never refreshed from the provider/cache.
     catalog = json.loads(Path(catalog_path).read_text()) if catalog_path else {"models": duty_provider_models()}
+    required = {"slug": str, "display_name": str, "supported_reasoning_levels": list, "shell_type": str,
+                "visibility": str, "supported_in_api": bool, "priority": int, "support_verbosity": bool,
+                "truncation_policy": dict, "experimental_supported_tools": list}
+    if (not isinstance(catalog, dict) or not isinstance(catalog.get("models"), list) or not catalog["models"]
+            or any(not isinstance(info, dict) or any(type(info.get(key)) is not kind for key, kind in required.items())
+                   or not (isinstance(info.get("base_instructions"), str)
+                           or isinstance(info.get("model_messages"), dict)
+                           and isinstance(info["model_messages"].get("instructions_template"), str))
+                   for info in catalog["models"])):
+        sys.exit("failed to parse model_catalog_json: missing or invalid model metadata")
     models = catalog["models"]
     if os.environ.get("TEAMSTER_DUTY_PROCESS"):
         trace({"command": "duty-model-catalog", "source": "model_catalog_json" if catalog_path else "provider",
@@ -541,6 +553,10 @@ def app_server():
                       # What the real app-server 0.169.0 answers for a room-only workspace-write sandbox.
                       "sandbox": {"type": "readOnly", "networkAccess": False}}
         elif method == "turn/start":
+            identifier = request["params"].get("threadId")
+            if thread is None or identifier != thread["id"]:
+                emit({"id": request["id"], "error": {"message": "thread not found: " + str(identifier)}})
+                continue
             duty_turn(request, thread, model, models)
             continue
         elif method == "turn/interrupt":

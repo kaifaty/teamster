@@ -11,7 +11,9 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -883,15 +885,32 @@ class ClaudeReviewTests(RotationTestCase):
         return [entry for entry in self.trace() if entry["command"] == "duty-turn"]
 
     def duty_fake_rpc(self, home, requests, overrides=()):
-        """Send a finite RPC script with no approvals to the isolated fake."""
+        """Send a finite RPC script; a builder can use replies to earlier requests."""
         args = [str(self.fake), "app-server"]
         for key, value in overrides:
             args += ["-c", key + "=" + json.dumps(value)]
-        completed = subprocess.run(args, input="".join(json.dumps(request) + "\n" for request in requests),
-                                   env=dict(self.env, CODEX_HOME=str(home), HOME=str(home)),
-                                   cwd=self.repo, text=True, capture_output=True, timeout=30)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        return [json.loads(line) for line in completed.stdout.splitlines()]
+        messages = []
+        with subprocess.Popen(args, env=dict(self.env, CODEX_HOME=str(home), HOME=str(home)),
+                              cwd=self.repo, text=True, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+            for request in requests:
+                request = request(messages) if callable(request) else request
+                process.stdin.write(json.dumps(request) + "\n")
+                process.stdin.flush()
+                while True:
+                    line = process.stdout.readline()
+                    self.assertTrue(line, "fake exited before its RPC reply")
+                    message = json.loads(line)
+                    messages.append(message)
+                    if message.get("id") == request["id"] and "method" not in message:
+                        break
+            process.stdin.close()
+            process.stdin = None
+            # Preserve notifications already buffered by readline.
+            stdout, stderr = process.stdout.read(), process.stderr.read()
+            process.wait(timeout=30)
+        self.assertEqual(process.returncode, 0, stderr)
+        return messages + [json.loads(line) for line in stdout.splitlines()]
 
     def test_codex_duty_starts_resumes_and_decides_each_request(self):
         self.configure(language="en")
@@ -948,6 +967,9 @@ class ClaudeReviewTests(RotationTestCase):
                               {"reply": self.duty_answer("Decide.", "needs_decision")}])
         self.put_duty("main", "codex")
         cache = self.home / "models_cache.json"
+        document = json.loads(cache.read_text())
+        document["models"][:2] = reversed(document["models"][:2])
+        cache.write_text(json.dumps(document))
         original_cache = cache.read_bytes()
         self.assertIn(command_output.strip(), self.cli("duty", "chat", "Discuss the parser.", timeout=60))
         st = self.state("duty")
@@ -1003,15 +1025,13 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(len(discovered), 10)
         self.assertTrue(all(entry["tool_mode"] == "code_mode_only" and entry["shell_type"] == "unified_exec"
                             and entry["apply_patch_tool_type"] == "freeform" for entry in discovered))
-        self.assertEqual(execution["models"], [dict(entry, tool_mode="direct") for entry in discovered])
+        self.assertEqual(execution["models"], [dict(entry, tool_mode="direct", experimental_supported_tools=[])
+                                               for entry in discovered])
+        self.assertIn("send_user_message_async", next(entry for entry in discovered
+                                                    if entry["slug"] == "gpt-6.1-sol")["experimental_supported_tools"])
         self.assertFalse(Path(execution["path"]).exists())
         self.assertEqual(cache.read_bytes(), original_cache)
         self.assertFalse((isolated / "models_cache.json").exists())
-        listed = next(entry for entry in self.trace()
-                      if entry["command"] == "duty-model-list" and entry["home"] == str(isolated))
-        self.assertTrue(listed["params"]["includeHidden"])
-        self.assertNotIn("limit", listed["params"])
-        self.assertEqual(len(listed["result"]["data"]), 10)
         tools = next(entry for entry in self.trace() if entry["command"] == "duty-tools")
         self.assertEqual(tools["tools"], ["exec_command", "write_stdin", "apply_patch"])
         self.assertFalse(tools["tty_allowed"])
@@ -1019,8 +1039,13 @@ class ClaudeReviewTests(RotationTestCase):
                          ("untrusted", "user"))
         for text in ("# Lead guide", "# On duty", "## Known repositories", "## Your room\n\n" + str(room)):
             self.assertIn(text, thread["params"]["developerInstructions"])
+        old_cache = isolated / "models_cache.json"
+        old_cache.write_bytes(b"Previous duty cache: leave this file alone.\n")
         self.cli("say", "duty", "Continue.", "--effort", "xhigh")
         self.assertIn("Second answer.", self.cli("wait", "duty", timeout=60))
+        self.assertEqual(old_cache.read_bytes(), b"Previous duty cache: leave this file alone.\n")
+        catalogs = [entry for entry in self.trace() if entry["command"] == "duty-model-catalog"]
+        self.assertEqual(catalogs[-1]["models"], execution["models"])
         self.assertEqual(self.state("duty")["thread"], first_thread)
         threads = [entry for entry in self.trace() if entry["command"] == "duty-thread"]
         self.assertEqual([entry["method"] for entry in threads], ["thread/start", "thread/resume"])
@@ -1051,10 +1076,13 @@ class ClaudeReviewTests(RotationTestCase):
         isolated = self.root / "fake-codex-home"
         isolated.mkdir()
         start = {"id": 2, "method": "thread/start", "params": {
-            "cwd": str(self.repo), "model": "gpt-6.1-sol", "approvalPolicy": "untrusted"}}
+            "cwd": str(self.repo), "model": "gpt-6.1-sol", "approvalPolicy": "untrusted",
+            "sandbox": "workspace-write"}}
         listed = self.duty_fake_rpc(isolated, [{"id": 1, "method": "model/list"}, start])
         self.assertFalse((isolated / "models_cache.json").exists())
-        thread = next(reply["result"]["thread"]["id"] for reply in listed if reply.get("id") == 2)
+        started = next(reply["result"] for reply in listed if reply.get("id") == 2)
+        self.assertEqual(started["sandbox"], {"type": "readOnly", "networkAccess": False})
+        thread = started["thread"]["id"]
         resume = {"id": 3, "method": "thread/resume", "params": {
             "cwd": str(self.repo), "threadId": thread, "approvalPolicy": "untrusted"}}
         turn = {"id": 4, "method": "turn/start", "params": {"threadId": thread, "input": []}}
@@ -1064,6 +1092,12 @@ class ClaudeReviewTests(RotationTestCase):
                       if message.get("method") == "item/completed"
                       and message["params"]["item"]["type"] == "agentMessage")
         self.assertEqual(json.loads(answer)["reply"], "code-mode host is disabled")
+        call = next(entry for entry in self.trace() if entry["command"] == "duty-model-tool-call")
+        self.assertEqual((call["type"], call["name"]), ("custom_tool_call", "exec"))
+        self.assertIn("tools.exec_command", call["input"])
+        output = next(entry for entry in self.trace() if entry["command"] == "duty-model-tool-output")
+        self.assertEqual((output["type"], output["output"]),
+                         ("custom_tool_call_output", "code-mode host is disabled"))
         self.assertTrue(all(info["tool_mode"] == "code_mode_only"
                             for info in json.loads((isolated / "models_cache.json").read_text())["models"]))
         self.assertFalse(any("requestApproval" in message.get("method", "") for message in messages))
@@ -1076,12 +1110,25 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(failed["error"]["message"],
                          "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.")
         catalog = isolated / "direct-models.json"
+        catalog.write_text(json.dumps({"models": [{"slug": "gpt-6.1-sol", "visibility": "list"}]}))
+        invalid = subprocess.run([str(self.fake), "app-server", "-c", "model_catalog_json=" + json.dumps(str(catalog))],
+                                 env=dict(self.env, CODEX_HOME=str(isolated), HOME=str(isolated)),
+                                 cwd=self.repo, input="", text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertIn("missing or invalid model metadata", invalid.stderr)
         catalog.write_text(json.dumps({"models": [dict(info, tool_mode="direct") for info in duty_provider_models()]}))
+        mismatched = self.duty_fake_rpc(isolated, [start, turn], [("model_catalog_json", str(catalog))])
+        self.assertEqual(next(reply["error"]["message"] for reply in mismatched if reply.get("id") == 4),
+                         "thread not found: " + thread)
+        self.assertFalse(any(message.get("method") == "turn/completed" for message in mismatched))
         # Either empty environments field disables local command execution.
         for method in ("thread/start", "turn/start"):
             with self.subTest(method=method):
                 commands = [dict(start, params=dict(start["params"])), dict(turn, params=dict(turn["params"]))]
                 commands[0 if method == "thread/start" else 1]["params"]["environments"] = []
+                turn_request = commands[1]
+                commands[1] = lambda replies: dict(turn_request, params=dict(turn_request["params"], threadId=next(
+                    reply["result"]["thread"]["id"] for reply in replies if reply.get("id") == 2)))
                 messages = self.duty_fake_rpc(isolated, commands, [("model_catalog_json", str(catalog))])
                 answer = next(message["params"]["item"]["text"] for message in messages
                               if message.get("method") == "item/completed"
@@ -1096,7 +1143,45 @@ class ClaudeReviewTests(RotationTestCase):
         directory = self.root / "duty-task"
         directory.mkdir()
         source = self.home / "models_cache.json"
-        for content in (None, '{"models": []}'):
+        original = source.read_text()
+        opened, finish = threading.Event(), threading.Event()
+
+        def update_cache():
+            with source.open("w") as stream:
+                opened.set()
+                if not finish.wait(5):
+                    raise TimeoutError("cache writer was not released")
+                stream.write(original)
+
+        read_text = Path.read_text
+        reads = []
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            writer = pool.submit(update_cache)
+            try:
+                self.assertTrue(opened.wait(5))
+
+                def read_during_update(path, *args, **kwargs):
+                    text = read_text(path, *args, **kwargs)
+                    if path == source:
+                        reads.append(text)
+                        if not text:
+                            finish.set()
+                            writer.result(timeout=5)
+                    return text
+
+                with mock.patch.object(Path, "read_text", read_during_update):
+                    models = worker.turns.codex_duty.codex_duty_catalog({"home": str(self.home)}, directory / "models.json")
+                self.assertEqual(reads, ["", original])
+                self.assertEqual([info["slug"] for info in models],
+                                 [info["slug"] for info in json.loads(original)["models"]])
+                self.assertEqual(source.read_text(), original)
+            finally:
+                finish.set()
+                writer.result(timeout=5)
+        incomplete = json.loads(original)
+        del incomplete["models"][0]["display_name"]
+        for content in (None, '{"models": []}', '{"models": [{"slug": "fixture", "visibility": "list"}]}',
+                        json.dumps(incomplete)):
             if content is None:
                 source.unlink()
             else:
@@ -1110,6 +1195,19 @@ class ClaudeReviewTests(RotationTestCase):
                                  + "; an ordinary Codex work turn creates it.")
         self.assertFalse(any(entry["command"] == "app-server" for entry in self.trace()))
 
+    def test_codex_duty_rejects_async_user_messages(self):
+        worker = self.worker()
+        rpc = object.__new__(worker.turns.codex_duty.DutyRPC)
+        rpc.thread, rpc.turn, rpc.items, rpc.directory = "thread", "turn", {}, self.root
+        answer = json.dumps(self.duty_answer("Final answer."))
+        rpc.notification("item/completed", {"threadId": "thread", "turnId": "turn", "item": {
+            "id": "final", "type": "agentMessage", "text": answer}})
+        with self.assertRaisesRegex(ValueError, "unexpected tool: asynchronous user message"):
+            rpc.notification("item/completed", {"threadId": "thread", "turnId": "turn", "item": {
+                "id": "async", "type": "agentMessage", "delivery": "async", "text": "Unapproved message."}})
+        self.assertEqual(rpc.answer, answer)
+        self.assertNotIn("Unapproved message", (self.root / "events.jsonl").read_text())
+
     def test_codex_duty_recovers_an_unavailable_stored_model(self):
         self.configure(language="en")
         self.codex_duty_runs([{"reply": self.duty_answer("Ready.")},
@@ -1119,19 +1217,19 @@ class ClaudeReviewTests(RotationTestCase):
         st = self.state("duty")
         isolated = self.home / "claude-tasks" / "duty" / "codex-home"
         (isolated / "duty-threads" / st["thread"]).write_text(json.dumps({"model": "gpt-5.5"}))
-        st["task_model"] = "gpt-5.5"
-        (isolated.parent / "state.json").write_text(json.dumps(st))
+        self.assertFalse(st.get("task_model"))
         # The next account catalogue can have a completely different set of models.
         cache = self.home / "models_cache.json"
         document = json.loads(cache.read_text())
-        document["models"] = [dict(document["models"][1], slug="fixture-next-model")]
+        by_name = {info["slug"]: info for info in document["models"]}
+        document["models"] = [dict(by_name["gpt-6.1-terra"], priority=7), dict(by_name["gpt-6-sol"], priority=3)]
         cache.write_text(json.dumps(document))
         self.assertIn("Recovered.", self.cli("duty", "chat", "Continue.", timeout=60))
         self.assertEqual(self.state("duty")["thread"], st["thread"])
-        self.assertEqual(self.state("duty")["model"], "fixture-next-model")
+        self.assertEqual(self.state("duty")["model"], "gpt-6.1-terra")
         resumed = [entry for entry in self.trace() if entry["command"] == "duty-thread"][-1]
         self.assertEqual((resumed["method"], resumed["params"]["model"]),
-                         ("thread/resume", "fixture-next-model"))
+                         ("thread/resume", "gpt-6.1-terra"))
 
     def test_codex_duty_escalates_only_the_guarded_command(self):
         self.configure(language="en")
@@ -1145,7 +1243,11 @@ class ClaudeReviewTests(RotationTestCase):
         self.codex_duty_runs([{"reply_from_command_output": True, "requests": [
             command, escalated, command,
             dict(escalated, params={"command": "gh pr merge 12", "cwd": str(room)}, write=str(escaped)),
-            dict(escalated, params=dict(command["params"], additionalPermissions={"network": True}), write=str(escaped)),
+            dict(escalated, params=dict(command["params"], additionalPermissions={"network": {"enabled": True}}),
+                 write=str(escaped)),
+            dict(escalated, params=dict(command["params"], additionalPermissions={
+                "network": None, "fileSystem": {"write": [str(escaped)]}}),
+                 write=str(escaped)),
             dict(escalated, tty=True, write=str(escaped))]}])
         self.put_duty("main", "codex")
         output = self.cli("duty", "chat", "Read the status.", timeout=60)
@@ -1156,9 +1258,19 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual([entry["escalated"] for entry in executed], [False, True, False])
         self.assertIn("state.lock", executed[0]["stderr"])
         self.assertIn("duty", executed[1]["stdout"])
-        decisions = [entry["decision"] for entry in self.trace() if entry["command"] == "duty-approval"]
-        self.assertEqual(decisions, ["accept", "accept", "accept", "decline", "decline"])
+        self.assertIn(executed[1]["stdout"].strip(), self.state("duty")["duty_turns"][-1]["reply"])
+        approvals = [entry for entry in self.trace() if entry["command"] == "duty-approval"]
+        self.assertEqual([entry["decision"] for entry in approvals],
+                         ["accept", "accept", "accept", "decline", "decline", "decline"])
+        self.assertEqual(approvals[1]["params"]["reason"], escalated["justification"])
+        self.assertIsNone(approvals[1]["params"]["approvalId"])
+        events = [json.loads(line) for line in (room.parent / "events.jsonl").read_text().splitlines()]
+        completed = [event["item"] for event in events if event.get("type") == "item.completed"
+                     and event.get("item", {}).get("type") == "command_execution"]
+        self.assertEqual([(item["exit_code"], item["status"]) for item in completed[:3]],
+                         [(1, "failed"), (0, "completed"), (1, "failed")])
         thread = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
+        self.assertEqual(thread["params"]["sandbox"], "workspace-write")
         for text in ('sandbox_permissions: "require_escalated"', "justification", "teamster", "gh", "git"):
             self.assertIn(text, thread["params"]["developerInstructions"])
         calls = [entry for entry in self.trace() if entry["command"] == "duty-model-tool-call"]

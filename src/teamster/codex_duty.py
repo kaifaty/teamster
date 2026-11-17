@@ -1,6 +1,6 @@
 """One guarded duty turn over the Codex 0.169.0 app-server protocol.
 
-Only command and patch approvals authorize effects. Plain accept is never a
+Commands and patches require guard approvals. Plain accept is never a
 session grant; the shared duty guard remains the boundary on sandbox retries.
 """
 import ctypes
@@ -31,6 +31,7 @@ DUTY_CODEX_DISABLED = (
     "in_app_browser", "computer_use", "skill_mcp_dependency_install", "skill_env_var_dependency_prompt",
     "shell_snapshot", "shell_snapshot_v2", "login_shell_package_path", "deferred_executor",
     "code_mode", "code_mode_only", "code_mode_host", "code_mode_prewarm", "token_budget", "unified_exec_tty",
+    "send_message_to_user_async",
 )
 
 
@@ -215,13 +216,31 @@ def codex_duty_credentials(account):
 
 
 def codex_duty_catalog(account, path):
-    """Copy the account's full provider metadata, changing only tool presentation."""
+    """Copy provider metadata with direct tools and no async message tools."""
     source = Path(account["home"]) / "models_cache.json"
     try:
-        models = json.loads(source.read_text(encoding="utf-8"))["models"]
+        # Codex truncates this shared file before writing its replacement.
+        for attempt in range(3):
+            try:
+                models = json.loads(source.read_text(encoding="utf-8"))["models"]
+                break
+            except json.JSONDecodeError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
+        # Required non-optional ModelInfo fields in the pinned 0.169.0 protocol.
+        required = {"slug": str, "display_name": str, "supported_reasoning_levels": list,
+                    "shell_type": str, "visibility": str, "supported_in_api": bool,
+                    "priority": int, "support_verbosity": bool, "truncation_policy": dict,
+                    "experimental_supported_tools": list}
         if (not isinstance(models, list) or not models
-                or any(not isinstance(info, dict) or not isinstance(info.get("slug"), str)
-                       or not info["slug"] for info in models)
+                or any(not isinstance(info, dict)
+                       or any(type(info.get(key)) is not expected for key, expected in required.items())
+                       or not info["slug"]
+                       or not (isinstance(info.get("base_instructions"), str)
+                               or isinstance(info.get("model_messages"), dict)
+                               and isinstance(info["model_messages"].get("instructions_template"), str))
+                       for info in models)
                 or not any(info.get("visibility") == "list" for info in models)):
             raise ValueError("unusable models")
     except (OSError, ValueError, TypeError, KeyError):
@@ -229,6 +248,9 @@ def codex_duty_catalog(account, path):
                          + "; an ordinary Codex work turn creates it.") from None
     for info in models:
         info["tool_mode"] = "direct"
+        info["experimental_supported_tools"] = [tool for tool in info["experimental_supported_tools"]
+                                                if tool not in ("request_user_input_async", "send_user_message_async",
+                                                                "send_message_to_user_async")]
     path.write_text(json.dumps({"models": models}), encoding="utf-8")
     return models
 
@@ -435,6 +457,8 @@ class DutyRPC:
                 return
             self.items[item["id"]] = item
             kind = item.get("type")
+            if kind == "agentMessage" and item.get("delivery") == "async":
+                raise ValueError("Codex duty exposed an unexpected tool: asynchronous user message")
             if kind == "agentMessage" and method == "item/completed":
                 self.answer = item.get("text", "")
                 self.event({"type": "item.completed", "item": {"type": "agent_message", "text": self.answer}})
@@ -520,11 +544,9 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         codex_duty_preflight(home, room, effective, requirements, overrides)
         # Select explicitly on every resume: the rollout may retain an unavailable model.
         available = {info["slug"] for info in models}
-        listed = rpc.call("model/list", {"includeHidden": True})
         if model not in available:
-            default = next((info.get("model") for info in listed["data"]
-                            if info.get("isDefault") and info.get("model") in available), None)
-            model = default or next(info["slug"] for info in models if info.get("visibility") == "list")
+            model = ("gpt-6.1-sol" if "gpt-6.1-sol" in available else
+                     next(info["slug"] for info in models if info.get("visibility") == "list"))
         system_text += ("\n\nFor Codex command execution, request sandbox_permissions: \"require_escalated\" "
                         "with a short justification for teamster commands, gh commands, and git commands "
                         "on other repositories when they need writes outside the room or network access. "
