@@ -455,8 +455,9 @@ class Store:
         if root.is_symlink():
             return []
         try:
-            return [path for path in root.iterdir()
-                    if not path.name.startswith(".") and not path.is_symlink() and path.is_dir()]
+            with os.scandir(root) as entries:
+                return [Path(entry.path) for entry in entries
+                        if not entry.name.startswith(".") and entry.is_dir(follow_symlinks=False)]
         except OSError:
             return []
 
@@ -465,12 +466,12 @@ class Store:
         archived = []
         if not self.tasks_path.is_symlink():
             for path in self._directories(self.tasks_path / ".archive"):
-                state = self._file(path, "state.json")
-                if state is not None:
-                    try:
-                        archived.append((state.stat().st_mtime_ns, path.name, path))
-                    except OSError:
-                        pass
+                try:
+                    metadata = (path / "state.json").lstat()
+                except OSError:
+                    continue
+                if stat.S_ISREG(metadata.st_mode):
+                    archived.append((metadata.st_mtime_ns, path.name, path))
         paths.extend((path, True) for _, _, path in sorted(archived, reverse=True)[:50])
         return paths
 
