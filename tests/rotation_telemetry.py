@@ -909,6 +909,20 @@ worker['telemetry_log'].PhaseTelemetry(state, 'work').finish(outcome='completed'
                          {None: (2, 24, "defects"), continuing_birth: (4, 48, "clean"),
                           reused_birth: (2, 24, "clean")})
 
+        verdicts = [dict(v=1, kind="verdict", at=at, repo=repo, slug="upgraded-reused-slug",
+                         created=created, verdict=verdict)
+                    for at, repo, created, verdict in (
+                        (now - 850, "repo", None, "dropped"),
+                        (now - 650, "repo", continuing_birth, "dropped"),
+                        (now - 650, "repo", continuing_birth, "revised"),
+                        (now - 640, "repo", None, "accepted"),
+                        (now - 640, "other-repo", reused_birth, "redone"))]
+        self.write_journal(rows + [dict(rows[-1], repo="other-repo")] + verdicts)
+        report = json.loads(self.cli("report", "--slug", "upgraded-reused-slug", "--json"))
+        self.assertEqual({(row["repo"], row["created"]): row["lead_verdict"] for row in report["tasks"]},
+                         {("repo", None): "dropped", ("repo", continuing_birth): "revised",
+                          ("repo", reused_birth): "accepted", ("other-repo", reused_birth): "redone"})
+
     def test_report_weekly_spent_overrides_overlapping_deltas_and_keeps_legacy_fallback(self):
         now = time.time()
         rows = []
