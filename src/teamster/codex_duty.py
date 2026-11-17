@@ -50,6 +50,7 @@ def codex_duty_overrides(marker, room):
         "sandbox_workspace_write.exclude_tmpdir_env_var": True,
         "sandbox_workspace_write.exclude_slash_tmp": True,
         "sandbox_workspace_write.network_access": True,
+        "shell_environment_policy.exclude": ["CODEX_SQLITE_HOME"],
         "shell_environment_policy.set." + config.STARTED_BY: "duty",
         "shell_environment_policy.set." + config.DUTY_PROCESS_MARKER: marker,
         "shell_environment_policy.set.TEAMSTER_HOME": str(config.DATA_HOME) if config.LAYOUT == "new" else "",

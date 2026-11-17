@@ -201,7 +201,11 @@ def duty_command_environment():
         environment = {key: value for key, value in os.environ.items() if key.upper() in core}
     else:
         sys.exit("unsupported fake duty shell environment inheritance")
-    if any(policy.get(key) for key in ("exclude", "include_only", "filters")):
+    if policy.get("exclude") == ["CODEX_SQLITE_HOME"]:
+        environment.pop("CODEX_SQLITE_HOME", None)
+    elif policy.get("exclude"):
+        sys.exit("unsupported fake duty shell environment excludes")
+    if any(policy.get(key) for key in ("include_only", "filters")):
         sys.exit("unsupported fake duty shell environment filters")
     environment.update(policy.get("set", {}))
     return environment
@@ -275,6 +279,7 @@ def duty_turn(request, thread):
         if step.get("execute"):
             trace({"command": "duty-command-environment", "started_by": environment.get("TEAMSTER_STARTED_BY"),
                    "command_marker": environment.get("TEAMSTER_DUTY_PROCESS"),
+                   "sqlite_home": environment.get("CODEX_SQLITE_HOME"),
                    "storage": {key: environment.get(key) for key in
                                ("TEAMSTER_HOME", "CODEX_TASK_HOME", "TEAMSTER_CODEX_HOME")}})
             completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
@@ -511,6 +516,7 @@ def execute():
         model = selected.get("review_model") or model
     invocation = {"command": "exec", "resume": resumed, "review": review,
                   "prompt": prompt, "pid": os.getpid(), "ppid": os.getppid(),
+                  "sqlite_home": os.environ.get("CODEX_SQLITE_HOME"),
                   "argv": sys.argv[1:], "cwd": os.getcwd(),
                   "output": str(output) if output else None,
                   "schema_path": str(schema) if schema else None,

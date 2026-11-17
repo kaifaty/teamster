@@ -50,6 +50,7 @@ this transport.
 
 A Codex turn runs through `codex app-server` in a teamster-owned `tasks/duty/codex-home`, outside
 the writable room. Both `CODEX_HOME` and the server's `HOME` point there, as does its SQLite storage.
+`CODEX_SQLITE_HOME` is excluded from shell commands, so tasks they start use their own account's storage.
 The home persists so later turns can resume their threads. No account configuration, `.env`, hooks,
 rules, plugins, skills or instruction files are copied or linked into it. Invocation settings disable
 plugins and bundled/cloud skills, stop project discovery at the room, and disable project instruction

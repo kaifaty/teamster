@@ -1341,12 +1341,6 @@ class ClaudeReviewTests(RotationTestCase):
         (self.home / "claude-accounts.json").replace(data / "config.json")
         self.account(self.other, "B", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
         self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
-        fixture_path = self.home / "fixture.json"
-        fixture = json.loads(fixture_path.read_text())
-        fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": dict(
-            {key: value for key, value in self.env.items() if key.startswith(("CODEX_FAKE_", "GIT_"))},
-            TEAMSTER_CODEX=str(self.fake))}}
-        fixture_path.write_text(json.dumps(fixture))
         self.put_duty("main", "codex")
         room = data / "tasks" / "duty" / "room"
         self.cli("duty", "chat", "Start the parser fix.", timeout=60)
@@ -1364,6 +1358,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(self.state("noted")["started_by"], "duty")
         executed = next(entry for entry in self.trace() if entry["command"] == "duty-command-environment")
         self.assertEqual(executed["started_by"], "duty")
+        self.assertIsNone(executed["sqlite_home"])
         self.assertEqual(executed["storage"], {"TEAMSTER_HOME": str(data), "CODEX_TASK_HOME": str(self.home),
                                                "TEAMSTER_CODEX_HOME": str(self.home)})
         self.assertFalse((self.home / "claude-tasks").exists())
@@ -1371,6 +1366,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.until(lambda: self.chat_settled(3), timeout=60)
         self.assertRegex(self.codex_duty_invocations()[1]["duty_marker"], r"^[0-9a-f]{32}$")
         self.assertIsNone(self.invocations()[0]["duty_marker"])
+        self.assertEqual((self.invocations()[0]["home"], self.invocations()[0]["sqlite_home"]),
+                         (str(self.other), None))
         self.assertEqual(len(self.state("duty")["duty_auto_turns"]), 1)
         self.assertIn("Task note: noted ended turn 1", self.chat_messages()[-1]["text"])
         self.assertIn("Task note: noted", self.codex_duty_invocations()[-1]["params"]["input"][0]["text"])
