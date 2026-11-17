@@ -399,8 +399,8 @@ def app_server():
             result = {"thread": thread, "model": params.get("model") or "fake-duty-model",
                       "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort", "high"),
                       "approvalPolicy": params.get("approvalPolicy"), "approvalsReviewer": params.get("approvalsReviewer"),
-                      "sandbox": {"type": "workspaceWrite", "writableRoots": [params["cwd"]],
-                                  "networkAccess": True, "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}}
+                      # What the real app-server 0.169.0 answers for a room-only workspace-write sandbox.
+                      "sandbox": {"type": "readOnly", "networkAccess": False}}
         elif method == "turn/start":
             duty_turn(request, thread)
             continue

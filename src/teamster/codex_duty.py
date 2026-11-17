@@ -508,8 +508,10 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
                 or reply.get("approvalsReviewer") != "user"):
             raise ValueError("Codex duty could not enforce client approvals")
         sandbox = reply.get("sandbox") or {}
-        if sandbox.get("type") != "workspaceWrite" or any(
-                Path(path).resolve() != Path(room).resolve() for path in sandbox.get("writableRoots", [])):
+        # Codex 0.169.0 reports the room-only sandbox, with /tmp and TMPDIR excluded, as readOnly: the
+        # working directory is implied and never listed. A reply that names any other writable root is refused.
+        if sandbox.get("type") not in ("readOnly", "workspaceWrite") or any(
+                Path(path).resolve() != Path(room).resolve() for path in sandbox.get("writableRoots") or []):
             raise ValueError("Codex duty could not confine the initial sandbox to its room")
         rpc.thread = (reply.get("thread") or {}).get("id")
         if not isinstance(rpc.thread, str) or not rpc.thread:
