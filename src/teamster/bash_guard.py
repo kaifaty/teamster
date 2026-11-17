@@ -170,6 +170,7 @@ class Shell:
         words, depth, target, mark = [], 0, False, len(self.names)
         # Duty-only stdin metadata never changes the shared command-name/mark state.
         piped, inherited, active = False, False, False
+        stdin_redirected, redirect_target = False, False
         groups, group_commands, descriptor = [], None, None
         while self.pos < len(self.text):
             char = self.text[self.pos]
@@ -182,6 +183,7 @@ class Shell:
                 words, mark = self.end(words, mark, piped)
                 if active:
                     piped, active, group_commands = inherited, False, None
+                    stdin_redirected = False
                 self.read_heredocs()
             elif char == "#":
                 while self.pos < len(self.text) and self.text[self.pos] != "\n":
@@ -191,26 +193,31 @@ class Shell:
                 self.pos += 3 if self.starts(";;&") else 2 if self.starts(";;", ";&") else 1
                 words, mark = self.end(words, mark, piped)
                 piped, active, group_commands = inherited, False, None
+                stdin_redirected = False
             elif char == "&":
                 if self.starts("&&"):
                     self.pos += 2
                     words, mark = self.end(words, mark, piped)
                     piped, active, group_commands = inherited, False, None
+                    stdin_redirected = False
                 elif self.starts("&>"):
                     self.operator = "&>>" if self.starts("&>>") else "&>"
                     self.pos += len(self.operator)
                     target = True
                     active = True
+                    redirect_target = True
                 else:
                     self.pos += 1
                     self.background = True
                     words, mark = self.end(words, mark, piped)
                     piped, active, group_commands = inherited, False, None
+                    stdin_redirected = False
             elif char == "|":
                 pipe = not self.starts("||")
                 self.pos += 2 if self.starts("||", "|&") else 1
                 words, next_mark = self.end(words, mark, piped)
                 piped, active, group_commands = pipe or inherited, False, None
+                stdin_redirected = False
                 # Later commands of a pipeline may kill the PIDs that earlier ones found.
                 mark = mark if pipe else next_mark
             elif char == "(":
@@ -222,16 +229,21 @@ class Shell:
                 else:
                     depth += 1
                     words, mark = self.end(words, mark, piped)
-                    groups.append((inherited, len(self.commands)))
+                    groups.append((inherited, len(self.commands), stdin_redirected))
                     inherited = piped
                     active, group_commands = False, None
+                    stdin_redirected = False
             elif char == ")":
                 self.pos += 1
                 words, mark = self.end(words, mark, piped)
                 if depth:
                     depth -= 1
-                    inherited, first = groups.pop()
+                    inherited, first, stdin_redirected = groups.pop()
                     group_commands = (first, len(self.commands))
+                    if stdin_redirected:
+                        # Prefix stdin redirections conservatively revoke even the group's inner pipes.
+                        for index in range(*group_commands):
+                            self.commands[index] = (self.commands[index][0], False)
                     piped, active = inherited, True
                 elif closer == ")":
                     return
@@ -239,22 +251,27 @@ class Shell:
                 if (char == "<" and descriptor is None
                         or descriptor is not None and not descriptor.strip("0")):
                     piped = False
+                    stdin_redirected = True
                     if group_commands is not None:
                         # Conservatively revoke every pipe exemption inside a group with redirected stdin.
                         for index in range(*group_commands):
                             self.commands[index] = (self.commands[index][0], False)
                 descriptor, active = None, True
                 target = self.redirect()
+                redirect_target = target
             else:
                 start = self.pos
                 word, quoted = self.read_word()
                 if self.pos == start:
                     self.pos += 1
                 elif not quoted and word.isdigit() and self.starts("<", ">"):
-                    descriptor = word
+                    # A duty redirection operand is consumed before looking for the next fd prefix.
+                    descriptor = None if redirect_target else word
+                    redirect_target = False
                 elif target:
                     self.targets.append((self.operator, word))
                     target = False
+                    redirect_target = False
                 else:
                     words.append(word)
                     active = True
