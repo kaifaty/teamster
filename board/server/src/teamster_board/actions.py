@@ -64,6 +64,10 @@ async def action_body(request):
             or len(headers.getlist("content-type")) != 1
             or headers["content-type"].split(";", 1)[0].strip().lower() != "application/json"):
         return error(403, "forbidden")
+    return await json_body(request)
+
+
+async def json_body(request):
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > BODY_LIMIT:

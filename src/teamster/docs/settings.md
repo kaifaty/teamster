@@ -173,12 +173,16 @@ It keeps `config.toml`, sessions and the default `main` login, with `~/.codex-ac
 | Rules override | `codex-worker-rules.md` | `rules.md` |
 | Duty | `duty.json`, `duty-log.jsonl`, `duty.lock`, `duty-launchd.log` | same names |
 | Board | `board-machines.json`, `board-server.log` | same names |
+| External duty | `external-duty/`, `external-duty-events.jsonl` | same names |
 
 The documents name paths in the new layout under `~/.teamster`; a legacy home has the legacy names in
 `~/.codex`. `duty plist` and `teamster-board plist` write `TEAMSTER_HOME` for a new-layout home
 (and `TEAMSTER_CODEX_HOME` when Codex's home is not `~/.codex`), and `CODEX_TASK_HOME` for a legacy one.
 
 ### migrate-home
+
+Stop Board before applying the migration if [external duty](external-duty.md) is enabled. The
+command ledger and event journal move with the data home. Restart Board using the new data home.
 
 `teamster migrate-home` prints the plan and changes nothing; `teamster migrate-home --apply`
 moves the legacy data from `~/.codex` to `~/.teamster`. It refuses, before it changes anything and

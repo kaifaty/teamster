@@ -21,6 +21,7 @@ from .accounts import Accounts, Reports, probe
 from .actions import Actions, action_body, error
 from .art import MEDIA_TYPES, art_file, art_index
 from .constellations import read_constellations
+from .external_duty import ExternalDutyConfig, register as register_external_duty
 from .duty import Duty
 from .duty_chat import DutyChat
 from .logins import Logins
@@ -89,6 +90,7 @@ class Settings:
     read_only: bool = False
     no_land: bool = False
     duty_seconds: float = 1800
+    external_duty: ExternalDutyConfig | None = None
 
     def path(self, purpose):
         return self.task_home / LAYOUT_FILES[self.layout][purpose]
@@ -96,6 +98,7 @@ class Settings:
     @classmethod
     def from_env(cls):
         task_home, layout = resolve_data_home()
+        external_config = os.environ.get("BOARD_EXTERNAL_DUTY_CONFIG")
         return cls(
             task_home=task_home, layout=layout,
             teamster=Path(os.environ.get("BOARD_TEAMSTER_COMMAND", os.environ.get(
@@ -116,6 +119,7 @@ class Settings:
             research_seconds=float(os.environ.get("BOARD_RESEARCH_SECONDS", "30")),
             reflection_task=os.environ.get("BOARD_REFLECTION_TASK") or "codex-batch-reflection",
             duty_seconds=float(os.environ.get("BOARD_DUTY_SECONDS", "1800")),
+            external_duty=ExternalDutyConfig.load(Path(external_config)) if external_config else None,
         )
 
 
@@ -433,6 +437,7 @@ def create_app(settings=None):
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(LocalOnly)
     app.state.board = board
+    register_external_duty(app, board)
 
     @app.get("/api/snapshot")
     async def snapshot():
