@@ -181,7 +181,9 @@ class DutyChat:
         duty = duty_account(self.accounts())
         if duty is None:
             return "no_duty"
-        return "codex_duty" if duty["family"] != "claude" else None
+        if duty["family"] != "claude" and not self.actions.duty_codex_chat():
+            return "codex_duty"
+        return None
 
     def view(self):
         state, messages, queued = conversation(self.directory)
