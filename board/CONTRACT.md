@@ -1147,7 +1147,7 @@ are empty and `busy` is false.
 `available` is true when `reason` is null. `reason` is the first that applies: `read_only` or `no_teamster`
 (as `actions.reason`), `old_teamster` when the installed `teamster --version` is older than 1.86.0 (asked once,
 by the same probe as `TaskDetail.actions.queue`), `no_duty` when `accounts.data.duty` names no account (or
-the accounts are not read yet), `codex_duty` when its family is `codex`. `duty` is `{account, family}` from
+the accounts are not read yet), `codex_duty` when its family is `codex` and the installed `teamster` is older than 1.94.0 (the first that runs the duty chat on a Codex duty; the same version probe). `duty` is `{account, family}` from
 `accounts.data.duty`, or null.
 
 `POST /api/actions/duty-chat` with `{text: string}` sends a message to the duty. It has the same origin,

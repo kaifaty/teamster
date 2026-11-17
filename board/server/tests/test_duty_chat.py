@@ -157,6 +157,7 @@ def test_view_without_conversation_and_each_reason(duty):
         assert view == {"actions": {"enabled": True, "reason": None}, "available": False, "reason": "no_duty",
                         "duty": None, "busy": False, "turn_started_at": None, "messages": [], "queued": [],
                         "last_error": None}
+        # The fake teamster is 1.86.0 by default: older than the Codex duty chat (1.94.0).
         set_duty(client, "codex", "main")
         view = client.get("/api/duty-chat").json()
         assert (view["available"], view["reason"], view["duty"]) == (False, "codex_duty",
@@ -167,6 +168,11 @@ def test_view_without_conversation_and_each_reason(duty):
         # A room left by a creation cut short, without state.json, is no conversation yet.
         (duty["tasks"] / "duty" / "room").mkdir(parents=True)
         assert client.get("/api/duty-chat").json()["messages"] == []
+    duty["configure"](version="1.94.0")
+    with duty["start"]() as client:
+        set_duty(client, "codex", "main")
+        view = client.get("/api/duty-chat").json()
+        assert (view["available"], view["reason"], view["duty"]) == (True, None, {"account": "main", "family": "codex"})
     duty["configure"](version="1.85.3")
     with duty["start"]() as client:
         set_duty(client)

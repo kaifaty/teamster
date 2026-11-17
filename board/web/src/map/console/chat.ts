@@ -122,7 +122,7 @@ export function unavailableText(view: DutyChatView | null, state: { read: boolea
     case "no_duty":
       return "Дежурный не выбран";
     case "codex_duty":
-      return "Дежурный — подписка Codex, а чату нужен Claude";
+      return "Дежурный — подписка Codex: чат с ней умеет teamster 1.94.0 и новее, обнови teamster";
     case "old_teamster":
       return "teamster старше 1.86.0 и не умеет чат с дежурным: обнови teamster";
     case "read_only":
