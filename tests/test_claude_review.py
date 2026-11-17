@@ -396,8 +396,10 @@ class ClaudeReviewTests(RotationTestCase):
             "rg -g '*.py' pattern", "rg -t py pattern", "rg -f- src", "rg -f /dev/stdin src",
             "tail -f log.txt", "tail -F log.txt", "tail --follow log.txt", "tail --follow=name log.txt",
             "tail -qf log.txt", "tail -qF log.txt",
+            "head | cat", "teamster status | head; tail", "teamster status | head && tail",
+            "teamster status | cat </dev/tty",
+            "teamster status | tail -f", "teamster status | tail -F", "teamster status | tail --follow",
             git + " log " + flags + " --oneline | head -3 | wc -l",
-            git + " diff " + flags + " A...B -- 2>&1 | tail -n 40",
             "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room,
         )
         allowed = (
@@ -424,6 +426,10 @@ class ClaudeReviewTests(RotationTestCase):
             # Compound commands pass when every part does; output may go to the room or /dev/null.
             "teamster status && " + git + " log " + flags + " --oneline -1; teamster accounts",
             "(teamster status; ls)", "rg -n x src 2>/dev/null", "cat a.md > brief.md",
+            "teamster status | head -n 285 | tail -n 110",
+            "teamster status | cat | head -n 285 | tail -n 110 | rg -n status | wc -l",
+            git + " log " + flags + " --oneline | head -n3 | wc -l",
+            git + " diff " + flags + " A...B -- 2>&1 | tail -n 40",
         ) + codex_refused
         refused = (
             "gh pr merge 12", "gh pr merge 12 --squash", "gh api repos/x", "gh pr checkout 12", "gh run rerun 7",
