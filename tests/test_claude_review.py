@@ -871,7 +871,7 @@ class ClaudeReviewTests(RotationTestCase):
         return [entry for entry in self.trace() if entry["command"] == "duty-turn"]
 
     def test_codex_duty_starts_resumes_and_decides_each_request(self):
-        self.configure(language="en", duty={"chat_codex_effort": "xhigh"})
+        self.configure(language="en")
         self.env["HOME"] = str(self.root / "user-home")
         self.env.update(OPENAI_API_KEY="fixture-unrelated-provider", OPENAI_BASE_URL="https://unrelated.test",
                         CODEX_API_KEY="fixture-unrelated-key", CODEX_ACCESS_TOKEN="fixture-unrelated-access",
@@ -964,6 +964,7 @@ class ClaudeReviewTests(RotationTestCase):
                             for entry in self.trace() if entry["command"] == "quota-snapshot"))
         worker = self.worker()
         self.assertEqual(first["params"]["outputSchema"], worker.result_schema.DUTY_SCHEMA)
+        self.assertNotIn("effort", first["params"])
         thread = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
         self.assertEqual(thread["params"]["model"], "gpt-5.5")
         tools = next(entry for entry in self.trace() if entry["command"] == "duty-tools")
@@ -972,7 +973,7 @@ class ClaudeReviewTests(RotationTestCase):
                          ("untrusted", "user"))
         for text in ("# Lead guide", "# On duty", "## Known repositories", "## Your room\n\n" + str(room)):
             self.assertIn(text, thread["params"]["developerInstructions"])
-        self.cli("say", "duty", "Continue.")
+        self.cli("say", "duty", "Continue.", "--effort", "xhigh")
         self.assertIn("Second answer.", self.cli("wait", "duty", timeout=60))
         self.assertEqual(self.state("duty")["thread"], first_thread)
         threads = [entry for entry in self.trace() if entry["command"] == "duty-thread"]
