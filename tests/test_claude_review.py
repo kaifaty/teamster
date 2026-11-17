@@ -986,19 +986,29 @@ class ClaudeReviewTests(RotationTestCase):
             self.put_duty("main", "codex")
             return start_process(st)
 
+        rule = self.home / "rules" / "custom.rules"
+        rule.write_text('prefix_rule(pattern=["rm"], decision="allow")\n')
         order = {"at": time.time(), "text": "1", "options": {}, "source": "user"}
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 mock.patch.object(worker.supervisor, "start_process", side_effect=switch_before_start):
             _, process = worker.commands.send_duty_chat(worker.config.accounts_config(), order, False)
         self.extra_pids.add(process.pid)
         process.wait(timeout=60)
+        rejected = self.state("duty")
+        self.assertEqual((rejected["executor"], rejected["outcome"]), ("codex", "failed"))
+        self.assertFalse(rejected.get("thread"))
+        self.assertNotIn("task_model", rejected)
+        self.assertIn("rule", rejected["error"].lower())
+        self.assertEqual(self.codex_duty_invocations(), [])
+        rule.unlink()
+        self.assertIn("Codex understood option 1.", self.cli("duty", "chat", "1", timeout=60))
         self.assertEqual(self.state("duty")["duty_turns"][-1]["reply"], "Codex understood option 1.")
-        self.assertNotIn("task_model", self.state("duty"))
         first_codex = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
         self.assertEqual(first_codex["params"]["model"], "fixture-codex")
         codex = self.codex_duty_invocations()[0]
         text = codex["params"]["input"][0]["text"]
-        for fragment in ("Fix the parser.", "Which repository?", "1. parser", "2. billing", "1"):
+        for fragment in ("Fix the parser.", "Which repository?", "1. parser", "2. billing", "1",
+                         "The question is still open."):
             self.assertIn(fragment, text)
         self.assertFalse(self.state("duty").get("session_id"))
         self.cli("say", "duty", "Prepare the handoff.", "--model", "fixture-codex-override")
@@ -1012,7 +1022,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertNotIn("--resume", returned["argv"])
         self.assertNotEqual(returned["session_id"], old_session)
         self.assertEqual(returned["argv"][returned["argv"].index("--model") + 1], "fixture-claude-return")
-        for fragment in ("Codex understood option 1.", "What happened?", "Which repository?", "1. parser"):
+        for fragment in ("Codex understood option 1.", "Codex is ready to hand off.", "What happened?",
+                         "Which repository?", "1. parser"):
             self.assertIn(fragment, returned["argv"][1])
         self.assertFalse(self.state("duty").get("thread"))
         self.assertEqual([turn["account"] for turn in self.state("duty")["duty_turns"]], ["main"] * 5)
