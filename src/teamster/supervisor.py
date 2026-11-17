@@ -618,8 +618,7 @@ def cmd__run(a):
         if (working and (turn or (step == "check" and not round_check))
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
-            task_state.mark_step(st, "check")
-            check = checking.saved_check(st, cfg, stopped, sleep, review_after and not in_ci)
+            check = checking.run_check_step(st, cfg, stopped, sleep, review_after=review_after and not in_ci)
         if review_fix or round_check:
             review_cycle.auto_fix(st, cfg, st.get("review_result"), effort, stopped, sleep,
                                   resume_prompt=pending["prompt"], resume_check=round_check)

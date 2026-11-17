@@ -7,6 +7,12 @@ import tempfile
 from . import clock, config, executors, result_schema, sandboxing, task_state
 
 
+def publish_turn(st, stopped):
+    """Publish workspace changes before publishing the pull request."""
+    publish_work(st, stopped)
+    publish_pr(st, stopped)
+
+
 def completed_work_turn(st):
     return (st.get("kind") == "work" and
             (st.get("outcome") == "completed" or

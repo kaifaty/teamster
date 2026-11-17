@@ -412,8 +412,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None, resume_pr
                 st["cycle"]["fix_head"] = before
             result = fix_round(st, cfg, entry, prompt, before, effort, stopped, sleep)
         if not stopped() and st.get("outcome") in ("budget_exhausted", "stuck"):
-            task_state.mark_step(st, "check")
-            entry["check"] = checking.saved_check(st, cfg, stopped, sleep, review_after=False)
+            entry["check"] = checking.run_check_step(st, cfg, stopped, sleep, review_after=False)
             if budgets.budget_stop(st) == "weekly":
                 st["auto_fix_stop"] = "budget"
             task_state.save(st)
@@ -427,8 +426,7 @@ def auto_fix(st, cfg, review, effort, stopped, sleep, base_merge=None, resume_pr
                     or not has_reviewable_commits(st, before)):
                 st["review_skipped"] = st["auto_fix_stop"]
                 return
-        task_state.mark_step(st, "check")
-        check = checking.saved_check(st, cfg, stopped, sleep)
+        check = checking.run_check_step(st, cfg, stopped, sleep)
         entry["check"] = check
         task_state.save(st)
         if stopped():
