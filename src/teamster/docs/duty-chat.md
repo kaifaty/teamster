@@ -108,13 +108,44 @@ command environment filters, are refused too. Each refusal names the blocking fi
 Overrides apply only to this invocation; the account's configuration is not rewritten. The thread's
 reply must confirm the requested approval policy, reviewer and room sandbox.
 
-The action tools are `exec_command`, `write_stdin` and `apply_patch`. Agent, app, plugin, MCP,
-browser, computer, image, memory, goal, history-note, permission and skill-install actions are
-disabled, as are inherited hooks, automatic review and reusable grants. Inert planning, time,
-sleep and context tools may remain. A model may select Code Mode's V8 wrappers; they provide no
-imports, filesystem, process or network APIs, and their nested command and file calls use the same
-approval checks. The adapter does not rely on Codex hooks or prefix allow rules to enforce the duty
-policy.
+The Codex duty uses `gpt-5.5` unless `duty.chat_codex_model` or a conversation's `--model` overrides it.
+Teamster explicitly sends `model: "gpt-5.5"` in `thread/start` and `thread/resume` when the setting is
+null. The [0.169.0 catalog](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/models-manager/models.json#L1516-L1536)
+gives that model a freeform patch tool and no model-owned tool mode. With invocation features
+`code_mode`, `code_mode_only`, `code_mode_host` and `code_mode_prewarm` all false, it therefore gets
+direct `exec_command`, `write_stdin` and `apply_patch` tools.
+
+In contrast, `gpt-6.1-sol` has
+[`tool_mode: "code_mode_only"`](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/models-manager/models.json#L177-L197).
+[Model metadata takes precedence over feature flags](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/mod.rs#L66-L87),
+and [Code Mode Only hides the direct tools](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/spec_plan.rs#L887-L912).
+Disabling its host leaves the model's `exec` returning `code-mode host is disabled`. There is no
+per-thread tool-mode override: `model_catalog_json` is a
+[startup-only replacement of the full model catalog](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/config/src/config_toml.rs#L407-L409),
+which would replace provider metadata and prompts rather than establish supported direct tools for
+that model. Teamster does not manufacture such a catalog. Enabling the Code Mode host is also
+rejected here: nested `write_stdin` can
+[send process input without another approval](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/unified_exec/stdin_approval.rs#L197-L230),
+so it fails the requirement that each machine effect in Code Mode request approval. Keep Codex duty
+overrides on a model with direct tools; to replace an existing conversation override, use
+`teamster say duty "Continue." --model gpt-5.5`.
+
+For the direct tools, `untrusted` asks for
+[every command without an explicit allow rule](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/exec_policy.rs#L910-L914)
+and [every nonempty patch](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/safety.rs#L79-L87).
+The [orchestrator awaits approval before running the tool](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/orchestrator.rs#L210-L231).
+The app-server emits `item/started`, then `item/commandExecution/requestApproval` or
+`item/fileChange/requestApproval`, then `item/completed`; a refused command completes as `declined`.
+Its [plain accept decision](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/app-server/src/bespoke_event_handling.rs#L2092-L2097)
+is [never cached as a session grant](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/sandboxing.rs#L88-L119).
+The fake tests check command output reaching the answer and refused commands producing no effect.
+Live account access to `gpt-5.5`, the provider's current metadata, and a real command/patch approval
+round trip still need a live check; these tests never run the real Codex.
+
+Agent, app, plugin, MCP, browser, computer, image, memory, goal, history-note, permission and
+skill-install actions are disabled, as are inherited hooks, automatic review and reusable grants. Inert planning, time,
+sleep and context tools may remain. The adapter does not rely on Codex hooks or prefix allow rules
+to enforce the duty policy.
 
 Codex also starts with a sandbox whose writable area is the room. This is an extra, best-effort
 layer: an accepted command may request escalation or automatically retry outside it after a
@@ -220,7 +251,7 @@ queue a note is logged in the task's `stderr.log`, never failing its cycle.
 |---|---|---|
 | `duty.chat_model` | `claude.model` | model of Claude duty chat turns (a nonempty string or null) |
 | `duty.chat_effort` | `"high"` | effort of Claude duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
-| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null uses the isolated Codex default |
+| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null selects `gpt-5.5` for direct tools |
 | `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the isolated Codex default |
 | `duty.chat_max_minutes` | `20` | active time budget of one duty chat turn |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; note-driven turns per hour, the rest wait for the next user message |
