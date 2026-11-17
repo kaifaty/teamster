@@ -137,7 +137,7 @@ class Shell:
         self.expansions += inner.expansions
         return inner.names
 
-    def end(self, words, mark):
+    def end(self, words, mark, piped=False):
         """Record a finished simple command and the script a shell, eval or trap runs.
 
         Names from ``mark`` on belong to this command's substitutions and to the
@@ -145,7 +145,7 @@ class Shell:
         """
         found = set(self.names[mark:])
         if words:
-            self.commands.append(list(words))
+            self.commands.append((list(words), piped))
         names, last = command_names(words, self)
         if "kill" in names and found & PROCESS_LOOKUPS:
             self.pattern_kill = True
@@ -168,6 +168,10 @@ class Shell:
     def parse(self, closer=None):
         """Read a command list up to EOF or, inside `$(`, its closing parenthesis."""
         words, depth, target, mark = [], 0, False, len(self.names)
+        # Duty-only stdin metadata never changes the shared command-name/mark state.
+        piped, inherited, active = False, False, False
+        stdin_redirected, redirect_target = False, False
+        groups, group_commands, descriptor = [], None, None
         while self.pos < len(self.text):
             char = self.text[self.pos]
             if char in " \t":
@@ -176,7 +180,10 @@ class Shell:
                 self.pos += 2
             elif char == "\n":
                 self.pos += 1
-                words, mark = self.end(words, mark)
+                words, mark = self.end(words, mark, piped)
+                if active:
+                    piped, active, group_commands = inherited, False, None
+                    stdin_redirected = False
                 self.read_heredocs()
             elif char == "#":
                 while self.pos < len(self.text) and self.text[self.pos] != "\n":
@@ -184,23 +191,33 @@ class Shell:
             elif char == ";":
                 # `;;`, `;&` and `;;&` end case items.
                 self.pos += 3 if self.starts(";;&") else 2 if self.starts(";;", ";&") else 1
-                words, mark = self.end(words, mark)
+                words, mark = self.end(words, mark, piped)
+                piped, active, group_commands = inherited, False, None
+                stdin_redirected = False
             elif char == "&":
                 if self.starts("&&"):
                     self.pos += 2
-                    words, mark = self.end(words, mark)
+                    words, mark = self.end(words, mark, piped)
+                    piped, active, group_commands = inherited, False, None
+                    stdin_redirected = False
                 elif self.starts("&>"):
                     self.operator = "&>>" if self.starts("&>>") else "&>"
                     self.pos += len(self.operator)
                     target = True
+                    active = True
+                    redirect_target = True
                 else:
                     self.pos += 1
                     self.background = True
-                    words, mark = self.end(words, mark)
+                    words, mark = self.end(words, mark, piped)
+                    piped, active, group_commands = inherited, False, None
+                    stdin_redirected = False
             elif char == "|":
                 pipe = not self.starts("||")
                 self.pos += 2 if self.starts("||", "|&") else 1
-                words, next_mark = self.end(words, mark)
+                words, next_mark = self.end(words, mark, piped)
+                piped, active, group_commands = pipe or inherited, False, None
+                stdin_redirected = False
                 # Later commands of a pipeline may kill the PIDs that earlier ones found.
                 mark = mark if pipe else next_mark
             elif char == "(":
@@ -211,29 +228,54 @@ class Shell:
                     self.skip_arithmetic()
                 else:
                     depth += 1
-                    words, mark = self.end(words, mark)
+                    words, mark = self.end(words, mark, piped)
+                    groups.append((inherited, len(self.commands), stdin_redirected))
+                    inherited = piped
+                    active, group_commands = False, None
+                    stdin_redirected = False
             elif char == ")":
                 self.pos += 1
-                words, mark = self.end(words, mark)
+                words, mark = self.end(words, mark, piped)
                 if depth:
                     depth -= 1
+                    inherited, first, stdin_redirected = groups.pop()
+                    group_commands = (first, len(self.commands))
+                    if stdin_redirected:
+                        # Prefix stdin redirections conservatively revoke even the group's inner pipes.
+                        for index in range(*group_commands):
+                            self.commands[index] = (self.commands[index][0], False)
+                    piped, active = inherited, True
                 elif closer == ")":
                     return
             elif char in "<>" and self.peek(1) != "(":
+                if (char == "<" and descriptor is None
+                        or descriptor is not None and not descriptor.strip("0")):
+                    piped = False
+                    stdin_redirected = True
+                    if group_commands is not None:
+                        # Conservatively revoke every pipe exemption inside a group with redirected stdin.
+                        for index in range(*group_commands):
+                            self.commands[index] = (self.commands[index][0], False)
+                descriptor, active = None, True
                 target = self.redirect()
+                redirect_target = target
             else:
                 start = self.pos
                 word, quoted = self.read_word()
                 if self.pos == start:
                     self.pos += 1
                 elif not quoted and word.isdigit() and self.starts("<", ">"):
-                    pass  # The file descriptor of a redirection.
+                    # A duty redirection operand is consumed before looking for the next fd prefix.
+                    descriptor = None if redirect_target else word
+                    redirect_target = False
                 elif target:
                     self.targets.append((self.operator, word))
                     target = False
+                    redirect_target = False
                 else:
                     words.append(word)
-        self.end(words + self.arguments if closer is None else words, mark)
+                    active = True
+        self.end(words + self.arguments if closer is None else words, mark, piped)
 
     def redirect(self):
         """Skip a redirection operator; return whether a target word follows it."""
@@ -618,8 +660,8 @@ def duty_command_denial(words, room, cwd):
     return f"`{name}` is not on the duty allowlist"
 
 
-def codex_reader_denial(words, cwd):
-    """Codex readers take explicit files, never stdin or tail's follow mode."""
+def codex_reader_denial(words, cwd, piped=False):
+    """Codex readers take finite files or pipeline input, never tail's follow mode."""
     name, arguments = words[0], words[1:]
     if name not in DUTY_READERS or name == "ls":
         return None
@@ -664,6 +706,8 @@ def codex_reader_denial(words, cwd):
                     pattern_files.append(value)
             else:
                 return refusal
+        elif options and piped and name in ("head", "tail") and re.fullmatch(r"-[0-9]+", argument):
+            pass  # Historical line-count options are allowed only at a piped stage.
         elif options and argument.startswith("-") and argument != "-":
             position = 1
             while position < len(argument):
@@ -689,7 +733,7 @@ def codex_reader_denial(words, cwd):
         index += 1
     if name == "rg" and not pattern_given and not list_files:
         files = files[1:]  # The first positional is the pattern, never a data file.
-    if not files and not (name == "rg" and list_files):
+    if not files and not piped and not (name == "rg" and list_files):
         return refusal
     stdin_paths = {os.path.realpath(path) for path in DUTY_STDIN_PATHS}
     for path in files + pattern_files:
@@ -728,10 +772,10 @@ def duty_denial(event, room):
             continue
         if operator in OUTPUT_REDIRECTIONS and target != "/dev/null" and not inside_room(target, room, cwd):
             return duty_reason(f"redirection to `{target}` outside the room (or inside its .git) is refused")
-    for words in shell.commands:
+    for words, piped in shell.commands:
         reason = duty_command_denial(words, room, cwd)
         if reason is None and event.get("duty_transport") == "codex":
-            reason = codex_reader_denial(words, cwd)
+            reason = codex_reader_denial(words, cwd, piped)
         if reason is not None:
             return duty_reason(reason)
     return None

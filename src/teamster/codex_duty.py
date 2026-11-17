@@ -1,6 +1,6 @@
 """One guarded duty turn over the Codex 0.169.0 app-server protocol.
 
-Only command and patch approvals authorize effects. Plain accept is never a
+Commands and patches require guard approvals. Plain accept is never a
 session grant; the shared duty guard remains the boundary on sandbox retries.
 """
 import ctypes
@@ -20,8 +20,8 @@ from . import accounts, clock, config, procs, result_schema
 
 
 # Verified against rust-v0.169.0 tools/spec_plan.rs and extension contributors.
-# Code Mode, if selected by model metadata, is an isolated V8 wrapper around
-# these same tool runtimes, with no imports, filesystem or process APIs.
+# Model metadata takes precedence over these flags. The invocation catalog
+# selects direct tools; enabling the host would expose unapproved process input.
 DUTY_CODEX_DISABLED = (
     "hooks", "plugin_hooks", "plugins", "apps", "enable_mcp_apps", "recommended_plugins", "view_image",
     "multi_agent", "multi_agent_v2", "multi_agent_v2_dynamic_tools", "agent_message_board",
@@ -30,7 +30,8 @@ DUTY_CODEX_DISABLED = (
     "image_generation", "image_generation_animation", "browser_use", "browser_use_external",
     "in_app_browser", "computer_use", "skill_mcp_dependency_install", "skill_env_var_dependency_prompt",
     "shell_snapshot", "shell_snapshot_v2", "login_shell_package_path", "deferred_executor",
-    "code_mode", "code_mode_only", "code_mode_host", "code_mode_prewarm", "token_budget",
+    "code_mode", "code_mode_only", "code_mode_host", "code_mode_prewarm", "token_budget", "unified_exec_tty",
+    "send_message_to_user_async",
 )
 
 
@@ -212,6 +213,67 @@ def codex_duty_credentials(account):
         # bridged without inheriting the account's credential-store configuration.
         raise ValueError("Codex duty needs readable ChatGPT authentication in " + str(path)) from None
     return {"accessToken": token, "chatgptAccountId": identity, "chatgptPlanType": None}
+
+
+def codex_duty_catalog(account, path):
+    """Copy provider metadata with direct tools and no async message tools."""
+    source = Path(account["home"]) / "models_cache.json"
+    try:
+        # Codex truncates this shared file before writing its replacement.
+        for attempt in range(3):
+            try:
+                models = json.loads(source.read_text(encoding="utf-8"))["models"]
+                break
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
+        # Required non-optional ModelInfo fields in the pinned 0.169.0 protocol.
+        required = {"slug": str, "display_name": str, "supported_reasoning_levels": list,
+                    "shell_type": str, "visibility": str, "supported_in_api": bool,
+                    "priority": int, "support_verbosity": bool, "truncation_policy": dict,
+                    "experimental_supported_tools": list}
+        if (not isinstance(models, list) or not models
+                or any(not isinstance(info, dict)
+                       or any(type(info.get(key)) is not expected for key, expected in required.items())
+                       or not info["slug"] for info in models)
+                or not any(info.get("visibility") == "list" for info in models)):
+            raise ValueError("unusable models")
+        for info in models:
+            truncation = info["truncation_policy"]
+            messages, legacy = info.get("model_messages"), info.get("base_instructions")
+            template = messages.get("instructions_template") if isinstance(messages, dict) else None
+            if (info["shell_type"] not in ("unified_exec", "disabled", "default", "local", "shell_command")
+                    or info["visibility"] not in ("list", "hide", "none")
+                    or not -(2 ** 31) <= info["priority"] < 2 ** 31
+                    or truncation.get("mode") not in ("bytes", "tokens")
+                    or type(truncation.get("limit")) is not int
+                    or not -(2 ** 63) <= truncation["limit"] < 2 ** 63
+                    or any(not isinstance(level, dict) or not isinstance(level.get("effort"), str)
+                           or not level["effort"] or not isinstance(level.get("description"), str)
+                           for level in info["supported_reasoning_levels"])
+                    or any(not isinstance(tool, str) for tool in info["experimental_supported_tools"])
+                    or "input_modalities" in info and (
+                        not isinstance(info["input_modalities"], list)
+                        or any(modality not in ("text", "image", "audio") for modality in info["input_modalities"]))
+                    or info.get("context_window") is not None and (
+                        type(info["context_window"]) is not int or not -(2 ** 63) <= info["context_window"] < 2 ** 63)
+                    or info.get("apply_patch_tool_type") not in (None, "freeform")
+                    or messages is not None and not isinstance(messages, dict)
+                    or template is not None and not isinstance(template, str)
+                    or legacy is not None and not isinstance(legacy, str)
+                    or template is None and legacy is None):
+                raise ValueError("unusable models")
+    except (OSError, ValueError, TypeError, KeyError):
+        raise ValueError("Codex duty needs a usable " + str(source)
+                         + "; an ordinary Codex work turn creates it.") from None
+    for info in models:
+        info["tool_mode"] = "direct"
+        info["experimental_supported_tools"] = [tool for tool in info["experimental_supported_tools"]
+                                                if tool not in ("request_user_input_async", "send_user_message_async",
+                                                                "send_message_to_user_async")]
+    path.write_text(json.dumps({"models": models}), encoding="utf-8")
+    return models
 
 
 def codex_duty_preflight(home, room, effective, requirements, overrides):
@@ -416,6 +478,8 @@ class DutyRPC:
                 return
             self.items[item["id"]] = item
             kind = item.get("type")
+            if kind == "agentMessage" and item.get("delivery") == "async":
+                raise ValueError("Codex duty exposed an unexpected tool: asynchronous user message")
             if kind == "agentMessage" and method == "item/completed":
                 self.answer = item.get("text", "")
                 self.event({"type": "item.completed", "item": {"type": "agent_message", "text": self.answer}})
@@ -444,6 +508,7 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
     response = {"outcome": "failed", "result": None, "reason": None,
                 "telemetry": {"thread": thread_id, "model": model, "reasoning_effort": effort}}
     process, rpc = None, None
+    catalog_path = None
     try:
         if stopped():
             raise InterruptedError("stopped")
@@ -458,7 +523,10 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         home = home.resolve()
         if os.path.lexists(home / ".env"):
             raise ValueError("Codex duty cannot isolate environment configuration at " + str(home / ".env"))
+        catalog_path = home / ("duty-models-" + marker + ".json")
+        models = codex_duty_catalog(account, catalog_path)
         overrides = codex_duty_overrides(marker, room)
+        overrides["model_catalog_json"] = str(catalog_path)
         args = [config.codex_binary(), "app-server", "--strict-config"]
         for key, value in overrides.items():
             # This table needs TOML's key/value separator, unlike scalar JSON literals.
@@ -495,12 +563,21 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         effective = rpc.call("config/read", {"includeLayers": True, "cwd": str(room)})
         requirements = rpc.call("configRequirements/read", {})
         codex_duty_preflight(home, room, effective, requirements, overrides)
+        # Select explicitly on every resume: the rollout may retain an unavailable model.
+        available = {info["slug"] for info in models}
+        if model not in available:
+            visible = [info["slug"] for info in models if info["visibility"] == "list"]
+            model = "gpt-6.1-sol" if "gpt-6.1-sol" in visible else visible[0]
+        system_text += ("\n\nFor Codex command execution, request sandbox_permissions: \"require_escalated\" "
+                        "with a short justification for teamster commands, gh commands, and git commands "
+                        "on other repositories when they need writes outside the room or network access. "
+                        "The initial sandbox cannot write teamster's state locks or use the network. "
+                        "Escalation still requires the guard to accept that exact command for this call; "
+                        "it grants no session-wide permission.\n")
         params = {"cwd": str(room), "approvalPolicy": "untrusted", "approvalsReviewer": "user",
                   "sandbox": "workspace-write", "developerInstructions": system_text,
-                  "environments": [],
                   "config": {"model_reasoning_effort": effort} if effort else {}}
-        if model:
-            params["model"] = model
+        params["model"] = model
         if thread_id:
             params["threadId"] = thread_id
         reply = rpc.call("thread/resume" if thread_id else "thread/start", params)
@@ -508,8 +585,10 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
                 or reply.get("approvalsReviewer") != "user"):
             raise ValueError("Codex duty could not enforce client approvals")
         sandbox = reply.get("sandbox") or {}
-        if sandbox.get("type") != "workspaceWrite" or any(
-                Path(path).resolve() != Path(room).resolve() for path in sandbox.get("writableRoots", [])):
+        # Codex 0.169.0 reports the room-only sandbox, with /tmp and TMPDIR excluded, as readOnly: the
+        # working directory is implied and never listed. A reply that names any other writable root is refused.
+        if sandbox.get("type") not in ("readOnly", "workspaceWrite") or any(
+                Path(path).resolve() != Path(room).resolve() for path in sandbox.get("writableRoots") or []):
             raise ValueError("Codex duty could not confine the initial sandbox to its room")
         rpc.thread = (reply.get("thread") or {}).get("id")
         if not isinstance(rpc.thread, str) or not rpc.thread:
@@ -520,7 +599,7 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         if progress is not None:
             progress(response["telemetry"])
         turn_params = {"threadId": rpc.thread, "input": [{"type": "text", "text": prompt}],
-                       "environments": [], "outputSchema": result_schema.DUTY_SCHEMA}
+                       "outputSchema": result_schema.DUTY_SCHEMA}
         if effort:
             turn_params["effort"] = effort
         begun = rpc.call("turn/start", turn_params)
@@ -579,4 +658,6 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
             procs.terminate(process)
             end_duty_terminals(marker)
             process.stdout.close()
+        if catalog_path is not None:
+            catalog_path.unlink(missing_ok=True)
     return response

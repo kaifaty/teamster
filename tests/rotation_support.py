@@ -31,6 +31,27 @@ PYTHON = sys.executable
 IMPOSSIBLE_PID = 2 ** 31 - 1
 
 
+def duty_provider_models():
+    # The live ChatGPT catalog has no direct-tool-only model to fall back to.
+    names = ("gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-reserve",
+             "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review")
+    return [{"slug": name, "display_name": name, "description": "Fixture model " + name,
+             "default_reasoning_level": "high",
+             "supported_reasoning_levels": [{"effort": effort, "description": effort}
+                                            for effort in ("low", "medium", "high", "xhigh")],
+             "shell_type": "unified_exec", "apply_patch_tool_type": "freeform", "tool_mode": "code_mode_only",
+             "visibility": "hide" if name in ("gpt-reserve", "codex-auto-review") else "list",
+             "supported_in_api": True, "priority": index, "availability_nux": None, "upgrade": None,
+             "base_instructions": "Fixture instructions for " + name,
+             "model_messages": {"instructions_template": "Fixture instructions for " + name,
+                                "tools": {"code_mode": {"exec": {"description": "Fixture exec guidance"}}}},
+             "support_verbosity": False, "default_verbosity": None,
+             "truncation_policy": {"mode": "bytes", "limit": 10000}, "context_window": 128000,
+             "experimental_supported_tools": ["send_user_message_async", "clock"] if name == "gpt-6.1-sol" else [],
+             "input_modalities": ["text", "image"]}
+            for index, name in enumerate(names)]
+
+
 # The fake has the same process boundary as Codex: the supervisor must discover
 # the quota in a rollout, interrupt the process group, and create a fresh thread.
 FAKE_CODEX = r'''import datetime
@@ -210,8 +231,19 @@ def duty_command_environment():
     environment.update(policy.get("set", {}))
     return environment
 
-def duty_turn(request, thread):
+def duty_provider_models():
+    return ''' + repr(duty_provider_models()) + r'''
+
+def duty_write_models_cache(models):
+    (home / "models_cache.json").write_text(json.dumps({
+        "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "etag": "fixture-models", "client_version": "0.169.0", "identity": fixture()["accountId"],
+        "models": models}))
+
+def duty_turn(request, thread, model, models):
     params = request["params"]
+    # A rollout becomes resumable only once a turn starts, including failed turns.
+    (home / "duty-threads" / thread["id"]).write_text(json.dumps({"model": model}))
     count_path = fixture_path.parent / "duty-count"
     count = int(count_path.read_text()) if count_path.exists() else 0
     count_path.write_text(str(count + 1))
@@ -257,22 +289,83 @@ def duty_turn(request, thread):
                            if item["type"] == "text" else item for item in params["input"]]}
     for method in ("item/started", "item/completed"):
         emit({"method": method, "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
+    model_info = next((entry for entry in models if entry["slug"] == model), None)
+    if model_info is None:
+        error = {"message": "The '" + model + "' model is not supported when using Codex with a ChatGPT account."}
+        emit({"method": "turn/completed", "params": {"threadId": thread["id"],
+              "turn": {"id": turn, "status": "failed", "items": [], "error": error}}})
+        return
     if run.get("sleep"):
         emit({"method": "item/started", "params": {"threadId": thread["id"], "turnId": turn,
               "item": {"id": "duty-sleep", "type": "sleep"}}})
-    for index, step in enumerate(run.get("requests", [])):
+    features = duty_config(duty_config_layers(thread["cwd"])).get("features", {})
+    # Model metadata wins over the code_mode/code_mode_only feature flags, including direct mode.
+    tool_mode = model_info.get("tool_mode")
+    code_mode = (tool_mode in ("code_mode", "code_mode_only") if tool_mode is not None
+                 else features.get("code_mode") or features.get("code_mode_only"))
+    command_tools = ["exec_command", "write_stdin"] if features.get("shell_tool", True) else []
+    if model_info["shell_type"] != "unified_exec" or model_info["apply_patch_tool_type"] != "freeform":
+        sys.exit("unsupported fake duty model tool metadata")
+    trace({"command": "duty-tools", "model": model,
+           "tools": ["exec"] if code_mode else command_tools + ["apply_patch"],
+           "tty_allowed": features.get("unified_exec_tty", True)})
+    steps = run.get("requests", [])
+    command_outputs = []
+    if code_mode and steps:
+        if features.get("code_mode_host"):
+            sys.exit("unsupported fake duty code-mode host")
+        command = steps[0].get("params", {})
+        trace({"command": "duty-model-tool-call", "type": "custom_tool_call", "name": "exec",
+               "input": "text(await tools.exec_command(" + json.dumps({
+                   "cmd": command.get("command", ""), "workdir": command.get("cwd", thread["cwd"])}) + "));"})
+        command_outputs.append("code-mode host is disabled")
+        trace({"command": "duty-model-tool-output", "type": "custom_tool_call_output",
+               "output": command_outputs[-1]})
+        steps = []
+    for index, step in enumerate(steps):
         item_id = step.get("id", "duty-item-" + str(index))
+        approval = {"threadId": thread["id"], "turnId": turn, "itemId": item_id}
+        approval.update(step.get("params", {}))
+        method = step.get("method", "item/commandExecution/requestApproval")
+        if method == "item/commandExecution/requestApproval" and not command_tools:
+            sys.exit("unsupported fake duty command request: shell_tool is disabled")
+        escalated = step.get("sandbox_permissions") == "require_escalated"
+        if method == "item/commandExecution/requestApproval":
+            arguments = {"cmd": approval.get("command", ""), "workdir": approval.get("cwd", thread["cwd"])}
+            if "sandbox_permissions" in step:
+                arguments["sandbox_permissions"] = step["sandbox_permissions"]
+            if "justification" in step:
+                arguments["justification"] = step["justification"]
+            if "tty" in step:
+                arguments["tty"] = step["tty"]
+            trace({"command": "duty-model-tool-call", "type": "function_call", "name": "exec_command",
+                   "arguments": arguments})
+            if step.get("tty") and not features.get("unified_exec_tty", True):
+                output = "TTY mode is disabled"
+                command_outputs.append(output)
+                trace({"command": "duty-model-tool-output", "type": "function_call_output", "output": output})
+                continue
+            if params.get("environments", thread.get("environments")) == []:
+                output = "No usable execution environment is available"
+                command_outputs.append(output)
+                trace({"command": "duty-model-tool-output", "type": "function_call_output", "output": output})
+                continue
+            if escalated:
+                approval.update(reason=step.get("justification"), environmentId="local")
         item = step.get("item")
+        if item is None and method == "item/commandExecution/requestApproval" and approval.get("command"):
+            item = {"type": "commandExecution", "command": approval["command"], "cwd": approval.get("cwd"),
+                    "status": "inProgress", "aggregatedOutput": "", "exitCode": None}
         if item is not None:
             item = dict(item, id=item_id)
             emit({"method": "item/started", "params": {
                   "threadId": thread["id"], "turnId": turn, "item": item}})
-        approval = {"threadId": thread["id"], "turnId": turn, "itemId": item_id}
-        approval.update(step.get("params", {}))
-        method = step.get("method", "item/commandExecution/requestApproval")
         decision = duty_approval("duty-approval-" + str(index), method,
                                  step.get("raw_params", approval))
         if decision != "accept":
+            if item is not None:
+                emit({"method": "item/completed", "params": {
+                      "threadId": thread["id"], "turnId": turn, "item": dict(item, status="declined")}})
             continue
         trace({"command": "duty-executed", "item_id": item_id, "params": approval})
         environment = duty_command_environment()
@@ -282,9 +375,34 @@ def duty_turn(request, thread):
                    "sqlite_home": environment.get("CODEX_SQLITE_HOME"),
                    "storage": {key: environment.get(key) for key in
                                ("TEAMSTER_HOME", "CODEX_TASK_HOME", "TEAMSTER_CODEX_HOME")}})
-            completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
-                                       env=environment, check=True, text=True, capture_output=True, start_new_session=True)
-            trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr})
+            script = approval["command"]
+            words = shlex.split(script)
+            if len(words) == 3 and words[0] in ("/bin/bash", "/bin/sh", "/bin/zsh") and words[1] in ("-c", "-lc"):
+                script = words[2]
+            if not escalated:
+                lock = Path(environment.get("TEAMSTER_HOME") or environment["CODEX_TASK_HOME"]) / "state.lock"
+                failure = "PermissionError: [Errno 1] Operation not permitted: '" + str(lock) + "'"
+                # Let the real shell execute the script, replacing only teamster's protected state access.
+                script = ("teamster() {\n"
+                          "  for argument do\n"
+                          "    case \"$argument\" in -h|--help) command teamster \"$@\"; return $?;; esac\n"
+                          "  done\n"
+                          "  case \"$1\" in\n"
+                          "    start|say|scout|review|stop|status|wait) ;;\n"
+                          "    accounts) case \" $* \" in *' --refresh '*) ;; *) command teamster \"$@\"; return $?;; esac ;;\n"
+                          "    *) command teamster \"$@\"; return $?;;\n"
+                          "  esac\n"
+                          "  printf '%s\\n' 'Duty status (partial).'\n"
+                          "  printf '%s\\n' " + shlex.quote(failure) + " >&2\n"
+                          "  return 1\n"
+                          "}\n" + script)
+            completed = subprocess.run(script, shell=True, cwd=approval.get("cwd", os.getcwd()),
+                                       env=environment, check=False, text=True, capture_output=True, start_new_session=True)
+            trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr,
+                   "exit_code": completed.returncode, "escalated": escalated})
+            command_outputs.append(completed.stdout + completed.stderr)
+            if item is not None:
+                item.update(aggregatedOutput=completed.stdout + completed.stderr, exitCode=completed.returncode)
         if "write" in step:
             Path(step["write"]).write_text(step.get("contents", "approved change\n"))
         if step.get("background"):
@@ -294,7 +412,8 @@ def duty_turn(request, thread):
             trace({"command": "duty-child", "child_pid": child.pid})
         if item is not None:
             emit({"method": "item/completed", "params": {
-                  "threadId": thread["id"], "turnId": turn, "item": dict(item, status="completed")}})
+                  "threadId": thread["id"], "turnId": turn,
+                  "item": dict(item, status="failed" if item.get("exitCode") not in (None, 0) else "completed")}})
     if run.get("child"):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
                                  env=duty_command_environment(), start_new_session=True)
@@ -309,20 +428,65 @@ def duty_turn(request, thread):
         trace({"command": "duty-waiting", "gate": run["gate"]})
         while not Path(run["gate"]).exists():
             time.sleep(0.02)
-    answer = run.get("reply", {"status": "answered", "reply": "Codex duty answer.",
-                               "question": "", "options": [], "started": []})
+    answer = dict(run.get("reply", {"status": "answered", "reply": "Codex duty answer.",
+                                    "question": "", "options": [], "started": []}))
+    if run.get("reply_from_command_output"):
+        answer["reply"] = "".join(command_outputs).strip()
     message = {"id": "duty-answer", "type": "agentMessage", "text": json.dumps(answer), "phase": "final_answer"}
     emit({"method": "item/completed", "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
     emit({"method": "thread/tokenUsage/updated", "params": {"threadId": thread["id"], "turnId": turn,
           "tokenUsage": {"total": {"inputTokens": 10, "cachedInputTokens": 2, "outputTokens": 3,
                                      "reasoningOutputTokens": 1, "totalTokens": 13}}}})
+    if not duty_config().get("model_catalog_json"):
+        duty_write_models_cache(models)
     emit({"method": "turn/completed", "params": {"threadId": thread["id"],
           "turn": {"id": turn, "status": "completed", "items": [message]}}})
 
 def app_server():
     trace({"command": "app-server", "argv": sys.argv[1:]})
+    catalog_path = duty_config().get("model_catalog_json")
+    # A configured catalog is loaded at process startup and never refreshed from the provider/cache.
+    catalog = json.loads(Path(catalog_path).read_text()) if catalog_path else {"models": duty_provider_models()}
+    required = {"slug": str, "display_name": str, "supported_reasoning_levels": list, "shell_type": str,
+                "visibility": str, "supported_in_api": bool, "priority": int, "support_verbosity": bool,
+                "truncation_policy": dict, "experimental_supported_tools": list}
+    if (not isinstance(catalog, dict) or not isinstance(catalog.get("models"), list) or not catalog["models"]
+            or any(not isinstance(info, dict) or any(type(info.get(key)) is not kind for key, kind in required.items())
+                   for info in catalog["models"])):
+        sys.exit("failed to parse model_catalog_json: missing or invalid model metadata")
+    models = catalog["models"]
+    for info in models:
+        truncation = info["truncation_policy"]
+        messages, legacy = info.get("model_messages"), info.get("base_instructions")
+        template = messages.get("instructions_template") if isinstance(messages, dict) else None
+        if (info["shell_type"] not in ("unified_exec", "disabled", "default", "local", "shell_command")
+                or info["visibility"] not in ("list", "hide", "none")
+                or not -(2 ** 31) <= info["priority"] < 2 ** 31
+                or truncation.get("mode") not in ("bytes", "tokens")
+                or type(truncation.get("limit")) is not int
+                or not -(2 ** 63) <= truncation["limit"] < 2 ** 63
+                or any(not isinstance(level, dict) or not isinstance(level.get("effort"), str)
+                       or not level["effort"] or not isinstance(level.get("description"), str)
+                       for level in info["supported_reasoning_levels"])
+                or any(not isinstance(tool, str) for tool in info["experimental_supported_tools"])
+                or "input_modalities" in info and (not isinstance(info["input_modalities"], list)
+                    or any(modality not in ("text", "image", "audio") for modality in info["input_modalities"]))
+                or info.get("context_window") is not None and (type(info["context_window"]) is not int
+                    or not -(2 ** 63) <= info["context_window"] < 2 ** 63)
+                or info.get("apply_patch_tool_type") not in (None, "freeform")
+                or messages is not None and not isinstance(messages, dict)
+                or template is not None and not isinstance(template, str)
+                or legacy is not None and not isinstance(legacy, str)
+                or template is None and legacy is None):
+            sys.exit("failed to parse model_catalog_json: missing or invalid model metadata")
+    if os.environ.get("TEAMSTER_DUTY_PROCESS"):
+        trace({"command": "duty-model-catalog", "source": "model_catalog_json" if catalog_path else "provider",
+               "path": catalog_path, "models": models})
     thread = None
+    model = None
     authenticated = False
+    initialized = False
+    experimental_api = False
     if "CODEX_FAKE_RPC_FAILURE" in os.environ:
         sys.stdin.readline()
         print(os.environ["CODEX_FAKE_RPC_FAILURE"], flush=True)
@@ -333,10 +497,24 @@ def app_server():
             continue
         value = fixture()
         method = request["method"]
+        if not initialized and method != "initialize":
+            emit({"id": request["id"], "error": {"code": -32600, "message": "Not initialized"}})
+            continue
+        params = request.get("params") or {}
+        experimental = ("account/login/start.chatgptAuthTokens"
+                        if method == "account/login/start" and params.get("type") == "chatgptAuthTokens" else
+                        method + ".environments"
+                        if method in ("thread/start", "turn/start") and params.get("environments") is not None else None)
+        if experimental and not experimental_api:
+            emit({"id": request["id"], "error": {"code": -32600,
+                  "message": experimental + " requires experimentalApi capability"}})
+            continue
         if value.get("rpc_error") and method == "account/read":
             emit({"id": request["id"], "error": {"code": -32000, "message": "fixture account unavailable"}})
             continue
         if method == "initialize":
+            initialized = True
+            experimental_api = (params.get("capabilities") or {}).get("experimentalApi") is True
             result = {"userAgent": "codex/0.169.0", "platformFamily": "unix"}
         elif method == "configRequirements/read":
             result = {"requirements": (value.get("duty_requirements_after_login")
@@ -379,6 +557,24 @@ def app_server():
                 continue
             authenticated = True
             result = {"type": "chatgptAuthTokens"}
+        elif method == "model/list":
+            params = request.get("params", {})
+            listed = [entry for entry in models if params.get("includeHidden") or entry["visibility"] == "list"]
+            default_model = min((entry for entry in models if entry["visibility"] == "list"),
+                                key=lambda entry: entry["priority"])["slug"]
+            result = {"data": [{"id": entry["slug"], "model": entry["slug"], "upgrade": None,
+                       "upgradeInfo": None, "availabilityNux": entry["availability_nux"],
+                       "displayName": entry["display_name"], "description": entry["description"],
+                       "modelSpecialty": None, "hidden": entry["visibility"] != "list",
+                       "supportedReasoningEfforts": [{"reasoningEffort": option["effort"],
+                                                      "description": option["description"]}
+                                                     for option in entry["supported_reasoning_levels"]],
+                       "defaultReasoningEffort": entry["default_reasoning_level"],
+                       "inputModalities": entry["input_modalities"], "supportsPersonality": False,
+                       "multiAgentVersion": None, "additionalSpeedTiers": [], "serviceTiers": [],
+                       "defaultServiceTier": None, "availableAccessPrograms": None,
+                       "isDefault": entry["slug"] == default_model} for entry in listed], "nextCursor": None}
+            trace({"command": "duty-model-list", "params": params, "result": result})
         elif method in ("thread/start", "thread/resume"):
             params = request["params"]
             identifier = params.get("threadId") if method == "thread/resume" else str(uuid.uuid4())
@@ -387,8 +583,9 @@ def app_server():
                 emit({"id": request["id"], "error": {"message": "no rollout found for thread id " + identifier}})
                 continue
             stored.parent.mkdir(exist_ok=True)
-            stored.touch()
             thread = {"id": identifier, "turns": [], "cwd": params["cwd"]}
+            if "environments" in params:
+                thread["environments"] = params["environments"]
             trace({"command": "duty-thread", "method": method, "params": params, "thread": identifier})
             settings = duty_config(duty_config_layers(params["cwd"]))
             for name, server in settings.get("mcp_servers", {}).items():
@@ -396,13 +593,20 @@ def app_server():
                     trace({"command": "duty-mcp-connected", "server": name})
             if not settings.get("projects", {}).get(params["cwd"], {}).get("trust_level"):
                 (home / "config.toml").write_text('[projects.' + json.dumps(params["cwd"]) + ']\ntrust_level = "trusted"\n')
-            result = {"thread": thread, "model": params.get("model") or "fake-duty-model",
+            previous = json.loads(stored.read_text()) if stored.exists() and stored.stat().st_size else {}
+            model = params.get("model") or previous.get("model") or settings.get("model") or min(
+                (entry for entry in models if entry["visibility"] == "list"), key=lambda entry: entry["priority"])["slug"]
+            result = {"thread": thread, "model": model,
                       "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort", "high"),
                       "approvalPolicy": params.get("approvalPolicy"), "approvalsReviewer": params.get("approvalsReviewer"),
-                      "sandbox": {"type": "workspaceWrite", "writableRoots": [params["cwd"]],
-                                  "networkAccess": True, "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}}
+                      # What the real app-server 0.169.0 answers for a room-only workspace-write sandbox.
+                      "sandbox": {"type": "readOnly", "networkAccess": False}}
         elif method == "turn/start":
-            duty_turn(request, thread)
+            identifier = request["params"].get("threadId")
+            if thread is None or identifier != thread["id"]:
+                emit({"id": request["id"], "error": {"message": "thread not found: " + str(identifier)}})
+                continue
+            duty_turn(request, thread, model, models)
             continue
         elif method == "turn/interrupt":
             result = {}
@@ -1109,6 +1313,11 @@ class RotationTestCase(unittest.TestCase):
         if release_at is not None:
             value["release_at"] = release_at
         (home / "fixture.json").write_text(json.dumps(value))
+        # Ordinary account work has already fetched this provider catalogue.
+        (home / "models_cache.json").write_text(json.dumps({
+            "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "etag": "fixture-models", "client_version": "0.169.0", "identity": account_id,
+            "models": duty_provider_models()}))
         return value
 
     def exhaust_accounts(self, *accounts, **settings):
