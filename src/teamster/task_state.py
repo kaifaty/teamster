@@ -160,6 +160,7 @@ STATE_FIELDS = {
     "max_task_weekly_percent": StateField("task"),
     "weekly_used_percent": StateField("history"),
     "created": StateField("task"),  # Immutable task birth metadata.
+    "task_deadline": StateField("task"),  # Absolute wall time shared by every cycle.
     "plugin_version": StateField("task"),
     # The version and script of the last spawn: say and review re-run in that version (installs.follow_pin).
     "runtime": StateField("task", spawn_reset=lambda st, turn: {
@@ -320,7 +321,8 @@ def enqueue(slug, order):
     Its supervisor reads the queue under the same lock when its cycle ends, so the order cannot miss that read.
     """
     with state_lock(slug):
-        if not procs.alive(load(slug).get("pid")):
+        st = load(slug)
+        if deadline_reached(st) or not procs.alive(st.get("pid")):
             return None
         queue = read_queue(slug)
         queue["waiting"].append(order)
@@ -346,8 +348,14 @@ def locked_queue_log(slug, path):
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
+def deadline_reached(st):
+    """Whether this task's wall-clock lifetime has elapsed."""
+    deadline = st.get("task_deadline")
+    return deadline is not None and clock.CLOCK.time() >= deadline
+
+
 def stop_outcome(st, stopped):
-    """Classify cancellation only by a stop request addressed to this supervisor."""
+    """Distinguish a stop addressed to this supervisor, a signal and a deadline."""
     if not stopped():
         return None
     pid = st.get("pid")
@@ -360,7 +368,11 @@ def stop_outcome(st, stopped):
             request = latest.get("stop_request") or {}
             if request.get("pid") == pid:
                 st["stop_request"] = request
-    return "stopped" if pid and request.get("pid") == pid else "interrupted"
+    if pid and request.get("pid") == pid:
+        return "stopped"
+    if not st.get("signal") and deadline_reached(st):
+        return "timeout"
+    return "interrupted"
 
 
 def running_tasks(exclude="", root=None, scouts=False):

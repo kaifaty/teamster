@@ -100,6 +100,9 @@ def cmd_start(a):
           "weekly_used_percent": 0,
           "created": clock.CLOCK.time(), "turns": 0, "plugin_version": config.plugin_version(),
           "parallel": bool(a.parallel)}
+    task_timeout = getattr(a, "task_timeout", None)
+    if task_timeout is not None:
+        st["task_deadline"] = st["created"] + task_timeout
     if config.started_by():
         st["started_by"] = config.started_by()
     task_state.save(st)

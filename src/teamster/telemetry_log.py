@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -41,10 +42,14 @@ def journal_path():
     return config.data_path("telemetry")
 
 
-def append_row(row, stopped=lambda: False):
-    """Append one journal row under the journal lock; raise when it cannot be written."""
+def append_row(row, stopped=lambda: False, *, path=None):
+    """Append one row under the journal lock; an explicit journal must already exist."""
     payload = (json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
-    with journal_path().open("a+b", buffering=0) as stream:
+
+    def existing(name, flags):
+        return os.open(name, (flags & ~os.O_CREAT) | os.O_NOFOLLOW)
+
+    with open(path or journal_path(), "a+b", buffering=0, opener=existing if path is not None else None) as stream:
         deadline = time.monotonic() + 2
         while True:
             try:
@@ -65,6 +70,8 @@ def append_row(row, stopped=lambda: False):
             if not written:
                 raise OSError("short telemetry write")
             remaining = remaining[written:]
+        if path is not None:
+            os.fsync(stream.fileno())
 
 
 def write_telemetry(st, row, stopped):
@@ -151,6 +158,47 @@ def record_turn_result(st, stopped):
                "budget_stop": budgets.budget_stop(st), "turn_stops": st.get("turn_stops", [])}
         row.update(executors.from_state(st).turn_fields(st))
         write_telemetry(st, row, stopped)
+    except Exception as exc:
+        telemetry_error(st, exc)
+
+
+def record_external_event(st):
+    """Keep the work cycle's result before queued orders replace it in state.json."""
+    if (st.get("kind") not in ("work", "review") or st.get("created") is None
+            or (st["kind"] == "review" and not st.get("work_completed"))):
+        return
+    try:
+        path = config.data_path("external_events")
+        if not path.is_file():
+            return
+        result = st.get("result") or {}
+        question = None
+        if st["outcome"] == "completed" and result.get("status") in ("blocked", "needs_decision"):
+            question = next((value.strip()[:4000] for value in result.get("questions", []) if value.strip()), None)
+        saved = st.get("checks", [])[st.get("check_start", 0):][-1:]
+        ci = st.get("ci")
+        if ci:
+            ci = {**{key: ci.get(key) for key in ("outcome", "seconds", "rounds", "reason")},
+                  "checks": [{key: entry.get(key) for key in ("name", "bucket")}
+                             for entry in ci.get("checks", [])]}
+        row = {
+            "v": 1, "id": uuid.uuid4().hex,
+            "type": "needs_decision" if question else "task_finished",
+            "slug": st["slug"], "created": st["created"], "turn": st.get("turns", 0),
+            "repository": str(Path(st["repo"]).resolve()), "at": st["turn_finished"],
+            "outcome": st["outcome"], "question": question,
+            "result": {"status": result.get("status"), "summary": (result.get("summary") or "")[:4000],
+                       "checks": [{key: entry[key][:200] for key in ("command", "outcome", "details")}
+                                  for entry in result.get("checks", [])[:10]]},
+            "checks": [{key: entry.get(key) for key in ("cmd", "exit", "at", "seconds", "outcome")}
+                       for entry in saved],
+            "ci": ci or None,
+            "pr": (st.get("publish") or {}).get("pr") or result.get("pr") or None,
+        }
+        append_row(row, path=path)
+    except FileNotFoundError:
+        # The operator may have removed the event journal since this cycle began.
+        pass
     except Exception as exc:
         telemetry_error(st, exc)
 

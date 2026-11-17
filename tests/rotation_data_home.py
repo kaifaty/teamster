@@ -298,6 +298,11 @@ class DataHomeTests(RotationTestCase):
 
     def test_migrate_home_end_to_end_keeps_tasks_working(self):
         self.legacy_user_home()
+        events = self.home / "external-duty-events.jsonl"
+        events.touch(mode=0o600)
+        ledger = self.home / "external-duty"
+        ledger.mkdir()
+        (ledger / "commands.lock").touch()
         disk = self.root / "disk/worktrees"
         disk.mkdir(parents=True)
         (self.home / "worktrees").symlink_to(disk)
@@ -307,6 +312,8 @@ class DataHomeTests(RotationTestCase):
         self.start("gone")
         self.wait("gone")
         self.cli("clean", "gone")
+        before_events = events.read_bytes()
+        self.assertEqual(len(before_events.splitlines()), 2)
         old_tasks = self.home / "claude-tasks"
         before_report = self.report()
         self.assertIn('"keep"', json.dumps(before_report))
@@ -330,6 +337,8 @@ class DataHomeTests(RotationTestCase):
             ]), output)
         data = self.user / ".teamster"
         self.assertFalse(old_tasks.exists())
+        self.assertFalse(events.exists())
+        self.assertTrue((data / ledger.name / "commands.lock").is_file())
         self.assertEqual(os.readlink(self.home / "worktrees"), str(disk))
         self.assertEqual(Path(os.path.realpath(data / "worktrees")), disk.resolve())
         self.assertEqual(tree(disk), disk_before)
@@ -350,6 +359,9 @@ class DataHomeTests(RotationTestCase):
         archived = [json.loads(path.read_text()) for path in (data / "tasks/.archive").glob("gone-*/state.json")]
         self.assertEqual([record["slug"] for record in archived], ["gone"])
         self.assertTrue((data / "log.jsonl").is_file())
+        migrated_events = (data / events.name).read_bytes()
+        self.assertTrue(migrated_events.startswith(before_events))
+        self.assertEqual(len(migrated_events.splitlines()), 3)
         self.assertFalse((self.home / "codex-worker-log.jsonl").exists())
         plist = plistlib.loads(self.cli("duty", "plist").encode())["EnvironmentVariables"]
         self.assertEqual(plist["TEAMSTER_HOME"], str(data))

@@ -74,6 +74,8 @@ def drop_dead_queue(slug):
 
 def launch(st, prompt, effort, current_message, kind, review_after, fix_rounds):
     """Claim the next turn in st, start its supervisor and save its pid; the caller holds spawn_lock and the state lock."""
+    if st.get("turns") and task_state.deadline_reached(st):
+        procs.die(f"{st['slug']}: task deadline has passed")
     if callable(prompt):
         prompt = prompt()
     d = config.TASKS / st["slug"]
@@ -177,6 +179,8 @@ def resume_refusal(st):
     slug = st["slug"]
     if st.get("kind") in ("scout", "reflect", "duty"):
         return f"{slug} is a {st['kind']}; resume continues only work tasks"
+    if task_state.deadline_reached(st):
+        return f"{slug}: task deadline has passed"
     busy = task_state.busy_message(st)
     if busy is not None:
         return busy
@@ -485,6 +489,7 @@ def finalize_cycle(st, cfg, check, stopped):
     st.pop("pending", None)
     st["turn_finished"] = clock.CLOCK.time()
     telemetry_log.record_turn_result(st, stopped)
+    telemetry_log.record_external_event(st)
     if cfg is not None:
         account = notifications.current_turn_account(st)
         message = f"turn {st['outcome']} on {account}"
@@ -552,7 +557,7 @@ def cmd__run(a):
         cancelled = stop_signal.requested
         if received_signal is not None and st is not None:
             st.setdefault("signal", received_signal)
-        return cancelled
+        return cancelled or (st is not None and task_state.deadline_reached(st))
     # The handler takes no lock: a stop while sleep holds one would deadlock.
     stop_signal.arm()
     signal.signal(signal.SIGINT, stop)
@@ -560,7 +565,7 @@ def cmd__run(a):
     # A supervisor started for queued orders inherits the signal mask of its predecessor's finalization.
     signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT, signal.SIGTERM})
     # Preserve interruptible real waits; file-clock waits advance logical time.
-    sleep = stop_signal.sleep if clock.CLOCK.path is None else clock.CLOCK.sleep
+    wait = stop_signal.sleep if clock.CLOCK.path is None else clock.CLOCK.sleep
     # The launcher publishes pid and pending before the supervisor becomes the only writer.
     for _ in range(200):
         st = task_state.load(a.slug)
@@ -569,6 +574,13 @@ def cmd__run(a):
         time.sleep(0.01)
     else:
         return
+    deadline = st.get("task_deadline")
+
+    def sleep(seconds):
+        if deadline is not None:
+            seconds = max(0, min(seconds, deadline - clock.CLOCK.time()))
+        return wait(seconds)
+
     cfg = None
     check = None
 
@@ -658,6 +670,8 @@ def cmd__run(a):
 
     try:
         cfg = config.accounts_config()
+        if task_state.deadline_reached(st):
+            return
         run_cycle(cfg)
     except (Exception, SystemExit) as exc:
         st.update(outcome="failed", error=str(exc))

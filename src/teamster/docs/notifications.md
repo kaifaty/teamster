@@ -15,3 +15,6 @@ event types. Hooks run asynchronously and write their output or launch errors to
 - `queue_dropped` fires after `turn_finished` when a cycle with queued messages ends with any other outcome
   (or is stopped while finishing); it includes `outcome` and `texts`, the dropped messages. They stay in
   `queue.json` under `dropped` (the last 10) and are not written to `messages.jsonl`.
+
+The [local external-duty API](external-duty.md) offers cursor-based replay of decisions and work
+results without notification hooks.

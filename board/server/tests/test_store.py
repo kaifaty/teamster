@@ -76,7 +76,7 @@ def test_each_column_and_actual_supervisor_liveness(tmp_path, pids):
 
 
 @pytest.mark.parametrize("outcome,status", [
-    ("sleeping", "done"), ("failed", "done"), ("stopped", "done"),
+    ("sleeping", "done"), ("failed", "done"), ("stopped", "done"), ("timeout", "done"),
     ("budget_exhausted", "done"), ("conflict", "done"), ("completed", "partial"),
     ("completed", "needs_decision"), ("completed", "blocked"),
 ])
@@ -820,10 +820,10 @@ def test_session_moved_transcript_search_is_cached_and_only_busy_sessions_read(t
     directories = Store._directories
     searches = []
 
-    def count_searches(root):
+    def count_searches(root, *, strict=False):
         if root == home / "projects":
             searches.append(root)
-        return directories(root)
+        return directories(root, strict=strict)
 
     monkeypatch.setattr(Store, "_directories", staticmethod(count_searches))
     store = session_store(tmp_path)
@@ -875,10 +875,10 @@ def test_session_transcript_direct_path_uses_ascii_and_retries_until_created(tmp
     directories = Store._directories
     searches = []
 
-    def count_searches(root):
+    def count_searches(root, *, strict=False):
         if root == home / "projects":
             searches.append(root)
-        return directories(root)
+        return directories(root, strict=strict)
 
     monkeypatch.setattr(Store, "_directories", staticmethod(count_searches))
     store = session_store(tmp_path)

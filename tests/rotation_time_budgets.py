@@ -10,6 +10,33 @@ from rotation_support import PYTHON, SCRIPT, RotationTestCase
 
 
 class TimeBudgetTests(RotationTestCase):
+    def test_task_timeout_survives_say_and_stops_its_executor(self):
+        self.enable_fake_clock(auto_advance=False)
+        self.configure(language="en")
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "reply": self.work_result("done")},
+            {"mode": "hold", "spawn_child": True}])
+        slug = "task-timeout"
+        self.start(slug, "--no-push", "--task-timeout", "60")
+        self.wait(slug)
+        start = self.state(slug)
+        self.assertEqual(start["task_deadline"], start["created"] + 60)
+        self.advance_fake_clock(59)
+        self.cli("say", slug, "Continue with the same deadline")
+        self.until(lambda: any(event.get("command") == "exec-child" for event in self.trace()))
+        child = next(event["child_pid"] for event in self.trace() if event.get("command") == "exec-child")
+        self.extra_pids.add(child)
+        self.assertEqual(self.state(slug)["task_deadline"], start["task_deadline"])
+        self.advance_fake_clock(1)
+        self.assertIn("task deadline passed", self.wait(slug))
+        self.assertEqual(self.state(slug)["outcome"], "timeout")
+        self.until(lambda: not self.process_is_live(child))
+        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "say", slug, "Too late", "--queue"],
+                                cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("task deadline has passed", result.stderr)
+        self.assertEqual(len(self.invocations()), 2)
+
     def test_time_budget_kills_exec_group_wraps_same_thread_checks_and_skips_review(self):
         # The 90-minute phase still fits its wait; wrap-up includes process startup.
         self.env["CODEX_TASK_MINUTE_SECONDS"] = "0.125"
