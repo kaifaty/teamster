@@ -264,8 +264,9 @@ def duty_turn(request, thread, model):
     # rust-v0.169.0 models.json forces code_mode_only for gpt-6.1-sol,
     # independently of the code_mode/code_mode_only feature flags.
     code_mode = model == "gpt-6.1-sol" or features.get("code_mode") or features.get("code_mode_only")
+    command_tools = ["exec_command", "write_stdin"] if features.get("shell_tool", True) else []
     trace({"command": "duty-tools", "model": model,
-           "tools": ["exec"] if code_mode else ["exec_command", "write_stdin", "apply_patch"]})
+           "tools": ["exec"] if code_mode else command_tools + ["apply_patch"]})
     steps = run.get("requests", [])
     command_outputs = []
     if code_mode and steps:
@@ -284,6 +285,8 @@ def duty_turn(request, thread, model):
         approval = {"threadId": thread["id"], "turnId": turn, "itemId": item_id}
         approval.update(step.get("params", {}))
         method = step.get("method", "item/commandExecution/requestApproval")
+        if method == "item/commandExecution/requestApproval" and not command_tools:
+            sys.exit("unsupported fake duty command request: shell_tool is disabled")
         item = step.get("item")
         if item is None and method == "item/commandExecution/requestApproval" and approval.get("command"):
             item = {"type": "commandExecution", "command": approval["command"], "cwd": approval.get("cwd"),
