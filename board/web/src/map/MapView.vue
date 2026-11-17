@@ -57,7 +57,7 @@ const panels = useMapPanels({
 });
 const { repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip, showOnMap } = panels;
 const { account, openAccount, closeAccount } = panels;
-const { openMachine, flying, enter, leave, goTo, openTask, summaryOpen, closeSummary } = panels;
+const { openMachine, enter, leave, goTo, openTask, summaryOpen, closeSummary } = panels;
 const { narrow, logOpen, fleetVisible, toggleFleet, showStation } = panels;
 
 const { sound } = useArrivalChime(sources);
@@ -69,7 +69,7 @@ const { entries, groups, plates, hidden } = useSystemFleet(sources, model, panel
 
 const stars = useStarLabels(overlay, repo, model, labels);
 const stage = useStageInsets(host, model, panels, stars.scheduleLabels);
-const { failure, retry } = useFleetScene({ props, host, overlay, sources, model, panels, entries, stars, stage });
+const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources, model, panels, entries, stars, stage });
 </script>
 
 <template>
@@ -88,10 +88,11 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
 
     <div v-if="failure" class="fallback" role="alert">
       <p v-if="failure === 'webgl'">Карта не смогла запустить графику в этом браузере. Задачи видны на доске.</p>
+      <p v-else-if="failure === 'system'">Не удалось загрузить текстуры системы. Можно попробовать ещё раз или перейти на доску.</p>
       <p v-else>Видеокарта сбросила карту. Можно попробовать ещё раз или перейти на доску.</p>
       <p>
         <a href="#" @click.prevent="emit('board')">Открыть доску</a>
-        <template v-if="failure === 'lost'"> · <a href="#" @click.prevent="retry">Повторить</a></template>
+        <template v-if="failure !== 'webgl'"> · <a href="#" @click.prevent="retry">Повторить</a></template>
       </p>
     </div>
 

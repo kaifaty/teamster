@@ -5,7 +5,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } 
 import { loadJson, saveJson } from "../../lib/storage";
 import type { LogEvent } from "../../types";
 import { systemTasks, type Place } from "../placement";
-import { FLIGHT_SECONDS } from "../scene";
 import type { GalaxyModel } from "./useGalaxyModel";
 import type { MapSources } from "./useMapSources";
 
@@ -167,18 +166,6 @@ export function useMapPanels({ props, sources, model, host, fleetPanel, summaryB
     onMachine(id, opener);
   }
 
-  // The labels of the place the map flies to wait for it to arrive.
-  const flying = ref(false);
-  let flightTimer: ReturnType<typeof setTimeout> | undefined;
-  watch(repo, () => {
-    clearTimeout(flightTimer);
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    flying.value = true;
-    flightTimer = setTimeout(() => {
-      flying.value = false;
-    }, FLIGHT_SECONDS * 1000);
-  });
-
   function enter(name: string) {
     repo.value = name;
   }
@@ -272,7 +259,6 @@ export function useMapPanels({ props, sources, model, host, fleetPanel, summaryB
     narrowQuery.addEventListener("change", onNarrow);
   });
   onBeforeUnmount(() => {
-    clearTimeout(flightTimer);
     window.removeEventListener("keydown", onKey);
     narrowQuery.removeEventListener("change", onNarrow);
   });
@@ -280,7 +266,7 @@ export function useMapPanels({ props, sources, model, host, fleetPanel, summaryB
   return {
     repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openShip, openResearch, closeResearch, close, showOnMap, openMachine,
     account, openAccount, closeAccount,
-    flying, enter, leave, goTo, openTask, summaryOpen, closeSummary, narrow,
+    enter, leave, goTo, openTask, summaryOpen, closeSummary, narrow,
     logOpen, fleetVisible, toggleFleet, showStation,
   };
 }

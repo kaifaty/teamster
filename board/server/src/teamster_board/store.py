@@ -460,8 +460,12 @@ class Store:
                 raise OSError(f"Task directory is a symlink: {root}")
             return []
         try:
-            return [path for path in root.iterdir()
-                    if not path.name.startswith(".") and not path.is_symlink() and path.is_dir()]
+            if strict:
+                return [path for path in root.iterdir()
+                        if not path.name.startswith(".") and not path.is_symlink() and path.is_dir()]
+            with os.scandir(root) as entries:
+                return [Path(entry.path) for entry in entries
+                        if not entry.name.startswith(".") and entry.is_dir(follow_symlinks=False)]
         except FileNotFoundError:
             return []
         except OSError:
@@ -474,15 +478,23 @@ class Store:
         archived = []
         if not self.tasks_path.is_symlink():
             for path in self._directories(self.tasks_path / ".archive", strict=strict):
-                state = self._file(path, "state.json", strict=strict)
-                if state is not None:
-                    try:
-                        archived.append((state.stat().st_mtime_ns, path.name, path))
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        if strict:
-                            raise
+                try:
+                    if strict:
+                        state = self._file(path, "state.json", strict=True)
+                        if state is None:
+                            continue
+                        metadata = state.stat()
+                    else:
+                        metadata = (path / "state.json").lstat()
+                        if not stat.S_ISREG(metadata.st_mode):
+                            continue
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    if strict:
+                        raise
+                    continue
+                archived.append((metadata.st_mtime_ns, path.name, path))
         paths.extend((path, True) for _, _, path in sorted(archived, reverse=True)[:50])
         return paths
 

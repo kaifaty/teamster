@@ -476,6 +476,56 @@ def deliver_duty_note(order):
             return "sent"
 
 
+def finalize_cycle(st, cfg, check, stopped):
+    """Publish the result and hand off follow-ups while stop signals are masked."""
+    guarded_changed = len(checking.guarded_changes(st)) if cfg is not None else 0
+    st["outcome"] = task_state.stop_outcome(st, stopped) or st["outcome"]
+    if st.get("fix_rounds") and (st["outcome"] != "completed" or not st.get("auto_fix_stop")):
+        st["auto_fix_stop"] = ("budget" if budgets.budget_stop(st) == "weekly" else
+                               "review refused" if st["outcome"] == "refused" and st.get("kind") == "review"
+                               else st["outcome"] if st["outcome"] != "completed"
+                               else st.get("review_skipped", "review unknown"))
+    st.pop("sleeping", None)
+    st.pop("pending", None)
+    st["turn_finished"] = clock.CLOCK.time()
+    telemetry_log.record_turn_result(st, stopped)
+    telemetry_log.record_external_event(st)
+    if cfg is not None:
+        account = notifications.current_turn_account(st)
+        message = f"turn {st['outcome']} on {account}"
+        result = st.get("result")
+        message += ", result " + (result["status"] if result is not None else "unknown")
+        if check is not None:
+            message += ", check " + check["outcome"]
+        notifications.notify(st, cfg, "turn_finished", message, outcome=st["outcome"], account=account, result=result,
+                             guarded_changed=guarded_changed, ci=st.get("ci"))
+        if st["outcome"] == "interrupted":
+            notifications.notify(st, cfg, "interrupted", task_state.interruption_message(st), outcome=st["outcome"],
+                                 signal=st.get("signal"))
+        if (result is not None and result["status"] in ("blocked", "needs_decision")
+                and (st.get("kind") not in ("review", "scout") or st.get("work_completed"))):
+            question = (result["question"] if st.get("kind") == duty_chat.CHAT_KIND
+                        else next(iter(result["questions"]), ""))
+            notifications.notify(st, cfg, "needs_input", f"result {result['status']}: {question}",
+                                 result=result, question=question)
+    notifications.reap_notifications()
+    queued = finish_cycle(st)
+    # Every cycle notes the duty, also one whose end started the next turn for queued orders.
+    queue_duty_note(st, (queued or {}).get("report"))
+    if queued is not None and cfg is not None:
+        texts = [order["text"] for order in queued["orders"]]
+        if "sent" in queued:
+            following = queued["sent"]
+            notifications.notify(following, cfg, "queue_sent",
+                                 f"queued orders sent: {len(texts)}, turn {following['turns']} started",
+                                 count=len(texts), turn=following["turns"])
+        else:
+            notifications.notify(st, cfg, "queue_dropped",
+                                 f"queued orders not sent (outcome {queued['dropped']}): {len(texts)}",
+                                 outcome=queued["dropped"], texts=texts)
+        notifications.reap_notifications()
+
+
 def cmd__run(a):
     stop_signal = procs.StopSignal()
     received_signal = None
@@ -533,10 +583,10 @@ def cmd__run(a):
 
     cfg = None
     check = None
-    try:
-        cfg = config.accounts_config()
-        if task_state.deadline_reached(st):
-            return
+
+    def run_cycle(cfg):
+        """Run or resume the recorded task phases."""
+        nonlocal check  # Keep the saved check if a later phase raises.
         pending = st.pop("pending")
         effort = pending["effort"]
         # resume names the step an interrupted cycle continues from; a new cycle starts at its turn.
@@ -580,8 +630,7 @@ def cmd__run(a):
         if (working and (turn or (step == "check" and not round_check))
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
-            task_state.mark_step(st, "check")
-            check = checking.saved_check(st, cfg, stopped, sleep, review_after and not in_ci)
+            check = checking.run_check_step(st, cfg, stopped, sleep, review_after=review_after and not in_ci)
         if review_fix or round_check:
             review_cycle.auto_fix(st, cfg, st.get("review_result"), effort, stopped, sleep,
                                   resume_prompt=pending["prompt"], resume_check=round_check)
@@ -618,6 +667,12 @@ def cmd__run(a):
             ci_runs.ci_cycle(st, cfg, effort, stopped, sleep)
         checks = st.get("checks", [])[st.get("check_start", 0):]
         check = checks[-1] if checks else None
+
+    try:
+        cfg = config.accounts_config()
+        if task_state.deadline_reached(st):
+            return
+        run_cycle(cfg)
     except (Exception, SystemExit) as exc:
         st.update(outcome="failed", error=str(exc))
         print(f"supervisor failed: {exc}", file=sys.stderr)
@@ -625,51 +680,6 @@ def cmd__run(a):
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
         finalized = True
         try:
-            guarded_changed = len(checking.guarded_changes(st)) if cfg is not None else 0
-            st["outcome"] = task_state.stop_outcome(st, stopped) or st["outcome"]
-            if st.get("fix_rounds") and (st["outcome"] != "completed" or not st.get("auto_fix_stop")):
-                st["auto_fix_stop"] = ("budget" if budgets.budget_stop(st) == "weekly" else
-                                       "review refused" if st["outcome"] == "refused" and st.get("kind") == "review"
-                                       else st["outcome"] if st["outcome"] != "completed"
-                                       else st.get("review_skipped", "review unknown"))
-            st.pop("sleeping", None)
-            st.pop("pending", None)
-            st["turn_finished"] = clock.CLOCK.time()
-            telemetry_log.record_turn_result(st, stopped)
-            telemetry_log.record_external_event(st)
-            if cfg is not None:
-                account = notifications.current_turn_account(st)
-                message = f"turn {st['outcome']} on {account}"
-                result = st.get("result")
-                message += ", result " + (result["status"] if result is not None else "unknown")
-                if check is not None:
-                    message += ", check " + check["outcome"]
-                notifications.notify(st, cfg, "turn_finished", message, outcome=st["outcome"], account=account, result=result,
-                       guarded_changed=guarded_changed, ci=st.get("ci"))
-                if st["outcome"] == "interrupted":
-                    notifications.notify(st, cfg, "interrupted", task_state.interruption_message(st), outcome=st["outcome"],
-                           signal=st.get("signal"))
-                if (result is not None and result["status"] in ("blocked", "needs_decision")
-                        and (st.get("kind") not in ("review", "scout") or st.get("work_completed"))):
-                    question = (result["question"] if st.get("kind") == duty_chat.CHAT_KIND
-                                else next(iter(result["questions"]), ""))
-                    notifications.notify(st, cfg, "needs_input", f"result {result['status']}: {question}",
-                           result=result, question=question)
-            notifications.reap_notifications()
-            queued = finish_cycle(st)
-            # Every cycle notes the duty, also one whose end started the next turn for queued orders.
-            queue_duty_note(st, (queued or {}).get("report"))
-            if queued is not None and cfg is not None:
-                texts = [order["text"] for order in queued["orders"]]
-                if "sent" in queued:
-                    following = queued["sent"]
-                    notifications.notify(following, cfg, "queue_sent",
-                                         f"queued orders sent: {len(texts)}, turn {following['turns']} started",
-                                         count=len(texts), turn=following["turns"])
-                else:
-                    notifications.notify(st, cfg, "queue_dropped",
-                                         f"queued orders not sent (outcome {queued['dropped']}): {len(texts)}",
-                                         outcome=queued["dropped"], texts=texts)
-                notifications.reap_notifications()
+            finalize_cycle(st, cfg, check, stopped)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, mask)

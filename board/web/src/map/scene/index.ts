@@ -15,9 +15,9 @@ import { createInput, listen } from "./input";
 import { createKit } from "./kit";
 import type { Clock, GalaxyLayer, Hit, SystemLayer } from "./layer";
 import { noise } from "./math";
-import { createPlaces } from "./system/places";
-import { createFleet } from "./system/ships";
-import { FLIGHT_SECONDS, type FleetScene, type GalaxyModel, type SceneOptions } from "./types";
+import { createPlaces, type Places } from "./system/places";
+import { createFleet, type Fleet } from "./system/ships";
+import { FLIGHT_SECONDS, type FleetScene, type GalaxyModel, type SceneOptions, type ShipEntry } from "./types";
 
 export * from "./types";
 
@@ -73,6 +73,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   let repo: string | null = null;
   let focus: string | null = null;
   let flight = 0;
+  let flying = false;
   let disposed = false;
   let repoArt: ArtIndex = {};
   /** The frame's clock, one object for the scene's life. */
@@ -93,15 +94,39 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   const galaxy = new Container();
   galaxy.addChild(...galaxyLayers.map((layer) => layer.root));
 
-  const fleet = createFleet(kit, frame, { onDive: () => places.flare() });
-  const places = createPlaces(kit, frame, { sky: systemBackdrop, fit: fitBackdrop, ships: fleet.ships });
-  /** The system's layers, the bottom one first: the places under the ships. */
-  const systemLayers: SystemLayer[] = [places, fleet];
   const system = new Container();
-  system.addChild(...systemLayers.map((layer) => layer.root));
+  const systemLayers: SystemLayer[] = [];
+  let fleet: Fleet | null = null;
+  let places: Places | null = null;
+  let loadingSystem = false;
+  let entries: ShipEntry[] = [];
+  let selected: string | null = null;
+  let hovered: string | null = null;
 
   const veil = new Graphics();
   app.stage.addChild(backdrop, systemBackdrop, dust, galaxy, system, veil);
+
+  async function loadSystem() {
+    if (loadingSystem) return;
+    loadingSystem = true;
+    try {
+      await kit.loadSystemArt();
+      if (disposed) return;
+      fleet = createFleet(kit, frame, { onDive: () => places?.flare() });
+      places = createPlaces(kit, frame, { sky: systemBackdrop, fit: fitBackdrop, ships: fleet.ships });
+      systemLayers.push(places, fleet);
+      system.addChild(places.root, fleet.root);
+      for (const layer of systemLayers) layer.layout(frame);
+      if (repo) places.open(repo, repoArt);
+      fleet.set(entries);
+      fleet.select(selected);
+      fleet.hover(hovered);
+    } catch (error) {
+      if (!disposed && repo) options.onSystemError(error);
+    } finally {
+      loadingSystem = false;
+    }
+  }
 
   // Drawing what changes rarely ---------------------------------------------------------------------
 
@@ -154,19 +179,28 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     container.position.set(view.tx, view.ty);
   }
 
+  function reportFlight() {
+    const next = (repo !== null && !fleet) || (!still && flight !== (repo ? 1 : 0));
+    if (next === flying) return;
+    flying = next;
+    options.onFlight(flying);
+  }
+
   function onFrame(elapsed: number) {
     // Ships take small steps after a pause; the flight keeps to real time, so it ends even in a slow tab.
     const dt = Math.min(elapsed, 0.1);
     clock.time += dt;
     clock.dt = dt;
-    const goal = repo ? 1 : 0;
+    // The opaque veil hides any wait for system art halfway through the flight.
+    const goal = !repo ? 0 : fleet ? 1 : still ? 0 : FALL;
     const step = still ? 1 : elapsed / FLIGHT_SECONDS;
     flight = goal > flight ? Math.min(goal, flight + step) : Math.max(goal, flight - step);
+    reportFlight();
     camera.step(dt);
     const { world, fit, galaxyView, systemView, systemWorld, systemFit } = camera;
 
     drawDust();
-    const inGalaxy = flight < FALL;
+    const inGalaxy = flight < FALL || !fleet;
     // The veil is opaque at the turn of the flight, so the skies change unseen.
     galaxy.visible = backdrop.visible = inGalaxy;
     system.visible = systemBackdrop.visible = !inGalaxy;
@@ -213,7 +247,7 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
   function hitAt(at: Point): Hit | null {
     const point = worldPoint(at);
     if (!repo) return galaxyAt(model, point);
-    const slug = fleet.shipAt(point);
+    const slug = fleet?.shipAt(point);
     return slug ? { kind: "ship", slug } : null;
   }
 
@@ -299,24 +333,35 @@ export async function createFleetScene(options: SceneOptions): Promise<FleetScen
     },
     setArt(next) {
       repoArt = next;
-      if (focus) places.dress(focus, repoArt);
+      if (focus) places?.dress(focus, repoArt);
     },
     setView(next) {
       if (next === repo) return;
       if (next !== null) {
-        fleet.clear();
+        fleet?.clear();
         focus = next;
-        places.open(next, repoArt);
+        places?.open(next, repoArt);
       }
       camera.show(next !== null);
       repo = next;
+      if (repo && !fleet) void loadSystem();
+      reportFlight();
       lastHover = null;
       leave();
       camera.report();
     },
-    setShips: (entries) => fleet.set(entries),
-    setSelected: (slug) => fleet.select(slug),
-    setHovered: (slug) => fleet.hover(slug),
+    setShips(next) {
+      entries = next;
+      fleet?.set(next);
+    },
+    setSelected(slug) {
+      selected = slug;
+      fleet?.select(slug);
+    },
+    setHovered(slug) {
+      hovered = slug;
+      fleet?.hover(slug);
+    },
     setInsets(next) {
       if (next.top === insets.top && next.right === insets.right && next.bottom === insets.bottom && next.left === insets.left) return;
       const galaxyMoved = next.bottom !== insets.bottom;
