@@ -552,8 +552,7 @@ def ci_cycle(st, cfg, effort, stopped, sleep):
         task_state.mark_step(st, "fix")
         turns.work_turn(st, cfg, prompt, effort, True, stopped, sleep, new_turn=False)
         if not stopped() and st.get("outcome") in ("completed", "budget_exhausted", "stuck"):
-            task_state.mark_step(st, "check")
-            checking.saved_check(st, cfg, stopped, sleep, review_after=False)
+            checking.run_check_step(st, cfg, stopped, sleep, review_after=False)
         result = st.get("result") or {}
         if stopped() or st.get("outcome") != "completed" or result.get("status") != "done":
             ci["reason"] = ("stopped" if stopped() else result.get("status") or st.get("outcome", "unknown"))

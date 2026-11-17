@@ -3887,3 +3887,207 @@ def test_landing_forgejo_resumes_running_process_without_blocking_other_lessons(
     task["drive"](actions, lambda: next(row for row in actions.research.view()["lessons"]
                                       if row["entry"] == task["entry"])["implementation"]["landing"]["stage"] == "landed")
     assert len(task["records"](script)) == 1
+
+
+
+@pytest.fixture
+def external_duty_worker(monkeypatch):
+    """The real CLI against the rotation suite's local Git origin and fake Codex."""
+    monkeypatch.syspath_prepend(str(board_app.REPOSITORY / "tests"))
+    from rotation_support import RotationTestCase, SCRIPT
+
+    worker = RotationTestCase()
+    worker.setUp()
+    try:
+        with monkeypatch.context() as env:
+            home = worker.root / "home"
+            home.mkdir()
+            env.setenv("HOME", str(home))
+            for key in os.environ.copy():
+                if key.startswith("TEAMSTER_") or key == "CODEX_TASK_CLOCK_FILE":
+                    env.delenv(key)
+            for key, value in worker.env.items():
+                if not key.startswith("TEAMSTER_") and key != "CODEX_TASK_CLOCK_FILE" and value != os.environ.get(key):
+                    env.setenv(key, value)
+            for name in ("claude", "security"):
+                fake = worker.root / name
+                fake.write_text("#!/bin/sh\nexit 99\n")
+                fake.chmod(0o700)
+            env.setenv("CODEX_TASK_CLAUDE", str(worker.root / "claude"))
+            command = worker.root / "teamster"
+            command.write_text(
+                f"#!{sys.executable}\nimport os, sys\n"
+                f"os.execv(sys.executable, [sys.executable, '-I', {str(SCRIPT)!r}, *sys.argv[1:]])\n"
+            )
+            command.chmod(0o700)
+            accounts = worker.root / "accounts.py"
+            accounts.write_text("print('{\"codex\": [], \"claude\": []}')\n")
+            worker.configure(language="en")
+            yield worker, command, accounts
+    finally:
+        worker.tearDown()
+
+
+def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
+    from teamster_board.external_duty import ExternalDuty, ExternalDutyConfig
+
+    worker, command, accounts = external_duty_worker
+    release = worker.root / "release-first-turn"
+    release_followup = worker.root / "release-followup"
+    question = "Which label should the new file contain?"
+    check = {"command": "verify labels", "outcome": "passed", "details": "1 check passed"}
+    worker.account(worker.home, "A", worker.reset, runs=[
+        {"mode": "complete", "delay_gate": str(release),
+         "reply": worker.work_result("needs_decision", questions=[question], checks=[])},
+        {"mode": "complete", "delay_gate": str(release_followup),
+         "write_files": {"label.txt": "blue\n"}, "commit_files": ["label.txt"],
+         "reply": worker.work_result(checks=[check], summary="Added the blue label.",
+                                     commit_message="Add blue label")},
+        {"mode": "hold"},
+    ])
+    repository = str(worker.repo)
+    token = "external-duty-test-token-with-enough-characters"
+    settings = Settings(worker.home, accounts, action_teamster=str(command), duty_seconds=0,
+                        no_land=True, poll_seconds=0.02, web_dist=worker.root / "dist",
+                        external_duty=ExternalDutyConfig("fixture", token, (repository,), 1, 300))
+    base = "/api/external-duty/v1"
+    headers = {"Authorization": f"Bearer {token}"}
+    start = {"request_id": "start-001", "repository": repository, "goal": "Add a label file.",
+             "done_when": ["Verify the contents of the file."]}
+
+    def server(host="127.0.0.1"):
+        return TestClient(create_app(settings), base_url="http://127.0.0.1:8787",
+                          client=(host, 54321), headers=headers)
+
+    def card(client, task_id):
+        response = client.get(f"{base}/tasks/{task_id}")
+        assert response.status_code == 200, response.text
+        return response.json()["task"]
+
+    def wait_for(client, task_id, status):
+        deadline = time.monotonic() + 30
+        while True:
+            current = card(client, task_id)
+            if current["status"] == status:
+                return current
+            assert time.monotonic() < deadline, current
+            time.sleep(0.02)
+
+    with server("192.0.2.1") as remote:
+        assert remote.get(f"{base}/tasks").status_code == 403
+    with server() as client:
+        assert client.get(f"{base}/tasks", headers={"Authorization": "Bearer wrong"}).status_code == 403
+        assert client.get(f"{base}/tasks").json()["tasks"] == []
+        forbidden = client.post(f"{base}/tasks",
+                                json=dict(start, request_id="foreign-001", repository=str(worker.root)))
+        assert forbidden.status_code == 403, forbidden.text
+        assert forbidden.json()["error"]["code"] == "repository_not_allowed"
+        created = client.post(f"{base}/tasks", json=start)
+        assert created.status_code == 201, created.text
+        initial = created.json()["task"]
+        task_id = initial["id"]
+        active = wait_for(client, task_id, "running")
+        assert active["goal"] == start["goal"]
+        assert active["executor"] == "codex"
+        assert active["repository"] == repository
+        assert active["no_push"] is True and active["pr"] is None
+        assert worker.state(active["slug"])["no_push"] is True
+        assert client.get(f"{base}/tasks").json()["tasks"][0]["id"] == task_id
+        at_capacity = client.post(f"{base}/tasks", json=dict(start, request_id="capacity-001"))
+        assert at_capacity.status_code == 409, at_capacity.text
+        assert at_capacity.json()["error"]["code"] == "parallel_limit"
+        assert client.get(f"{base}/events").json()["events"] == []
+        release.touch()
+        decision = wait_for(client, task_id, "needs_decision")
+        assert decision["question"] == question
+        event_page = client.get(f"{base}/events").json()
+        event, = event_page["events"]
+        assert event["type"] == "needs_decision"
+        assert event["question"] == question and event["task_id"] == task_id
+
+    with server() as client:
+        replay = client.post(f"{base}/tasks", json=start)
+        assert replay.status_code == 201, replay.text
+        assert replay.json() == created.json()
+        reused = client.post(f"{base}/tasks", json=dict(start, goal="Different work"))
+        assert reused.status_code == 409, reused.text
+        assert reused.json()["error"]["code"] == "idempotency_conflict"
+        assert len(worker.invocations()) == 1
+        assert client.get(f"{base}/events").json() == event_page
+        assert client.get(f"{base}/events", params={"after": event_page["next_cursor"]}).json()["events"] == []
+        decision = card(client, task_id)
+        answer = {"request_id": "say-001", "version": decision["version"],
+                  "message": "Use the blue label."}
+        sent = client.post(f"{base}/tasks/{task_id}/say", json=answer)
+        assert sent.status_code == 200, sent.text
+    # Finish while there is no client polling, then retrieve the missed event
+    # with the same cursor from a fresh Board instance.
+    release_followup.touch()
+    worker.until(lambda: worker.state(active["slug"]).get("pid") is None, timeout=30)
+
+    with server() as client:
+        replay = client.post(f"{base}/tasks/{task_id}/say", json=answer)
+        assert replay.status_code == 200 and replay.json() == sent.json(), replay.text
+        finished = wait_for(client, task_id, "succeeded")
+        assert finished["checks"]["reported"] == [check] and finished["pr"] is None
+        assert "activity_log" not in finished and "messages" not in finished
+        first, second = worker.invocations()
+        assert start["done_when"][0] in first["prompt"]
+        assert answer["message"] in second["prompt"]
+        worker.assert_resumed_same_thread(first, second, worker.home)
+        branch = worker.state(active["slug"])["branch"]
+        assert worker.git("show", f"{branch}:label.txt") == "blue"
+        assert not worker.gh_invocations()
+        assert worker.git("--git-dir", str(worker.root / "origin.git"), "for-each-ref",
+                          "--format=%(refname)", "refs/heads") == "refs/heads/main"
+        events = client.get(f"{base}/events", params={"after": event_page["next_cursor"]}).json()
+        end, = events["events"]
+        assert end["type"] == "task_finished" and end["task_id"] == task_id
+        assert end["id"] != event["id"] and end["checks"]["reported"] == [check]
+        assert client.get(f"{base}/events", params={"after": events["next_cursor"]}).json()["events"] == []
+
+        next_start = dict(start, request_id="start-002")
+
+        def lose_receipt(self, db, key, reply):
+            assert reply[0] == 201, reply
+            raise RuntimeError("Board stopped before saving the receipt")
+
+        with monkeypatch.context() as crash:
+            crash.setattr(ExternalDuty, "record", lose_receipt)
+            with pytest.raises(RuntimeError, match="before saving the receipt"):
+                client.post(f"{base}/tasks", json=next_start)
+        existing = {task["id"] for task in client.get(f"{base}/tasks").json()["tasks"]}
+        assert task_id in existing and len(existing) == 2
+
+    with server() as client:
+        next_task = client.post(f"{base}/tasks", json=next_start)
+        assert next_task.status_code == 201, next_task.text
+        running = wait_for(client, next_task.json()["task"]["id"], "running")
+        assert existing == {task_id, running["id"]}
+        assert len(worker.invocations()) == 3
+        stopped = client.post("/api/actions/stop", json={"slug": running["slug"]},
+                              headers={"Origin": "http://127.0.0.1:8787", "X-Teamster-Board": "1"})
+        assert stopped.status_code == 200, stopped.text
+        stale = client.post(f"{base}/tasks/{running['id']}/stop",
+                            json={"request_id": "stale-001", "version": running["version"]})
+        assert stale.status_code == 409, stale.text
+        assert stale.json()["error"]["code"] == "version_conflict"
+        assert stale.json()["task"]["status"] == "stopped"
+        assert stale.json()["task"]["version"] != running["version"]
+        stop_page = client.get(f"{base}/events", params={"after": events["next_cursor"]}).json()
+        stop_event, = stop_page["events"]
+        assert (stop_event["type"], stop_event["task_id"], stop_event["status"]) == (
+            "task_finished", running["id"], "stopped",
+        )
+
+        last = client.post(f"{base}/tasks", json=dict(start, request_id="start-003"))
+        assert last.status_code == 201, last.text
+        last_id = last.json()["task"]["id"]
+        for attempt in range(5):
+            current = card(client, last_id)
+            accepted = client.post(f"{base}/tasks/{last_id}/stop",
+                                   json={"request_id": f"stop-{attempt}", "version": current["version"]})
+            if accepted.status_code != 409 or accepted.json()["error"]["code"] != "version_conflict":
+                break
+        assert accepted.status_code == 200, accepted.text
+        assert wait_for(client, last_id, "stopped")["id"] == last_id

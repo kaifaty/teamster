@@ -10,7 +10,7 @@ import re
 import statistics
 import time
 from bisect import bisect_right
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 
@@ -99,6 +99,7 @@ def _read_rows(log_path, until, repo, slug):
         return [], []
     rows = []
     verdicts = []
+    phases = MODEL_PHASES | CHECK_PHASES | {"turn"}
     try:
         with handle:
             for line in handle:
@@ -108,24 +109,27 @@ def _read_rows(log_path, until, repo, slug):
                     continue
                 if not isinstance(row, dict) or type(row.get("v")) is not int or row["v"] != 1:
                     continue
+                if (repo is not None and row.get("repo") != repo) or (slug is not None and row.get("slug") != slug):
+                    continue
                 at = _number(row.get("at"))
                 if at is None or at > until:
                     continue
                 if not _identifier(row.get("repo")) or not _identifier(row.get("slug")):
                     continue
-                if repo is not None and row["repo"] != repo or slug is not None and row["slug"] != slug:
-                    continue
                 if row.get("kind") == "verdict":
                     if row.get("verdict") in LEAD_VERDICTS:
                         verdicts.append(row)
                     continue
-                if not isinstance(row.get("phase"), str) or row["phase"] not in MODEL_PHASES | CHECK_PHASES | {"turn"}:
+                phase = row.get("phase")
+                if not isinstance(phase, str) or phase not in phases:
                     continue
                 rows.append(row)
     except OSError:
         # Keep complete rows already read if a journal becomes unreadable.
         pass
-    return sorted(rows, key=lambda row: row["at"]), sorted(verdicts, key=lambda row: row["at"])
+    rows.sort(key=lambda row: row["at"])
+    verdicts.sort(key=lambda row: row["at"])
+    return rows, verdicts
 
 
 def _task(repo, slug, created):
@@ -351,7 +355,10 @@ def _accumulate_rows(rows, identities, since=0):
         if identity not in window:
             continue
         phase = row["phase"]
-        task = tasks.setdefault(identity, _task(row["repo"], row["slug"], _number(identity[2])))
+        task = tasks.get(identity)
+        if task is None:
+            task = _task(row["repo"], row["slug"], _number(identity[2]))
+            tasks[identity] = task
         task["_started"] = task["_started"] or row["at"]
         _attribute(row, task)
         if row["at"] < since:
@@ -476,10 +483,10 @@ def _reconcile_tasks(tasks):
                        "result_status": result_status, "auto_fix_stops": auto_fix_stops}
 
 
-def _verdict_task(tasks, repo, slug, created, at):
+def _verdict_task(task_items, repo, slug, created, at):
     """Return the task a verdict belongs to: the one born at ``created``, else the newest born by ``at``."""
     candidates = []
-    for key, task in tasks.items():
+    for key, task in task_items:
         if key[:2] == (repo, slug):
             if created is not None and task["created"] == created:
                 return task
@@ -494,8 +501,14 @@ def _verdict_task(tasks, repo, slug, created, at):
 
 def _attach_lead_verdicts(tasks, verdicts):
     """Give each task its latest lead verdict, matched by repository, slug, and birth."""
+    if not verdicts:
+        return
+    by_task = defaultdict(list)
+    for key, task in tasks.items():
+        by_task[key[:2]].append((key, task))
     for row in verdicts:
-        task = _verdict_task(tasks, row["repo"], row["slug"], _number(row.get("created")), row["at"])
+        repo, slug = row["repo"], row["slug"]
+        task = _verdict_task(by_task.get((repo, slug), ()), repo, slug, _number(row.get("created")), row["at"])
         if task is not None:
             task["lead_verdict"] = row["verdict"]
             task["lead_note"] = row.get("note") if isinstance(row.get("note"), str) else None
@@ -563,7 +576,7 @@ def lead_verdict(log_path, repo, slug, created, now=None):
         task = tasks.setdefault(identity, _task(row["repo"], row["slug"], _number(identity[2])))
         task["_started"] = task["_started"] or row["at"]
     _attach_lead_verdicts(tasks, verdicts)
-    task = _verdict_task(tasks, repo, slug, _number(created), now)
+    task = _verdict_task(tasks.items(), repo, slug, _number(created), now)
     return None if task is None else task["lead_verdict"]
 
 

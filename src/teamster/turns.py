@@ -370,8 +370,7 @@ def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, ne
             phase = telemetry_log.telemetry_phase(st)
             if phase is not None:
                 phase.finish(outcome=outcome)
-            publishing.publish_work(st, stopped)
-            publishing.publish_pr(st, stopped)
+            publishing.publish_turn(st, stopped)
         budgets.stop_at_weekly_budget(st)
         task_state.save(st)
 
@@ -602,8 +601,7 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
             st["outcome"] = result
             if phase is not None:
                 phase.finish(outcome=result)
-            publishing.publish_work(st, stopped)
-            publishing.publish_pr(st, stopped)
+            publishing.publish_turn(st, stopped)
             budgets.stop_at_weekly_budget(st)
             break
         if result in ("budget_exhausted", "stuck"):
@@ -723,8 +721,7 @@ def work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, work_pat
     if work_paths is None and st.get("kind") not in ("scout", "reflect", "duty"):
         work_paths = checking.check_paths(st)
     run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, **turn_options)
-    publishing.publish_work(st, stopped)
-    publishing.publish_pr(st, stopped)
+    publishing.publish_turn(st, stopped)
     if work_paths is not None:
         st["check_paths"] = sorted(set(work_paths) | set(checking.check_paths(st)))
 

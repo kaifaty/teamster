@@ -483,6 +483,12 @@ def _rerun_loaded_check(st, cfg, stopped, sleep, check):
     return result
 
 
+def run_check_step(st, cfg, stopped, sleep, review_after=True):
+    """Save the check as the cycle's resume point before running it."""
+    task_state.mark_step(st, "check")
+    return saved_check(st, cfg, stopped, sleep, review_after=review_after)
+
+
 def saved_check(st, cfg, stopped, sleep, review_after=True):
     check = run_check(st, stopped) if st.get("check") and not stopped() else None
     if check:

@@ -29,9 +29,12 @@ export interface SceneOptions {
   onHoverStar?: (repo: string | null) => void;
   /** The shapes of the galaxy's world and of the system's, and the camera over the one shown, for the labels. */
   onCamera: (worlds: { galaxy: Size; system: Size }, camera: Camera) => void;
+  /** Labels wait until the flight and any system texture loading finish. */
+  onFlight: (flying: boolean) => void;
   /** The labels over the canvas: the wheel and a pinch over them move the camera too. */
   labels?: HTMLElement;
   onLost: () => void;
+  onSystemError: (error: unknown) => void;
 }
 
 export interface FleetScene {

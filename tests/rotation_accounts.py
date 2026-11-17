@@ -1992,8 +1992,7 @@ else:
                     searches.append(clock[0])
                     return cached_rollout if resumed or clock[0] >= 11 else None
 
-                def read_limits(path, on_limits=None, offset=0):
-                    self.assertIs(path, cached_rollout)
+                def read_limits(lines, on_limits):
                     reads.append(clock[0])
                     limits = worker.accounts.normalize_limits({"primary": {"usedPercent": 10,
                         "windowDurationMins": 10080, "resetsAt": self.reset}})
@@ -2011,7 +2010,7 @@ else:
                         mock.patch.object(worker.os, "read", side_effect=read), \
                         mock.patch.object(worker.turn_monitor.time, "monotonic", side_effect=lambda: clock[0]), \
                         mock.patch.object(worker.threads, "rollout_path", side_effect=find_rollout), \
-                        mock.patch.object(worker.threads, "rollout_limits", side_effect=read_limits):
+                        mock.patch.object(worker.threads, "read_rollout_limits", side_effect=read_limits):
                     result = worker.turn_monitor.monitor(st, {"enabled": True, "switch_at": 99},
                                             {"name": "main", "home": str(self.home)}, "prompt", None,
                                             lambda: False, mock.Mock(side_effect=AssertionError("unexpected limit")))

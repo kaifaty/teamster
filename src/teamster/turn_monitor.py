@@ -175,9 +175,11 @@ class MonitorEvents:
 class MonitorRollout:
     """Rollout polling cursor and the stdout prefix queued at a weekly stop."""
     path: Optional[Path]
-    previous_size: int
+    previous_stat: Optional[os.stat_result]
     usage_offset: int
     next_search: float
+    read_offset: int
+    latest_limits: Optional[dict] = None
     next_poll: float = 0.0
     pending_weekly_spent: Optional[float] = None
     pending_weekly_bytes: int = 0
@@ -331,6 +333,33 @@ def resolve_monitor_quota(st, request, stopped, control, active_started, on_limi
     return ("limit", decision) if decision is not None or not request.allow_credits else None
 
 
+def read_monitor_rollout(usage, record_limits):
+    """Read new complete lines and keep the last quota across non-quota appends."""
+    previous = usage.previous_stat
+    observed = usage.path.stat()
+    if previous is not None and (observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns) == (
+            previous.st_dev, previous.st_ino, previous.st_size, previous.st_mtime_ns):
+        return None
+    with usage.path.open("rb") as stream:
+        observed = os.fstat(stream.fileno())
+        if previous is not None and ((observed.st_dev, observed.st_ino) != (previous.st_dev, previous.st_ino)
+                                     or observed.st_size < max(previous.st_size, usage.read_offset)
+                                     or (observed.st_size == previous.st_size
+                                         and observed.st_mtime_ns != previous.st_mtime_ns)):
+            # Replay the rewritten suffix without including earlier execs of a resumed thread.
+            usage.read_offset = usage.usage_offset
+            usage.latest_limits = None
+        stream.seek(usage.read_offset)
+        data = stream.read()
+    complete = data.rfind(b"\n") + 1
+    limits = threads.read_rollout_limits(data[:complete].splitlines(), record_limits)
+    usage.read_offset += complete
+    usage.previous_stat = observed
+    if limits is not None:
+        usage.latest_limits = limits
+    return usage.latest_limits
+
+
 def poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_limits):
     """Read a changed rollout sample; return its quota action or queue a weekly stop."""
     now = time.monotonic()
@@ -340,11 +369,7 @@ def poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_
     if usage.path is None or now < usage.next_poll:
         return MonitorQuotaDecision("continue")
     usage.next_poll = now + config.RATE_POLL_SECONDS
-    size = usage.path.stat().st_size
-    if size == usage.previous_size:
-        return MonitorQuotaDecision("continue")
-    limits = threads.rollout_limits(usage.path, record_limits, usage.usage_offset)
-    usage.previous_size = size
+    limits = read_monitor_rollout(usage, record_limits)
     if limits is None:
         return MonitorQuotaDecision("continue")
     # A completed model turn needs no wrap-up while the CLI exits.
@@ -471,7 +496,8 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback
     stream.model, stream.reasoning_effort = settings["model"], settings["reasoning_effort"]
     stream.review_model = settings["review_model"] if args[1:3] == ["exec", "review"] else None
     path = threads.rollout_path(account["home"], thread) if thread else None
-    previous_size = path.stat().st_size if path else 0
+    previous_stat = path.stat() if path else None
+    usage_offset = previous_stat.st_size if previous_stat is not None else 0
     telemetry = telemetry_log.telemetry_phase(st)
     usage_before = threads.rollout_usage(path)[1] if telemetry is not None else None
     weekly_started = st.get("weekly_used_percent", 0)
@@ -487,7 +513,7 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback
         return sample.delta
 
     next_search = time.monotonic() + config.ROLLOUT_SEARCH_SECONDS if thread else 0.0
-    usage = MonitorRollout(path, previous_size, previous_size, next_search)
+    usage = MonitorRollout(path, previous_stat, usage_offset, next_search, read_offset=usage_offset)
     st["exec_event_start"] = len(threads.events(st))
     task_state.save(st)
     with (d / "events.jsonl").open("ab", buffering=0) as log, (d / "stderr.log").open("a") as errors:

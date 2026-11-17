@@ -76,7 +76,7 @@ def test_each_column_and_actual_supervisor_liveness(tmp_path, pids):
 
 
 @pytest.mark.parametrize("outcome,status", [
-    ("sleeping", "done"), ("failed", "done"), ("stopped", "done"),
+    ("sleeping", "done"), ("failed", "done"), ("stopped", "done"), ("timeout", "done"),
     ("budget_exhausted", "done"), ("conflict", "done"), ("completed", "partial"),
     ("completed", "needs_decision"), ("completed", "blocked"),
 ])
@@ -119,13 +119,14 @@ def test_bad_state_preserves_cache_then_recovers(tmp_path, monkeypatch):
 
 def test_archive_cap_and_removed_message(tmp_path):
     live = write_state(tmp_path)
+    archive = tmp_path / ".archive"
     for i in range(55):
-        directory = write_state(tmp_path / ".archive", f"old-{i:02}")
+        directory = write_state(archive, f"old-{i:02}")
         os.utime(directory / "state.json", (100 + i, 100 + i))
     store = Store(tmp_path)
     store.poll()
     assert len(store.summaries()) == 51
-    newest = write_state(tmp_path / ".archive", "newest-20261105T120000Z")
+    newest = write_state(archive, "newest-20261105T120000Z")
     os.utime(newest / "state.json", (1, 1))
     store.poll()
     assert len(store.summaries()) == 51
@@ -133,7 +134,7 @@ def test_archive_cap_and_removed_message(tmp_path):
     assert "newest-20261105T120000Z" not in {task["slug"] for task in store.summaries()}
     assert "old-05" in {task["slug"] for task in store.summaries()}
     assert "old-00" not in {task["slug"] for task in store.summaries()}
-    old = tmp_path / ".archive" / "old-00"
+    old = archive / "old-00"
     (old / "brief.md").write_text("Archived brief")
     assert store.detail("old-00")["column"] == "closed"
     assert store.detail("old-00")["files"] == ["brief"]
@@ -141,6 +142,15 @@ def test_archive_cap_and_removed_message(tmp_path):
     assert len(store.summaries()) == 51
     assert store.detail("old-54")["slug"] == "old-54"
     assert store.detail("old-54")["column"] == "closed"
+
+    (archive / "linked-dir").symlink_to(archive / "old-54", target_is_directory=True)
+    (archive / "linked-state").mkdir()
+    (archive / "linked-state" / "state.json").symlink_to(archive / "old-54" / "state.json")
+    os.utime(old / "state.json", (154, 154))
+    assert store.poll() == [{"type": "task", "task": store.summary("old-00")}]
+    closed = [task["slug"] for task in store.summaries() if task["column"] == "closed"]
+    assert closed == ["old-54", "old-00", *(f"old-{i:02}" for i in range(53, 5, -1))]
+
     (live / "state.json").unlink()
     live.rmdir()
     assert store.poll() == [{"type": "task_removed", "slug": "task"}]
@@ -810,10 +820,10 @@ def test_session_moved_transcript_search_is_cached_and_only_busy_sessions_read(t
     directories = Store._directories
     searches = []
 
-    def count_searches(root):
+    def count_searches(root, *, strict=False):
         if root == home / "projects":
             searches.append(root)
-        return directories(root)
+        return directories(root, strict=strict)
 
     monkeypatch.setattr(Store, "_directories", staticmethod(count_searches))
     store = session_store(tmp_path)
@@ -865,10 +875,10 @@ def test_session_transcript_direct_path_uses_ascii_and_retries_until_created(tmp
     directories = Store._directories
     searches = []
 
-    def count_searches(root):
+    def count_searches(root, *, strict=False):
         if root == home / "projects":
             searches.append(root)
-        return directories(root)
+        return directories(root, strict=strict)
 
     monkeypatch.setattr(Store, "_directories", staticmethod(count_searches))
     store = session_store(tmp_path)

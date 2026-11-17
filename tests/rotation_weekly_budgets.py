@@ -1,5 +1,6 @@
 """Weekly usage and budget tests."""
 import json
+import os
 import subprocess
 import sys
 import time
@@ -430,10 +431,11 @@ class WeeklyBudgetTests(RotationTestCase):
         samples = [(90, self.reset), (92, self.reset), (1, self.reset + 604800),
                    (3, self.reset + 604800), (95, self.reset)]
         path = self.root / "reset-inside-exec.jsonl"
-        path.write_text("".join(json.dumps({"type": "event_msg", "payload": {
+        lines = [json.dumps({"type": "event_msg", "payload": {
             "type": "token_count", "rate_limits": {"primary": {
                 "used_percent": used, "window_minutes": 10080, "resets_at": reset}}}}) + "\n"
-            for used, reset in samples))
+                 for used, reset in samples]
+        path.write_text("".join(lines))
         with worker.telemetry_log.record_phase(st, "work", lambda: False) as phase:
             self.record_weekly_phase_usage(worker, st, phase, "main", "thread", path)
             phase.finish(outcome="completed")
@@ -442,6 +444,41 @@ class WeeklyBudgetTests(RotationTestCase):
         self.assertEqual(self.phase_telemetry_journal()[0]["weekly_spent"], 4)
         task = json.loads(self.cli("report", "--slug", slug, "--json"))["tasks"][0]
         self.assertEqual(task["weekly_used_percent"], 4)
+
+        # A resumed exec skips its historical prefix and accounts for each new complete sample once.
+        path.write_text(lines[-1])
+        metadata = path.stat()
+        usage = worker.turn_monitor.MonitorRollout(path, metadata, metadata.st_size, 0,
+                                                   read_offset=metadata.st_size)
+        live = {}
+        recorded = []
+
+        def record_limits(limits):
+            result = worker.budgets.monitor_weekly_usage(live, "main", limits, bool(recorded))
+            live.update(result.updates)
+            recorded.append(worker.budgets.weekly_used(limits))
+
+        for added, expected in ((lines[0] + lines[1][:-2], 90), (lines[1][-2:] + lines[2], 1),
+                                (lines[3] + lines[4], 95), ('{"type":"turn_context"}\n', 95)):
+            with path.open("a") as stream:
+                stream.write(added)
+            latest = worker.turn_monitor.read_monitor_rollout(usage, record_limits)
+            self.assertEqual(worker.budgets.weekly_used(latest), expected)
+        self.assertEqual(recorded, [used for used, _ in samples])
+        self.assertEqual(live["weekly_used_percent"], st["weekly_used_percent"])
+        self.assertIsNone(worker.turn_monitor.read_monitor_rollout(usage, record_limits))
+
+        path.write_text(lines[-1] + lines[2])
+        latest = worker.turn_monitor.read_monitor_rollout(usage, record_limits)
+        self.assertEqual(worker.budgets.weekly_used(latest), 1)
+        metadata = path.stat()
+        replacement = path.with_suffix(".new")
+        replacement.write_text(lines[-1] + lines[3])
+        os.utime(replacement, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        replacement.replace(path)
+        latest = worker.turn_monitor.read_monitor_rollout(usage, record_limits)
+        self.assertEqual(worker.budgets.weekly_used(latest), 3)
+        self.assertEqual(recorded, [90, 92, 1, 3, 95, 1, 3])
 
     def test_weekly_budget_counts_new_window_before_automatic_review(self):
         (self.home / "codex-worker.json").write_text(json.dumps({"language": "en"}))
@@ -651,10 +688,10 @@ class WeeklyBudgetTests(RotationTestCase):
                 exited[0] = True
             return chunk
 
-        read_rollout_limits = worker.threads.rollout_limits
+        read_rollout_limits = worker.turn_monitor.read_monitor_rollout
 
-        def read_limits(path, on_limits=None, offset=0):
-            self.assertIs(path, rollout)
+        def read_limits(usage, record_limits):
+            self.assertIs(usage.path, rollout)
             if observed == ["agent_message"]:
                 # Completion precedes the final quota, but remains unread.
                 # Splitting it across reads requires the full stdout drain.
@@ -662,7 +699,7 @@ class WeeklyBudgetTests(RotationTestCase):
                 with rollout.open("a") as stream:
                     stream.write(quota(16))
                 observed.append("final quota")
-            return read_rollout_limits(path, on_limits=on_limits, offset=offset)
+            return read_rollout_limits(usage, record_limits)
 
         with mock.patch.object(worker.accounts, "prepare_home"), \
                 mock.patch.object(worker.procs, "terminate"), \
@@ -672,7 +709,7 @@ class WeeklyBudgetTests(RotationTestCase):
                 mock.patch.object(worker.turn_monitor.fcntl, "ioctl", return_value=(
                     len(b'{"type":"turn.completed"}\n').to_bytes(4, sys.byteorder))), \
                 mock.patch.object(worker.threads, "rollout_path", return_value=rollout), \
-                mock.patch.object(worker.threads, "rollout_limits", side_effect=read_limits), \
+                mock.patch.object(worker.turn_monitor, "read_monitor_rollout", side_effect=read_limits), \
                 mock.patch.object(worker.publishing, "publish_pr") as publish_pr, \
                 mock.patch.object(worker.turns, "wrapup_turn", side_effect=AssertionError("unexpected wrap-up")) as wrapup:
             worker.turns.run_turn(st, {"enabled": False, "accounts": [account]}, "finish the fix", None,

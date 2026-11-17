@@ -140,7 +140,7 @@ st[dynamic_key] = 1
             "exec_event_start": 6, "exhausted": {"old-work": {}}, "fix_rounds": 9,
             "guards": ["protected/**"], "kind": "work", "max_task_weekly_percent": 30,
             "max_turn_minutes": 11, "needs_login": ["old-work"], "outcome": "done",
-            "no_push": True,
+            "no_push": True, "task_deadline": 1234568,
             "pending": {"prompt": "old-prompt"}, "pid": 103,
             "plugin_version": "1.20.0", "runtime": {"version": "1.20.0", "script": "/old/__main__.py"},
             "publish": {"pr": "https://example.invalid/pull/1"}, "refusal": "old-refusal",
