@@ -49,6 +49,9 @@ def codex_duty_overrides(marker):
         "sandbox_workspace_write.network_access": True,
         "shell_environment_policy.set." + config.STARTED_BY: "duty",
         "shell_environment_policy.set." + config.DUTY_PROCESS_MARKER: marker,
+        "shell_environment_policy.set.TEAMSTER_HOME": str(config.DATA_HOME) if config.LAYOUT == "new" else "",
+        "shell_environment_policy.set.CODEX_TASK_HOME": str(config.CODEX_HOME),
+        "shell_environment_policy.set.TEAMSTER_CODEX_HOME": str(config.CODEX_HOME),
         "shell_environment_policy.set.BASH_ENV": "/dev/null",
         "shell_environment_policy.set.ENV": "/dev/null",
         "shell_environment_policy.set.ZDOTDIR": str(config.PACKAGE),
@@ -359,7 +362,7 @@ class DutyRPC:
             elif kind == "fileChange":
                 self.event({"type": method.replace("/", "."), "item": {
                     "id": item["id"], "type": "file_change", "changes": item.get("changes", [])}})
-            elif kind not in ("userMessage", "reasoning", "plan", "contextCompaction", "agentMessage"):
+            elif kind not in ("userMessage", "reasoning", "plan", "contextCompaction", "agentMessage", "sleep"):
                 raise ValueError("Codex duty exposed an unexpected tool: " + str(kind))
         elif method == "item/fileChange/patchUpdated":
             item = self.items.get(params.get("itemId"))

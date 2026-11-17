@@ -169,6 +169,9 @@ def duty_turn(request, thread):
                            if item["type"] == "text" else item for item in params["input"]]}
     for method in ("item/started", "item/completed"):
         emit({"method": method, "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
+    if run.get("sleep"):
+        emit({"method": "item/started", "params": {"threadId": thread["id"], "turnId": turn,
+              "item": {"id": "duty-sleep", "type": "sleep"}}})
     for index, step in enumerate(run.get("requests", [])):
         item_id = step.get("id", "duty-item-" + str(index))
         item = step.get("item")
@@ -187,7 +190,9 @@ def duty_turn(request, thread):
         environment = duty_command_environment()
         if step.get("execute"):
             trace({"command": "duty-command-environment", "started_by": environment.get("TEAMSTER_STARTED_BY"),
-                   "command_marker": environment.get("TEAMSTER_DUTY_PROCESS")})
+                   "command_marker": environment.get("TEAMSTER_DUTY_PROCESS"),
+                   "storage": {key: environment.get(key) for key in
+                               ("TEAMSTER_HOME", "CODEX_TASK_HOME", "TEAMSTER_CODEX_HOME")}})
             completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
                                        env=environment, check=True, text=True, capture_output=True, start_new_session=True)
             trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr})

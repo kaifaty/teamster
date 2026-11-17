@@ -870,7 +870,7 @@ class ClaudeReviewTests(RotationTestCase):
             {"params": {"command": "cat tracked.txt", "cwd": str(room), "kind": "unknown"}, "write": str(outside)},
             {"params": {"command": "/bin/zsh -lc", "cwd": str(room)}, "write": str(outside)},
         ]
-        self.codex_duty_runs([{"reply": self.duty_answer("First answer."), "requests": requests},
+        self.codex_duty_runs([{"reply": self.duty_answer("First answer."), "requests": requests, "sleep": True},
                               {"reply": self.duty_answer("Second answer.")},
                               {"reply": self.duty_answer("Decide.", "needs_decision")}])
         self.put_duty("main", "codex")
@@ -1065,7 +1065,12 @@ class ClaudeReviewTests(RotationTestCase):
             st = self.state("duty")
             child = next(entry["child_pid"] for entry in self.trace() if entry["command"] == "duty-child")
             self.extra_pids.update((st["pid"], st["codex_pid"], child))
-            self.advance_fake_clock(3 * 60 + 1)
+            self.advance_fake_clock(3 * 60 - 1)
+            time.sleep(0.5)
+            self.assertIsNone(holding.poll())
+            self.assertEqual(self.state("duty")["outcome"], "running")
+            self.assertTrue(self.process_is_live(st["codex_pid"]))
+            self.advance_fake_clock(2)
             self.until(lambda: self.state("duty")["outcome"] == "budget_exhausted", timeout=10)
             output, errors = holding.communicate(timeout=60)
             self.assertEqual(holding.returncode, 1, output)
@@ -1121,12 +1126,15 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertFalse((self.home / "claude-tasks" / "duty").exists())
 
     def test_codex_duty_started_task_notes_and_hourly_cap(self):
+        self.env["HOME"] = str(self.root / "user-home")
+        Path(self.env["HOME"]).mkdir()
         self.configure(language="en", duty={"chat_auto_turns_per_hour": 1})
         self.account(self.other, "B", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
         fixture_path = self.home / "fixture.json"
         fixture = json.loads(fixture_path.read_text())
-        fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": {
-            key: value for key, value in self.env.items() if key.startswith(("CODEX_TASK_", "CODEX_FAKE_", "GIT_"))}}}
+        fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": dict(
+            {key: value for key, value in self.env.items() if key.startswith(("CODEX_FAKE_", "GIT_"))},
+            TEAMSTER_CODEX=str(self.fake))}}
         fixture_path.write_text(json.dumps(fixture))
         self.put_duty("main", "codex")
         room = self.home / "claude-tasks" / "duty" / "room"
@@ -1146,6 +1154,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(self.state("noted")["started_by"], "duty")
         executed = next(entry for entry in self.trace() if entry["command"] == "duty-command-environment")
         self.assertEqual(executed["started_by"], "duty")
+        self.assertEqual(executed["storage"], {"TEAMSTER_HOME": "", "CODEX_TASK_HOME": str(self.home),
+                                               "TEAMSTER_CODEX_HOME": str(self.home)})
         self.cli("wait", "noted", timeout=60)
         self.until(lambda: self.chat_settled(3), timeout=60)
         self.assertRegex(self.codex_duty_invocations()[1]["duty_marker"], r"^[0-9a-f]{32}$")
