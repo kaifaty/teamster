@@ -256,7 +256,7 @@ def app_server():
         elif method == "configRequirements/read":
             result = {"requirements": value.get("duty_requirements")}
         elif method == "config/read":
-            result = {"config": duty_config(), "layers": []}
+            result = {"config": duty_config(), "layers": value.get("duty_layers", [])}
         elif method in ("thread/start", "thread/resume"):
             params = request["params"]
             identifier = params.get("threadId") if method == "thread/resume" else str(uuid.uuid4())
@@ -1080,7 +1080,8 @@ class RotationTestCase(unittest.TestCase):
         return self.cli("start", slug, "--brief", str(self.brief), "--repo", str(self.repo), *args)
 
     def state(self, slug):
-        return json.loads((self.home / "claude-tasks" / slug / "state.json").read_text())
+        tasks = Path(self.env["TEAMSTER_HOME"]) / "tasks" if self.env.get("TEAMSTER_HOME") else self.home / "claude-tasks"
+        return json.loads((tasks / slug / "state.json").read_text())
 
     def trace(self):
         if not self.trace_path.exists():
@@ -1190,7 +1191,8 @@ class RotationTestCase(unittest.TestCase):
             self.extra_pids.add(pid)
         output = self.cli(*args, timeout=timeout + 15, prepared=prepared)
         state = self.state(slug)
-        stderr_path = self.home / "claude-tasks" / slug / "stderr.log"
+        tasks = Path(self.env["TEAMSTER_HOME"]) / "tasks" if self.env.get("TEAMSTER_HOME") else self.home / "claude-tasks"
+        stderr_path = tasks / slug / "stderr.log"
         stderr = stderr_path.read_text() if stderr_path.exists() else ""
         diagnostics = "state:\n%s\nstderr.log:\n%s\nwait:\n%s" % (
             json.dumps(state, ensure_ascii=False, indent=2), stderr, output)

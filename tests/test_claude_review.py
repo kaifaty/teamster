@@ -824,12 +824,13 @@ class ClaudeReviewTests(RotationTestCase):
 
     def put_duty(self, account, family="claude"):
         now = time.time()
-        (self.home / "duty.json").write_text(json.dumps({
+        (Path(self.env.get("TEAMSTER_HOME", self.home)) / "duty.json").write_text(json.dumps({
             "account": account, "family": family, "since": now, "checked_at": now, "reason": "fixture",
             "rooms": {family: {account: 10}}}))
 
     def chat_messages(self):
-        path = self.home / "claude-tasks" / "duty" / "messages.jsonl"
+        tasks = Path(self.env["TEAMSTER_HOME"]) / "tasks" if self.env.get("TEAMSTER_HOME") else self.home / "claude-tasks"
+        path = tasks / "duty" / "messages.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()]
 
     def chat_settled(self, answers):
@@ -869,6 +870,8 @@ class ClaudeReviewTests(RotationTestCase):
             {"method": "item/unknown/requestApproval", "write": str(outside)},
             {"params": {"command": "cat tracked.txt", "cwd": str(room), "kind": "unknown"}, "write": str(outside)},
             {"params": {"command": "/bin/zsh -lc", "cwd": str(room)}, "write": str(outside)},
+            {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat > outside.txt"]), "cwd": str(self.root)},
+             "write": str(outside)},
         ]
         self.codex_duty_runs([{"reply": self.duty_answer("First answer."), "requests": requests, "sleep": True},
                               {"reply": self.duty_answer("Second answer.")},
@@ -885,7 +888,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.extra_pids.add(stdin["reader_pid"])
         self.assertFalse(self.process_is_live(stdin["reader_pid"]))
         decisions = [entry["decision"] for entry in self.trace() if entry["command"] == "duty-approval"]
-        self.assertEqual(decisions, ["accept", "accept"] + ["decline"] * 8)
+        self.assertEqual(decisions, ["accept", "accept"] + ["decline"] * 9)
         self.assertEqual((room / "brief.md").read_text(), "Approved brief.\n")
         self.assertEqual(len([entry for entry in self.trace() if entry["command"] == "duty-executed"]), 2)
         first = self.codex_duty_invocations()[0]
@@ -1007,11 +1010,19 @@ class ClaudeReviewTests(RotationTestCase):
         self.configure(language="en")
         self.put_duty("main", "codex")
         self.codex_duty_runs([{"reply": self.duty_answer("Never sent.")}])
-        for path, text, reason in (
-                (self.home / "rules" / "custom.rules", 'prefix_rule(pattern=["rm"], decision="allow")\n', "rule"),
+        project = self.root / "project-layer" / ".codex"
+        (project / "rules").mkdir(parents=True)
+        for path, text, reason, layers in (
+                (self.home / "rules" / "custom.rules", 'prefix_rule(pattern=["rm"], decision="allow")\n', "rule", []),
                 (self.home / "hooks.json", json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
-                    {"type": "command", "command": "echo allow"}]}]}}), "hook")):
+                    {"type": "command", "command": "echo allow"}]}]}}), "hook", []),
+                (project / "rules" / "custom.rules", 'prefix_rule(pattern=["rm"], decision="allow")\n', "rule",
+                 [{"name": {"type": "project", "dotCodexFolder": str(project)}, "version": "fixture", "config": {}}])):
             with self.subTest(source=path.name):
+                fixture_path = self.home / "fixture.json"
+                fixture = json.loads(fixture_path.read_text())
+                fixture["duty_layers"] = layers
+                fixture_path.write_text(json.dumps(fixture))
                 path.write_text(text)
                 rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Never sent."], cwd=self.repo,
                                           env=self.env, text=True, capture_output=True, timeout=60)
@@ -1143,7 +1154,11 @@ class ClaudeReviewTests(RotationTestCase):
     def test_codex_duty_started_task_notes_and_hourly_cap(self):
         self.env["HOME"] = str(self.root / "user-home")
         Path(self.env["HOME"]).mkdir()
+        data = self.root / "teamster-data"
+        data.mkdir()
+        self.env.update(TEAMSTER_HOME=str(data), TEAMSTER_CODEX_HOME=str(self.home))
         self.configure(language="en", duty={"chat_auto_turns_per_hour": 1})
+        (self.home / "claude-accounts.json").replace(data / "config.json")
         self.account(self.other, "B", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
         fixture_path = self.home / "fixture.json"
         fixture = json.loads(fixture_path.read_text())
@@ -1152,7 +1167,7 @@ class ClaudeReviewTests(RotationTestCase):
             TEAMSTER_CODEX=str(self.fake))}}
         fixture_path.write_text(json.dumps(fixture))
         self.put_duty("main", "codex")
-        room = self.home / "claude-tasks" / "duty" / "room"
+        room = data / "tasks" / "duty" / "room"
         self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
         self.cli("duty", "chat", "Start the parser fix.", timeout=60)
         launcher = self.root / "teamster"
@@ -1169,8 +1184,9 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(self.state("noted")["started_by"], "duty")
         executed = next(entry for entry in self.trace() if entry["command"] == "duty-command-environment")
         self.assertEqual(executed["started_by"], "duty")
-        self.assertEqual(executed["storage"], {"TEAMSTER_HOME": "", "CODEX_TASK_HOME": str(self.home),
+        self.assertEqual(executed["storage"], {"TEAMSTER_HOME": str(data), "CODEX_TASK_HOME": str(self.home),
                                                "TEAMSTER_CODEX_HOME": str(self.home)})
+        self.assertFalse((self.home / "claude-tasks").exists())
         self.cli("wait", "noted", timeout=60)
         self.until(lambda: self.chat_settled(3), timeout=60)
         self.assertRegex(self.codex_duty_invocations()[1]["duty_marker"], r"^[0-9a-f]{32}$")
@@ -1179,7 +1195,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertIn("Task note: noted ended turn 1", self.chat_messages()[-1]["text"])
         self.assertIn("Task note: noted", self.codex_duty_invocations()[-1]["params"]["input"][0]["text"])
         self.started_by_duty("capped-note")
-        notes = self.home / "claude-tasks" / "duty" / "notes.json"
+        notes = data / "tasks" / "duty" / "notes.json"
         self.until(lambda: notes.exists() and len(json.loads(notes.read_text())["held"]) == 1, timeout=60)
         self.assertEqual(len(self.codex_duty_invocations()), 3)
         self.assertIn("The held note arrived.", self.cli("duty", "chat", "Any news?", timeout=60))
