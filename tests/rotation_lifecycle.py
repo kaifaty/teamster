@@ -28,13 +28,14 @@ from worker_loader import WORKER_BOOTSTRAP
 
 class LifecycleTests(RotationTestCase):
     def test_task_type_validation_persistence_and_followups(self):
-        self.configure()
+        self.configure(task_profiles={"logic": {"executor": "claude"}})
+        self.env["TEAMSTER_CLAUDE"] = str(self.root / "missing-claude")
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result(False)},
             {"mode": "complete", "reply": self.work_result()}])
-        self.start("typed-task", "--task-type", "feature")
+        self.assertNotIn("routing ", self.start("typed-task", "--task-type", "feature"))
         self.wait("typed-task")
         self.assertEqual(self.state("typed-task")["task_type"], "feature")
         self.cli("say", "typed-task", "Continue the task.")
@@ -51,6 +52,30 @@ class LifecycleTests(RotationTestCase):
         self.assertEqual([row["task_type"] for row in rows], ["feature"] * 6 + ["logic"] * 2)
         report = json.loads(self.cli("report", "--json"))
         self.assertEqual(report["tasks"][0]["task_type"], "logic")
+
+        self.configure(executor="claude", task_profiles={
+            "refactor": {"executor": "codex", "model": "gpt-6.2-sol", "effort": "xhigh"},
+            "logic": {"model": "fixture-claude", "effort": "low"},
+        })
+        for slug, label, flags, model, effort, route in (
+                ("profiled-start", "refactor", (), "gpt-6.2-sol", "xhigh",
+                 "executor codex (profile), model gpt-6.2-sol (profile), effort xhigh (profile)"),
+                ("profile-overrides", "refactor", ("--executor", "codex", "--model", "default", "--effort", "high"),
+                 None, "high", "executor codex (flag), model default (flag), effort high (flag)"),
+                ("profile-other-executor", "logic", ("--executor", "codex"), None, None,
+                 "executor codex (flag), model default (default), effort default (default)")):
+            with self.subTest(slug=slug):
+                output = self.start(slug, "--task-type", label, *flags)
+                self.wait(slug)
+                self.assertIn(f"routing {label}: {route}\n", output)
+                state = self.state(slug)
+                self.assertEqual(state["outcome"], "completed")
+                self.assertEqual((state["executor"], state["task_model"], state["effort"]), ("codex", model, effort))
+                argv = self.invocations()[-1]["argv"]
+                self.assertEqual(argv[argv.index("--model") + 1] if "--model" in argv else None, model)
+                self.assertEqual([arg for arg in argv if arg.startswith("model_reasoning_effort=")],
+                                 [f'model_reasoning_effort="{effort}"'] if effort else [])
+
         self.assertEqual(self.worker().cli.task_type("a" * 32), "a" * 32)
         for label in ("Feature", "a" * 33):
             with self.subTest(label=label):

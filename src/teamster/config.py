@@ -15,6 +15,10 @@ import teamster
 from . import executors, procs, result_schema, reviewers
 
 
+TASK_TYPE_PATTERN = re.compile(r"[a-z0-9-]{1,32}")
+MODEL_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
 def env(legacy_name, default=None):
     """Read a Teamster override first, retaining the old variable as a fallback."""
     name = legacy_name.removeprefix("CODEX_TASK_").removeprefix("CODEX_WORKER_")
@@ -222,6 +226,27 @@ def require_claude():
                   "TEAMSTER_CLAUDE to its executable path to use --executor claude or --reviewer claude.")
 
 
+def task_profiles(cfg):
+    profiles = cfg.get("task_profiles", {})
+    if not isinstance(profiles, dict):
+        procs.die("task_profiles must be an object")
+    for label, profile in profiles.items():
+        if not TASK_TYPE_PATTERN.fullmatch(label):
+            procs.die(f"invalid task profile label: {label!r}")
+        if not isinstance(profile, dict):
+            procs.die(f"task_profiles.{label} must be an object")
+        for key, value in profile.items():
+            if key not in ("executor", "model", "effort"):
+                procs.die(f"unknown task profile field: task_profiles.{label}.{key}")
+            if not isinstance(value, str) or not value.strip():
+                procs.die(f"task_profiles.{label}.{key} must be a nonempty string")
+            if key == "executor" and value not in executors.names():
+                procs.die(f"unknown executor in task_profiles.{label}: {value!r}")
+            if key == "model" and not MODEL_NAME_PATTERN.fullmatch(value):
+                procs.die(f"invalid model in task_profiles.{label}: {value!r}")
+    return profiles
+
+
 def accounts_config():
     p = settings_path()
     cfg = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
@@ -332,7 +357,7 @@ def accounts_config():
         procs.die("duty.chat_auto_turns_per_hour must be a nonnegative integer")
     task_types = duty_settings["claude_only_task_types"]
     if not isinstance(task_types, list) or not all(
-            isinstance(label, str) and re.fullmatch(r"[a-z0-9-]{1,32}", label) for label in task_types):
+            isinstance(label, str) and TASK_TYPE_PATTERN.fullmatch(label) for label in task_types):
         procs.die("duty.claude_only_task_types must be a list of task types (1-32 characters of a-z, 0-9 and '-')")
     if cfg["sandbox"] not in ("off", "workspace"):
         procs.die('sandbox must be "off" or "workspace"')

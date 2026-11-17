@@ -86,13 +86,13 @@ Before `start`, check that every "Done when" item can be reached within "Do not 
 
 ## Commands
 
-Run every command below as `teamster …`. The CLI is resolved from `TEAMSTER_CODEX`, then the
-ChatGPT.app bundle if present, then `codex` on `PATH`. Model and reasoning defaults come from the user's
-Codex configuration; `--effort` overrides reasoning effort for a task.
+Run every command below as `teamster …`. Teamster finds Codex through `TEAMSTER_CODEX`, then the
+ChatGPT.app bundle if present, then `codex` on `PATH`. Codex supplies its configured model and effort
+when Teamster has no work overrides.
 Use `start --model M` for work and `--review-model M` on `start`, `say`, or `review` for Codex reviews; `say` inherits or replaces them, and `default` clears an override. Read `accounts --json` before choosing ([models and JSON fields](settings.md#task-models)).
 A task keeps the teamster version it started on after an upgrade: `say` and `review` re-run in it while it is installed; `say --upgrade` moves the task to the current version ([versioned installs](settings.md#versioned-installs)).
-Use `start --task-type LABEL` to label telemetry; `say` and `review` inherit it, and `say --task-type LABEL` replaces it ([labels and grouped reports](telemetry.md)).
-Use `start --executor codex|claude` to choose the task worker; the default is `executor` in the settings, otherwise `codex`. The choice is saved for `say`, review fixes, CI repairs and wrap-up and cannot change during a task. Claude work requires `--sandbox off`; its model and effort default to `claude.model` and `claude.effort`, with task `--model` and `--effort` taking precedence.
+Use `start --task-type LABEL` to select a configured [task profile](settings.md#task-profiles) and label telemetry. `say` and `review` inherit the label, and `say --task-type LABEL` replaces it ([labels and grouped reports](telemetry.md)).
+Use `start --executor codex|claude` to choose the task worker. By default, `start` uses the profile's executor, then `executor` in the settings, then `codex`. The choice is saved for `say`, review fixes, CI repairs and wrap-up and cannot change during a task. Claude work requires `--sandbox off`; its model and effort default to `claude.model` and `claude.effort`, with task `--model` and `--effort` taking precedence.
 Without `--reviewer`, Claude tasks use Codex reviews; Codex tasks keep the configured reviewer default. Use `--reviewer claude` on `start`, `say`, or `review` for reviews from the isolated Claude account pool, preferring another account when Claude also implements ([setup](accounts.md#claude-account-pool)).
 
 | Step | Command |
@@ -100,7 +100,7 @@ Without `--reviewer`, Claude tasks use Codex reviews; Codex tasks keep the confi
 | Read documentation | `teamster docs` lists documents; `teamster docs <name>` prints one |
 | Find package files | `teamster path` prints the installed package directory |
 | Check the version | `teamster --version` |
-| Start a task | `teamster start <slug> --brief brief.md [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex\|claude] [--effort E] [--sandbox off\|workspace] --max-minutes M [--max-weekly P] --review [--review-angles LIST] --fix-rounds 2 [--ci] [--ci-rounds N] --check "<command from Checks>" [--check-timeout SEC] [--guard GLOB] [--base-check]` (base defaults to the remote's default branch; `--branch` overrides `codex/<slug>` and must pass `git check-ref-format --branch`; `--guard` is repeatable; `--no-push` keeps commits local through follow-ups, reviews, fixes and wrap-up, with no branch or PR publication and no CI) |
+| Start a task | `teamster start <slug> --brief brief.md [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--task-type LABEL] [--executor codex\|claude] [--effort E] [--sandbox off\|workspace] --max-minutes M [--max-weekly P] --review [--review-angles LIST] --fix-rounds 2 [--ci] [--ci-rounds N] --check "<command from Checks>" [--check-timeout SEC] [--guard GLOB] [--base-check]` (base defaults to the remote's default branch; `--branch` overrides `codex/<slug>` and must pass `git check-ref-format --branch`; `--guard` is repeatable; `--no-push` keeps commits local through follow-ups, reviews, fixes and wrap-up, with no branch or PR publication and no CI) |
 | Scout code | `teamster scout <slug> "question"` or `teamster scout <slug> --file Q.md`, with `[--repo DIR] [--executor codex\|claude] [--effort E]`; read-only in the existing directory (default `.`), no worktree or branch |
 | Batch reflection | `teamster reflect <slug> ["order"]` or `teamster reflect <slug> --file FILE`, with `[--executor codex\|claude] [--effort E] [--model M] [--max-minutes M]`; read-only [batch](reflection.md#batch) over the archived records since the newest `batch-*.md`, in a reading room copy; teamster writes the batch file and `INDEX.md` rows from its answer |
 | Study records | `teamster reflect <slug> "order"` with `--task SLUG` (repeatable) or `[--since YYYY-MM-DD\|Nd] [--repo NAME]` (`--repo` repeatable); read-only [study](reflection.md#study) of the chosen records, written to `study-<date>-<slug>.md`; does not move the batch's `through:` |

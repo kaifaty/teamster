@@ -72,13 +72,13 @@ def since_value(value):
 
 
 def task_type(value):
-    if not re.fullmatch(r"[a-z0-9-]{1,32}", value):
+    if not config.TASK_TYPE_PATTERN.fullmatch(value):
         raise argparse.ArgumentTypeError("task type must be 1-32 characters of a-z, 0-9 and '-'")
     return value
 
 
 def model_name(value):
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value):
+    if not config.MODEL_NAME_PATTERN.fullmatch(value):
         raise argparse.ArgumentTypeError("model must be 1-64 characters of A-Z, a-z, 0-9, '.', '_' and '-'")
     return value
 
@@ -172,7 +172,7 @@ OPTION_REGISTRY = (
      "synopsis": "[--no-push]", "commands": {"start": {}}},
     {"names": ("--executor",),
      "argparse": {"choices": executors.names(), "default": None,
-                  "help": "work provider saved for the task (default: executor setting, codex)"},
+                  "help": "work provider saved for the task (default: task profile or executor setting)"},
      "synopsis": "[--executor codex|claude]",
      "commands": {"start": {}, "scout": {"default": "codex",
                   "help": "scout provider (default: codex, ignores settings); claude requires a git directory"},
@@ -181,7 +181,7 @@ OPTION_REGISTRY = (
      "synopsis": "--file FILE", "commands": {"say": {}}},
     {"names": ("--effort",), "argparse": {"default": None},
      "synopsis": "[--effort E]",
-     "commands": {"start": {"help": "default: executor configuration"},
+     "commands": {"start": {"help": "default: task profile or executor configuration"},
                   "say": {}, "review": {}, "reflect": {}}},
     {"names": ("--model",),
      "argparse": {"type": model_name, "metavar": "M", "help": "work model; default clears the saved override"},
@@ -191,7 +191,7 @@ OPTION_REGISTRY = (
      "synopsis": "[--review-model M]", "commands": {"start": {}, "say": {}, "review": {}}},
     {"names": ("--task-type",), "argparse": {"type": task_type, "metavar": "LABEL"},
      "synopsis": "[--task-type LABEL]",
-     "commands": {"start": {"help": "optional task label for telemetry"},
+     "commands": {"start": {"help": "task label for profile defaults and telemetry"},
                   "say": {"help": "replace the saved task label for telemetry"}}},
     {"names": ("--parallel",), "argparse": {"action": "store_true"},
      "synopsis": "[--parallel]", "commands": {"start": {}}},

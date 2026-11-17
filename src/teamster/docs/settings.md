@@ -8,6 +8,7 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `language` | `"en"` | brief language (`"ru"` for Russian) and the language of the scout, handoff, review, fix, wrap-up and reset-continuation prompts the script writes; account status output is always English |
 | `max_turn_minutes` | none | `--max-minutes` default for implementation turns; with neither set, a turn has no time cap |
 | `max_review_minutes` | `30` | cap for reviews and scouts, separate from implementation time |
+| `task_profiles` | `{}` | work defaults by `--task-type` at `start` ([Task profiles](#task-profiles)) |
 | `reviewer` | `"codex"` | default review provider: `"codex"` or `"claude"`; saved per task and overridden by `--reviewer` |
 | `max_task_weekly_percent` | none | task weekly budget in percentage points (0 < P ≤ 100); `start --max-weekly P` overrides it, and `say` and `review` inherit or replace the saved task budget |
 | `repeat_limit` | `3` | identical failures before a `stuck` stop ([results.md](results.md)) |
@@ -45,11 +46,37 @@ model from it, including when a resumed conversation stored an unavailable model
 outside writes or network access request escalation, then pass the same exact-command guard for
 that call. See [duty chat](duty-chat.md#limits) for the catalogue requirement and sandbox limits.
 
+## Task profiles
+
+Add `task_profiles` to `config.json` to choose work defaults by task type.
+
+```json
+{
+  "task_profiles": {
+    "refactor": {"executor": "codex", "model": "gpt-6.2-sol", "effort": "xhigh"}
+  }
+}
+```
+
+`teamster start <slug> --brief FILE --task-type refactor` selects the example profile. Keys use the
+same label format as `--task-type` (`[a-z0-9-]{1,32}`). Each profile is an object with optional fields
+`executor` (`"codex"` or `"claude"`), `model` (see [Task models](#task-models)) and `effort`
+(reasoning effort). `start` rejects invalid entries and unknown fields.
+
+Explicit `--executor`, `--model` and `--effort` values take precedence. Pass `--model default` to use
+the selected executor's configured model. Profile model and effort defaults belong to the profile's
+executor, or to the global `executor` setting when the profile omits it. Choosing a different
+executor uses that executor's own model and effort settings unless the flags supply them.
+
+On a match, `start` prints the choices and their sources. The task saves the resolved work settings
+for follow-ups. Profile effort works like `start --effort`, including when reviews inherit the
+task's effort. `say --task-type` changes the saved label only.
+
 ## Task models
 
-`start --model M` saves a Codex model for the task's implementation, fixes, and wrap-up turns.
-`say` inherits it; `say --model M` replaces it, and `say --model default` clears it so Codex uses
-its configured model again. `status` and `wait` show a saved task model beside the latest observed
+`start --model M` saves a work model for the task's implementation, fixes, and wrap-up turns.
+`say` inherits it. `say --model M` replaces it, and `say --model default` uses the executor's
+configured model again. `status` and `wait` show a saved task model beside the latest observed
 reasoning effort, falling back to the task's effort override or `default` when not yet known.
 `--effort E` continues to control reasoning separately.
 

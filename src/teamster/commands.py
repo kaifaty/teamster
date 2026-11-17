@@ -20,6 +20,14 @@ def main_repo(path):
     return common.parent
 
 
+def start_option(flag, profile, key):
+    if flag is not None:
+        return flag, "flag"
+    if key in profile:
+        return profile[key], "profile"
+    return None, "default"
+
+
 def cmd_start(a):
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", a.slug):
         procs.die("slug: 2-41 chars of a-z, 0-9 and '-'")
@@ -27,14 +35,16 @@ def cmd_start(a):
     no_push = getattr(a, "no_push", False)
     if no_push and (a.ci or a.ci_command is not None):
         procs.die("--no-push cannot be combined with --ci or --ci-command; CI requires a published branch")
-    executor = (executors.get(a.executor) if getattr(a, "executor", None)
-                else executors.from_state(cfg))
+    profile = config.task_profiles(cfg).get(a.task_type)
+    executor, executor_source, defaults = executors.for_start(getattr(a, "executor", None), profile or {}, cfg)
+    model, model_source = start_option(getattr(a, "model", None), defaults, "model")
+    effort, effort_source = start_option(a.effort, defaults, "effort")
     reviewer = getattr(a, "reviewer", None) or executor.reviewer(cfg)
     sandbox = a.sandbox if a.sandbox is not None else cfg["sandbox"]
     if not executor.supports_sandbox and sandbox != "off":
         procs.die(f"--executor {executor.name} supports only --sandbox off; --sandbox workspace is not supported")
     try:
-        executor.prepare(a.effort, cfg)
+        executor.prepare(effort, cfg)
     except ValueError as exc:
         procs.die(str(exc))
     reviewers.get(reviewer).prepare(cfg)
@@ -82,8 +92,8 @@ def cmd_start(a):
             'report that with the numbers instead of fixing it.'))
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "repo": str(repo), "worktree": str(wt), "branch": branch, "base": a.base,
-          "executor": executor.name, "effort": a.effort, "task_type": a.task_type,
-          "task_model": None if getattr(a, "model", None) == "default" else getattr(a, "model", None),
+          "executor": executor.name, "effort": effort, "task_type": a.task_type,
+          "task_model": None if model == "default" else model,
           "review_model": None if getattr(a, "review_model", None) == "default" else getattr(a, "review_model", None),
           "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "check": a.check, "check_timeout": a.check_timeout,
@@ -106,7 +116,7 @@ def cmd_start(a):
     if config.started_by():
         st["started_by"] = config.started_by()
     task_state.save(st)
-    proc = supervisor.spawn(st, prompt, a.effort, review_after=a.review, fix_rounds=a.fix_rounds or 0)
+    proc = supervisor.spawn(st, prompt, effort, review_after=a.review, fix_rounds=a.fix_rounds or 0)
     for _ in range(300):
         st = task_state.load(a.slug)
         if st["thread"] or executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
@@ -115,6 +125,9 @@ def cmd_start(a):
     account = executor.account(st)
     cursor = executor.cursor_label + " " + (executor.cursor(st) or "?")
     print(f"started {a.slug}: executor {executor.name}, account {account or '?'}, {cursor}, pid {st.get('pid')}\n  worktree {wt}\n  branch {branch}")
+    if profile is not None:
+        print(f"  routing {a.task_type}: executor {executor.name} ({executor_source}), "
+              f"model {model or 'default'} ({model_source}), effort {effort or 'default'} ({effort_source})")
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
 
 
