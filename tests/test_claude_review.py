@@ -391,7 +391,7 @@ class ClaudeReviewTests(RotationTestCase):
         flags = "--no-ext-diff --no-textconv --no-show-signature --submodule=short"
         codex_refused = (
             "cat -", "head /dev/stdin", "tail /dev/fd/0", "wc /proc/self/fd/0", "rg x -", "cat stdin",
-            "cat", "cat -n", "head", "head -n5", "head -c 5", "tail", "tail -n20", "wc -l",
+            "cat", "cat -n", "head", "head -3", "head -n5", "head -c 5", "tail", "tail -n20", "wc -l",
             "rg pattern", "rg -n pattern", "rg -e pattern", "rg -f patterns.txt", "rg -A 2 pattern",
             "rg -g '*.py' pattern", "rg -t py pattern", "rg -f- src", "rg -f /dev/stdin src",
             "tail -f log.txt", "tail -F log.txt", "tail --follow log.txt", "tail --follow=name log.txt",
@@ -399,7 +399,9 @@ class ClaudeReviewTests(RotationTestCase):
             "head | cat", "teamster status | head; tail", "teamster status | head && tail",
             "teamster status | cat </dev/tty",
             "teamster status | tail -f", "teamster status | tail -F", "teamster status | tail --follow",
-            git + " log " + flags + " --oneline | head -3 | wc -l",
+            "ls | >/dev/null\ncat", "ls | head ||\ncat", "ls ||\ncat",
+            "teamster status || head", "teamster status | head\ntail",
+            "ls | (head -n 1); cat", "ls | (head -n 1) </dev/tty",
             "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room,
         )
         allowed = (
@@ -428,6 +430,10 @@ class ClaudeReviewTests(RotationTestCase):
             "(teamster status; ls)", "rg -n x src 2>/dev/null", "cat a.md > brief.md",
             "teamster status | head -n 285 | tail -n 110",
             "teamster status | cat | head -n 285 | tail -n 110 | rg -n status | wc -l",
+            "ls | (head -n 1)", "ls | (head -n 1; tail -n 1)",
+            "ls | head -n 1 3</dev/null", "ls |\nhead -n 1",
+            "teamster status |\nhead -n 3",
+            git + " log " + flags + " --oneline | head -3 | wc -l",
             git + " log " + flags + " --oneline | head -n3 | wc -l",
             git + " diff " + flags + " A...B -- 2>&1 | tail -n 40",
         ) + codex_refused

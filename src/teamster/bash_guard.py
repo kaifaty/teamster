@@ -167,8 +167,9 @@ class Shell:
 
     def parse(self, closer=None):
         """Read a command list up to EOF or, inside `$(`, its closing parenthesis."""
-        words, depth, target, mark = [], 0, False, len(self.names)
-        piped = False
+        words, target, mark = [], False, len(self.names)
+        piped, inherited, active = False, False, False
+        groups, group_commands, descriptor = [], None, None
         while self.pos < len(self.text):
             char = self.text[self.pos]
             if char in " \t":
@@ -179,7 +180,8 @@ class Shell:
                 self.pos += 1
                 if words:
                     words, mark = self.end(words, mark, piped)
-                    piped = False
+                if active:
+                    piped, active, group_commands = inherited, False, None
                 self.read_heredocs()
             elif char == "#":
                 while self.pos < len(self.text) and self.text[self.pos] != "\n":
@@ -188,26 +190,27 @@ class Shell:
                 # `;;`, `;&` and `;;&` end case items.
                 self.pos += 3 if self.starts(";;&") else 2 if self.starts(";;", ";&") else 1
                 words, mark = self.end(words, mark, piped)
-                piped = False
+                piped, active, group_commands = inherited, False, None
             elif char == "&":
                 if self.starts("&&"):
                     self.pos += 2
                     words, mark = self.end(words, mark, piped)
-                    piped = False
+                    piped, active, group_commands = inherited, False, None
                 elif self.starts("&>"):
                     self.operator = "&>>" if self.starts("&>>") else "&>"
                     self.pos += len(self.operator)
                     target = True
+                    active = True
                 else:
                     self.pos += 1
                     self.background = True
                     words, mark = self.end(words, mark, piped)
-                    piped = False
+                    piped, active, group_commands = inherited, False, None
             elif char == "|":
                 pipe = not self.starts("||")
                 self.pos += 2 if self.starts("||", "|&") else 1
                 words, next_mark = self.end(words, mark, piped)
-                piped = pipe
+                piped, active, group_commands = pipe or inherited, False, None
                 # Later commands of a pipeline may kill the PIDs that earlier ones found.
                 mark = mark if pipe else next_mark
             elif char == "(":
@@ -217,20 +220,27 @@ class Shell:
                     self.expansions += 1
                     self.skip_arithmetic()
                 else:
-                    depth += 1
                     words, mark = self.end(words, mark, piped)
-                    piped = False
+                    groups.append((inherited, len(self.commands)))
+                    inherited = piped
+                    active, group_commands = False, None
             elif char == ")":
                 self.pos += 1
                 words, mark = self.end(words, mark, piped)
-                piped = False
-                if depth:
-                    depth -= 1
+                if groups:
+                    inherited, first = groups.pop()
+                    group_commands = (first, len(self.commands))
+                    piped, active = inherited, True
                 elif closer == ")":
                     return
             elif char in "<>" and self.peek(1) != "(":
-                if char == "<":
+                if char == "<" and descriptor in (None, "0"):
                     piped = False
+                    if group_commands is not None:
+                        # A group's stdin redirection replaces its inherited pipe.
+                        for index in range(*group_commands):
+                            self.commands[index] = (self.commands[index][0], False)
+                descriptor, active = None, True
                 target = self.redirect()
             else:
                 start = self.pos
@@ -238,12 +248,13 @@ class Shell:
                 if self.pos == start:
                     self.pos += 1
                 elif not quoted and word.isdigit() and self.starts("<", ">"):
-                    pass  # The file descriptor of a redirection.
+                    descriptor = word
                 elif target:
                     self.targets.append((self.operator, word))
                     target = False
                 else:
                     words.append(word)
+                    active = True
         self.end(words + self.arguments if closer is None else words, mark, piped)
 
     def redirect(self):
@@ -675,6 +686,8 @@ def codex_reader_denial(words, cwd, piped=False):
                     pattern_files.append(value)
             else:
                 return refusal
+        elif options and name == "head" and re.fullmatch(r"-[0-9]+", argument):
+            pass  # The historical finite line-count option, as in head -3.
         elif options and argument.startswith("-") and argument != "-":
             position = 1
             while position < len(argument):
