@@ -868,7 +868,7 @@ class ClaudeReviewTests(RotationTestCase):
         outside = self.root / "outside.txt"
         read_output = room / "reader.txt"
         requests = [
-            {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat /dev/null > reader.txt"]), "cwd": str(room)},
+            {"params": {"command": shlex.join(["/bin/sh", "-c", "cat /dev/null > reader.txt"]), "cwd": str(room)},
              "item": {"type": "commandExecution", "command": "cat /dev/null > reader.txt", "cwd": str(room)},
              "execute": True},
             {"method": "item/fileChange/requestApproval", "item": {"type": "fileChange", "changes": [
