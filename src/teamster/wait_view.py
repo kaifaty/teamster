@@ -72,6 +72,8 @@ def wait_turn_lines(st, slug):
     cut = task_state.interruption(st)
     if st.get("outcome") == "interrupted" or cut is not None:
         yield "== " + task_state.interruption_message(st, cut)
+    if st.get("outcome") == "timeout":
+        yield "== turn stopped: task deadline passed"
     if st.get("outcome") == "refused" and st.get("kind") != "review":
         yield "== refused by the model: " + st.get("refusal", "")[:200]
     if (st.get("kind") != "review" or st.get("work_completed")) and not (

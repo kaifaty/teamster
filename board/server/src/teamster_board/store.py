@@ -16,7 +16,7 @@ from .activity import EventTail, FEED_FILES, TAIL_BYTES, task_feed, worktree_roo
 
 FILES = {"brief": "brief.md", "last": "last.md", "review": "review.md", "check": "check.log"}
 FAILURES = {"failed", "stopped", "interrupted", "budget_exhausted", "conflict", "stuck",
-            "refused", "unavailable", "exhausted", "running", "sleeping"}
+            "refused", "unavailable", "exhausted", "running", "sleeping", "timeout"}
 LOG_RETENTION_SECONDS = 31 * 24 * 3600
 # A larger queue.json reads as an empty queue.
 QUEUE_BYTES = 1024 * 1024
@@ -441,36 +441,48 @@ class Store:
         self._initial_poll = True
 
     @staticmethod
-    def _file(directory, name):
+    def _file(directory, name, *, strict=False):
         path = directory / name
-        if directory.is_symlink() or path.is_symlink():
-            return None
         try:
-            return path if path.is_file() else None
+            if not directory.is_symlink() and stat.S_ISREG(path.lstat().st_mode):
+                return path
+        except FileNotFoundError:
+            pass
         except OSError:
-            return None
+            if strict:
+                raise
+        return None
 
     @staticmethod
-    def _directories(root):
+    def _directories(root, *, strict=False):
         if root.is_symlink():
+            if strict:
+                raise OSError(f"Task directory is a symlink: {root}")
             return []
         try:
             return [path for path in root.iterdir()
                     if not path.name.startswith(".") and not path.is_symlink() and path.is_dir()]
+        except FileNotFoundError:
+            return []
         except OSError:
+            if strict:
+                raise
             return []
 
-    def _paths(self):
-        paths = [(path, False) for path in self._directories(self.tasks_path)]
+    def _paths(self, *, strict=False):
+        paths = [(path, False) for path in self._directories(self.tasks_path, strict=strict)]
         archived = []
         if not self.tasks_path.is_symlink():
-            for path in self._directories(self.tasks_path / ".archive"):
-                state = self._file(path, "state.json")
+            for path in self._directories(self.tasks_path / ".archive", strict=strict):
+                state = self._file(path, "state.json", strict=strict)
                 if state is not None:
                     try:
                         archived.append((state.stat().st_mtime_ns, path.name, path))
-                    except OSError:
+                    except FileNotFoundError:
                         pass
+                    except OSError:
+                        if strict:
+                            raise
         paths.extend((path, True) for _, _, path in sorted(archived, reverse=True)[:50])
         return paths
 
@@ -657,8 +669,8 @@ class Store:
             return []
         return [{"type": "event", "event": event} for event in sorted(added, key=lambda event: event["at"])]
 
-    def _read_state(self, record):
-        state_path = self._file(record.path, "state.json")
+    def _read_state(self, record, *, strict=False):
+        state_path = self._file(record.path, "state.json", strict=strict)
         if state_path is not None:
             try:
                 stat = state_path.stat()
@@ -669,8 +681,11 @@ class Store:
                         record.state = state
                         record.signature = signature
                         record.updated_at = stat.st_mtime
-            except (OSError, ValueError):
+            except (FileNotFoundError, ValueError):
                 pass
+            except OSError:
+                if strict:
+                    raise
 
     def _record(self, slug):
         if not self._safe_slug(slug):

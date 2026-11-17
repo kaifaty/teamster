@@ -17,14 +17,16 @@ uv run --project board/server teamster-board
 Open http://localhost:8787. The server listens on `127.0.0.1` by default; CLI options are
 `--host` (default `127.0.0.1`) and `--port` (default `8787`). Requests must use a localhost Host header;
 WebSocket Origins, when present, must also be localhost. The server reads task files and machine
-metrics and listens on localhost; it has no task control endpoints except science station actions:
-lesson decisions, lesson implementation (`implement`), `say` to reflection or implementation tasks,
-new `reflect` orders, and messages to the duty chat (`POST /api/actions/duty-chat`, read with
-`GET /api/duty-chat`), plus duty account selection (`POST /api/actions/duty`). These run the installed `teamster`
+metrics. Board actions cover lesson decisions and implementation (`implement`), new `reflect`
+orders, task `say`, `review`, `verdict`, `stop` and `clean`, messages to the duty chat
+(`POST /api/actions/duty-chat`, read with `GET /api/duty-chat`), and duty account selection
+(`POST /api/actions/duty`). These run the installed `teamster`
 command, found on `PATH` at startup; `--teamster PATH` selects its executable explicitly, and
 `--read-only` disables all actions, including account login and refresh. They require a matching same-origin `Origin`,
-`Content-Type: application/json` and `X-Teamster-Board: 1`. Ordinary task stop, clean, verdict and
-merge operations remain unavailable. The server never sends CORS headers.
+`Content-Type: application/json` and `X-Teamster-Board: 1`. The server never sends CORS headers.
+
+A local duty client can use the opt-in [external duty API v1](../src/teamster/docs/external-duty.md)
+for allowlisted task reads, no-push starts, follow-ups, stops and a resumable event feed.
 
 With actions enabled, the server also finishes lesson implementation tasks in the background.
 It merges ready PRs under `kaifaty` on GitHub and on the personal Forgejo (`192.168.1.150` or
@@ -407,6 +409,7 @@ The map's code in `board/web/src/map/`:
 | `TEAMSTER_HOME`, `CODEX_TASK_HOME` | `~/.teamster` | The worker's data home, found by the worker's rules (`teamster docs settings`). Read tasks from `tasks/` and archives from `tasks/.archive/` (`claude-tasks/` in a legacy home in `~/.codex`). Snapshots include at most 50 closed records together, ranked by state mtime. |
 | `BOARD_POLL_SECONDS` | `1.0` | Interval between file mtime and size polls, in seconds. |
 | `BOARD_ACCOUNTS_SECONDS` | `300` | Minimum interval between account subprocess calls, in seconds. A new `account_login` journal row from `teamster login` or `claude-login` refreshes accounts at once, at most once per 5 seconds; rows already in the journal at startup do not. |
+| `BOARD_EXTERNAL_DUTY_CONFIG` | Unset | Private JSON configuration for the [external duty API](../src/teamster/docs/external-duty.md). |
 | `BOARD_DUTY_SECONDS` | `1800` | Interval in seconds after a server duty tick finishes, only in automatic mode with actions enabled and a compatible installed teamster. Entering automatic mode also ticks immediately; `0` disables server ticks. |
 | `BOARD_MACHINES_FILE` | `<data home>/board-machines.json` | Machine configuration; reread when mtime or size changes. Missing means no machines; invalid files preserve the last valid list and expose `config_error`. |
 | `BOARD_MACHINES_SECONDS` | `30` | Interval between parallel machine and optional physical host probe cycles, in seconds. |

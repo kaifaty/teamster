@@ -11,8 +11,8 @@ from . import config, procs, task_state
 # Layout purposes that move, in order. Worktrees are linked, never moved. The
 # legacy lock files stay: migrate-home holds them while it moves, and a moved
 # lock would let a new process lock a fresh file at the old path.
-MOVED = ("tasks", "settings", "telemetry", "resets", "rules", "duty", "duty_log", "duty_launchd_log",
-         "board_machines", "board_log")
+MOVED = ("tasks", "settings", "telemetry", "external_events", "external_commands", "resets", "rules",
+         "duty", "duty_log", "duty_launchd_log", "board_machines", "board_log")
 HELD_LOCKS = ("settings_lock", "duty_lock")
 LAUNCHD_LABELS = ("teamster.board", "teamster.duty")
 

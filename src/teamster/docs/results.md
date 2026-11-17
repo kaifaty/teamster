@@ -91,6 +91,7 @@ separately from the implementation `result.status`, saved checks, CI and reset-c
 | `failed` | Exec or the supervisor failed, or no usable authenticated account remains. | Read the error and logs; resolve the cause, including any requested login, before a follow-up. |
 | `refused` | The model refused for possible cybersecurity risk; no retry or account rotation follows. `wait` shows the first 200 characters of the refusal. | Read the refusal and reassess the task rather than starting another automatic fix cycle. |
 | `stopped` | A durable `stop` request addressed this supervisor. | Inspect the preserved work and decide whether to continue with `say`. |
+| `timeout` | The task reached its wall-clock deadline set by `start --task-timeout`. | Inspect the preserved work. |
 | `interrupted` | A signal interrupted the supervisor without a matching `stop` request. | Continue with `teamster resume <slug>` ([resuming](#resuming-an-interrupted-cycle)); if it repeats, inspect the signal line in `stderr.log`. |
 | `exhausted` | Account capacity is unavailable and reset waiting is disabled or exceeded eight days. | Inspect `accounts` and the recorded reset time; resolve availability before continuing with `say`. |
 | `budget_exhausted` | The turn reached its time cap, or the task reached its weekly budget. | Use the check, wrap-up and remaining work to decide whether to split the task. For a time stop, split or send a budgeted `say`; for a weekly stop, raise the saved budget with `say --max-weekly P` only after that decision. |
