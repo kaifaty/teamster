@@ -486,7 +486,7 @@ class ClaudeReviewTests(RotationTestCase):
                 if expected:
                     self.assertIn("Blocked by teamster", reason)
                 params = {"threadId": "thread", "turnId": "turn", "itemId": "command",
-                          "command": command, "cwd": str(room)}
+                          "command": shlex.join(["/bin/zsh", "-lc", command]), "cwd": str(room)}
                 with mock.patch.dict(os.environ, self.env, clear=True):
                     decision, adapter_reason = worker.turns.codex_duty.approval(
                         "item/commandExecution/requestApproval", params, {}, room, "thread", "turn")
@@ -931,7 +931,7 @@ class ClaudeReviewTests(RotationTestCase):
                  ("brief.md", ".git/config", "decline"), ("brief.md", ".claude/settings.json", "decline"),
                  ("brief.md", "linked/renamed.md", "decline"), ("brief.md", "renamed.md", "accept")]
         for path, destination, expected in cases:
-            kind = {"type": "update", "movePath": destination} if destination else {"type": "add"}
+            kind = {"type": "update", "move_path": destination} if destination else {"type": "add"}
             item = {"id": "patch", "type": "fileChange", "changes": [{"path": path, "kind": kind, "diff": ""}]}
             params = {"threadId": "thread", "turnId": "turn", "itemId": "patch"}
             with self.subTest(path=path, destination=destination), mock.patch.dict(os.environ, self.env, clear=True):
@@ -952,27 +952,41 @@ class ClaudeReviewTests(RotationTestCase):
     def test_duty_chat_handoff_between_families_does_not_resume_a_stale_cursor(self):
         self.claude_pool_fixture(runs=[
             {"reply": self.duty_answer("Choose a repository.", "needs_decision", "Which repository?", ["parser", "billing"])},
-            {"reply": self.duty_answer("Claude has the completed answer.")}])
-        self.codex_duty_runs([{"reply": self.duty_answer("Codex understood option 1.")}])
-        self.put_duty("first")
+            {"reply": self.duty_answer("The question is still open.")},
+            {"reply": self.duty_answer("Claude has the completed answer.")}], names=("main", "second"),
+            duty={"chat_model": "fixture-claude", "chat_codex_model": "fixture-codex"})
+        self.codex_duty_runs([{"reply": self.duty_answer("Codex understood option 1.")},
+                              {"reply": self.duty_answer("Codex is ready to hand off.")}])
+        self.put_duty("main")
         self.cli("duty", "chat", "Fix the parser.", timeout=60)
         old_session = self.state("duty")["session_id"]
+        self.cli("say", "duty", "Continue.", "--model", "opus")
+        self.cli("wait", "duty", timeout=60)
+        overridden = self.claude_invocations()[-1]["argv"]
+        self.assertEqual(overridden[overridden.index("--model") + 1], "opus")
         self.put_duty("main", "codex")
         self.assertIn("Codex understood option 1.", self.cli("duty", "chat", "1", timeout=60))
+        first_codex = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
+        self.assertEqual(first_codex["params"]["model"], "fixture-codex")
         codex = self.codex_duty_invocations()[0]
         text = codex["params"]["input"][0]["text"]
         for fragment in ("Fix the parser.", "Which repository?", "1. parser", "2. billing", "1"):
             self.assertIn(fragment, text)
         self.assertFalse(self.state("duty").get("session_id"))
-        self.put_duty("first")
+        self.cli("say", "duty", "Prepare the handoff.", "--model", "fixture-codex-override")
+        self.cli("wait", "duty", timeout=60)
+        second_codex = [entry for entry in self.trace() if entry["command"] == "duty-thread"][-1]
+        self.assertEqual(second_codex["params"]["model"], "fixture-codex-override")
+        self.put_duty("main")
         self.assertIn("Claude has the completed answer.", self.cli("duty", "chat", "What happened?", timeout=60))
         returned = self.claude_invocations()[-1]
         self.assertNotIn("--resume", returned["argv"])
         self.assertNotEqual(returned["session_id"], old_session)
+        self.assertEqual(returned["argv"][returned["argv"].index("--model") + 1], "fixture-claude")
         for fragment in ("Codex understood option 1.", "What happened?", "Which repository?", "1. parser"):
             self.assertIn(fragment, returned["argv"][1])
         self.assertFalse(self.state("duty").get("thread"))
-        self.assertEqual([turn["account"] for turn in self.state("duty")["duty_turns"]], ["first", "main", "first"])
+        self.assertEqual([turn["account"] for turn in self.state("duty")["duty_turns"]], ["main"] * 5)
 
     def test_codex_duty_refuses_inherited_allow_rules_and_hooks_before_a_turn(self):
         self.configure(language="en")
@@ -995,7 +1009,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.enable_fake_clock(auto_advance=False)
         self.configure(language="en")
         self.codex_duty_runs([{"mode": "hold", "child": True}, {"mode": "hold", "child": True},
-                              {"mode": "crash", "child": True}, {"reply": self.duty_answer("Recovered.")}])
+                              {"mode": "crash", "child": True}, {"reply": self.duty_answer("Recovered.")},
+                              {"mode": "hold", "child": True}])
         worker = self.worker()
         account = worker.accounts.account_named(worker.config.accounts_config(), "main")
         directory = self.root / "duty-task"
@@ -1037,6 +1052,30 @@ class ClaudeReviewTests(RotationTestCase):
                 system_text="Duty fixture instructions.", task_dir=directory)
             self.assertEqual(recovered["outcome"], "completed", recovered)
             self.assertEqual(recovered["result"]["reply"], "Recovered.")
+        # The configured limit must also reach the transport through the supervisor.
+        self.configure(language="en", duty={"chat_max_minutes": 3})
+        self.env["CODEX_TASK_MINUTE_SECONDS"] = "60"
+        self.put_duty("main", "codex")
+        self.trace_path.unlink()
+        holding = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Wait for the configured limit."],
+                                   cwd=self.repo, env=self.env, text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.until(lambda: any(entry["command"] == "duty-holding" for entry in self.trace()), timeout=60)
+            st = self.state("duty")
+            child = next(entry["child_pid"] for entry in self.trace() if entry["command"] == "duty-child")
+            self.extra_pids.update((st["pid"], st["codex_pid"], child))
+            self.advance_fake_clock(3 * 60 + 1)
+            self.until(lambda: self.state("duty")["outcome"] == "budget_exhausted", timeout=10)
+            output, errors = holding.communicate(timeout=60)
+            self.assertEqual(holding.returncode, 1, output)
+            self.assertIn("the duty chat turn reached its time budget (3 minutes)", errors)
+            self.assertEqual(self.state("duty")["duty_turns"], [])
+            self.assertFalse(self.process_is_live(child))
+        finally:
+            if holding.poll() is None:
+                self.cli("stop", "duty", timeout=60)
+                holding.communicate(timeout=60)
 
     def test_codex_duty_orphan_refuses_messages_and_clean_until_stop(self):
         self.configure(language="en")
@@ -1084,6 +1123,11 @@ class ClaudeReviewTests(RotationTestCase):
     def test_codex_duty_started_task_notes_and_hourly_cap(self):
         self.configure(language="en", duty={"chat_auto_turns_per_hour": 1})
         self.account(self.other, "B", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
+        fixture_path = self.home / "fixture.json"
+        fixture = json.loads(fixture_path.read_text())
+        fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": {
+            key: value for key, value in self.env.items() if key.startswith(("CODEX_TASK_", "CODEX_FAKE_", "GIT_"))}}}
+        fixture_path.write_text(json.dumps(fixture))
         self.put_duty("main", "codex")
         room = self.home / "claude-tasks" / "duty" / "room"
         self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
@@ -1099,9 +1143,11 @@ class ClaudeReviewTests(RotationTestCase):
                               {"reply": self.duty_answer("Noted finished.")},
                               {"reply": self.duty_answer("The held note arrived.")}])
         self.cli("duty", "chat", "Proceed.", timeout=60)
+        self.assertEqual(self.state("noted")["started_by"], "duty")
+        executed = next(entry for entry in self.trace() if entry["command"] == "duty-command-environment")
+        self.assertEqual(executed["started_by"], "duty")
         self.cli("wait", "noted", timeout=60)
         self.until(lambda: self.chat_settled(3), timeout=60)
-        self.assertEqual(self.state("noted")["started_by"], "duty")
         self.assertRegex(self.codex_duty_invocations()[1]["duty_marker"], r"^[0-9a-f]{32}$")
         self.assertIsNone(self.invocations()[0]["duty_marker"])
         self.assertEqual(len(self.state("duty")["duty_auto_turns"]), 1)

@@ -172,9 +172,8 @@ def approval(method, params, items, room, thread, turn):
             if kind.get("type") not in ("add", "delete", "update"):
                 return "decline", refusal
             paths = [change.get("path")]
-            # Enum fields in this protocol use move_path; handle the camel-case
-            # presentation too, checking both if a server supplied both names.
-            paths += [kind[key] for key in ("move_path", "movePath") if kind.get(key) is not None]
+            if kind.get("move_path") is not None:
+                paths.append(kind["move_path"])
             for path in paths:
                 if not isinstance(path, str) or not path:
                     return "decline", refusal
@@ -360,7 +359,7 @@ class DutyRPC:
             elif kind == "fileChange":
                 self.event({"type": method.replace("/", "."), "item": {
                     "id": item["id"], "type": "file_change", "changes": item.get("changes", [])}})
-            elif kind not in ("reasoning", "plan", "contextCompaction", "agentMessage"):
+            elif kind not in ("userMessage", "reasoning", "plan", "contextCompaction", "agentMessage"):
                 raise ValueError("Codex duty exposed an unexpected tool: " + str(kind))
         elif method == "item/fileChange/patchUpdated":
             item = self.items.get(params.get("itemId"))

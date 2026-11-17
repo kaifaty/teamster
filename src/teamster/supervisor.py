@@ -263,6 +263,8 @@ def apply_say(st, options, cfg):
             account, refusal = duty_chat.chat_account(cfg)
             if account is None:
                 procs.die(refusal)
+            if executor.name != account["family"]:
+                st.pop("task_model", None)
             executor = executors.get(account["family"])
         if scouting:
             executor.prepare_scout(options.get("effort") or st.get("effort"), cfg, st["worktree"])
@@ -465,6 +467,7 @@ def deliver_duty_note(order):
             orders = duty_chat.held_notes() + [order]
             try:
                 require_startable()
+                apply_say(chat, {}, cfg)
                 drop_dead_queue(slug)
                 duty_chat.mark_auto_turn(chat, now)
                 text = "\n\n".join(item["text"] for item in orders)

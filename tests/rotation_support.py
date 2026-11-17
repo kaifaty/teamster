@@ -120,6 +120,37 @@ def duty_approval(request_id, method, params):
             return decision
     return "decline"
 
+def duty_config():
+    settings = fixture().get("duty_config", {})
+    for index, arg in enumerate(sys.argv[:-1]):
+        if arg == "-c":
+            key, _, raw = sys.argv[index + 1].partition("=")
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                value = raw
+            node = settings
+            names = key.split(".")
+            for name in names[:-1]:
+                node = node.setdefault(name, {})
+            node[names[-1]] = value
+    return settings
+
+def duty_command_environment():
+    policy = duty_config().get("shell_environment_policy", {})
+    inherit = policy.get("inherit", "all")
+    if inherit == "all":
+        environment = dict(os.environ)
+    elif inherit == "core":
+        core = {"PATH", "SHELL", "TMPDIR", "TEMP", "TMP", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "USER"}
+        environment = {key: value for key, value in os.environ.items() if key.upper() in core}
+    else:
+        sys.exit("unsupported fake duty shell environment inheritance")
+    if any(policy.get(key) for key in ("exclude", "include_only", "filters")):
+        sys.exit("unsupported fake duty shell environment filters")
+    environment.update(policy.get("set", {}))
+    return environment
+
 def duty_turn(request, thread):
     params = request["params"]
     count_path = home / "duty-count"
@@ -133,6 +164,11 @@ def duty_turn(request, thread):
     emit({"id": request["id"], "result": {"turn": {"id": turn, "status": "inProgress", "items": []}}})
     emit({"method": "turn/started", "params": {"threadId": thread["id"],
           "turn": {"id": turn, "status": "inProgress", "items": []}}})
+    message = {"id": "duty-user-" + str(count + 1), "type": "userMessage", "clientId": None,
+               "content": [dict(item, text_elements=item.get("text_elements", []))
+                           if item["type"] == "text" else item for item in params["input"]]}
+    for method in ("item/started", "item/completed"):
+        emit({"method": method, "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
     for index, step in enumerate(run.get("requests", [])):
         item_id = step.get("id", "duty-item-" + str(index))
         item = step.get("item")
@@ -148,16 +184,20 @@ def duty_turn(request, thread):
         if decision != "accept":
             continue
         trace({"command": "duty-executed", "item_id": item_id, "params": approval})
+        environment = duty_command_environment()
         if step.get("execute"):
+            trace({"command": "duty-command-environment", "started_by": environment.get("TEAMSTER_STARTED_BY"),
+                   "command_marker": environment.get("TEAMSTER_DUTY_PROCESS")})
             completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
-                                       check=True, text=True, capture_output=True, start_new_session=True)
+                                       env=environment, check=True, text=True, capture_output=True, start_new_session=True)
             trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr})
         if "write" in step:
             Path(step["write"]).write_text(step.get("contents", "approved change\n"))
         if "reader_input" in step:
             output = Path(step["reader_output"])
             with output.open("w") as stream:
-                reader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=stream, start_new_session=True)
+                reader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=stream,
+                                          env=environment, start_new_session=True)
                 reader.stdin.write(step["reader_input"].encode())
                 reader.stdin.flush()
                 while output.stat().st_size < len(step["reader_input"].encode()):
@@ -167,7 +207,8 @@ def duty_turn(request, thread):
             emit({"method": "item/completed", "params": {
                   "threadId": thread["id"], "turnId": turn, "item": dict(item, status="completed")}})
     if run.get("child"):
-        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], start_new_session=True)
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
+                                 env=duty_command_environment(), start_new_session=True)
         trace({"command": "duty-child", "child_pid": child.pid})
     if run.get("mode") == "crash":
         sys.exit(1)
@@ -210,20 +251,7 @@ def app_server():
         elif method == "configRequirements/read":
             result = {"requirements": value.get("duty_requirements")}
         elif method == "config/read":
-            overrides = {}
-            for index, arg in enumerate(sys.argv[:-1]):
-                if arg == "-c":
-                    key, _, raw = sys.argv[index + 1].partition("=")
-                    try:
-                        value_override = json.loads(raw)
-                    except ValueError:
-                        value_override = raw
-                    node = overrides
-                    names = key.split(".")
-                    for name in names[:-1]:
-                        node = node.setdefault(name, {})
-                    node[names[-1]] = value_override
-            result = {"config": dict(overrides, **value.get("duty_config", {})), "layers": []}
+            result = {"config": duty_config(), "layers": []}
         elif method in ("thread/start", "thread/resume"):
             params = request["params"]
             identifier = params.get("threadId") if method == "thread/resume" else str(uuid.uuid4())

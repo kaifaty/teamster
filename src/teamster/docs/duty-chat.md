@@ -27,6 +27,7 @@ on the current duty account, pinned by `duty set` or elected, and never on anoth
 family or account moves the next turn by the rotation handoff: the brief, the messages so far and
 the duty's earlier replies, including questions and answer options. Both session cursors are reset,
 so a return to a previous family starts with the handoff instead of resuming a stale session;
+saved model overrides are cleared when the family changes, before applying any new `--model`.
 `status` shows the rotation. A limit on the duty account ends the turn `unavailable`; the next turn
 runs once the account recovers or the duty moves.
 
