@@ -26,7 +26,8 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
   const { repo, selected, hovered, researchOpen, shipOpen } = panels;
   /** The station's screen and a ship's bridge cover the whole map: the galaxy under them stops drawing until they close. */
   const drawing = () => props.active && !researchOpen.value && !shipOpen.value;
-  const failure = ref<"webgl" | "lost" | null>(null);
+  const failure = ref<"webgl" | "lost" | "system" | null>(null);
+  const flying = ref(false);
   let scene: FleetScene | null = null;
   let unmounted = false;
 
@@ -52,6 +53,12 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
     style?.setProperty("--zoom", `${camera.zoom}`);
   }
 
+  function stopScene(reason: "lost" | "system") {
+    failure.value = reason;
+    scene?.dispose();
+    scene = null;
+  }
+
   async function mount() {
     if (!host.value) return;
     let made: FleetScene;
@@ -72,11 +79,14 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
           if (worlds.system.width !== systemWorld.value.width || worlds.system.height !== systemWorld.value.height) systemWorld.value = worlds.system;
           applyCamera(camera);
         },
+        onFlight: (value) => {
+          flying.value = value;
+        },
         labels: overlay.value ?? undefined,
-        onLost: () => {
-          failure.value = "lost";
-          scene?.dispose();
-          scene = null;
+        onLost: () => stopScene("lost"),
+        onSystemError: (error) => {
+          console.error(error);
+          stopScene("system");
         },
       });
     } catch (error) {
@@ -89,6 +99,7 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
       return;
     }
     failure.value = null;
+    flying.value = false;
     scene = made;
     feed();
   }
@@ -103,7 +114,10 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
   watch(model.galaxySources, () => scene?.setGalaxy(model.galaxyModel()));
   watch(repoArt, (art) => scene?.setArt(art));
   watch([researchOpen, shipOpen], () => scene?.setActive(drawing()));
-  watch(repo, (name) => scene?.setView(name), { flush: "sync" });
+  watch(repo, (name) => {
+    if (scene) scene.setView(name);
+    else flying.value = name !== null;
+  }, { flush: "sync" });
   watch(entries, (next) => scene?.setShips(next));
   watch(selected, (slug) => scene?.setSelected(slug));
   watch(hovered, (slug) => scene?.setHovered(slug));
@@ -118,5 +132,5 @@ export function useFleetScene({ props, host, overlay, sources, model, panels, en
     scene = null;
   });
 
-  return { failure, retry };
+  return { failure, flying, retry };
 }

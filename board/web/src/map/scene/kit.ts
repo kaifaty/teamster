@@ -5,10 +5,14 @@ import { Assets, ColorMatrixFilter, Sprite, Texture } from "pixi.js";
 import { ART, type ArtName } from "../art";
 import { noise } from "./math";
 
+const GALAXY_ART = [ART.nebula, ART.sun];
+const SYSTEM_ART = Object.values(ART).filter((url) => !GALAXY_ART.includes(url));
+
 export interface Kit {
   /** prefers-reduced-motion: the scene stands still. */
   still: boolean;
   art(name: ArtName): Texture;
+  loadSystemArt(): Promise<void>;
   /** A sprite of `texture` centred on its position, `size` world units across its longer side. */
   sprite(texture: Texture, size: number): Sprite;
   /** A soft additive glow of `color`, `size` world units across. */
@@ -21,10 +25,10 @@ export interface Kit {
   dispose(): void;
 }
 
-/** Loads the art and makes the procedural textures. */
+/** Loads the galaxy art and makes the procedural textures. */
 export async function createKit(): Promise<Kit> {
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const loaded = (await Assets.load(Object.values(ART))) as Record<string, Texture>;
+  const loaded = await Assets.load<Texture>(GALAXY_ART);
   const art = (name: ArtName): Texture => loaded[ART[name]]!;
   const glowTexture = Texture.from(softDisc(), true);
   const cloudTexture = Texture.from(softCloud(), true);
@@ -47,6 +51,9 @@ export async function createKit(): Promise<Kit> {
   return {
     still,
     art,
+    async loadSystemArt() {
+      Object.assign(loaded, await Assets.load<Texture>(SYSTEM_ART));
+    },
     sprite,
     glow,
     glowTexture,
