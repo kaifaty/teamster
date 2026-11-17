@@ -103,7 +103,7 @@ def start_process(st):
     # The supervisor runs in the worktree: pass the resolved homes, not relative variables.
     environment = dict(os.environ)
     # A start from a duty chat turn inherits its credential and its marker; neither belongs to the task.
-    for key in ("CLAUDE_CODE_OAUTH_TOKEN", config.STARTED_BY):
+    for key in ("CLAUDE_CODE_OAUTH_TOKEN", config.STARTED_BY, config.DUTY_PROCESS_MARKER):
         environment.pop(key, None)
     if config.HOME_VARIABLES["TEAMSTER_HOME"]:
         environment["TEAMSTER_HOME"] = str(config.DATA_HOME)
@@ -263,6 +263,13 @@ def apply_say(st, options, cfg):
     scouting = st.get("kind") in ("scout", "reflect")
     try:
         executor = executors.from_state(st)
+        if st.get("kind") == duty_chat.CHAT_KIND:
+            account, refusal = duty_chat.chat_account(cfg)
+            if account is None:
+                procs.die(refusal)
+            if st.get("task_model_family", executor.name) != account["family"]:
+                st.pop("task_model", None)
+            executor = executors.get(account["family"])
         if scouting:
             executor.prepare_scout(options.get("effort") or st.get("effort"), cfg, st["worktree"])
         else:
@@ -272,6 +279,8 @@ def apply_say(st, options, cfg):
     budgets.set_weekly_budget(st, options.get("max_weekly"), cfg)
     if options.get("model") is not None:
         st["task_model"] = None if options["model"] == "default" else options["model"]
+        if st.get("kind") == duty_chat.CHAT_KIND:
+            st["task_model_family"] = executor.name
     if options.get("review_model") is not None:
         st["review_model"] = None if options["review_model"] == "default" else options["review_model"]
     if options.get("task_type") is not None:
@@ -458,12 +467,13 @@ def deliver_duty_note(order):
             cfg = config.accounts_config()
             now = clock.CLOCK.time()
             if (not duty_chat.auto_turn_allowed(chat, cfg, now) or duty_chat.chat_account(cfg)[0] is None
-                    or procs.alive(chat.get("claude_pid"))):
+                    or task_state.duty_process(chat)[1] is not None):
                 duty_chat.hold_notes([order])
                 return "held"
             orders = duty_chat.held_notes() + [order]
             try:
                 require_startable()
+                apply_say(chat, {}, cfg)
                 drop_dead_queue(slug)
                 duty_chat.mark_auto_turn(chat, now)
                 text = "\n\n".join(item["text"] for item in orders)

@@ -9,25 +9,27 @@ follows a turn from another terminal.
 
 The first message creates one long-lived task, slug `duty` and kind `duty`, with a room: a fresh git
 repository in `~/.teamster/tasks/duty/room` where the duty writes its briefs. Later messages go to the
-same task exactly as `say` does: the turn resumes the duty's session, and while a turn runs
+same task exactly as `say` does: the turn resumes the Claude session or Codex thread, and while a turn runs
 `--queue` queues the message and its turn starts when the running one ends (without `--queue` the
 command refuses). `teamster say duty "…"` takes the same path as `duty chat`, with the same duty
-checks and held notes, but returns as soon as the turn starts; its `--effort`, `--model` and
-`--max-minutes` replace `duty.chat_effort`, `duty.chat_model` and `duty.chat_max_minutes` for the
+checks and held notes, but returns as soon as the turn starts; its `--effort` and `--model` replace
+the current family's chat settings, and `--max-minutes` replaces `duty.chat_max_minutes`, for the
 conversation, as `say` does for a task. `duty chat` returns when its turn's supervisor exits, also when
 that supervisor is killed. A creation that an interruption cut short (a room without `state.json`) is
-removed and made again by the next message. When a duty turn's supervisor dies before its Claude
-process, that process still holds the session: the next message and `clean duty` refuse until
+removed and made again by the next message. When a duty turn's supervisor dies before its Claude or
+Codex process, that process still holds the conversation: the next message and `clean duty` refuse until
 `teamster stop duty` ends it. `status duty` shows the room and the number of answers; `clean duty`
 removes the room and archives the record, and the next message starts a new conversation.
 
 Without a duty account (`duty.json` absent or its `account` null) the command fails with
-`no duty account` and starts nothing. A Codex duty is refused the same way: the chat needs a Claude
-duty. The turn always runs on the current duty account, pinned by `duty set` or elected, and never on
-another one: when `duty tick` moved the duty, the next turn continues on the new account with the
-rotation handoff (the brief, the messages so far and the duty's earlier replies), and `status` shows
-the rotation. A limit on the duty account ends the turn `unavailable`; the next turn runs once the
-account recovers or the duty moves.
+`no duty account` and starts nothing. Both Claude and Codex duties run the chat. The turn always runs
+on the current duty account, pinned by `duty set` or elected, and never on another one. A change of
+family or account moves the next turn by the rotation handoff: the brief, the messages so far and
+the duty's earlier replies, including questions and answer options. Both session cursors are reset,
+so a return to a previous family starts with the handoff instead of resuming a stale session;
+saved model overrides are cleared when the family changes, before applying any new `--model`.
+`status` shows the rotation. A limit on the duty account ends the turn `unavailable`; the next turn
+runs once the account recovers or the duty moves.
 
 The turn's system prompt is the [lead guide](lead-guide.md), the duty's role (`duty-role.md` in the
 package: how to answer, when to ask instead of starting, one task per independent piece, briefs in the
@@ -37,10 +39,65 @@ the room's path.
 
 ## Limits
 
-The turn never uses `bypassPermissions`: it runs with `--permission-mode dontAsk`, the tools `Read`,
+On both transports the limits rest on teamster's guard, `bash_guard.py --duty-room ROOM`. The system
+prompt describes the limits; the guard enforces them and fails closed.
+
+A Claude turn never uses `bypassPermissions`: it runs with `--permission-mode dontAsk`, the tools `Read`,
 `Grep`, `Glob`, `Bash`, `Write` and `Edit`, and a PreToolUse hook (`bash_guard.py --duty-room ROOM`)
 on `Bash`, `Write`, `Edit`, `MultiEdit` and `NotebookEdit`; the same `--settings` set `disableAllHooks: false`,
-so no account or project setting turns the hook off. The hook fails closed and allows:
+so no account or project setting turns the hook off. Teamster adds no operating-system sandbox to
+this transport.
+
+A Codex turn runs through `codex app-server` on the duty account's home. The adapter requires
+Codex 0.169.0 and checks the server version before starting a turn. It uses protocol
+`approvalPolicy: "untrusted"` and `approvalsReviewer: "user"`. The adapter sends each command
+approval to the same guard as Claude, using the exact shell text to be executed. It answers only
+`accept` or `decline`, with no session-wide or saved grant. For a file-change approval it matches
+the request's item id to the item's changes and checks every path, including rename destinations,
+with the guard's room check. Unreadable or unknown requests and unmatched changes are declined.
+
+Before starting or resuming a thread, the adapter reads the effective configuration and its layers
+with `config/read`, and managed requirements with `configRequirements/read`. It refuses inherited
+user or project rules, hooks and MCP configuration. Any managed requirements also cause a refusal:
+the protocol does not expose enough to verify every inherited rule. Settings that prevent the
+hardening overrides from taking effect, including command environment filters, are refused too.
+Overrides apply only to this invocation; the account's configuration is not rewritten. The thread's
+reply must confirm the requested approval policy, reviewer and room sandbox.
+
+The action tools are `exec_command`, `write_stdin` and `apply_patch`. Agent, app, plugin, MCP,
+browser, computer, image, memory, goal, history-note, permission and skill-install actions are
+disabled, as are inherited hooks, automatic review and reusable grants. Inert planning, time,
+sleep and context tools may remain. A model may select Code Mode's V8 wrappers; they provide no
+imports, filesystem, process or network APIs, and their nested command and file calls use the same
+approval checks. The adapter does not rely on Codex hooks or prefix allow rules to enforce the duty
+policy.
+
+Codex also starts with a sandbox whose writable area is the room. This is an extra, best-effort
+layer: an accepted command may request escalation or automatically retry outside it after a
+sandbox failure, without another teamster decision. In either case the exact command has already
+passed the guard. Turn cleanup interrupts the turn, cleans its background terminals and shuts the
+server down so Codex can end its command groups. The time limit, stop and orphan checks apply to
+both transports; independently started teamster tasks keep running under their own supervisors.
+Codex 0.169.0 exposes terminal session handles rather than command operating-system PIDs.
+Environment markers are only a best-effort cleanup aid: after an app-server crash, teamster cannot
+guarantee forced cleanup of native commands. Even a file-based command can stall on a named pipe,
+device or network resource. If both the supervisor and app-server are killed, no cleanup code runs.
+
+The difference from Claude is Codex's `write_stdin`: input may still be sent to a command that the
+guard already accepted. The allowed commands do not execute their input as a program; `teamster`,
+`git` and `gh` are also forbidden from taking hidden work through stdin paths or Git's `--stdin`,
+as described below. Sending input therefore adds no action beyond the accepted command.
+
+To avoid deliberately persistent readers that could outlive a crashed app-server, the Codex guard
+also refuses `tail -f`, `-F` and `--follow`, including combined short options and `--follow=…`.
+`cat`, `head`, `tail`, `wc` and `rg` must name their input files: a form that waits for stdin, or an
+explicit stdin operand such as `-` or `/dev/stdin`, is refused. Unknown or ambiguous reader options
+are declined with a reason; ordinary file-based forms such as `cat README.md`, `head -n 20 notes.md`
+and `rg -n pattern src` remain allowed. These extra reader restrictions apply only to Codex;
+Claude's hook keeps its existing reader policy. `rg --files` may enumerate the current directory
+without a path argument because it does not read stdin.
+
+The shared guard allows:
 
 - `teamster start|say|scout|review|stop|status|wait|report|docs|accounts` and `teamster duty status`,
   except `say`, `stop`, `review` and `wait` on the duty conversation itself. Each takes only the exact
@@ -66,8 +123,12 @@ so no account or project setting turns the hook off. The hook fails closed and a
 
 Everything else is refused, in particular `gh pr merge`, `git push|commit|merge|rebase|reset|checkout`,
 `teamster clean|verdict|login|claude-login|duty tick|duty set|duty auto|duty clear`, `scripts/bump_version.py`, package
-managers, `curl` and `rm`. Commands run by path and variable assignments are refused. A compound
-command (`;`, `&&`, `||`, `|`, a subshell) is judged by every part; shell expansions (`$VAR`, `$(…)`,
+managers, `curl` and `rm`. Commands run by path and variable assignments are refused.
+`teamster`, `git` and `gh` refuse `-`, `/dev/stdin`,
+`/dev/fd/0` and `/proc/self/fd/0` as arguments, including option values and symbolic links to these
+paths; git also refuses `--stdin` and its abbreviations. Claude readers may consume standard input;
+Codex readers have the additional restrictions above.
+A compound command (`;`, `&&`, `||`, `|`, a subshell) is judged by every part; shell expansions (`$VAR`, `$(…)`,
 backticks, ANSI-C quoting `$'…'`, arithmetic, globs, braces, the body of an unquoted heredoc that
 expands) and control keywords are refused. Redirections and the file tools may write only inside the
 room and outside its `.git` and `.claude` (project settings), with every symbolic link resolved (`/dev/null` and `2>&1` are fine). The duty never merges, releases or accepts work: that stays
@@ -101,8 +162,9 @@ whose end started the next turn for the task's own queued orders (with the repor
 turn began). The note joins the running duty turn's queue, or starts a note-driven turn while the duty
 is idle. At most `duty.chat_auto_turns_per_hour` note-driven turns start in an hour, whether the notes
 arrive while the duty is idle or wait in the queue of a running turn; the rest wait in
-`tasks/duty/notes.json` and go out with the next user message, as do notes held while the duty is not
-a Claude account, after a failed or stopped duty turn, or in the queue of a duty supervisor that died.
+`tasks/duty/notes.json` and go out with the next user message, as do notes held while no configured
+duty account can run the chat, after a failed or stopped duty turn, or in the queue of a duty
+supervisor that died.
 Held notes leave `notes.json` only once the turn that carries them has started and is saved: a start
 that fails, or a command that dies first, leaves them held for the next message, at the cost of a note
 journaled twice in `messages.jsonl`. The duty conversation's own turns never notify, and a failure to
@@ -112,7 +174,9 @@ queue a note is logged in the task's `stderr.log`, never failing its cycle.
 
 | Key | Default | Effect |
 |---|---|---|
-| `duty.chat_model` | `claude.model` | model of the duty chat turns (a nonempty string or null) |
-| `duty.chat_effort` | `"high"` | effort of the duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
+| `duty.chat_model` | `claude.model` | model of Claude duty chat turns (a nonempty string or null) |
+| `duty.chat_effort` | `"high"` | effort of Claude duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
+| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null uses the account's Codex default |
+| `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the account's Codex default |
 | `duty.chat_max_minutes` | `20` | active time budget of one duty chat turn |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; note-driven turns per hour, the rest wait for the next user message |

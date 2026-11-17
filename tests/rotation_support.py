@@ -38,6 +38,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -65,6 +66,7 @@ def fixture():
 def trace(value):
     value["home"] = str(home)
     value["copyfile_disable"] = os.environ.get("COPYFILE_DISABLE")
+    value["duty_marker"] = os.environ.get("TEAMSTER_DUTY_PROCESS")
     value.setdefault("pid", os.getpid())
     value.setdefault("ppid", os.getppid())
     value.setdefault("pgid", os.getpgrp())
@@ -105,8 +107,133 @@ def limits(value):
                 window["usedPercent"] = 0
     return result
 
+def duty_approval(request_id, method, params):
+    emit({"id": request_id, "method": method, "params": params})
+    for line in sys.stdin:
+        reply = json.loads(line)
+        if reply.get("method") == "turn/steer":
+            trace({"command": "duty-steer", "params": reply.get("params")})
+            emit({"id": reply["id"], "result": {"turnId": (reply.get("params") or {}).get("expectedTurnId")}})
+            continue
+        if reply.get("id") == request_id and "method" not in reply:
+            decision = (reply.get("result") or {}).get("decision", "decline")
+            trace({"command": "duty-approval", "method": method, "params": params, "decision": decision})
+            return decision
+    return "decline"
+
+def duty_config():
+    settings = fixture().get("duty_config", {})
+    for index, arg in enumerate(sys.argv[:-1]):
+        if arg == "-c":
+            key, _, raw = sys.argv[index + 1].partition("=")
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                value = raw
+            node = settings
+            names = key.split(".")
+            for name in names[:-1]:
+                node = node.setdefault(name, {})
+            node[names[-1]] = value
+    return settings
+
+def duty_command_environment():
+    policy = duty_config().get("shell_environment_policy", {})
+    inherit = policy.get("inherit", "all")
+    if inherit == "all":
+        environment = dict(os.environ)
+    elif inherit == "core":
+        core = {"PATH", "SHELL", "TMPDIR", "TEMP", "TMP", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "USER"}
+        environment = {key: value for key, value in os.environ.items() if key.upper() in core}
+    else:
+        sys.exit("unsupported fake duty shell environment inheritance")
+    if any(policy.get(key) for key in ("exclude", "include_only", "filters")):
+        sys.exit("unsupported fake duty shell environment filters")
+    environment.update(policy.get("set", {}))
+    return environment
+
+def duty_turn(request, thread):
+    params = request["params"]
+    count_path = home / "duty-count"
+    count = int(count_path.read_text()) if count_path.exists() else 0
+    count_path.write_text(str(count + 1))
+    runs = fixture().get("duty_runs", [])
+    run = runs[min(count, len(runs) - 1)] if runs else {}
+    turn = "duty-turn-" + str(count + 1)
+    trace({"command": "duty-turn", "params": params, "thread": thread["id"],
+           "started_by": os.environ.get("TEAMSTER_STARTED_BY"), "cwd": os.getcwd()})
+    emit({"id": request["id"], "result": {"turn": {"id": turn, "status": "inProgress", "items": []}}})
+    emit({"method": "turn/started", "params": {"threadId": thread["id"],
+          "turn": {"id": turn, "status": "inProgress", "items": []}}})
+    message = {"id": "duty-user-" + str(count + 1), "type": "userMessage", "clientId": None,
+               "content": [dict(item, text_elements=item.get("text_elements", []))
+                           if item["type"] == "text" else item for item in params["input"]]}
+    for method in ("item/started", "item/completed"):
+        emit({"method": method, "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
+    if run.get("sleep"):
+        emit({"method": "item/started", "params": {"threadId": thread["id"], "turnId": turn,
+              "item": {"id": "duty-sleep", "type": "sleep"}}})
+    for index, step in enumerate(run.get("requests", [])):
+        item_id = step.get("id", "duty-item-" + str(index))
+        item = step.get("item")
+        if item is not None:
+            item = dict(item, id=item_id)
+            emit({"method": "item/started", "params": {
+                  "threadId": thread["id"], "turnId": turn, "item": item}})
+        approval = {"threadId": thread["id"], "turnId": turn, "itemId": item_id}
+        approval.update(step.get("params", {}))
+        method = step.get("method", "item/commandExecution/requestApproval")
+        decision = duty_approval("duty-approval-" + str(index), method,
+                                 step.get("raw_params", approval))
+        if decision != "accept":
+            continue
+        trace({"command": "duty-executed", "item_id": item_id, "params": approval})
+        environment = duty_command_environment()
+        if step.get("execute"):
+            trace({"command": "duty-command-environment", "started_by": environment.get("TEAMSTER_STARTED_BY"),
+                   "command_marker": environment.get("TEAMSTER_DUTY_PROCESS"),
+                   "storage": {key: environment.get(key) for key in
+                               ("TEAMSTER_HOME", "CODEX_TASK_HOME", "TEAMSTER_CODEX_HOME")}})
+            completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
+                                       env=environment, check=True, text=True, capture_output=True, start_new_session=True)
+            trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr})
+        if "write" in step:
+            Path(step["write"]).write_text(step.get("contents", "approved change\n"))
+        if step.get("background"):
+            child = subprocess.Popen(shlex.split(approval["command"]), cwd=approval.get("cwd", os.getcwd()),
+                                     env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     start_new_session=True)
+            trace({"command": "duty-child", "child_pid": child.pid})
+        if item is not None:
+            emit({"method": "item/completed", "params": {
+                  "threadId": thread["id"], "turnId": turn, "item": dict(item, status="completed")}})
+    if run.get("child"):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
+                                 env=duty_command_environment(), start_new_session=True)
+        trace({"command": "duty-child", "child_pid": child.pid})
+    if run.get("mode") == "crash":
+        sys.exit(1)
+    if run.get("mode") == "hold":
+        trace({"command": "duty-holding"})
+        while True:
+            time.sleep(0.02)
+    if run.get("gate"):
+        trace({"command": "duty-waiting", "gate": run["gate"]})
+        while not Path(run["gate"]).exists():
+            time.sleep(0.02)
+    answer = run.get("reply", {"status": "answered", "reply": "Codex duty answer.",
+                               "question": "", "options": [], "started": []})
+    message = {"id": "duty-answer", "type": "agentMessage", "text": json.dumps(answer), "phase": "final_answer"}
+    emit({"method": "item/completed", "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
+    emit({"method": "thread/tokenUsage/updated", "params": {"threadId": thread["id"], "turnId": turn,
+          "tokenUsage": {"total": {"inputTokens": 10, "cachedInputTokens": 2, "outputTokens": 3,
+                                     "reasoningOutputTokens": 1, "totalTokens": 13}}}})
+    emit({"method": "turn/completed", "params": {"threadId": thread["id"],
+          "turn": {"id": turn, "status": "completed", "items": [message]}}})
+
 def app_server():
-    trace({"command": "app-server"})
+    trace({"command": "app-server", "argv": sys.argv[1:]})
+    thread = None
     if "CODEX_FAKE_RPC_FAILURE" in os.environ:
         sys.stdin.readline()
         print(os.environ["CODEX_FAKE_RPC_FAILURE"], flush=True)
@@ -121,7 +248,32 @@ def app_server():
             emit({"id": request["id"], "error": {"code": -32000, "message": "fixture account unavailable"}})
             continue
         if method == "initialize":
-            result = {"userAgent": "fake-codex", "platformFamily": "unix"}
+            result = {"userAgent": "codex/0.169.0", "platformFamily": "unix"}
+        elif method == "configRequirements/read":
+            result = {"requirements": value.get("duty_requirements")}
+        elif method == "config/read":
+            result = {"config": duty_config(), "layers": value.get("duty_layers", [])}
+        elif method in ("thread/start", "thread/resume"):
+            params = request["params"]
+            identifier = params.get("threadId") if method == "thread/resume" else str(uuid.uuid4())
+            thread = {"id": identifier, "turns": [], "cwd": params["cwd"]}
+            trace({"command": "duty-thread", "method": method, "params": params, "thread": identifier})
+            result = {"thread": thread, "model": params.get("model") or "fake-duty-model",
+                      "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort", "high"),
+                      "approvalPolicy": params.get("approvalPolicy"), "approvalsReviewer": params.get("approvalsReviewer"),
+                      "sandbox": {"type": "workspaceWrite", "writableRoots": [params["cwd"]],
+                                  "networkAccess": True, "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}}
+        elif method == "turn/start":
+            duty_turn(request, thread)
+            continue
+        elif method == "turn/interrupt":
+            result = {}
+        elif method == "thread/backgroundTerminals/clean":
+            trace({"command": "duty-terminals-cleaned", "params": request.get("params")})
+            result = {}
+        elif method == "turn/steer":
+            trace({"command": "duty-steer", "params": request.get("params")})
+            result = {"turnId": request["params"].get("expectedTurnId")}
         elif method == "account/read":
             result = {"account": value.get("account"),
                       "workspaceRouting": {"chatgptAccountId": value["accountId"]}}
@@ -924,7 +1076,8 @@ class RotationTestCase(unittest.TestCase):
         return self.cli("start", slug, "--brief", str(self.brief), "--repo", str(self.repo), *args)
 
     def state(self, slug):
-        return json.loads((self.home / "claude-tasks" / slug / "state.json").read_text())
+        tasks = Path(self.env["TEAMSTER_HOME"]) / "tasks" if self.env.get("TEAMSTER_HOME") else self.home / "claude-tasks"
+        return json.loads((tasks / slug / "state.json").read_text())
 
     def trace(self):
         if not self.trace_path.exists():
@@ -1034,7 +1187,8 @@ class RotationTestCase(unittest.TestCase):
             self.extra_pids.add(pid)
         output = self.cli(*args, timeout=timeout + 15, prepared=prepared)
         state = self.state(slug)
-        stderr_path = self.home / "claude-tasks" / slug / "stderr.log"
+        tasks = Path(self.env["TEAMSTER_HOME"]) / "tasks" if self.env.get("TEAMSTER_HOME") else self.home / "claude-tasks"
+        stderr_path = tasks / slug / "stderr.log"
         stderr = stderr_path.read_text() if stderr_path.exists() else ""
         diagnostics = "state:\n%s\nstderr.log:\n%s\nwait:\n%s" % (
             json.dumps(state, ensure_ascii=False, indent=2), stderr, output)

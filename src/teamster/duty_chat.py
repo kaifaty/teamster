@@ -1,6 +1,6 @@
 """The duty chat: its account, room, system prompt, recorded turns and the task notes it waits for.
 
-The conversation is one long-lived task, slug and kind ``duty``, on the current Claude duty
+The conversation is one long-lived task, slug and kind ``duty``, on the current duty
 account. Its turns resume through the say machinery; each valid answer appends an entry to
 ``duty_turns``, and messages.jsonl keeps the user's messages and the task notes. A note arrives
 when a task the duty started ends a cycle; notes wait in notes.json while the hourly cap on
@@ -12,7 +12,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import claude_accounts, clock, config, duty, procs, reflection
+from . import claude_accounts, clock, config, duty, executors, procs, reflection
 
 
 CHAT_SLUG = "duty"
@@ -32,17 +32,17 @@ def chat_room():
 
 
 def chat_account(cfg):
-    """(the Claude duty account, None), or (None, why the chat cannot run on the duty)."""
+    """(the duty account with its family, None), or (None, why the chat cannot run on the duty)."""
     record = duty.read_duty()
     if record is None or record.get("account") is None:
         return None, NO_DUTY
-    if record["family"] != "claude":
-        return None, (f"the duty chat needs a Claude duty account; the duty is {duty.duty_label(record)}, "
-                      "nothing was started")
-    account = next((item for item in claude_accounts.accounts(cfg) if item["name"] == record["account"]), None)
+    family = record["family"]
+    pool = claude_accounts.accounts(cfg) if family == "claude" else cfg["accounts"]
+    account = next((item for item in pool if item["name"] == record["account"]), None)
     if account is None:
-        return None, f"the duty account {record['account']} is not in claude.accounts; nothing was started"
-    return account, None
+        setting = "claude.accounts" if family == "claude" else "accounts"
+        return None, f"the duty account {record['account']} is not in {setting}; nothing was started"
+    return dict(account, family=family), None
 
 
 def clear_partial_chat():
@@ -96,11 +96,11 @@ def system_text(room):
     return "\n\n".join(parts) + "\n"
 
 
-def write_system_prompt(room, task_dir):
+def write_system_prompt(text, task_dir):
     """Save this turn's system prompt beside the task's state; the caller removes the file."""
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="duty-system-",
                                      suffix=".md", dir=task_dir, delete=False) as stream:
-        stream.write(system_text(room))
+        stream.write(text)
         return Path(stream.name)
 
 
@@ -108,7 +108,7 @@ def record_chat_turn(st):
     """Append the valid answer of the turn that just completed to duty_turns."""
     result = st["result"]
     st.setdefault("duty_turns", []).append({
-        "at": clock.CLOCK.time(), "turn": st.get("turns", 0), "account": st.get("claude_account"),
+        "at": clock.CLOCK.time(), "turn": st.get("turns", 0), "account": executors.from_state(st).account(st),
         "status": result["status"], "reply": result["reply"], "question": result["question"],
         "options": result["options"], "started": result["started"]})
 
@@ -172,7 +172,7 @@ def cycle_orders(st, orders):
     """The orders the end of a duty cycle sends; the caller holds the duty state lock.
 
     Held notes join any user message; the caller releases them once that turn has started. Notes alone
-    start a turn while the hourly cap and a Claude duty allow it; otherwise they wait in notes.json and
+    start a turn while the hourly cap and a duty account allow it; otherwise they wait in notes.json and
     the end sends nothing.
     """
     if not orders:

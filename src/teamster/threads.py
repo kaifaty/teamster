@@ -279,7 +279,7 @@ def handoff(st, current_message=False, cfg=None):
     d = config.TASKS / st["slug"]
     prompt = (d / "brief.md").read_text().rstrip() + ("\n\n## Продолжение\n\n" if ru else "\n\n## Continuation\n\n")
     executor = executors.for_turn(st)
-    has_threads = executor.has_history(st)
+    has_threads = executor.has_history(st) or bool(chatting and st.get("duty_turns"))
     if has_threads and chatting:
         prompt += (("Дежурство перешло на другой аккаунт. Продолжи разговор с пользователем "
                     "с учётом сообщений и своих прежних ответов ниже.\n\n") if ru else

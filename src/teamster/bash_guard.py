@@ -451,6 +451,8 @@ DUTY_GIT_DIFF_VALUES = ("--stat=", "--unified=", "--diff-filter=", "-U")
 DUTY_GIT_FORMATS = frozenset({"oneline", "short", "medium", "full", "fuller", "reference", "raw"})
 DUTY_GH = {"pr": frozenset({"view", "diff", "checks", "list"}), "run": frozenset({"view", "list"})}
 DUTY_READERS = frozenset({"ls", "cat", "head", "tail", "wc", "rg"})
+# Only readers may consume work from stdin: Codex can send input to an approved process.
+DUTY_STDIN_PATHS = frozenset({"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
 # Options that make rg run another program.
 DUTY_RG_OPTIONS = ("--pre", "--hostname-bin")
 OUTPUT_REDIRECTIONS = frozenset({">", ">>", ">|", "&>", "&>>", "<>", ">&"})
@@ -589,6 +591,17 @@ def duty_command_denial(words, room, cwd):
     if "/" in name:
         return f"commands run by path are refused (`{name}`); use the bare command name"
     arguments = words[1:]
+    if name in {"teamster", "git", "gh"}:
+        stdin_paths = {os.path.realpath(path) for path in DUTY_STDIN_PATHS}
+        for argument in arguments:
+            value = argument.split("=", 1)[1] if argument.startswith("-") and "=" in argument else argument
+            if name == "git" and argument.startswith("-") and not argument.startswith("--") and "f" in argument:
+                value = argument.partition("f")[2] or value  # git grep -nfFILE reads its patterns from FILE.
+            if (value == "-" or value in DUTY_STDIN_PATHS
+                    or os.path.realpath(os.path.join(cwd, os.path.expanduser(value))) in stdin_paths):
+                return f"`{name}` may not take work from standard input (`{argument}`)"
+            if name == "git" and len(argument) > 2 and "--stdin".startswith(argument):
+                return "git options that take work from standard input (`--stdin`) are refused"
     if name == "teamster":
         return teamster_denial(arguments)
     if name == "git":
@@ -603,6 +616,87 @@ def duty_command_denial(words, room, cwd):
             return "rg options that run programs (`--pre`, `--hostname-bin`) are refused"
         return None
     return f"`{name}` is not on the duty allowlist"
+
+
+def codex_reader_denial(words, cwd):
+    """Codex readers take explicit files, never stdin or tail's follow mode."""
+    name, arguments = words[0], words[1:]
+    if name not in DUTY_READERS or name == "ls":
+        return None
+    refusal = f"Codex duty `{name}` requires explicit finite file operands and supported options"
+    flags = {"cat": "benstuvAET", "head": "qvz", "tail": "qvrz", "wc": "clmwL", "rg": "nNiIlwxoUvqFSPcHha"}[name]
+    valued = ({"n": "count", "c": "count", "--lines": "count", "--bytes": "count"}
+              if name in ("head", "tail") else
+              {"e": "pattern", "f": "patterns", "A": "count", "B": "count", "C": "count", "m": "count",
+               "g": "glob", "t": "type", "--regexp": "pattern", "--file": "patterns",
+               "--after-context": "count", "--before-context": "count", "--context": "count",
+               "--max-count": "count", "--glob": "glob", "--type": "type"} if name == "rg" else {})
+    long_flags = {"cat": {"--number", "--number-nonblank", "--squeeze-blank", "--show-all", "--show-ends",
+                           "--show-tabs", "--show-nonprinting"},
+                  "head": {"--quiet", "--silent", "--verbose", "--zero-terminated"},
+                  "tail": {"--quiet", "--silent", "--verbose", "--zero-terminated"},
+                  "wc": {"--bytes", "--chars", "--lines", "--words", "--max-line-length"},
+                  "rg": {"--files", "--line-number", "--no-line-number", "--ignore-case", "--case-sensitive",
+                         "--fixed-strings", "--smart-case", "--word-regexp", "--line-regexp", "--only-matching",
+                         "--files-with-matches", "--files-without-match", "--count", "--count-matches", "--hidden",
+                         "--no-ignore", "--quiet", "--multiline", "--text", "--no-heading", "--heading"}}[name]
+    files, pattern_files = [], []
+    pattern_given, list_files, options = False, False, True
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if options and argument == "--":
+            options = False
+        elif options and argument.startswith("--"):
+            option, equals, value = argument.partition("=")
+            if name == "tail" and "--follow".startswith(option):
+                return "Codex duty tail follow mode is refused; read a finite file instead"
+            if option in long_flags and not equals:
+                list_files = list_files or option == "--files"
+            elif option in valued:
+                if not equals:
+                    index += 1
+                    if index == len(arguments):
+                        return refusal
+                    value = arguments[index]
+                pattern_given = pattern_given or valued[option] in ("pattern", "patterns")
+                if valued[option] == "patterns":
+                    pattern_files.append(value)
+            else:
+                return refusal
+        elif options and argument.startswith("-") and argument != "-":
+            position = 1
+            while position < len(argument):
+                option = argument[position]
+                if name == "tail" and option in "fF":
+                    return "Codex duty tail follow mode is refused; read a finite file instead"
+                if option in valued:
+                    value = argument[position + 1:]
+                    if not value:
+                        index += 1
+                        if index == len(arguments):
+                            return refusal
+                        value = arguments[index]
+                    pattern_given = pattern_given or valued[option] in ("pattern", "patterns")
+                    if valued[option] == "patterns":
+                        pattern_files.append(value)
+                    break
+                if option not in flags:
+                    return refusal
+                position += 1
+        else:
+            files.append(argument)
+        index += 1
+    if name == "rg" and not pattern_given and not list_files:
+        files = files[1:]  # The first positional is the pattern, never a data file.
+    if not files and not (name == "rg" and list_files):
+        return refusal
+    stdin_paths = {os.path.realpath(path) for path in DUTY_STDIN_PATHS}
+    for path in files + pattern_files:
+        if (path == "-" or path in DUTY_STDIN_PATHS
+                or os.path.realpath(os.path.join(cwd, os.path.expanduser(path))) in stdin_paths):
+            return "Codex duty readers require finite file operands instead of standard input"
+    return None
 
 
 def duty_denial(event, room):
@@ -636,6 +730,8 @@ def duty_denial(event, room):
             return duty_reason(f"redirection to `{target}` outside the room (or inside its .git) is refused")
     for words in shell.commands:
         reason = duty_command_denial(words, room, cwd)
+        if reason is None and event.get("duty_transport") == "codex":
+            reason = codex_reader_denial(words, cwd)
         if reason is not None:
             return duty_reason(reason)
     return None

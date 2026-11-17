@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import account_commands, accounts, budgets, claude_accounts, claude_review, claude_runner, clock, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
+from . import account_commands, accounts, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
 
 
 def main_repo(path):
@@ -488,15 +488,29 @@ def cmd_stop(a):
         st = task_state.load(a.slug)
         pid = st.get("pid")
         if not procs.alive(pid):
-            orphan = st.get("claude_pid") if st.get("kind") == duty_chat.CHAT_KIND else None
-            if not procs.alive(orphan):
+            family, orphan = task_state.duty_process(st)
+            if orphan is None:
                 print("not running")
                 return
-            # The duty's supervisor died before its Claude, which still holds the session.
+            # The duty's supervisor died before its transport, which still holds the conversation.
+            marker = codex_duty.duty_process_marker(orphan) if family == "codex" else None
+            if family == "codex":
+                # App-server owns terminal groups separate from its own. Let
+                # its SIGTERM shutdown end those before the group fallback.
+                try:
+                    os.kill(orphan, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                for _ in range(100):
+                    if not procs.alive(orphan):
+                        break
+                    time.sleep(0.2)
             procs.end_group(orphan)
-            st.pop("claude_pid", None)
+            if marker:
+                codex_duty.end_duty_terminals(marker)
+            st.pop(family + "_pid", None)
             task_state.write_state(st)
-            print(f"stopped {a.slug}: ended Claude process {orphan}")
+            print(f"stopped {a.slug}: ended {family.title()} process {orphan}")
             return
         st["stop_request"] = {"at": clock.CLOCK.time(), "pid": pid}
         task_state.write_state(st)
@@ -523,8 +537,9 @@ def cmd_clean(a):
         # A task note may start a duty turn at any moment: check and archive under the lock that delivery takes.
         with task_state.state_lock(a.slug):
             st = task_state.load(a.slug)
-            if not procs.alive(st.get("pid")) and procs.alive(st.get("claude_pid")):
-                procs.die(f"Claude process {st['claude_pid']} of the last duty turn is still running; "
+            family, orphan = task_state.duty_process(st)
+            if not procs.alive(st.get("pid")) and orphan is not None:
+                procs.die(f"{family.title()} process {orphan} of the last duty turn is still running; "
                           f"end it with {config.COMMAND} stop duty, then clean")
             return clean_task(a, st)
     return clean_task(a, st)
@@ -895,7 +910,10 @@ def send_to_duty(text, options, queue):
     account, refusal = duty_chat.chat_account(cfg)
     if account is None:
         procs.die(refusal)
-    config.require_claude()
+    if account["family"] == "claude":
+        config.require_claude()
+    else:
+        config.codex_binary()
     order = {"at": clock.CLOCK.time(), "text": text, "options": options, "source": "user"}
     if not task_state.state_path(duty_chat.CHAT_SLUG).exists():
         opened = open_duty_chat(cfg, account, order)
@@ -924,10 +942,11 @@ def open_duty_chat(cfg, account, order):
             brief = prompts.duty_chat_brief(cfg)
             (d / "brief.md").write_text(brief, encoding="utf-8")
             st = {"slug": duty_chat.CHAT_SLUG, "kind": duty_chat.CHAT_KIND, "repo": str(room), "worktree": str(room),
-                  "branch": "", "executor": "claude", "effort": None, "claude_account": account["name"],
+                  "branch": "", "executor": account["family"], "effort": None,
                   "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
                   "rotations": [], "reviews": [], "checks": [], "created": clock.CLOCK.time(), "turns": 0,
                   "plugin_version": config.plugin_version(), "duty_turns": [], "duty_auto_turns": []}
+            st[executors.from_state(st).account_field] = account["name"]
             supervisor.apply_say(st, order["options"], cfg)
             task_state.save(st)
 

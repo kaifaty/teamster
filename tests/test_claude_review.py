@@ -386,8 +386,20 @@ class ClaudeReviewTests(RotationTestCase):
         outside.mkdir()
         # A link inside the room to a directory outside it.
         (room / "linked").symlink_to(outside)
+        (room / "stdin").symlink_to("/dev/stdin")
         git = "git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null"
         flags = "--no-ext-diff --no-textconv --no-show-signature --submodule=short"
+        codex_refused = (
+            "cat -", "head /dev/stdin", "tail /dev/fd/0", "wc /proc/self/fd/0", "rg x -", "cat stdin",
+            "cat", "cat -n", "head", "head -n5", "head -c 5", "tail", "tail -n20", "wc -l",
+            "rg pattern", "rg -n pattern", "rg -e pattern", "rg -f patterns.txt", "rg -A 2 pattern",
+            "rg -g '*.py' pattern", "rg -t py pattern", "rg -f- src", "rg -f /dev/stdin src",
+            "tail -f log.txt", "tail -F log.txt", "tail --follow log.txt", "tail --follow=name log.txt",
+            "tail -qf log.txt", "tail -qF log.txt",
+            git + " log " + flags + " --oneline | head -3 | wc -l",
+            git + " diff " + flags + " A...B -- 2>&1 | tail -n 40",
+            "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room,
+        )
         allowed = (
             "teamster start fix-parser --brief %s/fix-parser.md --repo /work/repo --review --fix-rounds 2" % room,
             "teamster start fix-parser --brief=b.md --ci --ci-rounds 1 --check-timeout 60 --parallel",
@@ -395,7 +407,7 @@ class ClaudeReviewTests(RotationTestCase):
             "teamster scout where 'Who reads it?' --repo /r", "teamster review fix-parser --review-angles tests",
             "teamster stop fix-parser", "teamster status", "teamster wait fix-parser --timeout 60",
             "teamster report --since 7d --json", "teamster docs lead-guide", "teamster accounts --json",
-            "teamster duty status --json", "teamster start x --brief - -h",
+            "teamster duty status --json",
             git + " -C /work/repo log " + flags + " --oneline -5",
             git + " log " + flags + " -p --format=%h%x20%s", git + " show " + flags + " --format=fuller HEAD~1",
             git + " -C /work/repo diff " + flags + " --stat=80 origin/main...HEAD --", git + " diff " + flags + " A B -- src",
@@ -405,13 +417,14 @@ class ClaudeReviewTests(RotationTestCase):
             git + " ls-files -z --stage src", git + " grep -n parse HEAD -- src",
             "gh pr view 12 --repo fixture/repo", "gh pr diff 12", "gh pr checks 12", "gh pr list",
             "gh run view 7 --log-failed", "gh run list", "ls -la /work/repo", "cat README.md", "head -n 5 a.md",
-            "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src",
+            "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src", "cat /dev/null",
+            "head -n5 a.md", "head -c 5 a.md", "tail -n20 log.txt", "tail -c5 log.txt",
+            "rg -e pattern src", "rg -f patterns.txt src", "rg -A 2 pattern src",
+            "rg -g '*.py' pattern src", "rg -t py pattern src", "rg --files",
             # Compound commands pass when every part does; output may go to the room or /dev/null.
             "teamster status && " + git + " log " + flags + " --oneline -1; teamster accounts",
-            git + " log " + flags + " --oneline | head -3 | wc -l", "(teamster status; ls)",
-            git + " diff " + flags + " A...B -- 2>&1 | tail -n 40", "rg -n x src 2>/dev/null",
-            "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room, "cat a.md > brief.md",
-        )
+            "(teamster status; ls)", "rg -n x src 2>/dev/null", "cat a.md > brief.md",
+        ) + codex_refused
         refused = (
             "gh pr merge 12", "gh pr merge 12 --squash", "gh api repos/x", "gh pr checkout 12", "gh run rerun 7",
             "git push", "git commit -m x", "git merge main", "git rebase main", "git reset --hard",
@@ -446,7 +459,13 @@ class ClaudeReviewTests(RotationTestCase):
             "teamster start x --brief b.md --check 'gh pr merge 1'", "teamster say x hi --ci-command=sh",
             "teamster start x --brief b.md --check-loaded make", "teamster start sample --brief b.md --ci-comm='gh pr merge 1'",
             "teamster start x --brief b.md --ch=make", "teamster say x hi --check-l make", "teamster start x --bri b.md",
-            "teamster wait x --check y",
+            "teamster wait x --check y", "teamster say x --file -", "teamster start s --brief /dev/stdin",
+            "teamster start x --brief - -h", "teamster say x --file=/dev/fd/0",
+            "teamster scout x /proc/self/fd/0 --repo /r", "gh pr view -", "gh pr diff /dev/stdin",
+            git + " grep x /dev/fd/0", git + " ls-files /proc/self/fd/0",
+            "teamster start x --brief stdin", "gh pr view stdin", git + " grep -fstdin",
+            git + " grep -f-", git + " grep -nf/dev/stdin",
+            git + " log " + flags + " --oneline --stdin", git + " log " + flags + " --oneline --std",
             "scripts/bump_version.py minor --commit", "python3 scripts/bump_version.py patch", "./teamster status",
             "npm install", "pip install x", "uv tool install x", "brew install x", "curl https://example.test",
             "rm -rf build", "rg --pre=sh x .", "echo hi", "PATH=/tmp teamster status", "cd /work && teamster status",
@@ -469,6 +488,7 @@ class ClaudeReviewTests(RotationTestCase):
                 prefix = "git " + " ".join(item for item in required if item != missing)
                 switches = " ".join(flag for flag in flags.split() if flag != missing)
                 refused += (prefix + " " + subcommand + " " + switches + " " + rest,)
+        worker = self.worker()
         for command, expected in [(command, 0) for command in allowed] + [(command, 2) for command in refused]:
             with self.subTest(command=command):
                 status, reason = self.duty_hook(room, "Bash", {"command": command})
@@ -476,6 +496,16 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(bool(reason), bool(expected))
                 if expected:
                     self.assertIn("Blocked by teamster", reason)
+                params = {"threadId": "thread", "turnId": "turn", "itemId": "command",
+                          "command": shlex.join(["/bin/zsh", "-lc", command]), "cwd": str(room)}
+                with mock.patch.dict(os.environ, self.env, clear=True):
+                    decision, adapter_reason = worker.turns.codex_duty.approval(
+                        "item/commandExecution/requestApproval", params, {}, room, "thread", "turn")
+                self.assertEqual(decision, "decline" if expected or command in codex_refused else "accept", adapter_reason)
+                if command in codex_refused:
+                    self.assertIn("Blocked by teamster", adapter_reason)
+                else:
+                    self.assertEqual(adapter_reason.strip(), reason.strip())
         writes = ((("Write", "file_path", str(room / "fix-parser.md")), 0), (("Edit", "file_path", "notes.md"), 0),
                   (("Write", "file_path", str(self.root / "outside.md")), 2), (("Edit", "file_path", "../x.md"), 2),
                   (("Write", "file_path", str(room / ".git" / "config")), 2),
@@ -808,12 +838,13 @@ class ClaudeReviewTests(RotationTestCase):
 
     def put_duty(self, account, family="claude"):
         now = time.time()
-        (self.home / "duty.json").write_text(json.dumps({
+        (Path(self.env.get("TEAMSTER_HOME", self.home)) / "duty.json").write_text(json.dumps({
             "account": account, "family": family, "since": now, "checked_at": now, "reason": "fixture",
             "rooms": {family: {account: 10}}}))
 
     def chat_messages(self):
-        path = self.home / "claude-tasks" / "duty" / "messages.jsonl"
+        tasks = Path(self.env["TEAMSTER_HOME"]) / "tasks" if self.env.get("TEAMSTER_HOME") else self.home / "claude-tasks"
+        path = tasks / "duty" / "messages.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()]
 
     def chat_settled(self, answers):
@@ -821,6 +852,394 @@ class ClaudeReviewTests(RotationTestCase):
         if st.get("pid"):
             self.extra_pids.add(st["pid"])
         return len(st.get("duty_turns", [])) == answers and not st.get("pid")
+
+    def codex_duty_runs(self, runs, home=None):
+        path = (home or self.home) / "fixture.json"
+        value = json.loads(path.read_text())
+        value["duty_runs"] = runs
+        path.write_text(json.dumps(value))
+
+    def codex_duty_invocations(self):
+        return [entry for entry in self.trace() if entry["command"] == "duty-turn"]
+
+    def test_codex_duty_starts_resumes_and_decides_each_request(self):
+        self.configure(language="en", duty={"chat_codex_model": "fixture-duty", "chat_codex_effort": "xhigh"})
+        room = self.home / "claude-tasks" / "duty" / "room"
+        outside = self.root / "outside.txt"
+        read_output = room / "reader.txt"
+        requests = [
+            {"params": {"command": shlex.join(["/bin/sh", "-c", "cat /dev/null > reader.txt"]), "cwd": str(room)},
+             "item": {"type": "commandExecution", "command": "cat /dev/null > reader.txt", "cwd": str(room)},
+             "execute": True},
+            {"method": "item/fileChange/requestApproval", "item": {"type": "fileChange", "changes": [
+                {"path": str(room / "brief.md"), "kind": {"type": "add"}, "diff": "+Brief"}]},
+             "write": str(room / "brief.md"), "contents": "Approved brief.\n"},
+            {"method": "item/fileChange/requestApproval", "item": {"type": "fileChange", "changes": [
+                {"path": str(outside), "kind": {"type": "add"}, "diff": "+Escape"}]}, "write": str(outside)},
+            {"params": {"command": "teamster say x --file -", "cwd": str(room)}, "write": str(outside)},
+            {"params": {"command": "teamster start s --brief /dev/stdin", "cwd": str(room)}, "write": str(outside)},
+            {"params": {"command": shlex.join(["/bin/zsh", "-lc", "rm outside.txt"]), "cwd": str(room)},
+             "write": str(outside)},
+            {"raw_params": None, "write": str(outside)},
+            {"method": "item/unknown/requestApproval", "write": str(outside)},
+            {"params": {"command": "cat tracked.txt", "cwd": str(room), "kind": "unknown"}, "write": str(outside)},
+            {"params": {"command": "/bin/zsh -lc", "cwd": str(room)}, "write": str(outside)},
+            {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat /dev/null > outside.txt"]), "cwd": str(self.root)},
+             "write": str(outside)},
+        ]
+        self.codex_duty_runs([{"reply": self.duty_answer("First answer."), "requests": requests, "sleep": True},
+                              {"reply": self.duty_answer("Second answer.")},
+                              {"reply": self.duty_answer("Decide.", "needs_decision")}])
+        self.put_duty("main", "codex")
+        self.assertIn("First answer.", self.cli("duty", "chat", "Discuss the parser.", timeout=60))
+        st = self.state("duty")
+        self.assertEqual((st["executor"], st["account"]), ("codex", "main"))
+        first_thread = st["thread"]
+        self.assertTrue(first_thread)
+        self.assertFalse(outside.exists())
+        self.assertEqual(read_output.read_text(), "")
+        decisions = [entry["decision"] for entry in self.trace() if entry["command"] == "duty-approval"]
+        self.assertEqual(decisions, ["accept", "accept"] + ["decline"] * 9)
+        self.assertEqual((room / "brief.md").read_text(), "Approved brief.\n")
+        self.assertEqual(len([entry for entry in self.trace() if entry["command"] == "duty-executed"]), 2)
+        first = self.codex_duty_invocations()[0]
+        self.assertEqual((first["started_by"], first["cwd"]), ("duty", str(room)))
+        worker = self.worker()
+        self.assertEqual(first["params"]["outputSchema"], worker.result_schema.DUTY_SCHEMA)
+        thread = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
+        self.assertEqual((thread["params"]["approvalPolicy"], thread["params"]["approvalsReviewer"]),
+                         ("untrusted", "user"))
+        for text in ("# Lead guide", "# On duty", "## Known repositories", "## Your room\n\n" + str(room)):
+            self.assertIn(text, thread["params"]["developerInstructions"])
+        self.cli("say", "duty", "Continue.")
+        self.assertIn("Second answer.", self.cli("wait", "duty", timeout=60))
+        self.assertEqual(self.state("duty")["thread"], first_thread)
+        threads = [entry for entry in self.trace() if entry["command"] == "duty-thread"]
+        self.assertEqual([entry["method"] for entry in threads], ["thread/start", "thread/resume"])
+        self.assertEqual(threads[-1]["params"]["threadId"], first_thread)
+        self.assertEqual([entry["reply"] for entry in self.state("duty")["duty_turns"]],
+                         ["First answer.", "Second answer."])
+        self.assertEqual((self.state("duty")["model"], self.state("duty")["reasoning_effort"]),
+                         ("fixture-duty", "xhigh"))
+        self.assertIn("room " + str(room), self.cli("status", "duty"))
+        events = [json.loads(line) for line in (room.parent / "events.jsonl").read_text().splitlines()]
+        self.assertTrue(any(event.get("type") == "thread.started" for event in events))
+        self.assertTrue(any((event.get("item") or {}).get("type") == "command_execution" for event in events))
+        invalid = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Decide."], cwd=self.repo, env=self.env,
+                                 text=True, capture_output=True, timeout=60)
+        self.assertEqual(invalid.returncode, 1, invalid.stdout)
+        self.assertIn("invalid structured output", invalid.stderr)
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 2)
+
+    def test_codex_duty_file_approvals_match_items_and_all_destinations(self):
+        self.configure(language="en")
+        worker = self.worker()
+        room = self.root / "duty-room"
+        room.mkdir()
+        outside = self.root / "outside"
+        outside.mkdir()
+        (room / "linked").symlink_to(outside)
+        cases = [("brief.md", None, "accept"), (str(outside / "brief.md"), None, "decline"),
+                 (".git/config", None, "decline"), (".claude/settings.json", None, "decline"),
+                 ("linked/brief.md", None, "decline"), ("brief.md", str(outside / "renamed.md"), "decline"),
+                 ("brief.md", ".git/config", "decline"), ("brief.md", ".claude/settings.json", "decline"),
+                 ("brief.md", "linked/renamed.md", "decline"), ("brief.md", "renamed.md", "accept")]
+        for path, destination, expected in cases:
+            kind = {"type": "update", "move_path": destination} if destination else {"type": "add"}
+            item = {"id": "patch", "type": "fileChange", "changes": [{"path": path, "kind": kind, "diff": ""}]}
+            params = {"threadId": "thread", "turnId": "turn", "itemId": "patch"}
+            with self.subTest(path=path, destination=destination), mock.patch.dict(os.environ, self.env, clear=True):
+                decision, reason = worker.turns.codex_duty.approval(
+                    "item/fileChange/requestApproval", params, {"patch": item}, room, "thread", "turn")
+                self.assertEqual(decision, expected, reason)
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            for method, params, items in (
+                    ("item/fileChange/requestApproval", params, {}),
+                    ("item/fileChange/requestApproval", dict(params, turnId="old-turn"), {"patch": item}),
+                    ("item/fileChange/requestApproval", params, {"patch": dict(item, changes=item["changes"] + [
+                        {"path": str(outside / "another.md"), "kind": {"type": "add"}, "diff": ""}])}),
+                    ("item/fileChange/requestApproval", params, {"patch": dict(item, changes=[
+                        {"path": str(outside / "another.md"), "kind": {"type": "add"}, "diff": ""}] + item["changes"])}),
+                    ("item/fileChange/requestApproval", None, {"patch": item}),
+                    ("item/unknown/requestApproval", params, {"patch": item})):
+                decision, reason = worker.turns.codex_duty.approval(method, params, items, room, "thread", "turn")
+                self.assertEqual(decision, "decline", reason)
+
+    def test_duty_chat_handoff_between_families_does_not_resume_a_stale_cursor(self):
+        self.claude_pool_fixture(runs=[
+            {"reply": self.duty_answer("Choose a repository.", "needs_decision", "Which repository?", ["parser", "billing"])},
+            {"reply": self.duty_answer("The question is still open.")},
+            {"reply": self.duty_answer("Claude has the completed answer.")}], names=("main", "second"),
+            duty={"chat_model": "fixture-claude", "chat_codex_model": "fixture-codex"})
+        self.codex_duty_runs([{"reply": self.duty_answer("Codex understood option 1.")},
+                              {"reply": self.duty_answer("Codex is ready to hand off.")}])
+        self.put_duty("main")
+        self.cli("duty", "chat", "Fix the parser.", timeout=60)
+        old_session = self.state("duty")["session_id"]
+        self.cli("say", "duty", "Continue.", "--model", "opus")
+        self.cli("wait", "duty", timeout=60)
+        overridden = self.claude_invocations()[-1]["argv"]
+        self.assertEqual(overridden[overridden.index("--model") + 1], "opus")
+        worker = self.worker()
+        start_process = worker.supervisor.start_process
+
+        def switch_before_start(st):
+            self.assertEqual((st["executor"], st["task_model"]), ("claude", "opus"))
+            self.put_duty("main", "codex")
+            return start_process(st)
+
+        rule = self.home / "rules" / "custom.rules"
+        rule.write_text('prefix_rule(pattern=["rm"], decision="allow")\n')
+        order = {"at": time.time(), "text": "1", "options": {}, "source": "user"}
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process", side_effect=switch_before_start):
+            _, process = worker.commands.send_duty_chat(worker.config.accounts_config(), order, False)
+        self.extra_pids.add(process.pid)
+        process.wait(timeout=60)
+        rejected = self.state("duty")
+        self.assertEqual((rejected["executor"], rejected["outcome"]), ("codex", "failed"))
+        self.assertFalse(rejected.get("thread"))
+        self.assertNotIn("task_model", rejected)
+        self.assertIn("rule", rejected["error"].lower())
+        self.assertEqual(self.codex_duty_invocations(), [])
+        rule.unlink()
+        self.assertIn("Codex understood option 1.", self.cli("duty", "chat", "1", timeout=60))
+        self.assertEqual(self.state("duty")["duty_turns"][-1]["reply"], "Codex understood option 1.")
+        first_codex = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
+        self.assertEqual(first_codex["params"]["model"], "fixture-codex")
+        codex = self.codex_duty_invocations()[0]
+        text = codex["params"]["input"][0]["text"]
+        for fragment in ("Fix the parser.", "Which repository?", "1. parser", "2. billing", "1",
+                         "The question is still open."):
+            self.assertIn(fragment, text)
+        self.assertFalse(self.state("duty").get("session_id"))
+        self.cli("say", "duty", "Prepare the handoff.", "--model", "fixture-codex-override")
+        self.cli("wait", "duty", timeout=60)
+        second_codex = [entry for entry in self.trace() if entry["command"] == "duty-thread"][-1]
+        self.assertEqual(second_codex["params"]["model"], "fixture-codex-override")
+        self.put_duty("main")
+        self.cli("say", "duty", "What happened?", "--model", "fixture-claude-return")
+        self.assertIn("Claude has the completed answer.", self.cli("wait", "duty", timeout=60))
+        returned = self.claude_invocations()[-1]
+        self.assertNotIn("--resume", returned["argv"])
+        self.assertNotEqual(returned["session_id"], old_session)
+        self.assertEqual(returned["argv"][returned["argv"].index("--model") + 1], "fixture-claude-return")
+        for fragment in ("Codex understood option 1.", "Codex is ready to hand off.", "What happened?",
+                         "Which repository?", "1. parser"):
+            self.assertIn(fragment, returned["argv"][1])
+        self.assertFalse(self.state("duty").get("thread"))
+        self.assertEqual([turn["account"] for turn in self.state("duty")["duty_turns"]], ["main"] * 5)
+
+    def test_codex_duty_refuses_inherited_allow_rules_and_hooks_before_a_turn(self):
+        self.configure(language="en")
+        self.put_duty("main", "codex")
+        self.codex_duty_runs([{"reply": self.duty_answer("Never sent.")}])
+        project = self.root / "project-layer" / ".codex"
+        (project / "rules").mkdir(parents=True)
+        for path, text, reason, layers in (
+                (self.home / "rules" / "custom.rules", 'prefix_rule(pattern=["rm"], decision="allow")\n', "rule", []),
+                (self.home / "hooks.json", json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+                    {"type": "command", "command": "echo allow"}]}]}}), "hook", []),
+                (project / "rules" / "custom.rules", 'prefix_rule(pattern=["rm"], decision="allow")\n', "rule",
+                 [{"name": {"type": "project", "dotCodexFolder": str(project)}, "version": "fixture", "config": {}}])):
+            with self.subTest(source=path.name):
+                fixture_path = self.home / "fixture.json"
+                fixture = json.loads(fixture_path.read_text())
+                fixture["duty_layers"] = layers
+                fixture_path.write_text(json.dumps(fixture))
+                path.write_text(text)
+                rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Never sent."], cwd=self.repo,
+                                          env=self.env, text=True, capture_output=True, timeout=60)
+                self.assertEqual(rejected.returncode, 1, rejected.stdout)
+                self.assertIn(reason, rejected.stderr.lower())
+                self.assertEqual(self.codex_duty_invocations(), [])
+                path.unlink()
+
+    def test_codex_duty_stop_deadline_and_crash_end_the_process_group(self):
+        self.enable_fake_clock(auto_advance=False)
+        self.configure(language="en")
+        self.codex_duty_runs([{"mode": "hold", "child": True}, {"mode": "hold", "child": True},
+                              {"mode": "crash", "child": True, "requests": [
+                                  {"id": "duty-follow", "params": {
+                                      "command": shlex.join(["/bin/zsh", "-lc", "tail -f /dev/null"]),
+                                      "cwd": str(self.repo)}, "background": True}]},
+                              {"reply": self.duty_answer("Recovered.")},
+                              {"mode": "hold", "child": True}])
+        worker = self.worker()
+        account = worker.accounts.account_named(worker.config.accounts_config(), "main")
+        directory = self.root / "duty-task"
+        directory.mkdir()
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            for expected in ("stopped", "budget_exhausted"):
+                self.trace_path.unlink(missing_ok=True)
+                advanced = [False]
+
+                def stopped():
+                    ready = any(entry["command"] == "duty-holding" for entry in self.trace())
+                    if ready and expected == "budget_exhausted" and not advanced[0]:
+                        self.advance_fake_clock(61)
+                        advanced[0] = True
+                    return ready and expected == "stopped"
+
+                response = worker.turns.codex_duty.run_codex_duty(
+                    account, self.repo, "Discuss.", stopped,
+                    worker.clock.CLOCK.monotonic() + 60, "fixture-duty", "high",
+                    system_text="Duty fixture instructions.", task_dir=directory)
+                self.assertEqual(response["outcome"], expected, response)
+                trace = self.trace()
+                parent = self.codex_duty_invocations()[-1]
+                child = next(entry["child_pid"] for entry in trace if entry["command"] == "duty-child")
+                self.extra_pids.update((parent["pid"], child))
+                self.assertEqual(parent["pid"], parent["pgid"])
+                self.assertFalse(self.process_is_live(parent["pid"]))
+                self.assertFalse(self.process_is_live(child))
+            failed = worker.turns.codex_duty.run_codex_duty(
+                account, self.repo, "Crash.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
+                "fixture-duty", "high", system_text="Duty fixture instructions.", task_dir=directory)
+            crash_trace = self.trace()
+            crashed_children = [entry["child_pid"] for entry in crash_trace if entry["command"] == "duty-child"]
+            self.extra_pids.update(crashed_children)
+            self.assertEqual(failed["outcome"], "failed", failed)
+            approval = next(entry for entry in crash_trace if entry["command"] == "duty-approval")
+            self.assertEqual(approval["decision"], "decline", approval)
+            self.assertFalse(any(entry["command"] == "duty-executed" for entry in crash_trace))
+            for child in crashed_children:
+                self.assertFalse(self.process_is_live(child))
+            recovered = worker.turns.codex_duty.run_codex_duty(
+                account, self.repo, "Recover.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
+                "fixture-duty", "high", thread_id=failed["telemetry"]["thread"],
+                system_text="Duty fixture instructions.", task_dir=directory)
+            self.assertEqual(recovered["outcome"], "completed", recovered)
+            self.assertEqual(recovered["result"]["reply"], "Recovered.")
+        # The configured limit must also reach the transport through the supervisor.
+        self.configure(language="en", duty={"chat_max_minutes": 3})
+        self.env["CODEX_TASK_MINUTE_SECONDS"] = "60"
+        self.put_duty("main", "codex")
+        self.trace_path.unlink()
+        holding = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Wait for the configured limit."],
+                                   cwd=self.repo, env=self.env, text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.until(lambda: any(entry["command"] == "duty-holding" for entry in self.trace()), timeout=60)
+            st = self.state("duty")
+            child = next(entry["child_pid"] for entry in self.trace() if entry["command"] == "duty-child")
+            self.extra_pids.update((st["pid"], st["codex_pid"], child))
+            self.advance_fake_clock(3 * 60 - 1)
+            time.sleep(0.5)
+            self.assertIsNone(holding.poll())
+            self.assertEqual(self.state("duty")["outcome"], "running")
+            self.assertTrue(self.process_is_live(st["codex_pid"]))
+            self.advance_fake_clock(2)
+            self.until(lambda: self.state("duty")["outcome"] == "budget_exhausted", timeout=10)
+            output, errors = holding.communicate(timeout=60)
+            self.assertEqual(holding.returncode, 1, output)
+            self.assertIn("the duty chat turn reached its time budget (3 minutes)", errors)
+            self.assertEqual(self.state("duty")["duty_turns"], [])
+            self.assertFalse(self.process_is_live(child))
+        finally:
+            if holding.poll() is None:
+                self.cli("stop", "duty", timeout=60)
+                holding.communicate(timeout=60)
+
+    def test_codex_duty_orphan_refuses_messages_and_clean_until_stop(self):
+        self.configure(language="en")
+        self.codex_duty_runs([{"mode": "hold", "child": True}, {"reply": self.duty_answer("Recovered answer.")},
+                              {"mode": "hold", "child": True}])
+        self.put_duty("main", "codex")
+        holding = subprocess.Popen([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Hold."], cwd=self.repo,
+                                   env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.until(lambda: any(entry["command"] == "duty-holding" for entry in self.trace()), timeout=60)
+        st = self.state("duty")
+        child = next(entry["child_pid"] for entry in self.trace() if entry["command"] == "duty-child")
+        self.extra_pids.update((st["pid"], st["codex_pid"], child))
+        first_thread = st.get("thread")
+        self.assertTrue(first_thread)
+        os.kill(st["pid"], signal.SIGKILL)
+        output, errors = holding.communicate(timeout=30)
+        self.assertEqual(holding.returncode, 1, output)
+        self.assertIn("the duty gave no answer", errors)
+        for args in (("duty", "chat", "Again."), ("clean", "duty")):
+            refused = subprocess.run([PYTHON, "-I", str(SCRIPT), *args], cwd=self.repo, env=self.env,
+                                     text=True, capture_output=True, timeout=60)
+            self.assertEqual(refused.returncode, 1, refused.stdout)
+            self.assertIn("Codex process %d" % st["codex_pid"], refused.stderr)
+            self.assertIn("teamster stop duty", refused.stderr)
+        self.assertEqual(len(self.codex_duty_invocations()), 1)
+        self.assertIn("ended Codex process %d" % st["codex_pid"], self.cli("stop", "duty", timeout=60))
+        self.assertNotIn("codex_pid", self.state("duty"))
+        self.assertFalse(self.process_is_live(child))
+        self.assertIn("Recovered answer.", self.cli("duty", "chat", "Again.", timeout=60))
+        self.assertEqual(self.state("duty")["thread"], first_thread)
+        threads = [entry for entry in self.trace() if entry["command"] == "duty-thread"]
+        self.assertEqual([entry["method"] for entry in threads], ["thread/start", "thread/resume"])
+        self.assertEqual(threads[-1]["params"]["threadId"], first_thread)
+        # A live supervisor stops its transport too; readiness belongs to this third turn.
+        self.trace_path.unlink()
+        self.assertIn("sent to duty (turn 3), pid ", self.cli("say", "duty", "Hold again."))
+        self.until(lambda: any(entry["command"] == "duty-holding" for entry in self.trace()), timeout=60)
+        live = self.state("duty")
+        live_child = next(entry["child_pid"] for entry in self.trace() if entry["command"] == "duty-child")
+        self.extra_pids.update((live["pid"], live["codex_pid"], live_child))
+        self.assertEqual(self.cli("stop", "duty", timeout=60), "stopped duty\n")
+        self.until(lambda: not self.state("duty").get("pid"), timeout=60)
+        self.assertEqual(self.state("duty")["outcome"], "stopped")
+        self.assertNotIn("codex_pid", self.state("duty"))
+        self.assertFalse(self.process_is_live(live["codex_pid"]))
+        self.assertFalse(self.process_is_live(live_child))
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 1)
+        self.cli("clean", "duty")
+        self.assertFalse((self.home / "claude-tasks" / "duty").exists())
+
+    def test_codex_duty_started_task_notes_and_hourly_cap(self):
+        self.env["HOME"] = str(self.root / "user-home")
+        Path(self.env["HOME"]).mkdir()
+        data = self.root / "teamster-data"
+        data.mkdir()
+        self.env.update(TEAMSTER_HOME=str(data), TEAMSTER_CODEX_HOME=str(self.home))
+        self.configure(language="en", duty={"chat_auto_turns_per_hour": 1})
+        (self.home / "claude-accounts.json").replace(data / "config.json")
+        self.account(self.other, "B", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
+        fixture_path = self.home / "fixture.json"
+        fixture = json.loads(fixture_path.read_text())
+        fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": dict(
+            {key: value for key, value in self.env.items() if key.startswith(("CODEX_FAKE_", "GIT_"))},
+            TEAMSTER_CODEX=str(self.fake))}}
+        fixture_path.write_text(json.dumps(fixture))
+        self.put_duty("main", "codex")
+        room = data / "tasks" / "duty" / "room"
+        self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
+        self.cli("duty", "chat", "Start the parser fix.", timeout=60)
+        launcher = self.root / "teamster"
+        launcher.write_text("#!/bin/sh\nexec " + shlex.join([PYTHON, "-I", str(SCRIPT)]) + ' "$@"\n')
+        launcher.chmod(0o700)
+        brief = room / "noted.md"
+        brief.write_text("Fix the parser.\n")
+        command = shlex.join(["teamster", "start", "noted", "--brief", str(brief), "--repo", str(self.repo)])
+        self.codex_duty_runs([{}, {"reply": self.duty_answer("Started noted.", "started", started=["noted"]),
+                                   "requests": [{"params": {"command": command, "cwd": str(room)}, "execute": True}]},
+                              {"reply": self.duty_answer("Noted finished.")},
+                              {"reply": self.duty_answer("The held note arrived.")}])
+        self.cli("duty", "chat", "Proceed.", timeout=60)
+        self.assertEqual(self.state("noted")["started_by"], "duty")
+        executed = next(entry for entry in self.trace() if entry["command"] == "duty-command-environment")
+        self.assertEqual(executed["started_by"], "duty")
+        self.assertEqual(executed["storage"], {"TEAMSTER_HOME": str(data), "CODEX_TASK_HOME": str(self.home),
+                                               "TEAMSTER_CODEX_HOME": str(self.home)})
+        self.assertFalse((self.home / "claude-tasks").exists())
+        self.cli("wait", "noted", timeout=60)
+        self.until(lambda: self.chat_settled(3), timeout=60)
+        self.assertRegex(self.codex_duty_invocations()[1]["duty_marker"], r"^[0-9a-f]{32}$")
+        self.assertIsNone(self.invocations()[0]["duty_marker"])
+        self.assertEqual(len(self.state("duty")["duty_auto_turns"]), 1)
+        self.assertIn("Task note: noted ended turn 1", self.chat_messages()[-1]["text"])
+        self.assertIn("Task note: noted", self.codex_duty_invocations()[-1]["params"]["input"][0]["text"])
+        self.started_by_duty("capped-note")
+        notes = data / "tasks" / "duty" / "notes.json"
+        self.until(lambda: notes.exists() and len(json.loads(notes.read_text())["held"]) == 1, timeout=60)
+        self.assertEqual(len(self.codex_duty_invocations()), 3)
+        self.assertIn("The held note arrived.", self.cli("duty", "chat", "Any news?", timeout=60))
+        self.assertIn("Task note: capped-note", self.codex_duty_invocations()[-1]["params"]["input"][0]["text"])
+        self.assertEqual(json.loads(notes.read_text())["held"], [])
 
     def test_duty_chat_runs_on_the_duty_account_resumes_and_moves_with_the_duty(self):
         replies = [self.duty_answer("I need a decision.", "needs_decision", "Which repository?",
@@ -831,15 +1250,12 @@ class ClaudeReviewTests(RotationTestCase):
                    self.duty_answer("Decide for me.", "needs_decision")]
         accounts = self.claude_pool_fixture(runs=[{"reply": reply} for reply in replies])
         worker = self.worker()
-        for family, expected in ((None, "no duty account"), ("codex", "the duty chat needs a Claude duty account")):
-            if family:
-                self.put_duty("main", family)
-            refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Fix the parser."], cwd=self.repo,
-                                     env=self.env, text=True, capture_output=True, timeout=60)
-            self.assertEqual(refused.returncode, 1, refused.stderr)
-            self.assertIn(expected, refused.stderr)
-            self.assertFalse((self.home / "claude-tasks" / "duty").exists())
-            self.assertEqual(self.claude_invocations(), [])
+        refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Fix the parser."], cwd=self.repo,
+                                 env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(refused.returncode, 1, refused.stderr)
+        self.assertIn("no duty account", refused.stderr)
+        self.assertFalse((self.home / "claude-tasks" / "duty").exists())
+        self.assertEqual(self.claude_invocations(), [])
         # Known repositories come from task records; the user's duty rules join the system prompt.
         record = self.home / "claude-tasks" / ".archive" / "old-task-20260101T000000Z"
         record.mkdir(parents=True)
@@ -2764,6 +3180,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(settings, {"relative_margin": 25, "absolute_margin": 100,
                                     "claude_only_task_types": ["visual", "layout"],
                                     "chat_model": None, "chat_effort": "high", "chat_max_minutes": 20,
+                                    "chat_codex_model": None, "chat_codex_effort": None,
                                     "chat_auto_turns_per_hour": 12})
 
         def candidate(name, room, family="claude", unavailable=None):
@@ -2828,6 +3245,13 @@ class ClaudeReviewTests(RotationTestCase):
                                ("limited", {"ordinary": False})):
             with self.subTest(codex=label):
                 self.assertIsNotNone(duty.codex_duty_candidate(cfg, dict(info, **changes))["unavailable"])
+        for field in ("chat_codex_model", "chat_codex_effort"):
+            for value in ("", False):
+                with self.subTest(field=field, value=value):
+                    self.configure(duty={field: value})
+                    with mock.patch.dict(os.environ, self.env, clear=True), \
+                            self.assertRaisesRegex(SystemExit, "duty\\." + field):
+                        worker.config.accounts_config()
 
     def test_duty_tick_records_changes_once_and_skips_failed_refreshes(self):
         self.claude_pool_fixture(runs=[{"mode": "invalid_json", "limits": {}}], names=("first", "second", "unknown"))
