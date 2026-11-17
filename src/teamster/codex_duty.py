@@ -34,7 +34,7 @@ DUTY_CODEX_DISABLED = (
 )
 
 
-def codex_duty_overrides(marker):
+def codex_duty_overrides(marker, room):
     """Invocation-only overrides; never edit the account's configuration."""
     values = {"features." + key: False for key in DUTY_CODEX_DISABLED}
     values.update({
@@ -42,6 +42,7 @@ def codex_duty_overrides(marker):
         "agents.enabled": False, "cloud.skills.enabled": False,
         "skills.bundled.enabled": False,
         "cli_auth_credentials_store": "ephemeral", "project_root_markers": [], "project_doc_max_bytes": 0,
+        "projects": {str(Path(room).resolve()): {"trust_level": "untrusted"}},
         "orchestrator.mcp.enabled": False,
         "web_search": "disabled", "notify": [], "allow_login_shell": False,
         "approval_policy": "on-request", "approvals_reviewer": "user",
@@ -326,6 +327,9 @@ class DutyRPC:
         if "error" in reply:
             if method == "account/login/start":
                 raise ValueError("Codex duty authentication failed for " + str(Path(self.account["home"]) / "auth.json"))
+            if (method == "thread/resume" and isinstance(reply["error"], dict)
+                    and reply["error"].get("message") == "no rollout found for thread id " + params["threadId"]):
+                raise ValueError(reply["error"]["message"])
             raise ValueError("Codex duty " + method + " failed: " + str(reply["error"]))
         return reply.get("result")
 
@@ -453,10 +457,13 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         home = home.resolve()
         if os.path.lexists(home / ".env"):
             raise ValueError("Codex duty cannot isolate environment configuration at " + str(home / ".env"))
-        overrides = codex_duty_overrides(marker)
+        overrides = codex_duty_overrides(marker, room)
         args = [config.codex_binary(), "app-server", "--strict-config"]
         for key, value in overrides.items():
-            args += ["-c", key + "=" + json.dumps(value)]
+            # This table needs TOML's key/value separator, unlike scalar JSON literals.
+            encoded = ("{" + json.dumps(str(Path(room).resolve())) + ' = {trust_level = "untrusted"}}'
+                       if key == "projects" else json.dumps(value))
+            args += ["-c", key + "=" + encoded]
         environment = accounts.account_env(dict(account, home=str(home)))
         for key in list(environment):
             if (key.startswith(("OPENAI_", "CODEX_EXEC_SERVER_", "CODEX_APP_SERVER_"))

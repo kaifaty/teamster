@@ -986,6 +986,36 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertIn("invalid structured output", invalid.stderr)
         self.assertEqual(len(self.state("duty")["duty_turns"]), 2)
 
+    def test_codex_duty_hands_off_a_thread_from_the_account_home(self):
+        self.configure(language="en")
+        self.codex_duty_runs([
+            {"reply": self.duty_answer("Choose a repository.", "needs_decision", "Which repository?",
+                                       ["parser", "billing"])},
+            {"reply": self.duty_answer("The parser handoff is ready.")},
+            {"reply": self.duty_answer("Continuing in the isolated home.")}])
+        self.put_duty("main", "codex")
+        self.cli("duty", "chat", "Investigate the parser.", timeout=60)
+        legacy_thread = self.state("duty")["thread"]
+        isolated = self.home / "claude-tasks" / "duty" / "codex-home"
+        legacy_store = self.home / "duty-threads"
+        legacy_store.mkdir()
+        # Recreate the pre-upgrade state: the saved cursor exists only in the
+        # account store, even if a failed startup has already made the new home.
+        (isolated / "duty-threads" / legacy_thread).rename(legacy_store / legacy_thread)
+        self.assertIn("The parser handoff is ready.", self.cli("duty", "chat", "Choose parser.", timeout=60))
+        migrated = self.state("duty")["thread"]
+        self.assertNotEqual(migrated, legacy_thread)
+        prompt = self.codex_duty_invocations()[1]["params"]["input"][0]["text"]
+        for text in ("Investigate the parser.", "Choose parser.", "Which repository?", "1. parser", "2. billing"):
+            self.assertIn(text, prompt)
+        self.assertTrue((legacy_store / legacy_thread).exists())
+        self.assertIn("Continuing in the isolated home.", self.cli("duty", "chat", "Continue.", timeout=60))
+        self.assertEqual(self.state("duty")["thread"], migrated)
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 3)
+        threads = [entry for entry in self.trace() if entry["command"] == "duty-thread"]
+        self.assertEqual([entry["method"] for entry in threads], ["thread/start", "thread/start", "thread/resume"])
+        self.assertEqual(threads[-1]["params"]["threadId"], migrated)
+
     def test_codex_duty_file_approvals_match_items_and_all_destinations(self):
         self.configure(language="en")
         worker = self.worker()
@@ -1118,9 +1148,25 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(rejected.returncode, 1, rejected.stdout)
                 self.assertIn(reason, rejected.stderr)
                 self.assertEqual(self.codex_duty_invocations(), [])
+                self.assertFalse(any(entry["command"] in ("duty-thread", "duty-mcp-connected")
+                                     for entry in self.trace()))
                 path.unlink()
                 if path.name == "SKILL.md":
                     path.parent.rmdir()
+        fixture_path = self.home / "fixture.json"
+        fixture = json.loads(fixture_path.read_text())
+        fixture["duty_requirements_after_login"] = {}
+        fixture_path.write_text(json.dumps(fixture))
+        self.trace_path.unlink()
+        rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Never start a thread."],
+                                  cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(rejected.returncode, 1, rejected.stdout)
+        self.assertIn("configRequirements/read.requirements", rejected.stderr)
+        requirements = [entry for entry in self.trace() if entry["command"] == "duty-requirements"]
+        self.assertEqual([(entry["authenticated"], entry["requirements"]) for entry in requirements],
+                         [(False, None), (True, {})])
+        self.assertFalse(any(entry["command"] in ("duty-thread", "duty-turn", "duty-mcp-connected")
+                             for entry in self.trace()))
 
     def test_codex_duty_uses_only_the_account_owners_refreshed_access_token(self):
         self.configure(language="en")
@@ -1134,6 +1180,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(json.loads(original.read_text()), refreshed)
         refreshed_call = next(entry for entry in self.trace() if entry["command"] == "duty-auth-refresh")
         self.assertTrue(refreshed_call["matches"])
+        self.assertEqual(refreshed_call["account_id"], "A")
         self.assertEqual(refreshed_call["fields"], ["accessToken", "chatgptAccountId", "chatgptPlanType"])
         isolated = self.home / "claude-tasks" / "duty" / "codex-home"
         self.assertFalse((isolated / "auth.json").exists())

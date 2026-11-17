@@ -133,7 +133,9 @@ def duty_config_layers(cwd):
                 if not line or line.startswith("#"):
                     continue
                 if line.startswith("["):
-                    table = line[1:-1].split(".")
+                    name = line[1:-1]
+                    table = (["projects", json.loads(name[len("projects."):])]
+                             if name.startswith('projects."') else name.split("."))
                     continue
                 key, _, raw = line.partition("=")
                 node = settings
@@ -145,7 +147,8 @@ def duty_config_layers(cwd):
     layers = list(fixture().get("duty_layers", []))
     layers.append({"name": {"type": "user", "file": str(home / "config.toml")},
                    "config": read_config(home / "config.toml"), "version": "fixture"})
-    markers = duty_config(layers).get("project_root_markers", [".git"])
+    discovery = duty_config(layers)
+    markers = discovery.get("project_root_markers", [".git"])
     root = Path(cwd)
     for parent in (Path(cwd), *Path(cwd).parents):
         if any((parent / marker).exists() for marker in markers):
@@ -154,8 +157,11 @@ def duty_config_layers(cwd):
     for parent in (Path(cwd), *Path(cwd).parents):
         folder = parent / ".codex"
         if folder.is_dir():
-            layers.append({"name": {"type": "project", "dotCodexFolder": str(folder)},
-                           "config": read_config(folder / "config.toml"), "version": "fixture"})
+            layer = {"name": {"type": "project", "dotCodexFolder": str(folder)},
+                     "config": read_config(folder / "config.toml"), "version": "fixture"}
+            if discovery.get("projects", {}).get(str(parent), {}).get("trust_level") == "untrusted":
+                layer["disabledReason"] = "fixture project is untrusted"
+            layers.append(layer)
         if parent == root:
             break
     return layers
@@ -168,10 +174,16 @@ def duty_config(layers=None):
     for index, arg in enumerate(sys.argv[:-1]):
         if arg == "-c":
             key, _, raw = sys.argv[index + 1].partition("=")
-            try:
-                value = json.loads(raw)
-            except ValueError:
-                value = raw
+            if key == "projects":
+                project = re.fullmatch(r'\{\s*("(?:[^"\\]|\\.)*")\s*=\s*\{\s*trust_level\s*=\s*"untrusted"\s*\}\s*\}', raw)
+                if project is None:
+                    sys.exit("unsupported fake duty projects override")
+                value = {json.loads(project[1]): {"trust_level": "untrusted"}}
+            else:
+                try:
+                    value = json.loads(raw)
+                except ValueError:
+                    value = raw
             node = settings
             names = key.split(".")
             for name in names[:-1]:
@@ -226,9 +238,15 @@ def duty_turn(request, thread):
                 continue
             expected = json.loads((fixture_path.parent / "auth.json").read_text())["tokens"]
             supplied = reply.get("result") or {}
+            matches = (supplied.get("accessToken") == expected["access_token"]
+                       and supplied.get("chatgptAccountId") == expected["account_id"])
             trace({"command": "duty-auth-refresh", "error": reply.get("error"),
-                   "matches": supplied.get("accessToken") == expected["access_token"],
+                   "matches": matches,
                    "fields": sorted(supplied), "account_id": supplied.get("chatgptAccountId")})
+            if "error" in reply:
+                return
+            if not matches:
+                sys.exit("fake duty received mismatching refreshed account credentials")
             break
     message = {"id": "duty-user-" + str(count + 1), "type": "userMessage", "clientId": None,
                "content": [dict(item, text_elements=item.get("text_elements", []))
@@ -299,6 +317,7 @@ def duty_turn(request, thread):
 def app_server():
     trace({"command": "app-server", "argv": sys.argv[1:]})
     thread = None
+    authenticated = False
     if "CODEX_FAKE_RPC_FAILURE" in os.environ:
         sys.stdin.readline()
         print(os.environ["CODEX_FAKE_RPC_FAILURE"], flush=True)
@@ -315,7 +334,11 @@ def app_server():
         if method == "initialize":
             result = {"userAgent": "codex/0.169.0", "platformFamily": "unix"}
         elif method == "configRequirements/read":
-            result = {"requirements": value.get("duty_requirements")}
+            result = {"requirements": (value.get("duty_requirements_after_login")
+                                       if authenticated and "duty_requirements_after_login" in value
+                                       else value.get("duty_requirements"))}
+            trace({"command": "duty-requirements", "authenticated": authenticated,
+                   "requirements": result["requirements"]})
         elif method == "config/read":
             layers = duty_config_layers(request["params"].get("cwd", os.getcwd()))
             cwd = Path(request["params"].get("cwd", os.getcwd()))
@@ -341,15 +364,33 @@ def app_server():
         elif method == "account/login/start":
             params = request["params"]
             tokens = json.loads((fixture_path.parent / "auth.json").read_text())["tokens"]
+            matches = (params.get("accessToken") == tokens["access_token"]
+                       and params.get("chatgptAccountId") == tokens["account_id"])
             trace({"command": "duty-login", "fields": sorted(params), "type": params.get("type"),
-                   "matches": params.get("accessToken") == tokens["access_token"],
+                   "matches": matches,
                    "account_id": params.get("chatgptAccountId"), "plan_type": params.get("chatgptPlanType")})
+            if not matches or params.get("type") != "chatgptAuthTokens":
+                emit({"id": request["id"], "error": {"message": "mismatching fake account credentials"}})
+                continue
+            authenticated = True
             result = {"type": "chatgptAuthTokens"}
         elif method in ("thread/start", "thread/resume"):
             params = request["params"]
             identifier = params.get("threadId") if method == "thread/resume" else str(uuid.uuid4())
+            stored = home / "duty-threads" / identifier
+            if method == "thread/resume" and not stored.exists():
+                emit({"id": request["id"], "error": {"message": "no rollout found for thread id " + identifier}})
+                continue
+            stored.parent.mkdir(exist_ok=True)
+            stored.touch()
             thread = {"id": identifier, "turns": [], "cwd": params["cwd"]}
             trace({"command": "duty-thread", "method": method, "params": params, "thread": identifier})
+            settings = duty_config(duty_config_layers(params["cwd"]))
+            for name, server in settings.get("mcp_servers", {}).items():
+                if server.get("enabled", True):
+                    trace({"command": "duty-mcp-connected", "server": name})
+            if not settings.get("projects", {}).get(params["cwd"], {}).get("trust_level"):
+                (home / "config.toml").write_text('[projects.' + json.dumps(params["cwd"]) + ']\ntrust_level = "trusted"\n')
             result = {"thread": thread, "model": params.get("model") or "fake-duty-model",
                       "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort", "high"),
                       "approvalPolicy": params.get("approvalPolicy"), "approvalsReviewer": params.get("approvalsReviewer"),
