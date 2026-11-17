@@ -210,7 +210,7 @@ def duty_command_environment():
     environment.update(policy.get("set", {}))
     return environment
 
-def duty_turn(request, thread):
+def duty_turn(request, thread, model):
     params = request["params"]
     count_path = fixture_path.parent / "duty-count"
     count = int(count_path.read_text()) if count_path.exists() else 0
@@ -260,19 +260,44 @@ def duty_turn(request, thread):
     if run.get("sleep"):
         emit({"method": "item/started", "params": {"threadId": thread["id"], "turnId": turn,
               "item": {"id": "duty-sleep", "type": "sleep"}}})
-    for index, step in enumerate(run.get("requests", [])):
+    features = duty_config(duty_config_layers(thread["cwd"])).get("features", {})
+    # rust-v0.169.0 models.json forces code_mode_only for gpt-6.1-sol,
+    # independently of the code_mode/code_mode_only feature flags.
+    code_mode = model == "gpt-6.1-sol" or features.get("code_mode") or features.get("code_mode_only")
+    trace({"command": "duty-tools", "model": model,
+           "tools": ["exec"] if code_mode else ["exec_command", "write_stdin", "apply_patch"]})
+    steps = run.get("requests", [])
+    command_outputs = []
+    if code_mode and steps:
+        if features.get("code_mode_host"):
+            sys.exit("unsupported fake duty code-mode host")
+        command = steps[0].get("params", {})
+        trace({"command": "duty-model-tool-call", "type": "custom_tool_call", "name": "exec",
+               "input": "text(await tools.exec_command(" + json.dumps({
+                   "cmd": command.get("command", ""), "workdir": command.get("cwd", thread["cwd"])}) + "));"})
+        command_outputs.append("code-mode host is disabled")
+        trace({"command": "duty-model-tool-output", "type": "custom_tool_call_output",
+               "output": command_outputs[-1]})
+        steps = []
+    for index, step in enumerate(steps):
         item_id = step.get("id", "duty-item-" + str(index))
+        approval = {"threadId": thread["id"], "turnId": turn, "itemId": item_id}
+        approval.update(step.get("params", {}))
+        method = step.get("method", "item/commandExecution/requestApproval")
         item = step.get("item")
+        if item is None and method == "item/commandExecution/requestApproval" and approval.get("command"):
+            item = {"type": "commandExecution", "command": approval["command"], "cwd": approval.get("cwd"),
+                    "status": "inProgress", "aggregatedOutput": "", "exitCode": None}
         if item is not None:
             item = dict(item, id=item_id)
             emit({"method": "item/started", "params": {
                   "threadId": thread["id"], "turnId": turn, "item": item}})
-        approval = {"threadId": thread["id"], "turnId": turn, "itemId": item_id}
-        approval.update(step.get("params", {}))
-        method = step.get("method", "item/commandExecution/requestApproval")
         decision = duty_approval("duty-approval-" + str(index), method,
                                  step.get("raw_params", approval))
         if decision != "accept":
+            if item is not None:
+                emit({"method": "item/completed", "params": {
+                      "threadId": thread["id"], "turnId": turn, "item": dict(item, status="declined")}})
             continue
         trace({"command": "duty-executed", "item_id": item_id, "params": approval})
         environment = duty_command_environment()
@@ -285,6 +310,9 @@ def duty_turn(request, thread):
             completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
                                        env=environment, check=True, text=True, capture_output=True, start_new_session=True)
             trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr})
+            command_outputs.append(completed.stdout)
+            if item is not None:
+                item.update(aggregatedOutput=completed.stdout + completed.stderr, exitCode=completed.returncode)
         if "write" in step:
             Path(step["write"]).write_text(step.get("contents", "approved change\n"))
         if step.get("background"):
@@ -309,8 +337,10 @@ def duty_turn(request, thread):
         trace({"command": "duty-waiting", "gate": run["gate"]})
         while not Path(run["gate"]).exists():
             time.sleep(0.02)
-    answer = run.get("reply", {"status": "answered", "reply": "Codex duty answer.",
-                               "question": "", "options": [], "started": []})
+    answer = dict(run.get("reply", {"status": "answered", "reply": "Codex duty answer.",
+                                    "question": "", "options": [], "started": []}))
+    if run.get("reply_from_command_output"):
+        answer["reply"] = "".join(command_outputs).strip()
     message = {"id": "duty-answer", "type": "agentMessage", "text": json.dumps(answer), "phase": "final_answer"}
     emit({"method": "item/completed", "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
     emit({"method": "thread/tokenUsage/updated", "params": {"threadId": thread["id"], "turnId": turn,
@@ -322,6 +352,7 @@ def duty_turn(request, thread):
 def app_server():
     trace({"command": "app-server", "argv": sys.argv[1:]})
     thread = None
+    model = None
     authenticated = False
     if "CODEX_FAKE_RPC_FAILURE" in os.environ:
         sys.stdin.readline()
@@ -396,13 +427,14 @@ def app_server():
                     trace({"command": "duty-mcp-connected", "server": name})
             if not settings.get("projects", {}).get(params["cwd"], {}).get("trust_level"):
                 (home / "config.toml").write_text('[projects.' + json.dumps(params["cwd"]) + ']\ntrust_level = "trusted"\n')
-            result = {"thread": thread, "model": params.get("model") or "fake-duty-model",
+            model = params.get("model") or settings.get("model") or "gpt-6.1-sol"
+            result = {"thread": thread, "model": model,
                       "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort", "high"),
                       "approvalPolicy": params.get("approvalPolicy"), "approvalsReviewer": params.get("approvalsReviewer"),
                       # What the real app-server 0.169.0 answers for a room-only workspace-write sandbox.
                       "sandbox": {"type": "readOnly", "networkAccess": False}}
         elif method == "turn/start":
-            duty_turn(request, thread)
+            duty_turn(request, thread, model)
             continue
         elif method == "turn/interrupt":
             result = {}

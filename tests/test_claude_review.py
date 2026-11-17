@@ -871,7 +871,7 @@ class ClaudeReviewTests(RotationTestCase):
         return [entry for entry in self.trace() if entry["command"] == "duty-turn"]
 
     def test_codex_duty_starts_resumes_and_decides_each_request(self):
-        self.configure(language="en", duty={"chat_codex_model": "fixture-duty", "chat_codex_effort": "xhigh"})
+        self.configure(language="en", duty={"chat_codex_effort": "xhigh"})
         self.env["HOME"] = str(self.root / "user-home")
         self.env.update(OPENAI_API_KEY="fixture-unrelated-provider", OPENAI_BASE_URL="https://unrelated.test",
                         CODEX_API_KEY="fixture-unrelated-key", CODEX_ACCESS_TOKEN="fixture-unrelated-access",
@@ -896,10 +896,13 @@ class ClaudeReviewTests(RotationTestCase):
         (project / "hooks.json").write_text('{"hooks":{"SessionStart":[]}}')
         (project / "rules" / "default.rules").write_text('prefix_rule(pattern=["rm"], decision="allow")\n')
         outside = self.root / "outside.txt"
+        read_input = self.root / "command-input.txt"
+        command_output = "Parser command output.\n"
+        read_input.write_text(command_output)
         read_output = room / "reader.txt"
+        command = "cat " + shlex.quote(str(read_input)) + " > reader.txt && cat reader.txt"
         requests = [
-            {"params": {"command": shlex.join(["/bin/sh", "-c", "cat /dev/null > reader.txt"]), "cwd": str(room)},
-             "item": {"type": "commandExecution", "command": "cat /dev/null > reader.txt", "cwd": str(room)},
+            {"params": {"command": shlex.join(["/bin/sh", "-c", command]), "cwd": str(room)},
              "execute": True},
             {"method": "item/fileChange/requestApproval", "item": {"type": "fileChange", "changes": [
                 {"path": str(room / "brief.md"), "kind": {"type": "add"}, "diff": "+Brief"}]},
@@ -917,17 +920,17 @@ class ClaudeReviewTests(RotationTestCase):
             {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat /dev/null > outside.txt"]), "cwd": str(self.root)},
              "write": str(outside)},
         ]
-        self.codex_duty_runs([{"reply": self.duty_answer("First answer."), "requests": requests, "sleep": True},
+        self.codex_duty_runs([{"reply_from_command_output": True, "requests": requests, "sleep": True},
                               {"reply": self.duty_answer("Second answer.")},
                               {"reply": self.duty_answer("Decide.", "needs_decision")}])
         self.put_duty("main", "codex")
-        self.assertIn("First answer.", self.cli("duty", "chat", "Discuss the parser.", timeout=60))
+        self.assertIn(command_output.strip(), self.cli("duty", "chat", "Discuss the parser.", timeout=60))
         st = self.state("duty")
         self.assertEqual((st["executor"], st["account"]), ("codex", "main"))
         first_thread = st["thread"]
         self.assertTrue(first_thread)
         self.assertFalse(outside.exists())
-        self.assertEqual(read_output.read_text(), "")
+        self.assertEqual(read_output.read_text(), command_output)
         decisions = [entry["decision"] for entry in self.trace() if entry["command"] == "duty-approval"]
         self.assertEqual(decisions, ["accept", "accept"] + ["decline"] * 9)
         self.assertEqual((room / "brief.md").read_text(), "Approved brief.\n")
@@ -962,6 +965,9 @@ class ClaudeReviewTests(RotationTestCase):
         worker = self.worker()
         self.assertEqual(first["params"]["outputSchema"], worker.result_schema.DUTY_SCHEMA)
         thread = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
+        self.assertEqual(thread["params"]["model"], "gpt-5.5")
+        tools = next(entry for entry in self.trace() if entry["command"] == "duty-tools")
+        self.assertEqual(tools["tools"], ["exec_command", "write_stdin", "apply_patch"])
         self.assertEqual((thread["params"]["approvalPolicy"], thread["params"]["approvalsReviewer"]),
                          ("untrusted", "user"))
         for text in ("# Lead guide", "# On duty", "## Known repositories", "## Your room\n\n" + str(room)):
@@ -973,13 +979,18 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual([entry["method"] for entry in threads], ["thread/start", "thread/resume"])
         self.assertEqual(threads[-1]["params"]["threadId"], first_thread)
         self.assertEqual([entry["reply"] for entry in self.state("duty")["duty_turns"]],
-                         ["First answer.", "Second answer."])
+                         [command_output.strip(), "Second answer."])
         self.assertEqual((self.state("duty")["model"], self.state("duty")["reasoning_effort"]),
-                         ("fixture-duty", "xhigh"))
+                         ("gpt-5.5", "xhigh"))
         self.assertIn("room " + str(room), self.cli("status", "duty"))
         events = [json.loads(line) for line in (room.parent / "events.jsonl").read_text().splitlines()]
         self.assertTrue(any(event.get("type") == "thread.started" for event in events))
-        self.assertTrue(any((event.get("item") or {}).get("type") == "command_execution" for event in events))
+        commands = [event["item"] for event in events if event.get("type") == "item.completed"
+                    and (event.get("item") or {}).get("type") == "command_execution"]
+        self.assertEqual((commands[0]["aggregated_output"], commands[0]["exit_code"], commands[0]["status"]),
+                         (command_output, 0, "completed"))
+        refused = next(item for item in commands if item["id"] == "duty-item-5")
+        self.assertEqual(refused["status"], "declined")
         invalid = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Decide."], cwd=self.repo, env=self.env,
                                  text=True, capture_output=True, timeout=60)
         self.assertEqual(invalid.returncode, 1, invalid.stdout)
