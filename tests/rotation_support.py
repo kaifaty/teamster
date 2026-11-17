@@ -47,7 +47,7 @@ def duty_provider_models():
                                 "tools": {"code_mode": {"exec": {"description": "Fixture exec guidance"}}}},
              "support_verbosity": False, "default_verbosity": None,
              "truncation_policy": {"mode": "bytes", "limit": 10000}, "context_window": 128000,
-             "experimental_supported_tools": ["send_user_message_async"] if name == "gpt-6.1-sol" else [],
+             "experimental_supported_tools": ["send_user_message_async", "clock"] if name == "gpt-6.1-sol" else [],
              "input_modalities": ["text", "image"]}
             for index, name in enumerate(names)]
 
@@ -379,27 +379,25 @@ def duty_turn(request, thread, model, models):
             words = shlex.split(script)
             if len(words) == 3 and words[0] in ("/bin/bash", "/bin/sh", "/bin/zsh") and words[1] in ("-c", "-lc"):
                 script = words[2]
-            # Only classify the observed write-backed commands, including later pipeline/compound members.
-            lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|()\n")
-            lexer.whitespace = " \t\r"
-            lexer.whitespace_split = True
-            commands = [[]]
-            for word in lexer:
-                if all(char in ";&|()\n" for char in word):
-                    commands.append([])
-                else:
-                    commands[-1].append(word)
-            needs_outside_room = any(len(words) > 1 and words[0] == "teamster"
-                                     and words[1] in ("start", "say", "scout", "review", "stop", "status", "wait")
-                                     for words in commands)
-            if needs_outside_room and not escalated:
-                partial = "Duty status (partial).\n"
+            if not escalated:
                 lock = Path(environment.get("TEAMSTER_HOME") or environment["CODEX_TASK_HOME"]) / "state.lock"
-                completed = subprocess.CompletedProcess(approval["command"], 1, partial,
-                    "PermissionError: [Errno 1] Operation not permitted: '" + str(lock) + "'\n")
-            else:
-                completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
-                                           env=environment, check=False, text=True, capture_output=True, start_new_session=True)
+                failure = "PermissionError: [Errno 1] Operation not permitted: '" + str(lock) + "'"
+                # Let the real shell execute the script, replacing only teamster's protected state access.
+                script = ("teamster() {\n"
+                          "  for argument do\n"
+                          "    case \"$argument\" in -h|--help) command teamster \"$@\"; return $?;; esac\n"
+                          "  done\n"
+                          "  case \"$1\" in\n"
+                          "    start|say|scout|review|stop|status|wait) ;;\n"
+                          "    accounts) case \" $* \" in *' --refresh '*) ;; *) command teamster \"$@\"; return $?;; esac ;;\n"
+                          "    *) command teamster \"$@\"; return $?;;\n"
+                          "  esac\n"
+                          "  printf '%s\\n' 'Duty status (partial).'\n"
+                          "  printf '%s\\n' " + shlex.quote(failure) + " >&2\n"
+                          "  return 1\n"
+                          "}\n" + script)
+            completed = subprocess.run(script, shell=True, cwd=approval.get("cwd", os.getcwd()),
+                                       env=environment, check=False, text=True, capture_output=True, start_new_session=True)
             trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr,
                    "exit_code": completed.returncode, "escalated": escalated})
             command_outputs.append(completed.stdout + completed.stderr)
@@ -471,6 +469,11 @@ def app_server():
                        or not level["effort"] or not isinstance(level.get("description"), str)
                        for level in info["supported_reasoning_levels"])
                 or any(not isinstance(tool, str) for tool in info["experimental_supported_tools"])
+                or "input_modalities" in info and (not isinstance(info["input_modalities"], list)
+                    or any(modality not in ("text", "image", "audio") for modality in info["input_modalities"]))
+                or info.get("context_window") is not None and (type(info["context_window"]) is not int
+                    or not -(2 ** 63) <= info["context_window"] < 2 ** 63)
+                or info.get("apply_patch_tool_type") not in (None, "freeform")
                 or messages is not None and not isinstance(messages, dict)
                 or template is not None and not isinstance(template, str)
                 or legacy is not None and not isinstance(legacy, str)
@@ -483,6 +486,7 @@ def app_server():
     model = None
     authenticated = False
     initialized = False
+    experimental_api = False
     if "CODEX_FAKE_RPC_FAILURE" in os.environ:
         sys.stdin.readline()
         print(os.environ["CODEX_FAKE_RPC_FAILURE"], flush=True)
@@ -496,11 +500,21 @@ def app_server():
         if not initialized and method != "initialize":
             emit({"id": request["id"], "error": {"code": -32600, "message": "Not initialized"}})
             continue
+        params = request.get("params") or {}
+        experimental = ("account/login/start.chatgptAuthTokens"
+                        if method == "account/login/start" and params.get("type") == "chatgptAuthTokens" else
+                        method + ".environments"
+                        if method in ("thread/start", "turn/start") and params.get("environments") is not None else None)
+        if experimental and not experimental_api:
+            emit({"id": request["id"], "error": {"code": -32600,
+                  "message": experimental + " requires experimentalApi capability"}})
+            continue
         if value.get("rpc_error") and method == "account/read":
             emit({"id": request["id"], "error": {"code": -32000, "message": "fixture account unavailable"}})
             continue
         if method == "initialize":
             initialized = True
+            experimental_api = (params.get("capabilities") or {}).get("experimentalApi") is True
             result = {"userAgent": "codex/0.169.0", "platformFamily": "unix"}
         elif method == "configRequirements/read":
             result = {"requirements": (value.get("duty_requirements_after_login")
