@@ -31,6 +31,26 @@ PYTHON = sys.executable
 IMPOSSIBLE_PID = 2 ** 31 - 1
 
 
+def duty_provider_models():
+    # The live ChatGPT catalog has no direct-tool-only model to fall back to.
+    names = ("gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-reserve",
+             "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review")
+    return [{"slug": name, "display_name": name, "description": "Fixture model " + name,
+             "default_reasoning_level": "high",
+             "supported_reasoning_levels": [{"effort": effort, "description": effort}
+                                            for effort in ("low", "medium", "high", "xhigh")],
+             "shell_type": "unified_exec", "apply_patch_tool_type": "freeform", "tool_mode": "code_mode_only",
+             "visibility": "hide" if name in ("gpt-reserve", "codex-auto-review") else "list",
+             "supported_in_api": True, "priority": index, "availability_nux": None, "upgrade": None,
+             "base_instructions": "Fixture instructions for " + name,
+             "model_messages": {"instructions_template": "Fixture instructions for " + name,
+                                "tools": {"code_mode": {"exec": {"description": "Fixture exec guidance"}}}},
+             "support_verbosity": False, "default_verbosity": None,
+             "truncation_policy": {"mode": "bytes", "limit": 10000}, "context_window": 128000,
+             "experimental_supported_tools": [], "input_modalities": ["text", "image"]}
+            for index, name in enumerate(names)]
+
+
 # The fake has the same process boundary as Codex: the supervisor must discover
 # the quota in a rollout, interrupt the process group, and create a fresh thread.
 FAKE_CODEX = r'''import datetime
@@ -211,23 +231,13 @@ def duty_command_environment():
     return environment
 
 def duty_provider_models():
-    # The live ChatGPT catalog has no direct-tool-only model to fall back to.
-    names = ("gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-reserve",
-             "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review")
-    return [{"slug": name, "display_name": name, "description": "Fixture model " + name,
-             "default_reasoning_level": "high",
-             "supported_reasoning_levels": [{"effort": effort, "description": effort}
-                                            for effort in ("low", "medium", "high", "xhigh")],
-             "shell_type": "unified_exec", "apply_patch_tool_type": "freeform", "tool_mode": "code_mode_only",
-             "visibility": "hide" if name in ("gpt-reserve", "codex-auto-review") else "list",
-             "supported_in_api": True, "priority": index, "availability_nux": None, "upgrade": None,
-             "base_instructions": "Fixture instructions for " + name,
-             "model_messages": {"instructions_template": "Fixture instructions for " + name,
-                                "tools": {"code_mode": {"exec": {"description": "Fixture exec guidance"}}}},
-             "support_verbosity": False, "default_verbosity": None,
-             "truncation_policy": {"mode": "bytes", "limit": 10000}, "context_window": 128000,
-             "experimental_supported_tools": [], "input_modalities": ["text", "image"]}
-            for index, name in enumerate(names)]
+    return ''' + repr(duty_provider_models()) + r'''
+
+def duty_write_models_cache(models):
+    (home / "models_cache.json").write_text(json.dumps({
+        "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "etag": "fixture-models", "client_version": "0.169.0", "identity": fixture()["accountId"],
+        "models": models}))
 
 def duty_turn(request, thread, model, models):
     params = request["params"]
@@ -294,7 +304,8 @@ def duty_turn(request, thread, model, models):
     if model_info["shell_type"] != "unified_exec" or model_info["apply_patch_tool_type"] != "freeform":
         sys.exit("unsupported fake duty model tool metadata")
     trace({"command": "duty-tools", "model": model,
-           "tools": ["exec"] if code_mode else command_tools + ["apply_patch"]})
+           "tools": ["exec"] if code_mode else command_tools + ["apply_patch"],
+           "tty_allowed": features.get("unified_exec_tty", True)})
     steps = run.get("requests", [])
     command_outputs = []
     if code_mode and steps:
@@ -315,6 +326,29 @@ def duty_turn(request, thread, model, models):
         method = step.get("method", "item/commandExecution/requestApproval")
         if method == "item/commandExecution/requestApproval" and not command_tools:
             sys.exit("unsupported fake duty command request: shell_tool is disabled")
+        escalated = step.get("sandbox_permissions") == "require_escalated"
+        if method == "item/commandExecution/requestApproval":
+            arguments = {"cmd": approval.get("command", ""), "workdir": approval.get("cwd", thread["cwd"])}
+            if "sandbox_permissions" in step:
+                arguments["sandbox_permissions"] = step["sandbox_permissions"]
+            if "justification" in step:
+                arguments["justification"] = step["justification"]
+            if "tty" in step:
+                arguments["tty"] = step["tty"]
+            trace({"command": "duty-model-tool-call", "type": "function_call", "name": "exec_command",
+                   "arguments": arguments})
+            if step.get("tty") and not features.get("unified_exec_tty", True):
+                output = "TTY mode is disabled"
+                command_outputs.append(output)
+                trace({"command": "duty-model-tool-output", "type": "function_call_output", "output": output})
+                continue
+            if params.get("environments", thread.get("environments")) == []:
+                output = "No usable execution environment is available"
+                command_outputs.append(output)
+                trace({"command": "duty-model-tool-output", "type": "function_call_output", "output": output})
+                continue
+            if escalated:
+                approval.update(reason=step.get("justification"), approvalId=None)
         item = step.get("item")
         if item is None and method == "item/commandExecution/requestApproval" and approval.get("command"):
             item = {"type": "commandExecution", "command": approval["command"], "cwd": approval.get("cwd"),
@@ -338,10 +372,21 @@ def duty_turn(request, thread, model, models):
                    "sqlite_home": environment.get("CODEX_SQLITE_HOME"),
                    "storage": {key: environment.get(key) for key in
                                ("TEAMSTER_HOME", "CODEX_TASK_HOME", "TEAMSTER_CODEX_HOME")}})
-            completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
-                                       env=environment, check=True, text=True, capture_output=True, start_new_session=True)
-            trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr})
-            command_outputs.append(completed.stdout)
+            words = shlex.split(approval["command"])
+            if len(words) == 3 and words[0] in ("/bin/bash", "/bin/sh", "/bin/zsh") and words[1] in ("-c", "-lc"):
+                words = shlex.split(words[2])
+            needs_outside_room = step.get("needs_outside_room") or (words and words[0] in ("teamster", "gh"))
+            if needs_outside_room and not escalated:
+                partial = "Duty status (partial).\n"
+                lock = Path(environment.get("TEAMSTER_HOME") or environment["CODEX_TASK_HOME"]) / "state.lock"
+                completed = subprocess.CompletedProcess(approval["command"], 1, partial,
+                    "PermissionError: [Errno 1] Operation not permitted: '" + str(lock) + "'\n")
+            else:
+                completed = subprocess.run(approval["command"], shell=True, cwd=approval.get("cwd", os.getcwd()),
+                                           env=environment, check=False, text=True, capture_output=True, start_new_session=True)
+            trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr,
+                   "exit_code": completed.returncode, "escalated": escalated})
+            command_outputs.append(completed.stdout + completed.stderr)
             if item is not None:
                 item.update(aggregatedOutput=completed.stdout + completed.stderr, exitCode=completed.returncode)
         if "write" in step:
@@ -377,6 +422,8 @@ def duty_turn(request, thread, model, models):
     emit({"method": "thread/tokenUsage/updated", "params": {"threadId": thread["id"], "turnId": turn,
           "tokenUsage": {"total": {"inputTokens": 10, "cachedInputTokens": 2, "outputTokens": 3,
                                      "reasoningOutputTokens": 1, "totalTokens": 13}}}})
+    if not duty_config().get("model_catalog_json"):
+        duty_write_models_cache(models)
     emit({"method": "turn/completed", "params": {"threadId": thread["id"],
           "turn": {"id": turn, "status": "completed", "items": [message]}}})
 
@@ -449,8 +496,6 @@ def app_server():
             authenticated = True
             result = {"type": "chatgptAuthTokens"}
         elif method == "model/list":
-            if not catalog_path:
-                (home / "models_cache.json").write_text(json.dumps({"models": models}))
             params = request.get("params", {})
             listed = [entry for entry in models if params.get("includeHidden") or entry["visibility"] == "list"]
             default_model = min((entry for entry in models if entry["visibility"] == "list"),
@@ -476,8 +521,9 @@ def app_server():
                 emit({"id": request["id"], "error": {"message": "no rollout found for thread id " + identifier}})
                 continue
             stored.parent.mkdir(exist_ok=True)
-            stored.touch()
             thread = {"id": identifier, "turns": [], "cwd": params["cwd"]}
+            if "environments" in params:
+                thread["environments"] = params["environments"]
             trace({"command": "duty-thread", "method": method, "params": params, "thread": identifier})
             settings = duty_config(duty_config_layers(params["cwd"]))
             for name, server in settings.get("mcp_servers", {}).items():
@@ -485,8 +531,10 @@ def app_server():
                     trace({"command": "duty-mcp-connected", "server": name})
             if not settings.get("projects", {}).get(params["cwd"], {}).get("trust_level"):
                 (home / "config.toml").write_text('[projects.' + json.dumps(params["cwd"]) + ']\ntrust_level = "trusted"\n')
-            model = params.get("model") or settings.get("model") or min(
+            previous = json.loads(stored.read_text()) if stored.exists() and stored.stat().st_size else {}
+            model = params.get("model") or previous.get("model") or settings.get("model") or min(
                 (entry for entry in models if entry["visibility"] == "list"), key=lambda entry: entry["priority"])["slug"]
+            stored.write_text(json.dumps({"model": model}))
             result = {"thread": thread, "model": model,
                       "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort", "high"),
                       "approvalPolicy": params.get("approvalPolicy"), "approvalsReviewer": params.get("approvalsReviewer"),
@@ -1200,6 +1248,11 @@ class RotationTestCase(unittest.TestCase):
         if release_at is not None:
             value["release_at"] = release_at
         (home / "fixture.json").write_text(json.dumps(value))
+        # Ordinary account work has already fetched this provider catalogue.
+        (home / "models_cache.json").write_text(json.dumps({
+            "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "etag": "fixture-models", "client_version": "0.169.0", "identity": account_id,
+            "models": duty_provider_models()}))
         return value
 
     def exhaust_accounts(self, *accounts, **settings):

@@ -30,7 +30,7 @@ DUTY_CODEX_DISABLED = (
     "image_generation", "image_generation_animation", "browser_use", "browser_use_external",
     "in_app_browser", "computer_use", "skill_mcp_dependency_install", "skill_env_var_dependency_prompt",
     "shell_snapshot", "shell_snapshot_v2", "login_shell_package_path", "deferred_executor",
-    "code_mode", "code_mode_only", "code_mode_host", "code_mode_prewarm", "token_budget",
+    "code_mode", "code_mode_only", "code_mode_host", "code_mode_prewarm", "token_budget", "unified_exec_tty",
 )
 
 
@@ -212,6 +212,25 @@ def codex_duty_credentials(account):
         # bridged without inheriting the account's credential-store configuration.
         raise ValueError("Codex duty needs readable ChatGPT authentication in " + str(path)) from None
     return {"accessToken": token, "chatgptAccountId": identity, "chatgptPlanType": None}
+
+
+def codex_duty_catalog(account, path):
+    """Copy the account's full provider metadata, changing only tool presentation."""
+    source = Path(account["home"]) / "models_cache.json"
+    try:
+        models = json.loads(source.read_text(encoding="utf-8"))["models"]
+        if (not isinstance(models, list) or not models
+                or any(not isinstance(info, dict) or not isinstance(info.get("slug"), str)
+                       or not info["slug"] for info in models)
+                or not any(info.get("visibility") == "list" for info in models)):
+            raise ValueError("unusable models")
+    except (OSError, ValueError, TypeError, KeyError):
+        raise ValueError("Codex duty needs a usable " + str(source)
+                         + "; an ordinary Codex work turn creates it.") from None
+    for info in models:
+        info["tool_mode"] = "direct"
+    path.write_text(json.dumps({"models": models}), encoding="utf-8")
+    return models
 
 
 def codex_duty_preflight(home, room, effective, requirements, overrides):
@@ -459,82 +478,63 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         home = home.resolve()
         if os.path.lexists(home / ".env"):
             raise ValueError("Codex duty cannot isolate environment configuration at " + str(home / ".env"))
-        # Discard only this isolated home's cache: discovery must write a fresh
-        # provider catalog rather than reuse another duty account's metadata.
-        cache_path = home / "models_cache.json"
-        cache_path.unlink(missing_ok=True)
         catalog_path = home / ("duty-models-" + marker + ".json")
-        for discover in (True, False):
-            overrides = codex_duty_overrides(marker, room)
-            if not discover:
-                overrides["model_catalog_json"] = str(catalog_path)
-            args = [config.codex_binary(), "app-server", "--strict-config"]
-            for key, value in overrides.items():
-                # This table needs TOML's key/value separator, unlike scalar JSON literals.
-                encoded = ("{" + json.dumps(str(Path(room).resolve())) + ' = {trust_level = "untrusted"}}'
-                           if key == "projects" else json.dumps(value))
-                args += ["-c", key + "=" + encoded]
-            environment = accounts.account_env(dict(account, home=str(home)))
-            for key in list(environment):
-                if (key.startswith(("OPENAI_", "CODEX_EXEC_SERVER_", "CODEX_APP_SERVER_"))
-                        or key in ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")):
-                    environment.pop(key)
-            environment.update(HOME=str(home), CODEX_SQLITE_HOME=str(home))
-            environment[config.STARTED_BY] = "duty"
-            environment[config.DUTY_PROCESS_MARKER] = marker
-            process = subprocess.Popen(args, cwd=room, env=environment, stdin=subprocess.PIPE,
-                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
-            if started is not None:
-                started(process)
-            if duty_process_marker(process.pid) != marker:
-                raise ValueError("Codex duty cannot identify its command processes on this platform")
-            rpc = DutyRPC(process, room, stopped, deadline, directory, account)
-            initialized = rpc.call("initialize", {"clientInfo": {"name": "teamster-duty", "version": "1"},
-                                                  "capabilities": {"experimentalApi": True}})
-            if not isinstance(initialized, dict) or not re.search(r"\b0\.169\.0\b", initialized.get("userAgent", "")):
-                raise ValueError("Codex duty requires the verified app-server protocol 0.169.0")
-            rpc.send({"method": "initialized"})
-            effective = rpc.call("config/read", {"includeLayers": True, "cwd": str(room)})
-            requirements = rpc.call("configRequirements/read", {})
-            codex_duty_preflight(home, room, effective, requirements, overrides)
-            rpc.credentials = codex_duty_credentials(account)
-            rpc.call("account/login/start", dict(rpc.credentials, type="chatgptAuthTokens"))
-            # Signing in can load cloud-managed configuration. Inspect again before
-            # thread startup, where hooks and tools can begin acting.
-            effective = rpc.call("config/read", {"includeLayers": True, "cwd": str(room)})
-            requirements = rpc.call("configRequirements/read", {})
-            codex_duty_preflight(home, room, effective, requirements, overrides)
-            if not discover:
-                break
-            # model/list projects picker rows; its awaited cache write contains
-            # the full ModelInfo, including prompts and all model capabilities.
-            rpc.call("model/list", {"includeHidden": True})
-            # The real server writes the cache when a session starts, not on model/list: start an
-            # empty thread (no turn, so no model call) in the discovery process, which is then discarded.
-            if not cache_path.exists():
-                rpc.call("thread/start", {"cwd": str(room), "approvalPolicy": "untrusted", "approvalsReviewer": "user",
-                                          "sandbox": "workspace-write"})
-            waited = time.monotonic() + 5
-            while not cache_path.exists() and time.monotonic() < waited:
-                time.sleep(0.1)
-            # Work turns on the account keep its own model cache fresh: read it, never write it.
-            source = cache_path if cache_path.exists() else Path(account["home"]) / "models_cache.json"
-            models = json.loads(source.read_text(encoding="utf-8"))["models"]
-            if not any(info["visibility"] == "list" for info in models):
-                raise ValueError("Codex duty needs a cached provider catalog with a visible model")
-            for info in models:
-                info["tool_mode"] = "direct"
-            catalog_path.write_text(json.dumps({"models": models}), encoding="utf-8")
-            rpc.selector.close()
-            process.stdin.close()
-            procs.terminate(process)
-            process.stdout.close()
-            process, rpc = None, None
+        models = codex_duty_catalog(account, catalog_path)
+        overrides = codex_duty_overrides(marker, room)
+        overrides["model_catalog_json"] = str(catalog_path)
+        args = [config.codex_binary(), "app-server", "--strict-config"]
+        for key, value in overrides.items():
+            # This table needs TOML's key/value separator, unlike scalar JSON literals.
+            encoded = ("{" + json.dumps(str(Path(room).resolve())) + ' = {trust_level = "untrusted"}}'
+                       if key == "projects" else json.dumps(value))
+            args += ["-c", key + "=" + encoded]
+        environment = accounts.account_env(dict(account, home=str(home)))
+        for key in list(environment):
+            if (key.startswith(("OPENAI_", "CODEX_EXEC_SERVER_", "CODEX_APP_SERVER_"))
+                    or key in ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")):
+                environment.pop(key)
+        environment.update(HOME=str(home), CODEX_SQLITE_HOME=str(home))
+        environment[config.STARTED_BY] = "duty"
+        environment[config.DUTY_PROCESS_MARKER] = marker
+        process = subprocess.Popen(args, cwd=room, env=environment, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+        if started is not None:
+            started(process)
+        if duty_process_marker(process.pid) != marker:
+            raise ValueError("Codex duty cannot identify its command processes on this platform")
+        rpc = DutyRPC(process, room, stopped, deadline, directory, account)
+        initialized = rpc.call("initialize", {"clientInfo": {"name": "teamster-duty", "version": "1"},
+                                              "capabilities": {"experimentalApi": True}})
+        if not isinstance(initialized, dict) or not re.search(r"\b0\.169\.0\b", initialized.get("userAgent", "")):
+            raise ValueError("Codex duty requires the verified app-server protocol 0.169.0")
+        rpc.send({"method": "initialized"})
+        effective = rpc.call("config/read", {"includeLayers": True, "cwd": str(room)})
+        requirements = rpc.call("configRequirements/read", {})
+        codex_duty_preflight(home, room, effective, requirements, overrides)
+        rpc.credentials = codex_duty_credentials(account)
+        rpc.call("account/login/start", dict(rpc.credentials, type="chatgptAuthTokens"))
+        # Signing in can load cloud-managed configuration. Inspect again before
+        # thread startup, where hooks and tools can begin acting.
+        effective = rpc.call("config/read", {"includeLayers": True, "cwd": str(room)})
+        requirements = rpc.call("configRequirements/read", {})
+        codex_duty_preflight(home, room, effective, requirements, overrides)
+        # Select explicitly on every resume: the rollout may retain an unavailable model.
+        available = {info["slug"] for info in models}
+        listed = rpc.call("model/list", {"includeHidden": True})
+        if model not in available:
+            default = next((info.get("model") for info in listed["data"]
+                            if info.get("isDefault") and info.get("model") in available), None)
+            model = default or next(info["slug"] for info in models if info.get("visibility") == "list")
+        system_text += ("\n\nFor Codex command execution, request sandbox_permissions: \"require_escalated\" "
+                        "with a short justification for teamster commands, gh commands, and git commands "
+                        "on other repositories when they need writes outside the room or network access. "
+                        "The initial sandbox cannot write teamster's state locks or use the network. "
+                        "Escalation still requires the guard to accept that exact command for this call; "
+                        "it grants no session-wide permission.\n")
         params = {"cwd": str(room), "approvalPolicy": "untrusted", "approvalsReviewer": "user",
                   "sandbox": "workspace-write", "developerInstructions": system_text,
                   "config": {"model_reasoning_effort": effort} if effort else {}}
-        if model:
-            params["model"] = model
+        params["model"] = model
         if thread_id:
             params["threadId"] = thread_id
         reply = rpc.call("thread/resume" if thread_id else "thread/start", params)
