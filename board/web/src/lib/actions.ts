@@ -5,6 +5,7 @@
 
 import type { ActionsOff, Launch, Login, TaskSummary } from "../types";
 import type { Verdict } from "./commands";
+import type { DutyBody } from "../dutyTypes";
 
 export type ActionRoute =
   | "lesson"
@@ -19,7 +20,8 @@ export type ActionRoute =
   | "login/input"
   | "login/cancel"
   | "account-refresh"
-  | "duty-chat";
+  | "duty-chat"
+  | "duty";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -133,6 +135,7 @@ export interface ActionBodies {
   "login/cancel": LoginCancelBody;
   "account-refresh": AccountBody;
   "duty-chat": DutyChatBody;
+  duty: DutyBody;
 }
 
 /**
@@ -141,7 +144,7 @@ export interface ActionBodies {
  * carries the task with the verdict recorded. `queued`: a message to the duty waits for the end of the running turn.
  */
 export type ActionResult =
-  | { ok: true; output: string; slug?: string; launch?: Launch; login?: Login; task?: TaskSummary; queued?: boolean }
+  | { ok: true; output: string; slug?: string; launch?: Launch; login?: Login; task?: TaskSummary; queued?: boolean; warning?: string | null }
   | { ok: false; error: string };
 
 export type ActionSender = <R extends ActionRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
@@ -205,13 +208,20 @@ export async function requestAction<R extends ActionRoute>(
     if (isLogin(data.login)) result.login = data.login;
     if (isTask(data.task)) result.task = data.task;
     if (typeof data.queued === "boolean") result.queued = data.queued;
+    if (typeof data.warning === "string" || data.warning === null) result.warning = data.warning;
     return result;
   }
   if (isRecord(data) && typeof data.error === "string" && data.error.trim()) {
     const error = data.error.trim();
+    if (error === "old_teamster" && route === "duty") return { ok: false, error: "Установленный teamster не знает duty set: обнови его" };
     return { ok: false, error: CODES[error] ?? error };
   }
   return { ok: false, error: `Сервер доски ответил ${response.status}${response.statusText ? ` ${response.statusText}` : ""}` };
+}
+
+/** Pins an account, resumes automatic elections or leaves no duty. The accounts stream carries the result. */
+export function requestDuty(body: DutyBody, send: ActionSender = requestAction): Promise<ActionResult> {
+  return send("duty", body);
 }
 
 /**

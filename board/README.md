@@ -20,7 +20,7 @@ WebSocket Origins, when present, must also be localhost. The server reads task f
 metrics and listens on localhost; it has no task control endpoints except science station actions:
 lesson decisions, lesson implementation (`implement`), `say` to reflection or implementation tasks,
 new `reflect` orders, and messages to the duty chat (`POST /api/actions/duty-chat`, read with
-`GET /api/duty-chat`). These run the installed `teamster`
+`GET /api/duty-chat`), plus duty account selection (`POST /api/actions/duty`). These run the installed `teamster`
 command, found on `PATH` at startup; `--teamster PATH` selects its executable explicitly, and
 `--read-only` disables all actions, including account login and refresh. They require a matching same-origin `Origin`,
 `Content-Type: application/json` and `X-Teamster-Board: 1`. Ordinary task stop, clean, verdict and
@@ -78,6 +78,23 @@ Success requests an accounts refresh within 5 seconds. The snapshot's `accounts`
 `{"type":"accounts","accounts":...}` messages include `last_logins`: the latest journal
 `account_login` per account, `[{family, account, at, status}]`, including rows present at startup.
 
+`POST /api/actions/duty` accepts exactly `{account, family}` to pin a known account,
+`{mode: "auto"}` to remove the pin and elect, or `{mode: "off"}` to clear the duty. It waits for
+`teamster duty set <account> --family <family>`, `teamster duty auto` or `teamster duty clear`,
+with the same action protections and a 120-second timeout. Success returns
+`{ok: true, warning: string | null}` and refreshes accounts; a refusal returns 422 with the CLI's
+text. Installed teamster 1.87.0 or later is required, checked by the existing cached version probe.
+`accounts.data.duty` exposes the mode, `pinned_unavailable`, last election time/error and
+`choosable`/`reason_disabled`; each account includes `pinnable`/`pin_reason`. Accounts that need a
+login cannot be pinned. The web data layer and fixture sources support these actions; the
+selection control is separate work. See [CONTRACT.md](CONTRACT.md) for the full shapes.
+
+While the duty is automatic and actions are enabled, the server runs `teamster duty tick` on
+entering automatic mode and every 30 minutes after a tick finishes. `BOARD_DUTY_SECONDS` changes
+the interval; `0` disables all server ticks. Pinned and off modes run none. Ticks never overlap,
+and failures appear in the duty's `last_election.error` while the timer continues. A read-only
+server runs no duty actions or ticks. The server does not call `launchctl` to manage elections.
+
 The frontend builds into `board/web/dist`, which the server serves with an SPA fallback:
 
 ```sh
@@ -113,19 +130,50 @@ button stays, switched off. «Сводка дня» shows today's `teamster repo
 «Развернуть панель» (kept in `localStorage` as `codex-board.console-folded.v1`; the galaxy is fitted anew above the
 strip), «Звук уведомлений», off by default (`codex-board.console-sound.v1`): a short quiet chime made by Web Audio,
 lower for an alarm, when a task comes into `review_me` or `attention` (not at the page's first snapshot; the browser lets
-it sound after your first press or key), and in `dev:fixture` the map's source, «доска» or «сценарий». Every subscription has a portrait, the next one of its family in
+it sound after your first press or key), and in `dev:fixture` the map's source, «доска» or «сценарий».
+The command row starts with the duty chat (`GET /api/duty-chat`, `POST /api/actions/duty-chat`; `store/dutyChat.ts`):
+a microphone and the field «Задача дежурному…», which grows to five lines; Enter sends, Shift+Enter breaks the line, and
+a short row hides the other buttons' words first so that the field keeps its width. Focusing the field, or its
+conversation button, opens the conversation upward over the events, between the wings and under the toolbar; Escape or
+«×» folds it back to the field, and whether it stands open is kept as `codex-board.console-chat.v1`. It shows the
+user's messages, the duty's replies with their question's options as chips (only the latest unanswered question's
+are active, and a press sends the option's text) and the tasks a reply started as links that open them as the counters
+do, and teamster's notes about finished tasks, quieter, their details folded. A sent message shows at once until the
+server's view has it, and a refused one stays with the reason, «Повторить» and «Убрать»; messages waiting for the
+running turn are marked so, and while the duty works the conversation says for how long, with the last steps of the
+task feed of slug `duty`. The list stays at its newest message unless you scrolled up. When the chat cannot work a
+plain sentence by the server's `reason` stands instead of the field; `last_error` and a failed read show in the
+conversation. The microphone dictates through the browser's speech recognition (`console/voice.ts`) in the page's
+language, the words coming into the field as they are heard, and never sends; a second press or a pause stops it, and
+without recognition or after the microphone was refused it is switched off with the reason in its title. On a phone
+the conversation and the field open in the sheet under «Ещё». In `dev:fixture` the conversation runs its turns, and
+`?duty=` shows the chat's other states: `no_duty`, `codex_duty`, `old_teamster`, `read_only`, `no_teamster`,
+`error` (a failed last turn) and `refuse` (every send refused). Every subscription has a portrait, the next one of its family in
 order (`duty-claude-1…3.jpg`, `duty-codex-1…2.jpg`, round again past the last; `portraitNames`); an exhausted, limited or
 logged-out subscription's portrait is greyed out. «Дежурный» is the duty account, the one teamster keeps for the
 orchestrator and new tasks skip: its portrait large in an amber-edged window, and over its foot «Дежурный · <name>», its family, the week left and the time to the refill
 («83% · ↻ 5 д»), since when it is on duty, the reason in its title, and «в работе N · ждут тебя M» over the live tasks,
-counted as the systems' labels count them; without one it says «Дежурный не назначен». «Подписки» lists every
+counted as the systems' labels count them; without one it says «Дежурный не назначен». Under the name a quiet line says
+how the duty was chosen (`accounts.data.duty.mode`): «выбран автоматически», «закреплён вручную», or «дежурный не
+выбран»; a pin that cannot work now (`pinned_unavailable`) gives its reason there in the alarm colour. A click on the
+duty opens its choice (`ConsoleDutyPick.vue`, `console/dutyPick.ts`, `console/useDutyPick.ts` over `store/duty.ts`), a
+small dialog over the left wing: «Выбирать автоматически» (on: `{mode: "auto"}`, off: `{mode: "off"}`, no duty) and
+every account of both families, Claude first, with its week left and its state and the duty marked; choosing one pins
+it (`{account, family}`) and turns the automatic choice off. An account that needs a login is shown off with the
+reason. The choice shows at once in the panel and the wing, is rolled back with teamster's text on a refusal, and
+teamster's warning stays in the panel; when `choosable` is false everything is shown switched off under the reason
+(`--read-only`, no teamster, teamster older than 1.87.0). Arrows and Tab walk the accounts, Escape or a press elsewhere
+closes it and Escape gives the focus back to the duty. The duty chat's «Дежурный не выбран» and Codex-duty sentences
+offer «Выбрать» for the same choice. On a phone the choice heads the «Ещё» sheet, and the strip's duty opens it. In
+`dev:fixture`, `?pick=<anything>` answers the choice after 0.7 s, `?pick=refuse` refuses it, and `?pick=read_only`,
+`no_teamster` or `old_teamster` switch it off; pinning the exhausted Codex account gets a warning. «Подписки» lists every
 subscription as a row: its small portrait, its name, a bar of the week's limit left in the family's colour, red at 20% or less and grey
 when exhausted, limited or logged out, the share left, the time to the refill (the weekly reset, or the end of the limit
 that ran out) and a spare cell for every free reset of a Codex account; the duty's row stands out, and a row's title has
 the five-hour window, the reset times and when the free resets expire. On a phone the panel folds to a strip in the centre's
 rails with the duty, both counters and the newest event, and «Ещё» opens the subscriptions, the machines, the reflection,
 «Сводка дня» and the settings over the map.
-A click on the duty or a subscription's row opens the subscription's own screen (`board/web/src/map/account/`), over the
+A click on a subscription's row opens the subscription's own screen (`board/web/src/map/account/`), over the
 map like a ship's bridge. «Сейчас» says the state in plain words — works and how much of the week is left, little left, the week
 spent or a limit until when, no data, or a sign-in needed (a Codex account logged out or signed in to the same ChatGPT
 account as another, a Claude token missing or refused: `needs_login`) — with «Войти заново» as the main button when
@@ -343,10 +391,12 @@ The map's code in `board/web/src/map/`:
 - `use/` — the composables `MapView.vue` is made of: the sources, the model, the panels, the labels, the scene and the
   notification sound (`useArrivalChime.ts`).
 - `console/` — the control panel under the map: `MapConsole.vue` with its left wing (`.console-left`: `ConsoleDuty.vue`,
-  `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue` and the command row, `ConsoleCommands.vue`) and
-  right wing (`.console-right`: `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts,
-  `queue.ts` the command row's queues, `portraits.ts` finds the subscriptions'
-  pictures, and `console.css` holds what the blocks share.
+  `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue` and the command row, `ConsoleCommands.vue`,
+  with the duty chat's field `ConsoleChatField.vue` and its conversation `ConsoleChat.vue`) and right wing
+  (`.console-right`: `ConsoleMachines.vue`, `ConsoleReflection.vue`); `texts.ts` builds their texts, `queue.ts` the
+  command row's queues, `chat.ts` the conversation's rows and sentences, `useConsoleChat.ts` holds its state,
+  `voice.ts` wraps the speech recognition, `portraits.ts` finds the subscriptions' pictures, `console.css` holds what
+  the blocks share and `strip.css` the narrow window's strip.
 - `overlay/` — the labels over the canvas: the `.ts` builders make their texts and places, and a component for each
   kind draws one (`StarLabel.vue`, `StationPlate.vue`…), with its own styles; `overlay.css` holds what they share. A new
   object's label is a new component there, listed in `GalaxyLabels.vue` or `SystemLabels.vue`.
@@ -357,6 +407,7 @@ The map's code in `board/web/src/map/`:
 | `TEAMSTER_HOME`, `CODEX_TASK_HOME` | `~/.teamster` | The worker's data home, found by the worker's rules (`teamster docs settings`). Read tasks from `tasks/` and archives from `tasks/.archive/` (`claude-tasks/` in a legacy home in `~/.codex`). Snapshots include at most 50 closed records together, ranked by state mtime. |
 | `BOARD_POLL_SECONDS` | `1.0` | Interval between file mtime and size polls, in seconds. |
 | `BOARD_ACCOUNTS_SECONDS` | `300` | Minimum interval between account subprocess calls, in seconds. A new `account_login` journal row from `teamster login` or `claude-login` refreshes accounts at once, at most once per 5 seconds; rows already in the journal at startup do not. |
+| `BOARD_DUTY_SECONDS` | `1800` | Interval in seconds after a server duty tick finishes, only in automatic mode with actions enabled and a compatible installed teamster. Entering automatic mode also ticks immediately; `0` disables server ticks. |
 | `BOARD_MACHINES_FILE` | `<data home>/board-machines.json` | Machine configuration; reread when mtime or size changes. Missing means no machines; invalid files preserve the last valid list and expose `config_error`. |
 | `BOARD_MACHINES_SECONDS` | `30` | Interval between parallel machine and optional physical host probe cycles, in seconds. |
 | `BOARD_STALE_DAYS` | `7` | Close non-alive tasks older than this many days by state mtime. Non-alive scouts are always closed; alive tasks are exempt from the age rule. |
@@ -366,7 +417,7 @@ The map's code in `board/web/src/map/`:
 | `BOARD_SESSION_STALE_HOURS` | `48` | Close inactive sessions older than this many hours by `lastActivityAt`. Busy sessions and sessions awaiting a person take precedence. |
 | `BOARD_RESEARCH_SECONDS` | `30` | Minimum interval between rebuilds of `GET /api/research` from `tasks/.archive/`, in seconds; unchanged record states are not read again. |
 | `BOARD_REFLECTION_TASK` | `codex-batch-reflection` | Scheduled task id of the Claude Desktop sessions that run the batch reflection, returned as `reflection_task`. |
-| `BOARD_TEAMSTER_COMMAND` (fallback `BOARD_CODEX_TASK`) | Repository `src/teamster/__main__.py` | Script called as `python3 -I <script> accounts --json`, without `--refresh`, with a 60-second timeout. |
+| `BOARD_TEAMSTER_COMMAND` (fallback `BOARD_CODEX_TASK`) | Repository `src/teamster/__main__.py` | Script called as `python3 -I <script> accounts --json` (without `--refresh`), and `duty status --json` when duty selection is enabled, with a 60-second timeout. |
 
 Account calls run outside the event loop. Errors preserve the previous account data and expose an
 error string. A malformed or partially written state file preserves its last successfully read state.

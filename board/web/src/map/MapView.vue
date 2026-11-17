@@ -136,6 +136,7 @@ const { failure, retry } = useFleetScene({ props, host, overlay, sources, model,
         :narrow="narrow"
         :tasks="tasks"
         :demo="demo"
+        :host="source"
         @go="goTo"
         @task="openTask"
         @open-account="openAccount"

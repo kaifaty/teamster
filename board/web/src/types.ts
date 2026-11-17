@@ -414,7 +414,7 @@ import type { LastLogin, Login } from "./loginTypes";
 export interface Accounts {
   fetched_at: number | null;
   error: string | null;
-  data: unknown | null; // `accounts --json` output, passed through unchanged
+  data: unknown | null; // `accounts --json`, with duty selection and per-account pin ability added
   last_logins?: LastLogin[]; // missing from an older server
 }
 

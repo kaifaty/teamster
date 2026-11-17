@@ -22,6 +22,12 @@ describe("the command row's queues", () => {
     expect(queueOf(tasks, "attention").map((item) => item.slug)).toEqual(["alarm"]);
   });
 
+  it("orders tasks that have waited equally by slug, whatever order they come in", () => {
+    const tied = [task("b-second", "attention", NOW - 60), task("a-first", "attention", null, NOW - 60), task("c-third", "attention", NOW - 60)];
+    expect(queueOf(tied, "attention").map((item) => item.slug)).toEqual(["a-first", "b-second", "c-third"]);
+    expect(queueOf([...tied].reverse(), "attention").map((item) => item.slug)).toEqual(["a-first", "b-second", "c-third"]);
+  });
+
   it("counts what the systems' badges count", () => {
     const badges = stars(tasks);
     expect(queueOf(tasks, "review_me").length).toBe(badges.reduce((sum, star) => sum + star.ready, 0));

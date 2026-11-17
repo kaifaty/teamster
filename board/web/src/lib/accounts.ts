@@ -1,5 +1,6 @@
 // Reads `teamster accounts --json` output defensively. Any part that does not have the
 // expected shape is shown as compact JSON instead.
+import type { DutyData } from "../dutyTypes";
 
 export interface AccountRow {
   key: string;
@@ -26,6 +27,9 @@ export interface AccountRow {
   burst: { percent: number; resetsAt: number | null } | null;
   /** Nothing works until someone signs in again: a Codex account logged out, a Claude token missing or refused. */
   needsLogin: boolean;
+  /** Whether teamster can pin this account now; the duty's choosable also gates the control. */
+  pinnable: boolean;
+  pinReason: "needs_login" | null;
   /** Codex: signed in to the same ChatGPT account as another subscription, so tasks skip it until it signs in anew. */
   duplicate: boolean;
   /** Codex: the ChatGPT plan (`pro`, `team`…) and the sign-in's e-mail; null when unknown or for Claude. */
@@ -175,6 +179,8 @@ function codexRow(entry: Obj, index: number): AccountRow | null {
     resets: resetsOf(entry),
     burst: burstOf(codexBurst(entry)),
     needsLogin: status === "not_logged_in",
+    pinnable: entry.pinnable === true,
+    pinReason: entry.pin_reason === "needs_login" ? "needs_login" : null,
     duplicate: status === "duplicate",
     plan: text(entry.plan),
     email: text(entry.email),
@@ -215,6 +221,8 @@ function claudeRow(entry: Obj, index: number, now: number): AccountRow | null {
     resets: null,
     burst: burstOf(isObj(entry.five_hour) ? entry.five_hour : null),
     needsLogin,
+    pinnable: entry.pinnable === true,
+    pinReason: entry.pin_reason === "needs_login" ? "needs_login" : null,
     duplicate: false,
     plan: null,
     email: null,
@@ -233,6 +241,25 @@ function dutyOf(data: Obj): { account: string; family: "codex" | "claude"; info:
     account: duty.account,
     family: duty.family,
     info: { reason: typeof duty.reason === "string" && duty.reason ? duty.reason : null, since: toSeconds(duty.since) },
+  };
+}
+
+/** Null until the server reports duty selection support, including its disabled reason. */
+export function parseDuty(data: unknown): DutyData | null {
+  const duty = isObj(data) && isObj(data.duty) ? data.duty : null;
+  if (!duty || (duty.mode !== "auto" && duty.mode !== "pinned" && duty.mode !== "off")) return null;
+  const election = isObj(duty.last_election) ? duty.last_election : {};
+  return {
+    mode: duty.mode,
+    account: text(duty.account),
+    family: duty.family === "codex" || duty.family === "claude" ? duty.family : null,
+    since: toSeconds(duty.since),
+    checked_at: toSeconds(duty.checked_at),
+    reason: text(duty.reason),
+    pinned_unavailable: text(duty.pinned_unavailable),
+    choosable: duty.choosable === true,
+    reason_disabled: duty.reason_disabled === "read_only" || duty.reason_disabled === "no_teamster" || duty.reason_disabled === "old_teamster" ? duty.reason_disabled : null,
+    last_election: { at: toSeconds(election.at), error: text(election.error) },
   };
 }
 
