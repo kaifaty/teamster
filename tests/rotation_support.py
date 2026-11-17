@@ -54,6 +54,8 @@ if os.environ.get("CODEX_TASK_CLOCK_FILE"):
 
 home = Path(os.environ["CODEX_HOME"])
 fixture_path = home / "fixture.json"
+if not fixture_path.exists() and os.environ.get("CODEX_FAKE_DUTY_ACCOUNT_HOME"):
+    fixture_path = Path(os.environ["CODEX_FAKE_DUTY_ACCOUNT_HOME"]) / "fixture.json"
 trace_path = Path(os.environ["CODEX_FAKE_TRACE"])
 
 def append(path, value):
@@ -121,8 +123,48 @@ def duty_approval(request_id, method, params):
             return decision
     return "decline"
 
-def duty_config():
+def duty_config_layers(cwd):
+    # Only the table and JSON-compatible scalar forms used by these fixtures.
+    def read_config(path):
+        settings, table = {}, []
+        if path.exists():
+            for line in path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("["):
+                    table = line[1:-1].split(".")
+                    continue
+                key, _, raw = line.partition("=")
+                node = settings
+                for name in table:
+                    node = node.setdefault(name, {})
+                node[key.strip()] = json.loads(raw.strip())
+        return settings
+
+    layers = list(fixture().get("duty_layers", []))
+    layers.append({"name": {"type": "user", "file": str(home / "config.toml")},
+                   "config": read_config(home / "config.toml"), "version": "fixture"})
+    markers = duty_config(layers).get("project_root_markers", [".git"])
+    root = Path(cwd)
+    for parent in (Path(cwd), *Path(cwd).parents):
+        if any((parent / marker).exists() for marker in markers):
+            root = parent
+            break
+    for parent in (Path(cwd), *Path(cwd).parents):
+        folder = parent / ".codex"
+        if folder.is_dir():
+            layers.append({"name": {"type": "project", "dotCodexFolder": str(folder)},
+                           "config": read_config(folder / "config.toml"), "version": "fixture"})
+        if parent == root:
+            break
+    return layers
+
+def duty_config(layers=None):
     settings = fixture().get("duty_config", {})
+    for layer in layers or []:
+        if not layer.get("disabledReason"):
+            settings.update(layer.get("config", {}))
     for index, arg in enumerate(sys.argv[:-1]):
         if arg == "-c":
             key, _, raw = sys.argv[index + 1].partition("=")
@@ -154,7 +196,7 @@ def duty_command_environment():
 
 def duty_turn(request, thread):
     params = request["params"]
-    count_path = home / "duty-count"
+    count_path = fixture_path.parent / "duty-count"
     count = int(count_path.read_text()) if count_path.exists() else 0
     count_path.write_text(str(count + 1))
     runs = fixture().get("duty_runs", [])
@@ -165,6 +207,29 @@ def duty_turn(request, thread):
     emit({"id": request["id"], "result": {"turn": {"id": turn, "status": "inProgress", "items": []}}})
     emit({"method": "turn/started", "params": {"threadId": thread["id"],
           "turn": {"id": turn, "status": "inProgress", "items": []}}})
+    if run.get("refresh"):
+        refresh = run["refresh"]
+        if refresh.get("replace"):
+            # A concurrent ordinary task owns OAuth refresh and atomically saves it.
+            auth_path = fixture_path.parent / "auth.json"
+            writer = ("import os,sys; from pathlib import Path; "
+                      "path=Path(os.environ['CODEX_HOME'])/'auth.json'; "
+                      "replacement=path.with_suffix('.replacement'); "
+                      "replacement.write_text(sys.stdin.read()); replacement.replace(path)")
+            subprocess.run([sys.executable, "-c", writer], input=json.dumps(refresh["replace"]),
+                           text=True, env=dict(os.environ, CODEX_HOME=str(auth_path.parent)), check=True)
+        emit({"id": "refresh", "method": "account/chatgptAuthTokens/refresh", "params": {
+              "reason": "unauthorized", "previousAccountId": fixture()["accountId"]}})
+        for line in sys.stdin:
+            reply = json.loads(line)
+            if reply.get("id") != "refresh":
+                continue
+            expected = json.loads((fixture_path.parent / "auth.json").read_text())["tokens"]
+            supplied = reply.get("result") or {}
+            trace({"command": "duty-auth-refresh", "error": reply.get("error"),
+                   "matches": supplied.get("accessToken") == expected["access_token"],
+                   "fields": sorted(supplied), "account_id": supplied.get("chatgptAccountId")})
+            break
     message = {"id": "duty-user-" + str(count + 1), "type": "userMessage", "clientId": None,
                "content": [dict(item, text_elements=item.get("text_elements", []))
                            if item["type"] == "text" else item for item in params["input"]]}
@@ -252,7 +317,34 @@ def app_server():
         elif method == "configRequirements/read":
             result = {"requirements": value.get("duty_requirements")}
         elif method == "config/read":
-            result = {"config": duty_config(), "layers": value.get("duty_layers", [])}
+            layers = duty_config_layers(request["params"].get("cwd", os.getcwd()))
+            cwd = Path(request["params"].get("cwd", os.getcwd()))
+            folders = [home, Path(os.environ["HOME"]) / ".agents" / "skills", cwd / ".agents" / "skills"]
+            for layer in layers:
+                if layer.get("disabledReason"):
+                    continue
+                source = layer["name"]
+                if source["type"] == "system":
+                    folders.append(Path(source["file"]).parent / "skills")
+                elif source["type"] == "project":
+                    folders.append(Path(source["dotCodexFolder"]))
+            authority = [str(path) for folder in folders for path in folder.rglob("*")
+                         if path.is_file() and (path.name in ("hooks.json", "SKILL.md")
+                                               or path.suffix == ".rules")]
+            result = {"config": duty_config(layers), "layers": layers}
+            trace({"command": "duty-config", "config": result["config"], "layers": layers,
+                   "authority_files": authority, "user_home": os.environ.get("HOME"),
+                   "sqlite_home": os.environ.get("CODEX_SQLITE_HOME"),
+                   "provider_environment": sorted(key for key in os.environ
+                       if key.startswith(("OPENAI_", "CODEX_EXEC_SERVER_", "CODEX_APP_SERVER_"))
+                       or key in ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN"))})
+        elif method == "account/login/start":
+            params = request["params"]
+            tokens = json.loads((fixture_path.parent / "auth.json").read_text())["tokens"]
+            trace({"command": "duty-login", "fields": sorted(params), "type": params.get("type"),
+                   "matches": params.get("accessToken") == tokens["access_token"],
+                   "account_id": params.get("chatgptAccountId"), "plan_type": params.get("chatgptPlanType")})
+            result = {"type": "chatgptAuthTokens"}
         elif method in ("thread/start", "thread/resume"):
             params = request["params"]
             identifier = params.get("threadId") if method == "thread/resume" else str(uuid.uuid4())
