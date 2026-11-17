@@ -29,14 +29,21 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `duty.claude_only_task_types` | `["visual", "layout"]` | task types (`--task-type`) that a Claude duty account still takes when it is the only Claude account left |
 | `duty.chat_model` | `claude.model` | model of Claude [duty chat](duty-chat.md) turns, a nonempty string or null; `say duty --model` and `--effort` replace the current family's settings for the conversation |
 | `duty.chat_effort` | `"high"` | effort of Claude duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
-| `duty.chat_codex_model` | `null` | model of Codex duty chat turns, a nonempty string or null; null selects `gpt-5.5` for direct tools (see [duty chat](duty-chat.md#limits)) |
-| `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the account's Codex default |
+| `duty.chat_codex_model` | `null` | model of Codex duty chat turns, a nonempty string or null; null or an unavailable name selects the catalogue default, then its first visible model (see [duty chat](duty-chat.md#limits)) |
+| `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the isolated Codex default |
 | `duty.chat_max_minutes` | `20` | positive number; active time budget of one duty chat turn; `say duty --max-minutes` replaces it for the conversation |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; duty chat turns that task notes may start in an hour; the other notes wait for the next user message |
 
 Load reruns use the saved check command or the alternative saved with `start --check-loaded CMD`.
 `say` inherits the alternative, `say --check-loaded CMD` replaces it, and `say --no-check` removes
 both commands. See [checks.md](checks.md) for the two recorded runs and interruptible load wait.
+
+The experimental Codex duty transport is pinned to 0.169.0. It reads the account home's
+`models_cache.json` without changing it; ordinary Codex work turns create and refresh that file.
+Each duty turn uses an isolated catalogue copy with direct command tools and explicitly selects a
+model from it, including when a resumed conversation stored an unavailable model. Commands needing
+outside writes or network access request escalation, then pass the same exact-command guard for
+that call. See [duty chat](duty-chat.md#limits) for the catalogue requirement and sandbox limits.
 
 ## Task models
 

@@ -66,8 +66,8 @@ Inherited remote-executor, app-server configuration and OpenAI authentication en
 are removed. Guarded shell commands receive the original `HOME`, so allowed commands such as `gh`
 can use their normal configuration; their command approvals still go through teamster.
 
-The only account-home file teamster reads for the duty transport is `auth.json`, read-only. It parses
-that document and sends only `tokens.access_token` and `tokens.account_id` to
+For authentication, teamster reads the account home's `auth.json` read-only. It sends only
+`tokens.access_token` and `tokens.account_id` to
 `account/login/start` with type `chatgptAuthTokens`, over the server's stdin pipe. Codex keeps those
 credentials in process-local ephemeral storage with no refresh token. Teamster never copies or
 symlinks credential files, exchanges refresh tokens, writes account credentials, or logs the supplied
@@ -85,8 +85,11 @@ verifies the [login and refresh protocol](https://github.com/openai/codex/blob/r
 [401 delegation to the client](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/app-server/src/external_auth.rs),
 [configuration discovery](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/config/src/loader/mod.rs),
 and [host skill roots](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/ext/skills/src/host_roots.rs).
-The tests exercise these boundaries with fake servers and fake credential refresh; they do not
-establish live backend acceptance or guarantee that an account owner has refreshed an expired token.
+Live probes on a real ChatGPT account established the direct command approval path, including
+guard acceptance and refusal, and an escalated `teamster status`. The regression tests use faithful
+fake servers and credentials; they never run the real Codex. Neither the authentication bridge nor
+the catalogue override below is a stable integration contract, and tests cannot guarantee that an
+account owner has refreshed an expired token.
 
 The adapter requires
 Codex 0.169.0 and checks the server version before starting a turn. It uses protocol
@@ -108,27 +111,30 @@ command environment filters, are refused too. Each refusal names the blocking fi
 Overrides apply only to this invocation; the account's configuration is not rewritten. The thread's
 reply must confirm the requested approval policy, reviewer and room sandbox.
 
-The Codex duty uses `gpt-5.5` unless `duty.chat_codex_model` or a conversation's `--model` overrides it.
-Teamster explicitly sends `model: "gpt-5.5"` in `thread/start` and `thread/resume` when the setting is
-null. The [0.169.0 catalog](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/models-manager/models.json#L1516-L1536)
-gives that model a freeform patch tool and no model-owned tool mode. With invocation features
-`code_mode`, `code_mode_only`, `code_mode_host` and `code_mode_prewarm` all false, it therefore gets
-direct `exec_command`, `write_stdin` and `apply_patch` tools.
+The account catalogue observed with Codex 0.169.0 gives every model
+`tool_mode: "code_mode_only"`. [Model metadata takes precedence over feature flags](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/mod.rs#L66-L87),
+and [Code Mode Only hides direct tools](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/spec_plan.rs#L887-L912).
+With the Code Mode host disabled, its `exec` tool answers `code-mode host is disabled`.
+For each duty turn, teamster instead reads the account home's `models_cache.json` read-only,
+preserves every model's metadata and prompts, changes only `tool_mode` to `direct`, and writes a
+per-run copy into the isolated duty home. It passes that copy through the invocation's
+[`model_catalog_json`](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/config/mod.rs#L2327-L2358),
+then removes the copy during cleanup. No account file is written or deleted. There is one
+app-server process, with no discovery process or isolated-cache deletion. The observed account
+models then expose direct `exec_command`, `write_stdin` and `apply_patch` tools.
 
-In contrast, `gpt-6.1-sol` has
-[`tool_mode: "code_mode_only"`](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/models-manager/models.json#L177-L197).
-[Model metadata takes precedence over feature flags](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/mod.rs#L66-L87),
-and [Code Mode Only hides the direct tools](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/spec_plan.rs#L887-L912).
-Disabling its host leaves the model's `exec` returning `code-mode host is disabled`. There is no
-per-thread tool-mode override: `model_catalog_json` is a
-[startup-only replacement of the full model catalog](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/config/src/config_toml.rs#L407-L409),
-which would replace provider metadata and prompts rather than establish supported direct tools for
-that model. Teamster does not manufacture such a catalog. Enabling the Code Mode host is also
-rejected here: nested `write_stdin` can
-[send process input without another approval](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/unified_exec/stdin_approval.rs#L197-L230),
-so it fails the requirement that each machine effect in Code Mode request approval. Keep Codex duty
-overrides on a model with direct tools; to replace an existing conversation override, use
-`teamster say duty "Continue." --model gpt-5.5`.
+Ordinary Codex work turns create and refresh the account's cache. In the observed isolated server,
+`model/list` and `thread/start` did not create it; no reliable fetch without a model turn has been
+established. If the account cache is missing or unusable, the duty refuses with one sentence:
+`Codex duty needs a usable <account-home>/models_cache.json; an ordinary Codex work turn creates it.`
+The cached catalogue can become stale; an ordinary work turn refreshes it.
+
+The default model is the `model/list` default when its name appears in the copied catalogue,
+otherwise the first catalogue model with `visibility: "list"`. `duty.chat_codex_model` and the
+conversation's `--model` select another name only while it remains in that catalogue. A missing
+or unavailable override uses the same fallback. Every `thread/start` and `thread/resume` receives
+the selected model explicitly, so an unavailable model stored in a rollout recovers on the next
+turn without a new `--model` argument.
 
 For the direct tools, `untrusted` asks for
 [every command without an explicit allow rule](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/exec_policy.rs#L910-L914)
@@ -139,35 +145,51 @@ The app-server emits `item/started`, then `item/commandExecution/requestApproval
 Its [plain accept decision](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/app-server/src/bespoke_event_handling.rs#L2092-L2097)
 is [never cached as a session grant](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/sandboxing.rs#L88-L119).
 The fake tests check command output reaching the answer and refused commands producing no effect.
-Live account access to `gpt-5.5`, the provider's current metadata, and a real command/patch approval
-round trip still need a live check; these tests never run the real Codex.
+Unknown tool items fail the turn; unreadable or unknown approval requests are declined.
 
 Agent, app, plugin, MCP, browser, computer, image, memory, goal, history-note, permission and
 skill-install actions are disabled, as are inherited hooks, automatic review and reusable grants. Inert planning, time,
 sleep and context tools may remain. The adapter does not rely on Codex hooks or prefix allow rules
 to enforce the duty policy.
 
-Codex also starts with a sandbox whose writable area is the room. This is an extra, best-effort
-layer: an accepted command may request escalation or automatically retry outside it after a
-sandbox failure, without another teamster decision. In either case the exact command has already
-passed the guard. Turn cleanup interrupts the turn, cleans its background terminals and shuts the
-server down so Codex can end its command groups. The time limit, stop and orphan checks apply to
-both transports; independently started teamster tasks keep running under their own supervisors.
-Codex 0.169.0 exposes terminal session handles rather than command operating-system PIDs.
-Environment markers are only a best-effort cleanup aid: after an app-server crash, teamster cannot
-guarantee forced cleanup of native commands. Even a file-based command can stall on a named pipe,
-device or network resource. If both the supervisor and app-server are killed, no cleanup code runs.
+Codex starts with a room-only writable sandbox. In the live probe, 0.169.0 replied
+`{"type": "readOnly", "networkAccess": false}`: the filesystem root is readable, the room writable,
+and its `.git`, `.agents` and `.codex` directories read-only. Teamster omits `environments` from
+thread and turn requests so commands use the local execution environment; an empty array instead
+leaves no usable execution environment.
 
-The difference from Claude is Codex's `write_stdin`: input may still be sent to a command that the
-guard already accepted. The allowed commands do not execute their input as a program; `teamster`,
-`git` and `gh` are also forbidden from taking hidden work through stdin paths or Git's `--stdin`,
-as described below. Sending input therefore adds no action beyond the accepted command.
+A guarded command can still fail inside the sandbox: even `teamster status` needs a state lock
+outside the room. Codex duty instructions therefore tell the model to call `exec_command` with
+`sandbox_permissions: "require_escalated"` and a short `justification` for `teamster`, `gh`, and
+commands on other git repositories when they need outside writes or network access. The escalated
+command comes through the same command approval path. The guard decides its exact shell text and
+plain `accept` authorizes only that call outside the sandbox. `additionalPermissions`, reusable
+permissions and session-wide grants remain declined. A sandbox failure does not guarantee that
+Codex will request escalation or retry successfully.
+
+TTY execution and the Code Mode host are disabled. The server
+[rejects `tty: true`](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/handlers/unified_exec/preparation.rs#L185-L189).
+A non-TTY `write_stdin` can poll an accepted command or interrupt it;
+[it cannot send ordinary input](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/unified_exec/process_manager.rs#L1017-L1026)
+to that process. This prevents later stdin
+from adding unapproved work to an accepted command. Teamster also forbids hidden work through
+stdin paths or Git's `--stdin`, as described below.
+
+Turn cleanup interrupts the turn, cleans its background terminals and shuts the server down so
+Codex can end its command groups. The time limit, stop and orphan checks apply to both transports;
+independently started teamster tasks keep running under their own supervisors. Codex 0.169.0
+exposes terminal session handles rather than command operating-system PIDs. Environment markers
+are only a best-effort cleanup aid: after an app-server crash, teamster cannot guarantee forced
+cleanup of native commands. Even a file-based command can stall on a named pipe, device or network
+resource. If both the supervisor and app-server are killed, no cleanup code runs.
 
 To avoid deliberately persistent readers that could outlive a crashed app-server, the Codex guard
 also refuses `tail -f`, `-F` and `--follow`, including combined short options and `--follow=…`.
-`cat`, `head`, `tail`, `wc` and `rg` must name their input files: a form that waits for stdin, or an
-explicit stdin operand such as `-` or `/dev/stdin`, is refused. Unknown or ambiguous reader options
-are declined with a reason; ordinary file-based forms such as `cat README.md`, `head -n 20 notes.md`
+`cat`, `head`, `tail`, `wc` and `rg` must name their input files unless their stdin comes from the
+previous command in the same pipeline. For example, `teamster status | head -n 285 | tail -n 110`
+is allowed, while a leading `head -n 285` still waits for terminal input and is refused. Explicit
+stdin operands such as `-` or `/dev/stdin` remain refused. Unknown or ambiguous reader options are
+declined with a reason; ordinary file-based forms such as `cat README.md`, `head -n 20 notes.md`
 and `rg -n pattern src` remain allowed. These extra reader restrictions apply only to Codex;
 Claude's hook keeps its existing reader policy. `rg --files` may enumerate the current directory
 without a path argument because it does not read stdin.
@@ -251,7 +273,7 @@ queue a note is logged in the task's `stderr.log`, never failing its cycle.
 |---|---|---|
 | `duty.chat_model` | `claude.model` | model of Claude duty chat turns (a nonempty string or null) |
 | `duty.chat_effort` | `"high"` | effort of Claude duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
-| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null selects `gpt-5.5` for direct tools |
+| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null or an unavailable name selects the catalogue default, then its first visible model |
 | `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the isolated Codex default |
 | `duty.chat_max_minutes` | `20` | active time budget of one duty chat turn |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; note-driven turns per hour, the rest wait for the next user message |
