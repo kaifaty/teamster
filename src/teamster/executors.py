@@ -12,6 +12,8 @@ Hooks store the module and attribute name, never the function, so later patches
 of the owning module remain visible. Required operations and signatures are:
   turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True)
   scout(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True)
+  duty(account, room, prompt, stopped, deadline, model, effort, *, thread_id=None,
+       system_text="", started=None, progress=None, task_dir=None, max_minutes=None) -> response
   wrapup(st, cfg, account, prompt, effort, stopped, cursor) -> outcome
   last_message(st) -> str; messages(st) -> list[str]; pr_messages(st) -> list[str]
 Optional status_message(st) overrides the last_message fallback for status.

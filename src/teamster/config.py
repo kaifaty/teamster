@@ -173,6 +173,8 @@ TOKEN_FIELDS = ROLLOUT["TOKEN_FIELDS"]
 GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
 # A duty chat turn sets it to "duty" for the teamster commands it runs; start and scout record it.
 STARTED_BY = "TEAMSTER_STARTED_BY"
+# Per-invocation ownership of Codex duty commands, including separate terminal groups.
+DUTY_PROCESS_MARKER = "TEAMSTER_DUTY_PROCESS"
 
 
 def started_by():
@@ -306,16 +308,21 @@ def accounts_config():
     duty_settings.setdefault("claude_only_task_types", ["visual", "layout"])
     duty_settings.setdefault("chat_model", None)
     duty_settings.setdefault("chat_effort", "high")
+    duty_settings.setdefault("chat_codex_model", None)
+    duty_settings.setdefault("chat_codex_effort", None)
     duty_settings.setdefault("chat_max_minutes", 20)
     duty_settings.setdefault("chat_auto_turns_per_hour", 12)
     for key in ("relative_margin", "absolute_margin"):
         if not result_schema.is_finite_number(duty_settings[key]) or duty_settings[key] < 0:
             procs.die("duty." + key + " must be a finite nonnegative number")
-    if duty_settings["chat_model"] is not None and (
-            not isinstance(duty_settings["chat_model"], str) or not duty_settings["chat_model"]):
-        procs.die("duty.chat_model must be a nonempty string or null")
+    for key in ("chat_model", "chat_codex_model"):
+        if duty_settings[key] is not None and (not isinstance(duty_settings[key], str) or not duty_settings[key]):
+            procs.die("duty." + key + " must be a nonempty string or null")
     if duty_settings["chat_effort"] not in ("low", "medium", "high", "xhigh", "max"):
         procs.die("duty.chat_effort must be low, medium, high, xhigh or max")
+    if duty_settings["chat_codex_effort"] is not None and (
+            not isinstance(duty_settings["chat_codex_effort"], str) or not duty_settings["chat_codex_effort"]):
+        procs.die("duty.chat_codex_effort must be a nonempty string or null")
     if not result_schema.is_finite_number(duty_settings["chat_max_minutes"]) or duty_settings["chat_max_minutes"] <= 0:
         procs.die("duty.chat_max_minutes must be a positive finite number")
     hourly = duty_settings["chat_auto_turns_per_hour"]

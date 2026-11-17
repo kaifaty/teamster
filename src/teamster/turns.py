@@ -2,7 +2,7 @@
 import json
 import sys
 
-from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, config, duty, duty_chat, executors, notifications, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
+from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, duty, duty_chat, executors, notifications, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
 
 
 LIMIT_REASONS = ("usage limit", "authentication failed", "token unavailable")
@@ -103,8 +103,21 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
     task_state.save(st)
 
 
+def run_claude_duty(account, room, prompt, stopped, deadline, model, effort, *, thread_id=None,
+                    system_text="", started=None, progress=None, task_dir=None, max_minutes=None):
+    """Adapt the Claude duty transport to the executor's shared duty contract."""
+    system_prompt = duty_chat.write_system_prompt(system_text, task_dir)
+    try:
+        return claude_runner.run_claude(
+            account, room, prompt, stopped, deadline, model, effort,
+            session_id=thread_id, system_prompt=system_prompt, started=started,
+            progress=progress, task_dir=task_dir, role="duty", max_minutes=max_minutes)
+    finally:
+        system_prompt.unlink(missing_ok=True)
+
+
 def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
-    """One duty chat turn on the current Claude duty account, never another account.
+    """One duty chat turn on the current duty account, never another account.
 
     When the duty moved since the last turn, the conversation continues on the new account
     with the rotation handoff. A limit or a missing duty ends the turn unavailable or failed.
@@ -117,57 +130,74 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
         st.update(outcome="failed", error=refusal)
         task_state.save(st)
         return
-    name, previous = account["name"], st.get("claude_account")
-    if previous and previous != name:
+    name, family = account["name"], account["family"]
+    previous_executor = executors.from_state(st)
+    previous = previous_executor.account(st)
+    if previous and (previous_executor.name, previous) != (family, name):
         prompt = threads.handoff(st, current_message=current_message, cfg=cfg)
-        st["rotations"].append({"at": clock.CLOCK.time(), "from": previous, "to": name,
-                                "reason": f"the duty moved to {name}", "thread": ""})
-        st["session_id"] = ""
-        notifications.notify(st, cfg, "rotated", f"rotated from {previous} to {name}: the duty moved",
-                             **{"from": previous, "to": name, "account": name})
-    st.update(claude_account=name, outcome="running")
+        source = previous if previous_executor.name == family else f"{previous_executor.name}/{previous}"
+        target = name if previous_executor.name == family else f"{family}/{name}"
+        st["rotations"].append({"at": clock.CLOCK.time(), "from": source, "to": target,
+                                "reason": f"the duty moved to {target}", "thread": ""})
+        st.update(session_id="", thread="")
+        notifications.notify(st, cfg, "rotated", f"rotated from {source} to {target}: the duty moved",
+                             **{"from": source, "to": target, "account": name})
+    executor = executors.get(family)
+    st.update(executor=family, outcome="running")
+    st[executor.account_field] = name
     st.pop("error", None)
     task_state.save(st)
     settings = cfg["duty"]
     # say duty --max-minutes and --model replace the settings for the conversation, as say does for a task.
     minutes = st.get("max_turn_minutes") or settings["chat_max_minutes"]
     deadline = clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
+    pid_field = family + "_pid"
 
     def started(proc):
-        st["claude_pid"] = proc.pid
+        st[pid_field] = proc.pid
         task_state.save(st)
 
     def progress(telemetry):
-        if telemetry.get("session_id") and telemetry["session_id"] != st.get("session_id"):
-            st["session_id"] = telemetry["session_id"]
+        cursor = telemetry.get(executor.cursor_field)
+        if cursor and cursor != executor.cursor(st):
+            st[executor.cursor_field] = cursor
+            if family == "codex":
+                st["threads"].append({"account": name, "thread": cursor, "started": clock.CLOCK.time()})
             task_state.save(st)
 
-    system_prompt = duty_chat.write_system_prompt(st["worktree"], directory)
-    model = st.get("task_model") or settings["chat_model"] or cfg["claude"].get("model")
+    model = (st.get("task_model") or settings["chat_model"] or cfg["claude"].get("model")
+             if family == "claude" else st.get("task_model") or settings["chat_codex_model"])
+    effort = effort or settings["chat_effort" if family == "claude" else "chat_codex_effort"]
     try:
-        response = claude_runner.run_claude(
-            account, st["worktree"], prompt, stopped, deadline, model,
-            effort or settings["chat_effort"], session_id=st.get("session_id") or None, system_prompt=system_prompt,
-            started=started, progress=progress, task_dir=directory, role="duty", max_minutes=minutes)
+        response = executor.call(
+            "duty", account, st["worktree"], prompt, stopped, deadline, model, effort,
+            thread_id=executor.cursor(st) or None, system_text=duty_chat.system_text(st["worktree"]),
+            started=started, progress=progress, task_dir=directory, max_minutes=minutes)
     finally:
-        system_prompt.unlink(missing_ok=True)
-        st.pop("claude_pid", None)
+        st.pop(pid_field, None)
         task_state.save(st)
     telemetry = response["telemetry"]
     progress(telemetry)
+    st.update(model=telemetry.get("model"), reasoning_effort=telemetry.get("reasoning_effort"))
     phase = telemetry_log.telemetry_phase(st)
     if phase is not None:
-        phase.add_claude_usage(telemetry, account=name)
+        phase.provider = executor.telemetry_provider(st, "duty")
+        if family == "claude":
+            phase.add_claude_usage(telemetry, account=name)
+        else:
+            phase.add_usage(name, st.get("thread"), None, None, 0,
+                            model=st.get("model"), reasoning_effort=st.get("reasoning_effort"))
     st["outcome"] = task_state.stop_outcome(st, stopped) or response["outcome"]
     reason = response.get("reason")
     if st["outcome"] == "completed":
         st["result"] = response["result"]
         message = json.dumps(response["result"], ensure_ascii=False)
         last.write_text(message, encoding="utf-8")
-        threads.record_claude_message(st, message)
+        if family == "claude":
+            threads.record_claude_message(st, message)
         duty_chat.record_chat_turn(st)
     elif st["outcome"] == "unavailable" and reason in LIMIT_REASONS:
-        if "limited_until" not in response:  # The stream has already marked its own rejection.
+        if family == "claude" and "limited_until" not in response:  # The stream has already marked its own rejection.
             claude_accounts.mark_limited(name, token_unavailable=reason == "token unavailable", reason=reason,
                                          model=model)
         st["error"] = f"the duty account {name} is unavailable: {reason}"
@@ -714,5 +744,6 @@ def claude_wrapup_turn(st, cfg, account, prompt, effort, stopped, thread):
 
 
 executors.get("codex").bind(sys.modules[__name__], turn="_run_turn", scout="_run_turn", wrapup="codex_wrapup_turn")
+executors.get("codex").bind(codex_duty, duty="run_codex_duty")
 executors.get("claude").bind(sys.modules[__name__], turn="run_claude_turn", scout="run_claude_scout_turn",
-                             wrapup="claude_wrapup_turn")
+                             wrapup="claude_wrapup_turn", duty="run_claude_duty")
