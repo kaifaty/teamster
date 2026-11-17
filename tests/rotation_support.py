@@ -210,7 +210,26 @@ def duty_command_environment():
     environment.update(policy.get("set", {}))
     return environment
 
-def duty_turn(request, thread, model):
+def duty_provider_models():
+    # The live ChatGPT catalog has no direct-tool-only model to fall back to.
+    names = ("gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-reserve",
+             "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "codex-auto-review")
+    return [{"slug": name, "display_name": name, "description": "Fixture model " + name,
+             "default_reasoning_level": "high",
+             "supported_reasoning_levels": [{"effort": effort, "description": effort}
+                                            for effort in ("low", "medium", "high", "xhigh")],
+             "shell_type": "unified_exec", "apply_patch_tool_type": "freeform", "tool_mode": "code_mode_only",
+             "visibility": "hide" if name in ("gpt-reserve", "codex-auto-review") else "list",
+             "supported_in_api": True, "priority": index, "availability_nux": None, "upgrade": None,
+             "base_instructions": "Fixture instructions for " + name,
+             "model_messages": {"instructions_template": "Fixture instructions for " + name,
+                                "tools": {"code_mode": {"exec": {"description": "Fixture exec guidance"}}}},
+             "support_verbosity": False, "default_verbosity": None,
+             "truncation_policy": {"mode": "bytes", "limit": 10000}, "context_window": 128000,
+             "experimental_supported_tools": [], "input_modalities": ["text", "image"]}
+            for index, name in enumerate(names)]
+
+def duty_turn(request, thread, model, models):
     params = request["params"]
     count_path = fixture_path.parent / "duty-count"
     count = int(count_path.read_text()) if count_path.exists() else 0
@@ -257,14 +276,23 @@ def duty_turn(request, thread, model):
                            if item["type"] == "text" else item for item in params["input"]]}
     for method in ("item/started", "item/completed"):
         emit({"method": method, "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
+    model_info = next((entry for entry in models if entry["slug"] == model), None)
+    if model_info is None:
+        error = {"message": "The '" + model + "' model is not supported when using Codex with a ChatGPT account."}
+        emit({"method": "turn/completed", "params": {"threadId": thread["id"],
+              "turn": {"id": turn, "status": "failed", "items": [], "error": error}}})
+        return
     if run.get("sleep"):
         emit({"method": "item/started", "params": {"threadId": thread["id"], "turnId": turn,
               "item": {"id": "duty-sleep", "type": "sleep"}}})
     features = duty_config(duty_config_layers(thread["cwd"])).get("features", {})
-    # rust-v0.169.0 models.json forces code_mode_only for gpt-6.1-sol,
-    # independently of the code_mode/code_mode_only feature flags.
-    code_mode = model == "gpt-6.1-sol" or features.get("code_mode") or features.get("code_mode_only")
+    # Model metadata wins over the code_mode/code_mode_only feature flags, including direct mode.
+    tool_mode = model_info.get("tool_mode")
+    code_mode = (tool_mode in ("code_mode", "code_mode_only") if tool_mode is not None
+                 else features.get("code_mode") or features.get("code_mode_only"))
     command_tools = ["exec_command", "write_stdin"] if features.get("shell_tool", True) else []
+    if model_info["shell_type"] != "unified_exec" or model_info["apply_patch_tool_type"] != "freeform":
+        sys.exit("unsupported fake duty model tool metadata")
     trace({"command": "duty-tools", "model": model,
            "tools": ["exec"] if code_mode else command_tools + ["apply_patch"]})
     steps = run.get("requests", [])
@@ -354,6 +382,13 @@ def duty_turn(request, thread, model):
 
 def app_server():
     trace({"command": "app-server", "argv": sys.argv[1:]})
+    catalog_path = duty_config().get("model_catalog_json")
+    # A configured catalog is loaded at process startup and never refreshed from the provider/cache.
+    catalog = json.loads(Path(catalog_path).read_text()) if catalog_path else {"models": duty_provider_models()}
+    models = catalog["models"]
+    if os.environ.get("TEAMSTER_DUTY_PROCESS"):
+        trace({"command": "duty-model-catalog", "source": "model_catalog_json" if catalog_path else "provider",
+               "path": catalog_path, "models": models})
     thread = None
     model = None
     authenticated = False
@@ -413,6 +448,26 @@ def app_server():
                 continue
             authenticated = True
             result = {"type": "chatgptAuthTokens"}
+        elif method == "model/list":
+            if not catalog_path:
+                (home / "models_cache.json").write_text(json.dumps({"models": models}))
+            params = request.get("params", {})
+            listed = [entry for entry in models if params.get("includeHidden") or entry["visibility"] == "list"]
+            default_model = min((entry for entry in models if entry["visibility"] == "list"),
+                                key=lambda entry: entry["priority"])["slug"]
+            result = {"data": [{"id": entry["slug"], "model": entry["slug"], "upgrade": None,
+                       "upgradeInfo": None, "availabilityNux": entry["availability_nux"],
+                       "displayName": entry["display_name"], "description": entry["description"],
+                       "modelSpecialty": None, "hidden": entry["visibility"] != "list",
+                       "supportedReasoningEfforts": [{"reasoningEffort": option["effort"],
+                                                      "description": option["description"]}
+                                                     for option in entry["supported_reasoning_levels"]],
+                       "defaultReasoningEffort": entry["default_reasoning_level"],
+                       "inputModalities": entry["input_modalities"], "supportsPersonality": False,
+                       "multiAgentVersion": None, "additionalSpeedTiers": [], "serviceTiers": [],
+                       "defaultServiceTier": None, "availableAccessPrograms": None,
+                       "isDefault": entry["slug"] == default_model} for entry in listed], "nextCursor": None}
+            trace({"command": "duty-model-list", "params": params, "result": result})
         elif method in ("thread/start", "thread/resume"):
             params = request["params"]
             identifier = params.get("threadId") if method == "thread/resume" else str(uuid.uuid4())
@@ -430,14 +485,15 @@ def app_server():
                     trace({"command": "duty-mcp-connected", "server": name})
             if not settings.get("projects", {}).get(params["cwd"], {}).get("trust_level"):
                 (home / "config.toml").write_text('[projects.' + json.dumps(params["cwd"]) + ']\ntrust_level = "trusted"\n')
-            model = params.get("model") or settings.get("model") or "gpt-6.1-sol"
+            model = params.get("model") or settings.get("model") or min(
+                (entry for entry in models if entry["visibility"] == "list"), key=lambda entry: entry["priority"])["slug"]
             result = {"thread": thread, "model": model,
                       "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort", "high"),
                       "approvalPolicy": params.get("approvalPolicy"), "approvalsReviewer": params.get("approvalsReviewer"),
                       # What the real app-server 0.169.0 answers for a room-only workspace-write sandbox.
                       "sandbox": {"type": "readOnly", "networkAccess": False}}
         elif method == "turn/start":
-            duty_turn(request, thread, model)
+            duty_turn(request, thread, model, models)
             continue
         elif method == "turn/interrupt":
             result = {}

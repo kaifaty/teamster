@@ -966,7 +966,21 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(first["params"]["outputSchema"], worker.result_schema.DUTY_SCHEMA)
         self.assertNotIn("effort", first["params"])
         thread = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
-        self.assertEqual(thread["params"]["model"], "gpt-5.5")
+        self.assertNotIn("model", thread["params"])
+        catalogs = [entry for entry in self.trace()
+                    if entry["command"] == "duty-model-catalog" and entry["home"] == str(isolated)]
+        discovered = next(entry for entry in catalogs if entry["source"] == "provider")["models"]
+        execution = next(entry for entry in catalogs if entry["source"] == "model_catalog_json")
+        self.assertEqual(len(discovered), 10)
+        self.assertTrue(all(entry["tool_mode"] == "code_mode_only" and entry["shell_type"] == "unified_exec"
+                            and entry["apply_patch_tool_type"] == "freeform" for entry in discovered))
+        self.assertEqual(execution["models"], [dict(entry, tool_mode="direct") for entry in discovered])
+        self.assertFalse(Path(execution["path"]).exists())
+        listed = next(entry for entry in self.trace()
+                      if entry["command"] == "duty-model-list" and entry["home"] == str(isolated))
+        self.assertTrue(listed["params"]["includeHidden"])
+        self.assertNotIn("limit", listed["params"])
+        self.assertEqual(len(listed["result"]["data"]), 10)
         tools = next(entry for entry in self.trace() if entry["command"] == "duty-tools")
         self.assertEqual(tools["tools"], ["exec_command", "write_stdin", "apply_patch"])
         self.assertEqual((thread["params"]["approvalPolicy"], thread["params"]["approvalsReviewer"]),
@@ -982,7 +996,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual([entry["reply"] for entry in self.state("duty")["duty_turns"]],
                          [command_output.strip(), "Second answer."])
         self.assertEqual((self.state("duty")["model"], self.state("duty")["reasoning_effort"]),
-                         ("gpt-5.5", "xhigh"))
+                         ("gpt-6.1-sol", "xhigh"))
         self.assertIn("room " + str(room), self.cli("status", "duty"))
         events = [json.loads(line) for line in (room.parent / "events.jsonl").read_text().splitlines()]
         self.assertTrue(any(event.get("type") == "thread.started" for event in events))
@@ -1067,7 +1081,7 @@ class ClaudeReviewTests(RotationTestCase):
             {"reply": self.duty_answer("Choose a repository.", "needs_decision", "Which repository?", ["parser", "billing"])},
             {"reply": self.duty_answer("The question is still open.")},
             {"reply": self.duty_answer("Claude has the completed answer.")}], names=("main", "second"),
-            duty={"chat_model": "fixture-claude", "chat_codex_model": "fixture-codex"})
+            duty={"chat_model": "fixture-claude", "chat_codex_model": "gpt-6.1-sol"})
         self.codex_duty_runs([{"reply": self.duty_answer("Codex understood option 1.")},
                               {"reply": self.duty_answer("Codex is ready to hand off.")}])
         self.put_duty("main")
@@ -1106,17 +1120,17 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertIn("Codex understood option 1.", self.cli("duty", "chat", "1", timeout=60))
         self.assertEqual(self.state("duty")["duty_turns"][-1]["reply"], "Codex understood option 1.")
         first_codex = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
-        self.assertEqual(first_codex["params"]["model"], "fixture-codex")
+        self.assertEqual(first_codex["params"]["model"], "gpt-6.1-sol")
         codex = self.codex_duty_invocations()[0]
         text = codex["params"]["input"][0]["text"]
         for fragment in ("Fix the parser.", "Which repository?", "1. parser", "2. billing", "1",
                          "The question is still open."):
             self.assertIn(fragment, text)
         self.assertFalse(self.state("duty").get("session_id"))
-        self.cli("say", "duty", "Prepare the handoff.", "--model", "fixture-codex-override")
+        self.cli("say", "duty", "Prepare the handoff.", "--model", "gpt-6-sol")
         self.cli("wait", "duty", timeout=60)
         second_codex = [entry for entry in self.trace() if entry["command"] == "duty-thread"][-1]
-        self.assertEqual(second_codex["params"]["model"], "fixture-codex-override")
+        self.assertEqual(second_codex["params"]["model"], "gpt-6-sol")
         self.put_duty("main")
         self.cli("say", "duty", "What happened?", "--model", "fixture-claude-return")
         self.assertIn("Claude has the completed answer.", self.cli("wait", "duty", timeout=60))
@@ -1236,7 +1250,7 @@ class ClaudeReviewTests(RotationTestCase):
 
                 response = worker.turns.codex_duty.run_codex_duty(
                     account, self.repo, "Discuss.", stopped,
-                    worker.clock.CLOCK.monotonic() + 60, "fixture-duty", "high",
+                    worker.clock.CLOCK.monotonic() + 60, "gpt-6.1-sol", "high",
                     system_text="Duty fixture instructions.", task_dir=directory)
                 self.assertEqual(response["outcome"], expected, response)
                 trace = self.trace()
@@ -1248,7 +1262,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertFalse(self.process_is_live(child))
             failed = worker.turns.codex_duty.run_codex_duty(
                 account, self.repo, "Crash.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
-                "fixture-duty", "high", system_text="Duty fixture instructions.", task_dir=directory)
+                "gpt-6.1-sol", "high", system_text="Duty fixture instructions.", task_dir=directory)
             crash_trace = self.trace()
             crashed_children = [entry["child_pid"] for entry in crash_trace if entry["command"] == "duty-child"]
             self.extra_pids.update(crashed_children)
@@ -1260,7 +1274,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertFalse(self.process_is_live(child))
             recovered = worker.turns.codex_duty.run_codex_duty(
                 account, self.repo, "Recover.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
-                "fixture-duty", "high", thread_id=failed["telemetry"]["thread"],
+                "gpt-6.1-sol", "high", thread_id=failed["telemetry"]["thread"],
                 system_text="Duty fixture instructions.", task_dir=directory)
             self.assertEqual(recovered["outcome"], "completed", recovered)
             self.assertEqual(recovered["result"]["reply"], "Recovered.")
