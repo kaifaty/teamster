@@ -116,8 +116,12 @@ The account catalogue observed with Codex 0.169.0 gives every model
 and [Code Mode Only hides direct tools](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/spec_plan.rs#L887-L912).
 With the Code Mode host disabled, its `exec` tool answers `code-mode host is disabled`.
 For each duty turn, teamster instead reads the account home's `models_cache.json` read-only,
-preserves every model's metadata and prompts, changes only `tool_mode` to `direct`, and writes a
-per-run copy into the isolated duty home. It passes that copy through the invocation's
+sets `tool_mode` to `direct`, and removes only `request_user_input_async`, its legacy name
+`send_user_message_async`, and `send_message_to_user_async` from `experimental_supported_tools`.
+It preserves the other metadata and prompts and writes a per-run copy into the isolated duty home.
+These [async tools emit messages marked as final answers](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/handlers/request_user_input_async.rs#L131-L143);
+an unexpected async agent message fails the turn before its text is journaled or used as the answer.
+Teamster passes the copy through the invocation's
 [`model_catalog_json`](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/config/mod.rs#L2327-L2358),
 then removes the copy during cleanup. No account file is written or deleted. There is one
 app-server process, with no discovery process or isolated-cache deletion. The observed account
@@ -128,9 +132,13 @@ Ordinary Codex work turns create and refresh the account's cache. In the observe
 established. If the account cache is missing or unusable, the duty refuses with one sentence:
 `Codex duty needs a usable <account-home>/models_cache.json; an ordinary Codex work turn creates it.`
 The cached catalogue can become stale; an ordinary work turn refreshes it.
+Teamster checks the required model metadata and instruction template, including the legacy
+`base_instructions` form. A JSON decoding failure during an in-place cache rewrite gets at most
+three read attempts; a persistently invalid cache produces the same refusal.
 
-The default model is the `model/list` default when its name appears in the copied catalogue,
-otherwise the first catalogue model with `visibility: "list"`. `duty.chat_codex_model` and the
+The default model is teamster's usual `gpt-6.1-sol` when it appears in the account catalogue,
+otherwise the first model with `visibility: "list"` in cache order. Teamster does not recompute
+the default from `model/list` or model priorities. `duty.chat_codex_model` and the
 conversation's `--model` select another name only while it remains in that catalogue. A missing
 or unavailable override uses the same fallback. Every `thread/start` and `thread/resume` receives
 the selected model explicitly, so an unavailable model stored in a rollout recovers on the next
@@ -171,8 +179,10 @@ TTY execution and the Code Mode host are disabled. The server
 [rejects `tty: true`](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/handlers/unified_exec/preparation.rs#L185-L189).
 A non-TTY `write_stdin` can poll an accepted command or interrupt it;
 [it cannot send ordinary input](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/unified_exec/process_manager.rs#L1017-L1026)
-to that process. This prevents later stdin
-from adding unapproved work to an accepted command. Teamster also forbids hidden work through
+to that process. However, [Ctrl-C explicitly skips approval](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/unified_exec/stdin_approval.rs#L198-L205)
+and interrupts the process. Codex 0.169.0 [registers `exec_command` and `write_stdin` together](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tools/spec_plan.rs#L1311-L1320);
+its public invocation settings cannot remove only `write_stdin`. This transport therefore cannot
+guard the model's interruption of an already approved process. It also forbids hidden work through
 stdin paths or Git's `--stdin`, as described below.
 
 Turn cleanup interrupts the turn, cleans its background terminals and shuts the server down so
@@ -273,7 +283,7 @@ queue a note is logged in the task's `stderr.log`, never failing its cycle.
 |---|---|---|
 | `duty.chat_model` | `claude.model` | model of Claude duty chat turns (a nonempty string or null) |
 | `duty.chat_effort` | `"high"` | effort of Claude duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
-| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null or an unavailable name selects the catalogue default, then its first visible model |
+| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null or an unavailable name selects `gpt-6.1-sol` when present, otherwise the first visible model in cache order |
 | `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the isolated Codex default |
 | `duty.chat_max_minutes` | `20` | active time budget of one duty chat turn |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; note-driven turns per hour, the rest wait for the next user message |
