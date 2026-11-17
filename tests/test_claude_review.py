@@ -1293,6 +1293,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.configure(language="en", duty={"chat_auto_turns_per_hour": 1})
         (self.home / "claude-accounts.json").replace(data / "config.json")
         self.account(self.other, "B", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
+        self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
         fixture_path = self.home / "fixture.json"
         fixture = json.loads(fixture_path.read_text())
         fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": dict(
@@ -1301,7 +1302,6 @@ class ClaudeReviewTests(RotationTestCase):
         fixture_path.write_text(json.dumps(fixture))
         self.put_duty("main", "codex")
         room = data / "tasks" / "duty" / "room"
-        self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
         self.cli("duty", "chat", "Start the parser fix.", timeout=60)
         launcher = self.root / "teamster"
         launcher.write_text("#!/bin/sh\nexec " + shlex.join([PYTHON, "-I", str(SCRIPT)]) + ' "$@"\n')
