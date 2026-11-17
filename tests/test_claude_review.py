@@ -964,8 +964,22 @@ class ClaudeReviewTests(RotationTestCase):
         self.cli("wait", "duty", timeout=60)
         overridden = self.claude_invocations()[-1]["argv"]
         self.assertEqual(overridden[overridden.index("--model") + 1], "opus")
-        self.put_duty("main", "codex")
-        self.assertIn("Codex understood option 1.", self.cli("duty", "chat", "1", timeout=60))
+        worker = self.worker()
+        start_process = worker.supervisor.start_process
+
+        def switch_before_start(st):
+            self.assertEqual((st["executor"], st["task_model"]), ("claude", "opus"))
+            self.put_duty("main", "codex")
+            return start_process(st)
+
+        order = {"at": time.time(), "text": "1", "options": {}, "source": "user"}
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process", side_effect=switch_before_start):
+            _, process = worker.commands.send_duty_chat(worker.config.accounts_config(), order, False)
+        self.extra_pids.add(process.pid)
+        process.wait(timeout=60)
+        self.assertEqual(self.state("duty")["duty_turns"][-1]["reply"], "Codex understood option 1.")
+        self.assertNotIn("task_model", self.state("duty"))
         first_codex = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
         self.assertEqual(first_codex["params"]["model"], "fixture-codex")
         codex = self.codex_duty_invocations()[0]
@@ -978,11 +992,12 @@ class ClaudeReviewTests(RotationTestCase):
         second_codex = [entry for entry in self.trace() if entry["command"] == "duty-thread"][-1]
         self.assertEqual(second_codex["params"]["model"], "fixture-codex-override")
         self.put_duty("main")
-        self.assertIn("Claude has the completed answer.", self.cli("duty", "chat", "What happened?", timeout=60))
+        self.cli("say", "duty", "What happened?", "--model", "fixture-claude-return")
+        self.assertIn("Claude has the completed answer.", self.cli("wait", "duty", timeout=60))
         returned = self.claude_invocations()[-1]
         self.assertNotIn("--resume", returned["argv"])
         self.assertNotEqual(returned["session_id"], old_session)
-        self.assertEqual(returned["argv"][returned["argv"].index("--model") + 1], "fixture-claude")
+        self.assertEqual(returned["argv"][returned["argv"].index("--model") + 1], "fixture-claude-return")
         for fragment in ("Codex understood option 1.", "What happened?", "Which repository?", "1. parser"):
             self.assertIn(fragment, returned["argv"][1])
         self.assertFalse(self.state("duty").get("thread"))

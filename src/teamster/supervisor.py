@@ -263,7 +263,7 @@ def apply_say(st, options, cfg):
             account, refusal = duty_chat.chat_account(cfg)
             if account is None:
                 procs.die(refusal)
-            if executor.name != account["family"]:
+            if st.get("task_model_family", executor.name) != account["family"]:
                 st.pop("task_model", None)
             executor = executors.get(account["family"])
         if scouting:
@@ -275,6 +275,8 @@ def apply_say(st, options, cfg):
     budgets.set_weekly_budget(st, options.get("max_weekly"), cfg)
     if options.get("model") is not None:
         st["task_model"] = None if options["model"] == "default" else options["model"]
+        if st.get("kind") == duty_chat.CHAT_KIND:
+            st["task_model_family"] = executor.name
     if options.get("review_model") is not None:
         st["review_model"] = None if options["review_model"] == "default" else options["review_model"]
     if options.get("task_type") is not None:

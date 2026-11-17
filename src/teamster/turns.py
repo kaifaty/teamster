@@ -133,6 +133,9 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
     name, family = account["name"], account["family"]
     previous_executor = executors.from_state(st)
     previous = previous_executor.account(st)
+    if st.get("task_model_family", previous_executor.name) != family:
+        st.pop("task_model", None)
+        st.pop("task_model_family", None)
     if previous and (previous_executor.name, previous) != (family, name):
         prompt = threads.handoff(st, current_message=current_message, cfg=cfg)
         source = previous if previous_executor.name == family else f"{previous_executor.name}/{previous}"

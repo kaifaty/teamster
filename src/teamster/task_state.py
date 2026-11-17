@@ -144,6 +144,7 @@ STATE_FIELDS = {
     "base_switch": StateField("task"),
     "effort": StateField("task"),
     "task_model": StateField("task"),
+    "task_model_family": StateField("task"),
     "review_model": StateField("task"),
     "task_type": StateField("task"),
     "model": StateField("cursor", spawn_reset=lambda st, turn: None),
