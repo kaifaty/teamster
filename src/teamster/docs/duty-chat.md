@@ -66,8 +66,11 @@ so no account or project setting turns the hook off. The hook fails closed and a
 
 Everything else is refused, in particular `gh pr merge`, `git push|commit|merge|rebase|reset|checkout`,
 `teamster clean|verdict|login|claude-login|duty tick|duty set|duty auto|duty clear`, `scripts/bump_version.py`, package
-managers, `curl` and `rm`. Commands run by path and variable assignments are refused. A compound
-command (`;`, `&&`, `||`, `|`, a subshell) is judged by every part; shell expansions (`$VAR`, `$(…)`,
+managers, `curl` and `rm`. Commands run by path and variable assignments are refused.
+`teamster`, `git` and `gh` refuse `-`, `/dev/stdin`,
+`/dev/fd/0` and `/proc/self/fd/0` as arguments, including option values and symbolic links to these
+paths; git also refuses `--stdin` and its abbreviations. Readers may consume standard input.
+A compound command (`;`, `&&`, `||`, `|`, a subshell) is judged by every part; shell expansions (`$VAR`, `$(…)`,
 backticks, ANSI-C quoting `$'…'`, arithmetic, globs, braces, the body of an unquoted heredoc that
 expands) and control keywords are refused. Redirections and the file tools may write only inside the
 room and outside its `.git` and `.claude` (project settings), with every symbolic link resolved (`/dev/null` and `2>&1` are fine). The duty never merges, releases or accepts work: that stays

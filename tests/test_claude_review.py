@@ -386,6 +386,7 @@ class ClaudeReviewTests(RotationTestCase):
         outside.mkdir()
         # A link inside the room to a directory outside it.
         (room / "linked").symlink_to(outside)
+        (room / "stdin").symlink_to("/dev/stdin")
         git = "git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null"
         flags = "--no-ext-diff --no-textconv --no-show-signature --submodule=short"
         allowed = (
@@ -395,7 +396,7 @@ class ClaudeReviewTests(RotationTestCase):
             "teamster scout where 'Who reads it?' --repo /r", "teamster review fix-parser --review-angles tests",
             "teamster stop fix-parser", "teamster status", "teamster wait fix-parser --timeout 60",
             "teamster report --since 7d --json", "teamster docs lead-guide", "teamster accounts --json",
-            "teamster duty status --json", "teamster start x --brief - -h",
+            "teamster duty status --json",
             git + " -C /work/repo log " + flags + " --oneline -5",
             git + " log " + flags + " -p --format=%h%x20%s", git + " show " + flags + " --format=fuller HEAD~1",
             git + " -C /work/repo diff " + flags + " --stat=80 origin/main...HEAD --", git + " diff " + flags + " A B -- src",
@@ -405,7 +406,8 @@ class ClaudeReviewTests(RotationTestCase):
             git + " ls-files -z --stage src", git + " grep -n parse HEAD -- src",
             "gh pr view 12 --repo fixture/repo", "gh pr diff 12", "gh pr checks 12", "gh pr list",
             "gh run view 7 --log-failed", "gh run list", "ls -la /work/repo", "cat README.md", "head -n 5 a.md",
-            "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src",
+            "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src", "cat -", "head /dev/stdin",
+            "tail /dev/fd/0", "wc /proc/self/fd/0", "rg x -", "cat stdin",
             # Compound commands pass when every part does; output may go to the room or /dev/null.
             "teamster status && " + git + " log " + flags + " --oneline -1; teamster accounts",
             git + " log " + flags + " --oneline | head -3 | wc -l", "(teamster status; ls)",
@@ -446,7 +448,13 @@ class ClaudeReviewTests(RotationTestCase):
             "teamster start x --brief b.md --check 'gh pr merge 1'", "teamster say x hi --ci-command=sh",
             "teamster start x --brief b.md --check-loaded make", "teamster start sample --brief b.md --ci-comm='gh pr merge 1'",
             "teamster start x --brief b.md --ch=make", "teamster say x hi --check-l make", "teamster start x --bri b.md",
-            "teamster wait x --check y",
+            "teamster wait x --check y", "teamster say x --file -", "teamster start s --brief /dev/stdin",
+            "teamster start x --brief - -h", "teamster say x --file=/dev/fd/0",
+            "teamster scout x /proc/self/fd/0 --repo /r", "gh pr view -", "gh pr diff /dev/stdin",
+            git + " grep x /dev/fd/0", git + " ls-files /proc/self/fd/0",
+            "teamster start x --brief stdin", "gh pr view stdin", git + " grep -fstdin",
+            git + " grep -f-", git + " grep -nf/dev/stdin",
+            git + " log " + flags + " --oneline --stdin", git + " log " + flags + " --oneline --std",
             "scripts/bump_version.py minor --commit", "python3 scripts/bump_version.py patch", "./teamster status",
             "npm install", "pip install x", "uv tool install x", "brew install x", "curl https://example.test",
             "rm -rf build", "rg --pre=sh x .", "echo hi", "PATH=/tmp teamster status", "cd /work && teamster status",

@@ -451,6 +451,8 @@ DUTY_GIT_DIFF_VALUES = ("--stat=", "--unified=", "--diff-filter=", "-U")
 DUTY_GIT_FORMATS = frozenset({"oneline", "short", "medium", "full", "fuller", "reference", "raw"})
 DUTY_GH = {"pr": frozenset({"view", "diff", "checks", "list"}), "run": frozenset({"view", "list"})}
 DUTY_READERS = frozenset({"ls", "cat", "head", "tail", "wc", "rg"})
+# Only readers may consume work from stdin: Codex can send input to an approved process.
+DUTY_STDIN_PATHS = frozenset({"/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
 # Options that make rg run another program.
 DUTY_RG_OPTIONS = ("--pre", "--hostname-bin")
 OUTPUT_REDIRECTIONS = frozenset({">", ">>", ">|", "&>", "&>>", "<>", ">&"})
@@ -589,6 +591,17 @@ def duty_command_denial(words, room, cwd):
     if "/" in name:
         return f"commands run by path are refused (`{name}`); use the bare command name"
     arguments = words[1:]
+    if name in {"teamster", "git", "gh"}:
+        stdin_paths = {os.path.realpath(path) for path in DUTY_STDIN_PATHS}
+        for argument in arguments:
+            value = argument.split("=", 1)[1] if argument.startswith("-") and "=" in argument else argument
+            if name == "git" and argument.startswith("-") and not argument.startswith("--") and "f" in argument:
+                value = argument.partition("f")[2] or value  # git grep -nfFILE reads its patterns from FILE.
+            if (value == "-" or value in DUTY_STDIN_PATHS
+                    or os.path.realpath(os.path.join(cwd, os.path.expanduser(value))) in stdin_paths):
+                return f"`{name}` may not take work from standard input (`{argument}`)"
+            if name == "git" and len(argument) > 2 and "--stdin".startswith(argument):
+                return "git options that take work from standard input (`--stdin`) are refused"
     if name == "teamster":
         return teamster_denial(arguments)
     if name == "git":
