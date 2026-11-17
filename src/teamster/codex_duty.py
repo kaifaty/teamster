@@ -20,8 +20,8 @@ from . import accounts, clock, config, procs, result_schema
 
 
 # Verified against rust-v0.169.0 tools/spec_plan.rs and extension contributors.
-# Code Mode, if selected by model metadata, is an isolated V8 wrapper around
-# these same tool runtimes, with no imports, filesystem or process APIs.
+# Model metadata can select Code Mode despite these flags. Use a direct-tool
+# model by default; enabling the host would also expose unapproved process input.
 DUTY_CODEX_DISABLED = (
     "hooks", "plugin_hooks", "plugins", "apps", "enable_mcp_apps", "recommended_plugins", "view_image",
     "multi_agent", "multi_agent_v2", "multi_agent_v2_dynamic_tools", "agent_message_board",
@@ -496,11 +496,10 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         requirements = rpc.call("configRequirements/read", {})
         codex_duty_preflight(home, room, effective, requirements, overrides)
         params = {"cwd": str(room), "approvalPolicy": "untrusted", "approvalsReviewer": "user",
+                  "model": model or "gpt-5.5",
                   "sandbox": "workspace-write", "developerInstructions": system_text,
                   "environments": [],
                   "config": {"model_reasoning_effort": effort} if effort else {}}
-        if model:
-            params["model"] = model
         if thread_id:
             params["threadId"] = thread_id
         reply = rpc.call("thread/resume" if thread_id else "thread/start", params)
