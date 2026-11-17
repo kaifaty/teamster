@@ -242,6 +242,8 @@ def duty_write_models_cache(models):
 
 def duty_turn(request, thread, model, models):
     params = request["params"]
+    # A rollout becomes resumable only once a turn starts, including failed turns.
+    (home / "duty-threads" / thread["id"]).write_text(json.dumps({"model": model}))
     count_path = fixture_path.parent / "duty-count"
     count = int(count_path.read_text()) if count_path.exists() else 0
     count_path.write_text(str(count + 1))
@@ -349,7 +351,7 @@ def duty_turn(request, thread, model, models):
                 trace({"command": "duty-model-tool-output", "type": "function_call_output", "output": output})
                 continue
             if escalated:
-                approval.update(reason=step.get("justification"), approvalId=None)
+                approval.update(reason=step.get("justification"), environmentId="local")
         item = step.get("item")
         if item is None and method == "item/commandExecution/requestApproval" and approval.get("command"):
             item = {"type": "commandExecution", "command": approval["command"], "cwd": approval.get("cwd"),
@@ -373,10 +375,23 @@ def duty_turn(request, thread, model, models):
                    "sqlite_home": environment.get("CODEX_SQLITE_HOME"),
                    "storage": {key: environment.get(key) for key in
                                ("TEAMSTER_HOME", "CODEX_TASK_HOME", "TEAMSTER_CODEX_HOME")}})
-            words = shlex.split(approval["command"])
+            script = approval["command"]
+            words = shlex.split(script)
             if len(words) == 3 and words[0] in ("/bin/bash", "/bin/sh", "/bin/zsh") and words[1] in ("-c", "-lc"):
-                words = shlex.split(words[2])
-            needs_outside_room = step.get("needs_outside_room") or (words and words[0] in ("teamster", "gh"))
+                script = words[2]
+            # Only classify the observed write-backed commands, including later pipeline/compound members.
+            lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|()\n")
+            lexer.whitespace = " \t\r"
+            lexer.whitespace_split = True
+            commands = [[]]
+            for word in lexer:
+                if all(char in ";&|()\n" for char in word):
+                    commands.append([])
+                else:
+                    commands[-1].append(word)
+            needs_outside_room = any(len(words) > 1 and words[0] == "teamster"
+                                     and words[1] in ("start", "say", "scout", "review", "stop", "status", "wait")
+                                     for words in commands)
             if needs_outside_room and not escalated:
                 partial = "Duty status (partial).\n"
                 lock = Path(environment.get("TEAMSTER_HOME") or environment["CODEX_TASK_HOME"]) / "state.lock"
@@ -439,18 +454,35 @@ def app_server():
                 "truncation_policy": dict, "experimental_supported_tools": list}
     if (not isinstance(catalog, dict) or not isinstance(catalog.get("models"), list) or not catalog["models"]
             or any(not isinstance(info, dict) or any(type(info.get(key)) is not kind for key, kind in required.items())
-                   or not (isinstance(info.get("base_instructions"), str)
-                           or isinstance(info.get("model_messages"), dict)
-                           and isinstance(info["model_messages"].get("instructions_template"), str))
                    for info in catalog["models"])):
         sys.exit("failed to parse model_catalog_json: missing or invalid model metadata")
     models = catalog["models"]
+    for info in models:
+        truncation = info["truncation_policy"]
+        messages, legacy = info.get("model_messages"), info.get("base_instructions")
+        template = messages.get("instructions_template") if isinstance(messages, dict) else None
+        if (info["shell_type"] not in ("unified_exec", "disabled", "default", "local", "shell_command")
+                or info["visibility"] not in ("list", "hide", "none")
+                or not -(2 ** 31) <= info["priority"] < 2 ** 31
+                or truncation.get("mode") not in ("bytes", "tokens")
+                or type(truncation.get("limit")) is not int
+                or not -(2 ** 63) <= truncation["limit"] < 2 ** 63
+                or any(not isinstance(level, dict) or not isinstance(level.get("effort"), str)
+                       or not level["effort"] or not isinstance(level.get("description"), str)
+                       for level in info["supported_reasoning_levels"])
+                or any(not isinstance(tool, str) for tool in info["experimental_supported_tools"])
+                or messages is not None and not isinstance(messages, dict)
+                or template is not None and not isinstance(template, str)
+                or legacy is not None and not isinstance(legacy, str)
+                or template is None and legacy is None):
+            sys.exit("failed to parse model_catalog_json: missing or invalid model metadata")
     if os.environ.get("TEAMSTER_DUTY_PROCESS"):
         trace({"command": "duty-model-catalog", "source": "model_catalog_json" if catalog_path else "provider",
                "path": catalog_path, "models": models})
     thread = None
     model = None
     authenticated = False
+    initialized = False
     if "CODEX_FAKE_RPC_FAILURE" in os.environ:
         sys.stdin.readline()
         print(os.environ["CODEX_FAKE_RPC_FAILURE"], flush=True)
@@ -461,10 +493,14 @@ def app_server():
             continue
         value = fixture()
         method = request["method"]
+        if not initialized and method != "initialize":
+            emit({"id": request["id"], "error": {"code": -32600, "message": "Not initialized"}})
+            continue
         if value.get("rpc_error") and method == "account/read":
             emit({"id": request["id"], "error": {"code": -32000, "message": "fixture account unavailable"}})
             continue
         if method == "initialize":
+            initialized = True
             result = {"userAgent": "codex/0.169.0", "platformFamily": "unix"}
         elif method == "configRequirements/read":
             result = {"requirements": (value.get("duty_requirements_after_login")
@@ -546,7 +582,6 @@ def app_server():
             previous = json.loads(stored.read_text()) if stored.exists() and stored.stat().st_size else {}
             model = params.get("model") or previous.get("model") or settings.get("model") or min(
                 (entry for entry in models if entry["visibility"] == "list"), key=lambda entry: entry["priority"])["slug"]
-            stored.write_text(json.dumps({"model": model}))
             result = {"thread": thread, "model": model,
                       "reasoningEffort": (params.get("config") or {}).get("model_reasoning_effort", "high"),
                       "approvalPolicy": params.get("approvalPolicy"), "approvalsReviewer": params.get("approvalsReviewer"),

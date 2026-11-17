@@ -133,7 +133,7 @@ established. If the account cache is missing or unusable, the duty refuses with 
 `Codex duty needs a usable <account-home>/models_cache.json; an ordinary Codex work turn creates it.`
 The cached catalogue can become stale; an ordinary work turn refreshes it.
 Teamster checks the required model metadata and instruction template, including the legacy
-`base_instructions` form. A JSON decoding failure during an in-place cache rewrite gets at most
+`base_instructions` form. A JSON or UTF-8 decoding failure during an in-place cache rewrite gets at most
 three read attempts; a persistently invalid cache produces the same refusal.
 
 The default model is teamster's usual `gpt-6.1-sol` when it appears in the account catalogue,
@@ -197,8 +197,10 @@ To avoid deliberately persistent readers that could outlive a crashed app-server
 also refuses `tail -f`, `-F` and `--follow`, including combined short options and `--follow=…`.
 `cat`, `head`, `tail`, `wc` and `rg` must name their input files unless their stdin comes from the
 previous command in the same pipeline. For example, `teamster status | head -n 285 | tail -n 110`
-is allowed, while a leading `head -n 285` still waits for terminal input and is refused. Explicit
-stdin operands such as `-` or `/dev/stdin` remain refused. Unknown or ambiguous reader options are
+is allowed, while a leading `head -n 285` still waits for terminal input and is refused. Stdin
+redirections on a stage or its enclosing group remove this pipe exemption. Numeric
+`head -N` and `tail -N` forms are accepted only at a stage fed by a pipe.
+Explicit stdin operands such as `-` or `/dev/stdin` remain refused. Unknown or ambiguous reader options are
 declined with a reason; ordinary file-based forms such as `cat README.md`, `head -n 20 notes.md`
 and `rg -n pattern src` remain allowed. These extra reader restrictions apply only to Codex;
 Claude's hook keeps its existing reader policy. `rg --files` may enumerate the current directory
