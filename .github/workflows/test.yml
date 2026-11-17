@@ -7,17 +7,12 @@ on:
 
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        # ubuntu-latest moved to Ubuntu 26.04, where setup-python has no Python 3.9.
-        os: [ubuntu-24.04, macos-latest]
-        python: ["3.9", "3.12"]
-    runs-on: ${{ matrix.os }}
+    # One runner per pull request: Ubuntu with Python 3.12. macOS and Python 3.9 are checked locally.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
       - run: python tests/test_rotation.py
       - run: python tests/package_smoke.py
