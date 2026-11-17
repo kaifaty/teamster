@@ -53,7 +53,13 @@ the writable room. Both `CODEX_HOME` and the server's `HOME` point there, as doe
 The home persists so later turns can resume their threads. No account configuration, `.env`, hooks,
 rules, plugins, skills or instruction files are copied or linked into it. Invocation settings disable
 plugins and bundled/cloud skills, stop project discovery at the room, and disable project instruction
-loading. Host skill discovery in this app-server cannot be switched off with
+loading. An invocation-only `projects` entry marks the room `untrusted`, preventing Codex from
+automatically writing a trusted-project table into the isolated `config.toml`.
+If a saved thread still belongs to the old account store, Codex reports that its rollout is missing;
+teamster clears that cursor and starts a fresh thread with its existing conversation handoff, under
+the same turn deadline. Other resume errors fail normally; account rollout files are never copied.
+These behaviors follow the [thread startup and resume implementation](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/app-server/src/request_processors/thread_processor.rs).
+Host skill discovery in this app-server cannot be switched off with
 `skip_host_skill_discovery` alone, so the isolated `HOME` also excludes the user's `.agents/skills`.
 Inherited remote-executor, app-server configuration and OpenAI authentication environment settings
 are removed. Guarded shell commands receive the original `HOME`, so allowed commands such as `gh`
