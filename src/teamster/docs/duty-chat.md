@@ -48,7 +48,47 @@ on `Bash`, `Write`, `Edit`, `MultiEdit` and `NotebookEdit`; the same `--settings
 so no account or project setting turns the hook off. Teamster adds no operating-system sandbox to
 this transport.
 
-A Codex turn runs through `codex app-server` on the duty account's home. The adapter requires
+A Codex turn runs through `codex app-server` in a teamster-owned `tasks/duty/codex-home`, outside
+the writable room. Both `CODEX_HOME` and the server's `HOME` point there, as does its SQLite storage.
+`CODEX_SQLITE_HOME` is excluded from shell commands, so tasks they start use their own account's storage.
+The home persists so later turns can resume their threads. No account configuration, `.env`, hooks,
+rules, plugins, skills or instruction files are copied or linked into it. Invocation settings disable
+plugins and bundled/cloud skills, stop project discovery at the room, and disable project instruction
+loading. An invocation-only `projects` entry marks the room `untrusted`, preventing Codex from
+automatically writing a trusted-project table into the isolated `config.toml`.
+If a saved thread still belongs to the old account store, Codex reports that its rollout is missing;
+teamster clears that cursor and starts a fresh thread with its existing conversation handoff, under
+the same turn deadline. Other resume errors fail normally; account rollout files are never copied.
+These behaviors follow the [thread startup and resume implementation](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/app-server/src/request_processors/thread_processor.rs).
+Host skill discovery in this app-server cannot be switched off with
+`skip_host_skill_discovery` alone, so the isolated `HOME` also excludes the user's `.agents/skills`.
+Inherited remote-executor, app-server configuration and OpenAI authentication environment settings
+are removed. Guarded shell commands receive the original `HOME`, so allowed commands such as `gh`
+can use their normal configuration; their command approvals still go through teamster.
+
+The only account-home file teamster reads for the duty transport is `auth.json`, read-only. It parses
+that document and sends only `tokens.access_token` and `tokens.account_id` to
+`account/login/start` with type `chatgptAuthTokens`, over the server's stdin pipe. Codex keeps those
+credentials in process-local ephemeral storage with no refresh token. Teamster never copies or
+symlinks credential files, exchanges refresh tokens, writes account credentials, or logs the supplied
+tokens. On `account/chatgptAuthTokens/refresh`, it rereads the same file and returns a changed access
+token only if the account ID still matches. An ordinary work process may refresh and replace the
+real credential file concurrently; the duty only reads its result and adds no competing OAuth
+refresh. If no replacement access token is available, the duty refuses with the account's `auth.json`
+path and asks for an account-owner refresh. Missing, unreadable or keyring-only credentials also
+refuse with that path. Usage limits and account rotation continue to query the real account home.
+
+This bridge is pinned to Codex 0.169.0: upstream marks `chatgptAuthTokens` as experimental and
+internal-only, rather than a stable public integration contract. The source at `rust-v0.169.0`
+verifies the [login and refresh protocol](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/app-server-protocol/src/protocol/v2/account.rs),
+[empty refresh token and ephemeral credential storage](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/login/src/auth/manager.rs),
+[401 delegation to the client](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/app-server/src/external_auth.rs),
+[configuration discovery](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/config/src/loader/mod.rs),
+and [host skill roots](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/ext/skills/src/host_roots.rs).
+The tests exercise these boundaries with fake servers and fake credential refresh; they do not
+establish live backend acceptance or guarantee that an account owner has refreshed an expired token.
+
+The adapter requires
 Codex 0.169.0 and checks the server version before starting a turn. It uses protocol
 `approvalPolicy: "untrusted"` and `approvalsReviewer: "user"`. The adapter sends each command
 approval to the same guard as Claude, using the exact shell text to be executed. It answers only
@@ -56,11 +96,15 @@ approval to the same guard as Claude, using the exact shell text to be executed.
 the request's item id to the item's changes and checks every path, including rename destinations,
 with the guard's room check. Unreadable or unknown requests and unmatched changes are declined.
 
-Before starting or resuming a thread, the adapter reads the effective configuration and its layers
-with `config/read`, and managed requirements with `configRequirements/read`. It refuses inherited
-user or project rules, hooks and MCP configuration. Any managed requirements also cause a refusal:
-the protocol does not expose enough to verify every inherited rule. Settings that prevent the
-hardening overrides from taking effect, including command environment filters, are refused too.
+Before signing in and again before starting or resuming a thread, the adapter reads the effective
+configuration and its layers with `config/read`, and managed requirements with
+`configRequirements/read`; sign-in can activate cloud-managed configuration. It refuses nonempty
+system or user configuration, enabled project layers, MCP servers, hooks and approval rules that
+remain in active configuration folders. Managed requirements also cause a refusal: the protocol
+does not expose enough to verify every inherited rule. Skills in the isolated home, the room's
+`.codex/skills` or `.agents/skills`, or system configuration folders cannot be isolated and cause a
+refusal naming the path. Settings that prevent the hardening overrides from taking effect, including
+command environment filters, are refused too. Each refusal names the blocking file or setting.
 Overrides apply only to this invocation; the account's configuration is not rewritten. The thread's
 reply must confirm the requested approval policy, reviewer and room sandbox.
 
@@ -176,7 +220,7 @@ queue a note is logged in the task's `stderr.log`, never failing its cycle.
 |---|---|---|
 | `duty.chat_model` | `claude.model` | model of Claude duty chat turns (a nonempty string or null) |
 | `duty.chat_effort` | `"high"` | effort of Claude duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
-| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null uses the account's Codex default |
-| `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the account's Codex default |
+| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null uses the isolated Codex default |
+| `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the isolated Codex default |
 | `duty.chat_max_minutes` | `20` | active time budget of one duty chat turn |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; note-driven turns per hour, the rest wait for the next user message |

@@ -34,12 +34,15 @@ DUTY_CODEX_DISABLED = (
 )
 
 
-def codex_duty_overrides(marker):
+def codex_duty_overrides(marker, room):
     """Invocation-only overrides; never edit the account's configuration."""
     values = {"features." + key: False for key in DUTY_CODEX_DISABLED}
     values.update({
         "features.skip_host_skill_discovery": True,
         "agents.enabled": False, "cloud.skills.enabled": False,
+        "skills.bundled.enabled": False,
+        "cli_auth_credentials_store": "ephemeral", "project_root_markers": [], "project_doc_max_bytes": 0,
+        "projects": {str(Path(room).resolve()): {"trust_level": "untrusted"}},
         "orchestrator.mcp.enabled": False,
         "web_search": "disabled", "notify": [], "allow_login_shell": False,
         "approval_policy": "on-request", "approvals_reviewer": "user",
@@ -47,6 +50,7 @@ def codex_duty_overrides(marker):
         "sandbox_workspace_write.exclude_tmpdir_env_var": True,
         "sandbox_workspace_write.exclude_slash_tmp": True,
         "sandbox_workspace_write.network_access": True,
+        "shell_environment_policy.exclude": ["CODEX_SQLITE_HOME"],
         "shell_environment_policy.set." + config.STARTED_BY: "duty",
         "shell_environment_policy.set." + config.DUTY_PROCESS_MARKER: marker,
         "shell_environment_policy.set.TEAMSTER_HOME": str(config.DATA_HOME) if config.LAYOUT == "new" else "",
@@ -57,6 +61,7 @@ def codex_duty_overrides(marker):
         "shell_environment_policy.set.ZDOTDIR": str(config.PACKAGE),
         "shell_environment_policy.set.GIT_TERMINAL_PROMPT": "0",
         "shell_environment_policy.set.GH_PROMPT_DISABLED": "1",
+        "shell_environment_policy.set.HOME": os.environ["HOME"],
         "shell_environment_policy.experimental_use_profile": False,
     })
     return values
@@ -191,60 +196,89 @@ def approval(method, params, items, room, thread, turn):
     return ("decline", reason) if reason else ("accept", "")
 
 
-def codex_duty_preflight(account, room, effective, requirements, overrides):
+def codex_duty_credentials(account):
+    """Read the current access token; never refresh or write account credentials."""
+    path = Path(account["home"]) / "auth.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        tokens = document["tokens"]
+        token, identity = tokens["access_token"], tokens["account_id"]
+        if not all(isinstance(value, str) and value for value in (token, identity)):
+            raise ValueError("missing token or account id")
+        if document.get("auth_mode") not in (None, "chatgpt"):
+            raise ValueError("unsupported authentication mode")
+    except (OSError, ValueError, TypeError, KeyError):
+        # Parser errors can contain secrets. Keyring-only accounts cannot be
+        # bridged without inheriting the account's credential-store configuration.
+        raise ValueError("Codex duty needs readable ChatGPT authentication in " + str(path)) from None
+    return {"accessToken": token, "chatgptAccountId": identity, "chatgptPlanType": None}
+
+
+def codex_duty_preflight(home, room, effective, requirements, overrides):
     """Refuse inherited authority that cannot be disabled for this invocation."""
     if not isinstance(effective, dict) or not isinstance(effective.get("config"), dict):
         raise ValueError("cannot inspect the Codex duty configuration")
     if not isinstance(requirements, dict) or requirements.get("requirements", {}) is not None:
         # The public requirements response omits exec-policy rules. A managed
         # policy object therefore cannot establish the absence of allow rules.
-        raise ValueError("Codex duty cannot isolate managed requirements and approval rules")
+        raise ValueError("Codex duty cannot isolate managed approval rules in configRequirements/read.requirements")
     values = effective["config"]
-    if values.get("mcp_servers"):
-        raise ValueError("Codex duty cannot run with inherited MCP servers")
-    if values.get("hooks"):
-        raise ValueError("Codex duty cannot run with inherited hooks")
-    environment = values.get("shell_environment_policy") or {}
-    if (not isinstance(environment, dict) or environment.get("include_only") or environment.get("filters")):
-        raise ValueError("Codex duty cannot preserve its command environment with inherited filters")
     layers = effective.get("layers")
     if not isinstance(layers, list):
         raise ValueError("cannot inspect Codex duty configuration layers")
-    folders = {Path(account["home"]), Path("/etc/codex")}
-    for parent in (Path(room), *Path(room).parents):
-        folders.add(parent / ".codex")
+    folders = {Path(home), Path("/etc/codex")}
+    skills = {Path(home) / "skills", Path(home) / ".agents" / "skills",
+              Path(room) / ".agents" / "skills", Path(room) / ".codex" / "skills"}
     for layer in layers:
         if not isinstance(layer, dict) or not isinstance(layer.get("name"), dict):
             raise ValueError("cannot inspect a Codex duty configuration layer")
-        if layer.get("disabledReason"):
-            continue
         source = layer["name"]
         kind = source.get("type")
+        settings = layer.get("config")
+        if not isinstance(settings, dict):
+            raise ValueError("cannot inspect Codex duty config/read.layers.config")
         if kind in ("system", "user", "project"):
             path = source.get("dotCodexFolder" if kind == "project" else "file")
             if not isinstance(path, str) or not Path(path).is_absolute():
                 raise ValueError("cannot inspect a Codex duty configuration layer path")
-            folders.add(Path(path) if kind == "project" else Path(path).parent)
+            folder = Path(path) if kind == "project" else Path(path).parent
+            # Host skill roots include disabled project layers in this version.
+            skills.add(folder / "skills")
+            if layer.get("disabledReason"):
+                continue
+            if (settings or kind == "project"
+                    or kind == "user" and Path(path) != Path(home) / "config.toml"):
+                raise ValueError("Codex duty cannot isolate " + kind + " configuration at " + path)
+            folders.add(folder)
         elif kind not in ("packagedDefaults", "sessionFlags"):
-            raise ValueError("Codex duty cannot isolate this configuration source: " + str(kind))
-        settings = layer.get("config") or {}
-        if not isinstance(settings, dict) or settings.get("hooks"):
-            raise ValueError("Codex duty cannot run with inherited hooks")
-    for folder in folders:
+            raise ValueError("Codex duty cannot isolate config/read.layers source " + str(kind))
+        if settings.get("hooks"):
+            raise ValueError("Codex duty cannot isolate hooks in config/read.layers.config.hooks")
+    for key in ("mcp_servers", "hooks"):
+        if values.get(key):
+            raise ValueError("Codex duty cannot isolate config/read.config." + key)
+    environment = values.get("shell_environment_policy") or {}
+    if not isinstance(environment, dict) or environment.get("include_only") or environment.get("filters"):
+        raise ValueError("Codex duty cannot isolate config/read.config.shell_environment_policy filters")
+    for folder in sorted(folders):
         hooks = folder / "hooks.json"
         try:
             hooks.lstat()
         except FileNotFoundError:
             pass
         else:
-            raise ValueError("Codex duty cannot run with inherited hooks: " + str(hooks))
+            raise ValueError("Codex duty cannot isolate hooks at " + str(hooks))
         rules = folder / "rules"
         try:
             has_rules = any(path.suffix == ".rules" for path in rules.iterdir())
         except FileNotFoundError:
             has_rules = False
         if has_rules:
-            raise ValueError("Codex duty cannot run with inherited approval rules: " + str(rules))
+            raise ValueError("Codex duty cannot isolate approval rules at " + str(rules))
+        skills.add(folder / "skills")
+    for path in sorted(skills):
+        if os.path.lexists(path):
+            raise ValueError("Codex duty cannot isolate skills at " + str(path))
     # config/read includes flattened additional configuration. Check every
     # invocation override before creating a thread (and before SessionStart).
     for key, expected in overrides.items():
@@ -258,7 +292,7 @@ def codex_duty_preflight(account, room, effective, requirements, overrides):
 class DutyRPC:
     """Line-delimited app-server RPC with cancellation and one active turn."""
 
-    def __init__(self, process, room, stopped, deadline, directory):
+    def __init__(self, process, room, stopped, deadline, directory, account):
         self.process, self.room, self.stopped, self.deadline = process, room, stopped, deadline
         self.directory = directory
         self.selector = selectors.DefaultSelector()
@@ -270,6 +304,8 @@ class DutyRPC:
         self.items = {}
         self.finished = None
         self.answer = ""
+        self.account = account
+        self.credentials = None
 
     def send(self, message):
         self.process.stdin.write((json.dumps(message, ensure_ascii=False) + "\n").encode())
@@ -290,8 +326,33 @@ class DutyRPC:
             self.read()
         reply = self.replies.pop(request_id)
         if "error" in reply:
+            if method == "account/login/start":
+                raise ValueError("Codex duty authentication failed for " + str(Path(self.account["home"]) / "auth.json"))
+            if (method == "thread/resume" and isinstance(reply["error"], dict)
+                    and reply["error"].get("message") == "no rollout found for thread id " + params["threadId"]):
+                raise ValueError(reply["error"]["message"])
             raise ValueError("Codex duty " + method + " failed: " + str(reply["error"]))
         return reply.get("result")
+
+    def refresh_credentials(self, message):
+        """Borrow an owner's replacement access token, without an OAuth exchange."""
+        path = Path(self.account["home"]) / "auth.json"
+        try:
+            params = message.get("params")
+            if (self.finished is not None or not self.credentials or not isinstance(params, dict)
+                    or params.get("reason") != "unauthorized"
+                    or params.get("previousAccountId") not in (None, self.credentials["chatgptAccountId"])):
+                raise ValueError("Codex duty cannot refresh authentication for " + str(path))
+            credentials = codex_duty_credentials(self.account)
+            if credentials["chatgptAccountId"] != self.credentials["chatgptAccountId"]:
+                raise ValueError("Codex duty authentication account changed in " + str(path))
+            if credentials["accessToken"] == self.credentials["accessToken"]:
+                raise ValueError("Codex duty needs the account owner to refresh authentication in " + str(path))
+        except ValueError as exc:
+            self.send({"id": message["id"], "error": {"code": -32000, "message": str(exc)}})
+            raise
+        self.credentials = credentials
+        self.send({"id": message["id"], "result": credentials})
 
     def event(self, value):
         with (self.directory / "events.jsonl").open("a", encoding="utf-8") as stream:
@@ -318,6 +379,9 @@ class DutyRPC:
                 raise ValueError("unreadable Codex duty app-server message")
             if "method" in message and "id" in message:
                 self.check()
+                if message["method"] == "account/chatgptAuthTokens/refresh":
+                    self.refresh_credentials(message)
+                    continue
                 if self.finished is None:
                     decision, reason = approval(message["method"], message.get("params"), self.items,
                                                 self.room, self.thread, self.turn)
@@ -386,11 +450,27 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         if clock.CLOCK.monotonic() >= deadline:
             raise TimeoutError("duty time budget exhausted")
         marker = uuid.uuid4().hex
-        overrides = codex_duty_overrides(marker)
+        home = directory / "codex-home"
+        if home.is_symlink():
+            raise ValueError("Codex duty cannot isolate a symbolic-link home at " + str(home))
+        home.mkdir(mode=0o700, exist_ok=True)
+        home.chmod(0o700)
+        home = home.resolve()
+        if os.path.lexists(home / ".env"):
+            raise ValueError("Codex duty cannot isolate environment configuration at " + str(home / ".env"))
+        overrides = codex_duty_overrides(marker, room)
         args = [config.codex_binary(), "app-server", "--strict-config"]
         for key, value in overrides.items():
-            args += ["-c", key + "=" + json.dumps(value)]
-        environment = accounts.account_env(account)
+            # This table needs TOML's key/value separator, unlike scalar JSON literals.
+            encoded = ("{" + json.dumps(str(Path(room).resolve())) + ' = {trust_level = "untrusted"}}'
+                       if key == "projects" else json.dumps(value))
+            args += ["-c", key + "=" + encoded]
+        environment = accounts.account_env(dict(account, home=str(home)))
+        for key in list(environment):
+            if (key.startswith(("OPENAI_", "CODEX_EXEC_SERVER_", "CODEX_APP_SERVER_"))
+                    or key in ("CODEX_API_KEY", "CODEX_ACCESS_TOKEN")):
+                environment.pop(key)
+        environment.update(HOME=str(home), CODEX_SQLITE_HOME=str(home))
         environment[config.STARTED_BY] = "duty"
         environment[config.DUTY_PROCESS_MARKER] = marker
         process = subprocess.Popen(args, cwd=room, env=environment, stdin=subprocess.PIPE,
@@ -399,7 +479,7 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
             started(process)
         if duty_process_marker(process.pid) != marker:
             raise ValueError("Codex duty cannot identify its command processes on this platform")
-        rpc = DutyRPC(process, room, stopped, deadline, directory)
+        rpc = DutyRPC(process, room, stopped, deadline, directory, account)
         initialized = rpc.call("initialize", {"clientInfo": {"name": "teamster-duty", "version": "1"},
                                               "capabilities": {"experimentalApi": True}})
         if not isinstance(initialized, dict) or not re.search(r"\b0\.169\.0\b", initialized.get("userAgent", "")):
@@ -407,7 +487,14 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         rpc.send({"method": "initialized"})
         effective = rpc.call("config/read", {"includeLayers": True, "cwd": str(room)})
         requirements = rpc.call("configRequirements/read", {})
-        codex_duty_preflight(account, room, effective, requirements, overrides)
+        codex_duty_preflight(home, room, effective, requirements, overrides)
+        rpc.credentials = codex_duty_credentials(account)
+        rpc.call("account/login/start", dict(rpc.credentials, type="chatgptAuthTokens"))
+        # Signing in can load cloud-managed configuration. Inspect again before
+        # thread startup, where hooks and tools can begin acting.
+        effective = rpc.call("config/read", {"includeLayers": True, "cwd": str(room)})
+        requirements = rpc.call("configRequirements/read", {})
+        codex_duty_preflight(home, room, effective, requirements, overrides)
         params = {"cwd": str(room), "approvalPolicy": "untrusted", "approvalsReviewer": "user",
                   "sandbox": "workspace-write", "developerInstructions": system_text,
                   "environments": [],

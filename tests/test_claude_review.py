@@ -854,7 +854,15 @@ class ClaudeReviewTests(RotationTestCase):
         return len(st.get("duty_turns", [])) == answers and not st.get("pid")
 
     def codex_duty_runs(self, runs, home=None):
-        path = (home or self.home) / "fixture.json"
+        home = home or self.home
+        self.env["CODEX_FAKE_DUTY_ACCOUNT_HOME"] = str(home)
+        auth = home / "auth.json"
+        if not auth.exists():
+            account_id = json.loads((home / "fixture.json").read_text())["accountId"]
+            auth.write_text(json.dumps({"tokens": {"access_token": "fixture-access-" + account_id,
+                                                   "account_id": account_id,
+                                                   "refresh_token": "fixture-refresh-" + account_id}}))
+        path = home / "fixture.json"
         value = json.loads(path.read_text())
         value["duty_runs"] = runs
         path.write_text(json.dumps(value))
@@ -864,7 +872,29 @@ class ClaudeReviewTests(RotationTestCase):
 
     def test_codex_duty_starts_resumes_and_decides_each_request(self):
         self.configure(language="en", duty={"chat_codex_model": "fixture-duty", "chat_codex_effort": "xhigh"})
+        self.env["HOME"] = str(self.root / "user-home")
+        self.env.update(OPENAI_API_KEY="fixture-unrelated-provider", OPENAI_BASE_URL="https://unrelated.test",
+                        CODEX_API_KEY="fixture-unrelated-key", CODEX_ACCESS_TOKEN="fixture-unrelated-access",
+                        CODEX_EXEC_SERVER_URL="https://unrelated-executor.test",
+                        CODEX_EXEC_SERVER_NOISE_KEY="fixture-unrelated-noise",
+                        CODEX_APP_SERVER_URL="https://unrelated-app-server.test")
+        host_skill = Path(self.env["HOME"]) / ".agents" / "skills" / "host" / "SKILL.md"
+        host_skill.parent.mkdir(parents=True)
+        host_skill.write_text("Never discover the host's skill.\n")
         room = self.home / "claude-tasks" / "duty" / "room"
+        inherited = ('[mcp_servers.enabled]\ncommand = "unapproved-mcp"\nenabled = true\n'
+                     '[mcp_servers.disabled]\ncommand = "disabled-mcp"\nenabled = false\n'
+                     '[plugins.unapproved]\nenabled = true\n[hooks]\nSessionStart = []\n')
+        (self.home / "config.toml").write_text(inherited)
+        (self.home / "rules" / "default.rules").write_text(
+            'prefix_rule(pattern=["rm"], decision="allow")\n' * 160)
+        (self.home / "hooks.json").write_text('{"hooks":{"SessionStart":[]}}')
+        (self.home / "skills" / "SKILL.md").write_text("Never discover this skill.\n")
+        project = room.parent.parent / ".codex"
+        (project / "rules").mkdir(parents=True)
+        (project / "config.toml").write_text(inherited)
+        (project / "hooks.json").write_text('{"hooks":{"SessionStart":[]}}')
+        (project / "rules" / "default.rules").write_text('prefix_rule(pattern=["rm"], decision="allow")\n')
         outside = self.root / "outside.txt"
         read_output = room / "reader.txt"
         requests = [
@@ -904,6 +934,31 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(len([entry for entry in self.trace() if entry["command"] == "duty-executed"]), 2)
         first = self.codex_duty_invocations()[0]
         self.assertEqual((first["started_by"], first["cwd"]), ("duty", str(room)))
+        isolated = room.parent / "codex-home"
+        self.assertEqual(first["home"], str(isolated))
+        self.assertFalse(isolated.is_symlink())
+        self.assertFalse((isolated / "auth.json").exists())
+        self.assertFalse((isolated / "config.toml").exists())
+        inspected = [entry for entry in self.trace() if entry["command"] == "duty-config"]
+        self.assertTrue(inspected)
+        for entry in inspected:
+            self.assertEqual((entry["user_home"], entry["sqlite_home"]), (str(isolated), str(isolated)))
+            self.assertEqual(entry["provider_environment"], [])
+            self.assertEqual(entry["authority_files"], [])
+            self.assertNotIn("mcp_servers", entry["config"])
+            self.assertNotIn("hooks", entry["config"])
+            self.assertNotIn("plugins", entry["config"])
+            self.assertFalse(entry["config"]["skills"]["bundled"]["enabled"])
+            self.assertEqual(entry["config"]["shell_environment_policy"]["set"]["HOME"], self.env["HOME"])
+            self.assertFalse(any(layer["name"]["type"] == "project" for layer in entry["layers"]))
+        login = next(entry for entry in self.trace() if entry["command"] == "duty-login")
+        self.assertTrue(login["matches"])
+        self.assertEqual(login["fields"], ["accessToken", "chatgptAccountId", "chatgptPlanType", "type"])
+        self.assertEqual((login["type"], login["account_id"], login["plan_type"]),
+                         ("chatgptAuthTokens", "A", None))
+        self.assertEqual((self.home / "config.toml").read_text(), inherited)
+        self.assertTrue(all(entry["home"] in (str(self.home), str(self.other))
+                            for entry in self.trace() if entry["command"] == "quota-snapshot"))
         worker = self.worker()
         self.assertEqual(first["params"]["outputSchema"], worker.result_schema.DUTY_SCHEMA)
         thread = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
@@ -930,6 +985,36 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(invalid.returncode, 1, invalid.stdout)
         self.assertIn("invalid structured output", invalid.stderr)
         self.assertEqual(len(self.state("duty")["duty_turns"]), 2)
+
+    def test_codex_duty_hands_off_a_thread_from_the_account_home(self):
+        self.configure(language="en")
+        self.codex_duty_runs([
+            {"reply": self.duty_answer("Choose a repository.", "needs_decision", "Which repository?",
+                                       ["parser", "billing"])},
+            {"reply": self.duty_answer("The parser handoff is ready.")},
+            {"reply": self.duty_answer("Continuing in the isolated home.")}])
+        self.put_duty("main", "codex")
+        self.cli("duty", "chat", "Investigate the parser.", timeout=60)
+        legacy_thread = self.state("duty")["thread"]
+        isolated = self.home / "claude-tasks" / "duty" / "codex-home"
+        legacy_store = self.home / "duty-threads"
+        legacy_store.mkdir()
+        # Recreate the pre-upgrade state: the saved cursor exists only in the
+        # account store, even if a failed startup has already made the new home.
+        (isolated / "duty-threads" / legacy_thread).rename(legacy_store / legacy_thread)
+        self.assertIn("The parser handoff is ready.", self.cli("duty", "chat", "Choose parser.", timeout=60))
+        migrated = self.state("duty")["thread"]
+        self.assertNotEqual(migrated, legacy_thread)
+        prompt = self.codex_duty_invocations()[1]["params"]["input"][0]["text"]
+        for text in ("Investigate the parser.", "Choose parser.", "Which repository?", "1. parser", "2. billing"):
+            self.assertIn(text, prompt)
+        self.assertTrue((legacy_store / legacy_thread).exists())
+        self.assertIn("Continuing in the isolated home.", self.cli("duty", "chat", "Continue.", timeout=60))
+        self.assertEqual(self.state("duty")["thread"], migrated)
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 3)
+        threads = [entry for entry in self.trace() if entry["command"] == "duty-thread"]
+        self.assertEqual([entry["method"] for entry in threads], ["thread/start", "thread/start", "thread/resume"])
+        self.assertEqual(threads[-1]["params"]["threadId"], migrated)
 
     def test_codex_duty_file_approvals_match_items_and_all_destinations(self):
         self.configure(language="en")
@@ -988,8 +1073,10 @@ class ClaudeReviewTests(RotationTestCase):
             self.put_duty("main", "codex")
             return start_process(st)
 
-        rule = self.home / "rules" / "custom.rules"
-        rule.write_text('prefix_rule(pattern=["rm"], decision="allow")\n')
+        fixture_path = self.home / "fixture.json"
+        fixture = json.loads(fixture_path.read_text())
+        fixture["duty_requirements"] = {}
+        fixture_path.write_text(json.dumps(fixture))
         order = {"at": time.time(), "text": "1", "options": {}, "source": "user"}
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 mock.patch.object(worker.supervisor, "start_process", side_effect=switch_before_start):
@@ -1002,7 +1089,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertNotIn("task_model", rejected)
         self.assertIn("rule", rejected["error"].lower())
         self.assertEqual(self.codex_duty_invocations(), [])
-        rule.unlink()
+        fixture.pop("duty_requirements")
+        fixture_path.write_text(json.dumps(fixture))
         self.assertIn("Codex understood option 1.", self.cli("duty", "chat", "1", timeout=60))
         self.assertEqual(self.state("duty")["duty_turns"][-1]["reply"], "Codex understood option 1.")
         first_codex = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
@@ -1030,30 +1118,83 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertFalse(self.state("duty").get("thread"))
         self.assertEqual([turn["account"] for turn in self.state("duty")["duty_turns"]], ["main"] * 5)
 
-    def test_codex_duty_refuses_inherited_allow_rules_and_hooks_before_a_turn(self):
+    def test_codex_duty_refuses_authority_that_remains_after_isolation_before_a_turn(self):
         self.configure(language="en")
         self.put_duty("main", "codex")
         self.codex_duty_runs([{"reply": self.duty_answer("Never sent.")}])
-        project = self.root / "project-layer" / ".codex"
-        (project / "rules").mkdir(parents=True)
-        for path, text, reason, layers in (
-                (self.home / "rules" / "custom.rules", 'prefix_rule(pattern=["rm"], decision="allow")\n', "rule", []),
-                (self.home / "hooks.json", json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
-                    {"type": "command", "command": "echo allow"}]}]}}), "hook", []),
-                (project / "rules" / "custom.rules", 'prefix_rule(pattern=["rm"], decision="allow")\n', "rule",
-                 [{"name": {"type": "project", "dotCodexFolder": str(project)}, "version": "fixture", "config": {}}])):
+        system = self.root / "system-codex"
+        (system / "rules").mkdir(parents=True)
+        layer = {"name": {"type": "system", "file": str(system / "config.toml")},
+                 "version": "fixture", "config": {}}
+        room = self.home / "claude-tasks" / "duty" / "room"
+        for path, text, reason, settings in (
+                (system / "rules" / "custom.rules", 'prefix_rule(pattern=["rm"], decision="allow")\n',
+                 str(system / "rules"), {}),
+                (system / "hooks.json", '{"hooks":{"SessionStart":[]}}', str(system / "hooks.json"), {}),
+                (system / "config.toml", '[mcp_servers.system]\ncommand = "unapproved-mcp"\n',
+                 str(system / "config.toml"), {"mcp_servers": {"system": {"command": "unapproved-mcp"}}}),
+                (system / "skills" / "SKILL.md", "Never load the system skill.\n", str(system / "skills"), {}),
+                (room / ".agents" / "skills" / "SKILL.md", "Never load the room skill.\n",
+                 str(room / ".agents" / "skills"), {})):
             with self.subTest(source=path.name):
                 fixture_path = self.home / "fixture.json"
                 fixture = json.loads(fixture_path.read_text())
-                fixture["duty_layers"] = layers
+                fixture["duty_layers"] = [dict(layer, config=settings)]
                 fixture_path.write_text(json.dumps(fixture))
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text)
                 rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Never sent."], cwd=self.repo,
                                           env=self.env, text=True, capture_output=True, timeout=60)
                 self.assertEqual(rejected.returncode, 1, rejected.stdout)
-                self.assertIn(reason, rejected.stderr.lower())
+                self.assertIn(reason, rejected.stderr)
                 self.assertEqual(self.codex_duty_invocations(), [])
+                self.assertFalse(any(entry["command"] in ("duty-thread", "duty-mcp-connected")
+                                     for entry in self.trace()))
                 path.unlink()
+                if path.name == "SKILL.md":
+                    path.parent.rmdir()
+        fixture_path = self.home / "fixture.json"
+        fixture = json.loads(fixture_path.read_text())
+        fixture["duty_requirements_after_login"] = {}
+        fixture_path.write_text(json.dumps(fixture))
+        self.trace_path.unlink()
+        rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Never start a thread."],
+                                  cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(rejected.returncode, 1, rejected.stdout)
+        self.assertIn("configRequirements/read.requirements", rejected.stderr)
+        requirements = [entry for entry in self.trace() if entry["command"] == "duty-requirements"]
+        self.assertEqual([(entry["authenticated"], entry["requirements"]) for entry in requirements],
+                         [(False, None), (True, {})])
+        self.assertFalse(any(entry["command"] in ("duty-thread", "duty-turn", "duty-mcp-connected")
+                             for entry in self.trace()))
+
+    def test_codex_duty_uses_only_the_account_owners_refreshed_access_token(self):
+        self.configure(language="en")
+        refreshed = {"tokens": {"access_token": "fixture-access-refreshed", "account_id": "A",
+                                "refresh_token": "fixture-refresh-refreshed"}}
+        self.codex_duty_runs([{"refresh": {"replace": refreshed}, "reply": self.duty_answer("Refreshed safely.")},
+                              {"refresh": {"replace": refreshed}}])
+        self.put_duty("main", "codex")
+        original = self.home / "auth.json"
+        self.assertIn("Refreshed safely.", self.cli("duty", "chat", "Continue after refresh.", timeout=60))
+        self.assertEqual(json.loads(original.read_text()), refreshed)
+        refreshed_call = next(entry for entry in self.trace() if entry["command"] == "duty-auth-refresh")
+        self.assertTrue(refreshed_call["matches"])
+        self.assertEqual(refreshed_call["account_id"], "A")
+        self.assertEqual(refreshed_call["fields"], ["accessToken", "chatgptAccountId", "chatgptPlanType"])
+        isolated = self.home / "claude-tasks" / "duty" / "codex-home"
+        self.assertFalse((isolated / "auth.json").exists())
+        self.assertFalse(original.is_symlink())
+        events = (isolated.parent / "events.jsonl").read_text()
+        self.assertNotIn("fixture-access", events)
+        self.assertNotIn("fixture-refresh", events)
+        rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), "duty", "chat", "Refresh without a new token."],
+                                  cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(rejected.returncode, 1, rejected.stdout)
+        self.assertIn(str(original), rejected.stderr)
+        self.assertIn("refresh", rejected.stderr.lower())
+        self.assertEqual(json.loads(original.read_text()), refreshed)
+        self.assertEqual(len(self.state("duty")["duty_turns"]), 1)
 
     def test_codex_duty_stop_deadline_and_crash_end_the_process_group(self):
         self.enable_fake_clock(auto_advance=False)
@@ -1199,15 +1340,9 @@ class ClaudeReviewTests(RotationTestCase):
         self.configure(language="en", duty={"chat_auto_turns_per_hour": 1})
         (self.home / "claude-accounts.json").replace(data / "config.json")
         self.account(self.other, "B", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        fixture_path = self.home / "fixture.json"
-        fixture = json.loads(fixture_path.read_text())
-        fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": dict(
-            {key: value for key, value in self.env.items() if key.startswith(("CODEX_FAKE_", "GIT_"))},
-            TEAMSTER_CODEX=str(self.fake))}}
-        fixture_path.write_text(json.dumps(fixture))
+        self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
         self.put_duty("main", "codex")
         room = data / "tasks" / "duty" / "room"
-        self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
         self.cli("duty", "chat", "Start the parser fix.", timeout=60)
         launcher = self.root / "teamster"
         launcher.write_text("#!/bin/sh\nexec " + shlex.join([PYTHON, "-I", str(SCRIPT)]) + ' "$@"\n')
@@ -1223,6 +1358,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(self.state("noted")["started_by"], "duty")
         executed = next(entry for entry in self.trace() if entry["command"] == "duty-command-environment")
         self.assertEqual(executed["started_by"], "duty")
+        self.assertIsNone(executed["sqlite_home"])
         self.assertEqual(executed["storage"], {"TEAMSTER_HOME": str(data), "CODEX_TASK_HOME": str(self.home),
                                                "TEAMSTER_CODEX_HOME": str(self.home)})
         self.assertFalse((self.home / "claude-tasks").exists())
@@ -1230,6 +1366,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.until(lambda: self.chat_settled(3), timeout=60)
         self.assertRegex(self.codex_duty_invocations()[1]["duty_marker"], r"^[0-9a-f]{32}$")
         self.assertIsNone(self.invocations()[0]["duty_marker"])
+        self.assertEqual((self.invocations()[0]["home"], self.invocations()[0]["sqlite_home"]),
+                         (str(self.other), None))
         self.assertEqual(len(self.state("duty")["duty_auto_turns"]), 1)
         self.assertIn("Task note: noted ended turn 1", self.chat_messages()[-1]["text"])
         self.assertIn("Task note: noted", self.codex_duty_invocations()[-1]["params"]["input"][0]["text"])

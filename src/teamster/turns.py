@@ -176,6 +176,17 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
             "duty", account, st["worktree"], prompt, stopped, deadline, model, effort,
             thread_id=executor.cursor(st) or None, system_text=duty_chat.system_text(st["worktree"]),
             started=started, progress=progress, task_dir=directory, max_minutes=minutes)
+        if (family == "codex" and st.get("thread")
+                and response.get("reason") == "no rollout found for thread id " + st["thread"]):
+            # A pre-isolation duty cursor belongs to the account's old store.
+            # No turn began; continue from teamster's conversation in the new store.
+            prompt = threads.handoff(st, current_message=current_message, cfg=cfg)
+            st["thread"] = ""
+            task_state.save(st)
+            response = executor.call(
+                "duty", account, st["worktree"], prompt, stopped, deadline, model, effort,
+                system_text=duty_chat.system_text(st["worktree"]),
+                started=started, progress=progress, task_dir=directory, max_minutes=minutes)
     finally:
         st.pop(pid_field, None)
         task_state.save(st)
