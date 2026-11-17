@@ -253,6 +253,12 @@ def codex_duty_catalog(account, path):
                            or not level["effort"] or not isinstance(level.get("description"), str)
                            for level in info["supported_reasoning_levels"])
                     or any(not isinstance(tool, str) for tool in info["experimental_supported_tools"])
+                    or "input_modalities" in info and (
+                        not isinstance(info["input_modalities"], list)
+                        or any(modality not in ("text", "image", "audio") for modality in info["input_modalities"]))
+                    or info.get("context_window") is not None and (
+                        type(info["context_window"]) is not int or not -(2 ** 63) <= info["context_window"] < 2 ** 63)
+                    or info.get("apply_patch_tool_type") not in (None, "freeform")
                     or messages is not None and not isinstance(messages, dict)
                     or template is not None and not isinstance(template, str)
                     or legacy is not None and not isinstance(legacy, str)
@@ -560,8 +566,8 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         # Select explicitly on every resume: the rollout may retain an unavailable model.
         available = {info["slug"] for info in models}
         if model not in available:
-            model = ("gpt-6.1-sol" if "gpt-6.1-sol" in available else
-                     next(info["slug"] for info in models if info.get("visibility") == "list"))
+            visible = [info["slug"] for info in models if info["visibility"] == "list"]
+            model = "gpt-6.1-sol" if "gpt-6.1-sol" in visible else visible[0]
         system_text += ("\n\nFor Codex command execution, request sandbox_permissions: \"require_escalated\" "
                         "with a short justification for teamster commands, gh commands, and git commands "
                         "on other repositories when they need writes outside the room or network access. "

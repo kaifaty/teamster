@@ -29,7 +29,7 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `duty.claude_only_task_types` | `["visual", "layout"]` | task types (`--task-type`) that a Claude duty account still takes when it is the only Claude account left |
 | `duty.chat_model` | `claude.model` | model of Claude [duty chat](duty-chat.md) turns, a nonempty string or null; `say duty --model` and `--effort` replace the current family's settings for the conversation |
 | `duty.chat_effort` | `"high"` | effort of Claude duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
-| `duty.chat_codex_model` | `null` | model of Codex duty chat turns, a nonempty string or null; null or an unavailable name selects `gpt-6.1-sol` when present, otherwise the first visible model in cache order (see [duty chat](duty-chat.md#limits)) |
+| `duty.chat_codex_model` | `null` | model of Codex duty chat turns, a nonempty string or null; null or an unavailable name selects `gpt-6.1-sol` when visible, otherwise the first visible model in cache order (see [duty chat](duty-chat.md#limits)) |
 | `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the isolated Codex default |
 | `duty.chat_max_minutes` | `20` | positive number; active time budget of one duty chat turn; `say duty --max-minutes` replaces it for the conversation |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; duty chat turns that task notes may start in an hour; the other notes wait for the next user message |

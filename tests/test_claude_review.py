@@ -1237,13 +1237,16 @@ class ClaudeReviewTests(RotationTestCase):
                     text = read_text(path, *args, **kwargs)
                     if path == source:
                         reads.append(text)
-                        if not text:
-                            finish.set()
-                            writer.result(timeout=5)
                     return text
 
-                with mock.patch.object(Path, "read_text", read_during_update):
+                def retry_pause(delay):
+                    finish.set()
+                    writer.result(timeout=5)
+
+                with mock.patch.object(Path, "read_text", read_during_update), mock.patch.object(
+                        worker.turns.codex_duty.time, "sleep", side_effect=retry_pause) as pause:
                     models = worker.turns.codex_duty.codex_duty_catalog({"home": str(self.home)}, directory / "models.json")
+                pause.assert_called_once_with(0.05)
                 self.assertEqual(reads, ["", original])
                 self.assertEqual([info["slug"] for info in models],
                                  [info["slug"] for info in json.loads(original)["models"]])
@@ -1257,14 +1260,12 @@ class ClaudeReviewTests(RotationTestCase):
         def read_torn_utf8(path, *args, **kwargs):
             if path == source:
                 reads.append(path)
-            try:
-                return read_text(path, *args, **kwargs)
-            except UnicodeDecodeError:
-                source.write_text(original)
-                raise
+            return read_text(path, *args, **kwargs)
 
-        with mock.patch.object(Path, "read_text", read_torn_utf8):
+        with mock.patch.object(Path, "read_text", read_torn_utf8), mock.patch.object(
+                worker.turns.codex_duty.time, "sleep", side_effect=lambda delay: source.write_text(original)) as pause:
             models = worker.turns.codex_duty.codex_duty_catalog({"home": str(self.home)}, directory / "models.json")
+        pause.assert_called_once_with(0.05)
         self.assertEqual(len(reads), 2)
         self.assertEqual([info["slug"] for info in models],
                          [info["slug"] for info in json.loads(original)["models"]])
@@ -1279,6 +1280,9 @@ class ClaudeReviewTests(RotationTestCase):
             ("experimental_supported_tools", [False]),
             ("shell_type", "unknown"),
             ("priority", 2 ** 31),
+            ("input_modalities", ["video"]),
+            ("context_window", "128000"),
+            ("apply_patch_tool_type", "invalid"),
             ("model_messages", {"instructions_template": False}))]
         for content in (None, '{"models": []}', '{"models": [{"slug": "fixture", "visibility": "list"}]}',
                         json.dumps(incomplete), b'\xd0', *malformed):
@@ -1313,23 +1317,42 @@ class ClaudeReviewTests(RotationTestCase):
     def test_codex_duty_recovers_an_unavailable_stored_model(self):
         self.configure(language="en")
         self.codex_duty_runs([{"reply": self.duty_answer("Ready.")},
-                              {"reply": self.duty_answer("Recovered.")}])
+                              {"reply": self.duty_answer("Recovered.")},
+                              {"reply": self.duty_answer("Selected.")},
+                              {"reply": self.duty_answer("Override recovered.")}])
         self.put_duty("main", "codex")
+        cache = self.home / "models_cache.json"
+        document = json.loads(cache.read_text())
+        by_name = {info["slug"]: info for info in document["models"]}
+        document["models"] = [dict(by_name["gpt-6.1-sol"], visibility="hide"),
+                              by_name["gpt-6.1-terra"], by_name["gpt-6-sol"]]
+        cache.write_text(json.dumps(document))
         self.cli("duty", "chat", "Start.", timeout=60)
         st = self.state("duty")
+        self.assertEqual(st["model"], "gpt-6.1-terra")
         isolated = self.home / "claude-tasks" / "duty" / "codex-home"
         (isolated / "duty-threads" / st["thread"]).write_text(json.dumps({"model": "gpt-5.5"}))
         self.assertFalse(st.get("task_model"))
         # The next account catalogue can have a completely different set of models.
-        cache = self.home / "models_cache.json"
-        document = json.loads(cache.read_text())
-        by_name = {info["slug"]: info for info in document["models"]}
         document["models"] = [by_name["gpt-reserve"], dict(by_name["gpt-6.1-terra"], priority=7),
                               dict(by_name["gpt-6-sol"], priority=3)]
         cache.write_text(json.dumps(document))
         self.assertIn("Recovered.", self.cli("duty", "chat", "Continue.", timeout=60))
         self.assertEqual(self.state("duty")["thread"], st["thread"])
         self.assertEqual(self.state("duty")["model"], "gpt-6.1-terra")
+        resumed = [entry for entry in self.trace() if entry["command"] == "duty-thread"][-1]
+        self.assertEqual((resumed["method"], resumed["params"]["model"]),
+                         ("thread/resume", "gpt-6.1-terra"))
+        self.cli("say", "duty", "Select another model.", "--model", "gpt-6-sol", timeout=60)
+        self.until(lambda: self.chat_settled(3), timeout=60)
+        self.assertEqual(self.state("duty")["duty_turns"][-1]["reply"], "Selected.")
+        self.assertEqual((self.state("duty")["thread"], self.state("duty")["task_model"], self.state("duty")["model"]),
+                         (st["thread"], "gpt-6-sol", "gpt-6-sol"))
+        document["models"] = [info for info in document["models"] if info["slug"] != "gpt-6-sol"]
+        cache.write_text(json.dumps(document))
+        self.assertIn("Override recovered.", self.cli("duty", "chat", "Continue without the saved model.", timeout=60))
+        self.assertEqual((self.state("duty")["thread"], self.state("duty")["task_model"], self.state("duty")["model"]),
+                         (st["thread"], "gpt-6-sol", "gpt-6.1-terra"))
         resumed = [entry for entry in self.trace() if entry["command"] == "duty-thread"][-1]
         self.assertEqual((resumed["method"], resumed["params"]["model"]),
                          ("thread/resume", "gpt-6.1-terra"))

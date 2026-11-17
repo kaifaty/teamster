@@ -136,7 +136,7 @@ Teamster checks the required model metadata and instruction template, including 
 `base_instructions` form. A JSON or UTF-8 decoding failure during an in-place cache rewrite gets at most
 three read attempts; a persistently invalid cache produces the same refusal.
 
-The default model is teamster's usual `gpt-6.1-sol` when it appears in the account catalogue,
+The default model is teamster's usual `gpt-6.1-sol` when it is visible in the account catalogue,
 otherwise the first model with `visibility: "list"` in cache order. Teamster does not recompute
 the default from `model/list` or model priorities. `duty.chat_codex_model` and the
 conversation's `--model` select another name only while it remains in that catalogue. A missing
@@ -285,7 +285,7 @@ queue a note is logged in the task's `stderr.log`, never failing its cycle.
 |---|---|---|
 | `duty.chat_model` | `claude.model` | model of Claude duty chat turns (a nonempty string or null) |
 | `duty.chat_effort` | `"high"` | effort of Claude duty chat turns: `low`, `medium`, `high`, `xhigh` or `max` |
-| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null or an unavailable name selects `gpt-6.1-sol` when present, otherwise the first visible model in cache order |
+| `duty.chat_codex_model` | `null` | model of Codex duty chat turns; null or an unavailable name selects `gpt-6.1-sol` when visible, otherwise the first visible model in cache order |
 | `duty.chat_codex_effort` | `null` | nonempty effort string for Codex duty chat turns, or null to use the isolated Codex default |
 | `duty.chat_max_minutes` | `20` | active time budget of one duty chat turn |
 | `duty.chat_auto_turns_per_hour` | `12` | nonnegative integer; note-driven turns per hour, the rest wait for the next user message |
