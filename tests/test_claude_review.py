@@ -884,7 +884,7 @@ class ClaudeReviewTests(RotationTestCase):
             {"method": "item/unknown/requestApproval", "write": str(outside)},
             {"params": {"command": "cat tracked.txt", "cwd": str(room), "kind": "unknown"}, "write": str(outside)},
             {"params": {"command": "/bin/zsh -lc", "cwd": str(room)}, "write": str(outside)},
-            {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat > outside.txt"]), "cwd": str(self.root)},
+            {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat /dev/null > outside.txt"]), "cwd": str(self.root)},
              "write": str(outside)},
         ]
         self.codex_duty_runs([{"reply": self.duty_answer("First answer."), "requests": requests, "sleep": True},
@@ -958,6 +958,8 @@ class ClaudeReviewTests(RotationTestCase):
                     ("item/fileChange/requestApproval", dict(params, turnId="old-turn"), {"patch": item}),
                     ("item/fileChange/requestApproval", params, {"patch": dict(item, changes=item["changes"] + [
                         {"path": str(outside / "another.md"), "kind": {"type": "add"}, "diff": ""}])}),
+                    ("item/fileChange/requestApproval", params, {"patch": dict(item, changes=[
+                        {"path": str(outside / "another.md"), "kind": {"type": "add"}, "diff": ""}] + item["changes"])}),
                     ("item/fileChange/requestApproval", None, {"patch": item}),
                     ("item/unknown/requestApproval", params, {"patch": item})):
                 decision, reason = worker.turns.codex_duty.approval(method, params, items, room, "thread", "turn")
@@ -1150,6 +1152,8 @@ class ClaudeReviewTests(RotationTestCase):
         st = self.state("duty")
         child = next(entry["child_pid"] for entry in self.trace() if entry["command"] == "duty-child")
         self.extra_pids.update((st["pid"], st["codex_pid"], child))
+        first_thread = st.get("thread")
+        self.assertTrue(first_thread)
         os.kill(st["pid"], signal.SIGKILL)
         output, errors = holding.communicate(timeout=30)
         self.assertEqual(holding.returncode, 1, output)
@@ -1165,6 +1169,10 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertNotIn("codex_pid", self.state("duty"))
         self.assertFalse(self.process_is_live(child))
         self.assertIn("Recovered answer.", self.cli("duty", "chat", "Again.", timeout=60))
+        self.assertEqual(self.state("duty")["thread"], first_thread)
+        threads = [entry for entry in self.trace() if entry["command"] == "duty-thread"]
+        self.assertEqual([entry["method"] for entry in threads], ["thread/start", "thread/resume"])
+        self.assertEqual(threads[-1]["params"]["threadId"], first_thread)
         # A live supervisor stops its transport too; readiness belongs to this third turn.
         self.trace_path.unlink()
         self.assertIn("sent to duty (turn 3), pid ", self.cli("say", "duty", "Hold again."))
