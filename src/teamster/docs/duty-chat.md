@@ -76,15 +76,26 @@ Codex also starts with a sandbox whose writable area is the room. This is an ext
 layer: an accepted command may request escalation or automatically retry outside it after a
 sandbox failure, without another teamster decision. In either case the exact command has already
 passed the guard. Turn cleanup interrupts the turn, cleans its background terminals and shuts the
-server down, ending remaining command groups as needed. The time limit, stop and orphan checks
-apply to both transports. Invocation ownership also identifies command groups after an app-server
-crash; independently started teamster tasks keep running under their own supervisors.
+server down so Codex can end its command groups. The time limit, stop and orphan checks apply to
+both transports; independently started teamster tasks keep running under their own supervisors.
+Codex 0.169.0 exposes terminal session handles rather than command operating-system PIDs.
+Environment markers are only a best-effort cleanup aid: after an app-server crash, teamster cannot
+guarantee forced cleanup of native commands. Even a file-based command can stall on a named pipe,
+device or network resource. If both the supervisor and app-server are killed, no cleanup code runs.
 
 The difference from Claude is Codex's `write_stdin`: input may still be sent to a command that the
 guard already accepted. The allowed commands do not execute their input as a program; `teamster`,
 `git` and `gh` are also forbidden from taking hidden work through stdin paths or Git's `--stdin`,
-as described below. Readers only turn their input into output, and output redirections already
-passed the room check. Sending input therefore adds no action beyond the accepted command.
+as described below. Sending input therefore adds no action beyond the accepted command.
+
+To avoid deliberately persistent readers that could outlive a crashed app-server, the Codex guard
+also refuses `tail -f`, `-F` and `--follow`, including combined short options and `--follow=…`.
+`cat`, `head`, `tail`, `wc` and `rg` must name their input files: a form that waits for stdin, or an
+explicit stdin operand such as `-` or `/dev/stdin`, is refused. Unknown or ambiguous reader options
+are declined with a reason; ordinary file-based forms such as `cat README.md`, `head -n 20 notes.md`
+and `rg -n pattern src` remain allowed. These extra reader restrictions apply only to Codex;
+Claude's hook keeps its existing reader policy. `rg --files` may enumerate the current directory
+without a path argument because it does not read stdin.
 
 The shared guard allows:
 
@@ -115,7 +126,8 @@ Everything else is refused, in particular `gh pr merge`, `git push|commit|merge|
 managers, `curl` and `rm`. Commands run by path and variable assignments are refused.
 `teamster`, `git` and `gh` refuse `-`, `/dev/stdin`,
 `/dev/fd/0` and `/proc/self/fd/0` as arguments, including option values and symbolic links to these
-paths; git also refuses `--stdin` and its abbreviations. Readers may consume standard input.
+paths; git also refuses `--stdin` and its abbreviations. Claude readers may consume standard input;
+Codex readers have the additional restrictions above.
 A compound command (`;`, `&&`, `||`, `|`, a subshell) is judged by every part; shell expansions (`$VAR`, `$(…)`,
 backticks, ANSI-C quoting `$'…'`, arithmetic, globs, braces, the body of an unquoted heredoc that
 expands) and control keywords are refused. Redirections and the file tools may write only inside the

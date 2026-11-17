@@ -161,7 +161,8 @@ def approval(method, params, items, room, thread, turn):
         cwd = params.get("cwd")
         if command is None or not isinstance(cwd, str) or not Path(cwd).is_absolute():
             return "decline", refusal
-        reason = duty_guard_reason(room, {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd})
+        reason = duty_guard_reason(room, {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd,
+                                          "duty_transport": "codex"})
     elif method == "item/fileChange/requestApproval":
         item = items.get(params["itemId"])
         if (params.get("grantRoot") or not isinstance(item, dict) or item.get("type") != "fileChange"

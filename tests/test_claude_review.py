@@ -389,6 +389,17 @@ class ClaudeReviewTests(RotationTestCase):
         (room / "stdin").symlink_to("/dev/stdin")
         git = "git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null"
         flags = "--no-ext-diff --no-textconv --no-show-signature --submodule=short"
+        codex_refused = (
+            "cat -", "head /dev/stdin", "tail /dev/fd/0", "wc /proc/self/fd/0", "rg x -", "cat stdin",
+            "cat", "cat -n", "head", "head -n5", "head -c 5", "tail", "tail -n20", "wc -l",
+            "rg pattern", "rg -n pattern", "rg -e pattern", "rg -f patterns.txt", "rg -A 2 pattern",
+            "rg -g '*.py' pattern", "rg -t py pattern", "rg -f- src", "rg -f /dev/stdin src",
+            "tail -f log.txt", "tail -F log.txt", "tail --follow log.txt", "tail --follow=name log.txt",
+            "tail -qf log.txt", "tail -qF log.txt",
+            git + " log " + flags + " --oneline | head -3 | wc -l",
+            git + " diff " + flags + " A...B -- 2>&1 | tail -n 40",
+            "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room,
+        )
         allowed = (
             "teamster start fix-parser --brief %s/fix-parser.md --repo /work/repo --review --fix-rounds 2" % room,
             "teamster start fix-parser --brief=b.md --ci --ci-rounds 1 --check-timeout 60 --parallel",
@@ -406,14 +417,14 @@ class ClaudeReviewTests(RotationTestCase):
             git + " ls-files -z --stage src", git + " grep -n parse HEAD -- src",
             "gh pr view 12 --repo fixture/repo", "gh pr diff 12", "gh pr checks 12", "gh pr list",
             "gh run view 7 --log-failed", "gh run list", "ls -la /work/repo", "cat README.md", "head -n 5 a.md",
-            "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src", "cat -", "head /dev/stdin",
-            "tail /dev/fd/0", "wc /proc/self/fd/0", "rg x -", "cat stdin",
+            "tail -n 20 log.txt", "wc -l a.md", "rg -n 'parse|load' src", "cat /dev/null",
+            "head -n5 a.md", "head -c 5 a.md", "tail -n20 log.txt", "tail -c5 log.txt",
+            "rg -e pattern src", "rg -f patterns.txt src", "rg -A 2 pattern src",
+            "rg -g '*.py' pattern src", "rg -t py pattern src", "rg --files",
             # Compound commands pass when every part does; output may go to the room or /dev/null.
             "teamster status && " + git + " log " + flags + " --oneline -1; teamster accounts",
-            git + " log " + flags + " --oneline | head -3 | wc -l", "(teamster status; ls)",
-            git + " diff " + flags + " A...B -- 2>&1 | tail -n 40", "rg -n x src 2>/dev/null",
-            "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room, "cat a.md > brief.md",
-        )
+            "(teamster status; ls)", "rg -n x src 2>/dev/null", "cat a.md > brief.md",
+        ) + codex_refused
         refused = (
             "gh pr merge 12", "gh pr merge 12 --squash", "gh api repos/x", "gh pr checkout 12", "gh run rerun 7",
             "git push", "git commit -m x", "git merge main", "git rebase main", "git reset --hard",
@@ -490,8 +501,11 @@ class ClaudeReviewTests(RotationTestCase):
                 with mock.patch.dict(os.environ, self.env, clear=True):
                     decision, adapter_reason = worker.turns.codex_duty.approval(
                         "item/commandExecution/requestApproval", params, {}, room, "thread", "turn")
-                self.assertEqual(decision, "accept" if not expected else "decline", adapter_reason)
-                self.assertEqual(adapter_reason.strip(), reason.strip())
+                self.assertEqual(decision, "decline" if expected or command in codex_refused else "accept", adapter_reason)
+                if command in codex_refused:
+                    self.assertIn("Blocked by teamster", adapter_reason)
+                else:
+                    self.assertEqual(adapter_reason.strip(), reason.strip())
         writes = ((("Write", "file_path", str(room / "fix-parser.md")), 0), (("Edit", "file_path", "notes.md"), 0),
                   (("Write", "file_path", str(self.root / "outside.md")), 2), (("Edit", "file_path", "../x.md"), 2),
                   (("Write", "file_path", str(room / ".git" / "config")), 2),
@@ -854,9 +868,9 @@ class ClaudeReviewTests(RotationTestCase):
         outside = self.root / "outside.txt"
         read_output = room / "reader.txt"
         requests = [
-            {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat > reader.txt"]), "cwd": str(room)},
-             "item": {"type": "commandExecution", "command": "cat > reader.txt", "cwd": str(room)},
-             "reader_input": "Input remains data: rm -rf /outside\n", "reader_output": str(read_output)},
+            {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat /dev/null > reader.txt"]), "cwd": str(room)},
+             "item": {"type": "commandExecution", "command": "cat /dev/null > reader.txt", "cwd": str(room)},
+             "execute": True},
             {"method": "item/fileChange/requestApproval", "item": {"type": "fileChange", "changes": [
                 {"path": str(room / "brief.md"), "kind": {"type": "add"}, "diff": "+Brief"}]},
              "write": str(room / "brief.md"), "contents": "Approved brief.\n"},
@@ -883,10 +897,7 @@ class ClaudeReviewTests(RotationTestCase):
         first_thread = st["thread"]
         self.assertTrue(first_thread)
         self.assertFalse(outside.exists())
-        self.assertEqual(read_output.read_text(), "Input remains data: rm -rf /outside\n")
-        stdin = next(entry for entry in self.trace() if entry["command"] == "duty-write-stdin")
-        self.extra_pids.add(stdin["reader_pid"])
-        self.assertFalse(self.process_is_live(stdin["reader_pid"]))
+        self.assertEqual(read_output.read_text(), "")
         decisions = [entry["decision"] for entry in self.trace() if entry["command"] == "duty-approval"]
         self.assertEqual(decisions, ["accept", "accept"] + ["decline"] * 9)
         self.assertEqual((room / "brief.md").read_text(), "Approved brief.\n")
@@ -1035,7 +1046,11 @@ class ClaudeReviewTests(RotationTestCase):
         self.enable_fake_clock(auto_advance=False)
         self.configure(language="en")
         self.codex_duty_runs([{"mode": "hold", "child": True}, {"mode": "hold", "child": True},
-                              {"mode": "crash", "child": True}, {"reply": self.duty_answer("Recovered.")},
+                              {"mode": "crash", "child": True, "requests": [
+                                  {"id": "duty-follow", "params": {
+                                      "command": shlex.join(["/bin/zsh", "-lc", "tail -f /dev/null"]),
+                                      "cwd": str(self.repo)}, "background": True}]},
+                              {"reply": self.duty_answer("Recovered.")},
                               {"mode": "hold", "child": True}])
         worker = self.worker()
         account = worker.accounts.account_named(worker.config.accounts_config(), "main")
@@ -1068,10 +1083,15 @@ class ClaudeReviewTests(RotationTestCase):
             failed = worker.turns.codex_duty.run_codex_duty(
                 account, self.repo, "Crash.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
                 "fixture-duty", "high", system_text="Duty fixture instructions.", task_dir=directory)
+            crash_trace = self.trace()
+            crashed_children = [entry["child_pid"] for entry in crash_trace if entry["command"] == "duty-child"]
+            self.extra_pids.update(crashed_children)
             self.assertEqual(failed["outcome"], "failed", failed)
-            crashed_child = [entry["child_pid"] for entry in self.trace() if entry["command"] == "duty-child"][-1]
-            self.extra_pids.add(crashed_child)
-            self.assertFalse(self.process_is_live(crashed_child))
+            approval = next(entry for entry in crash_trace if entry["command"] == "duty-approval")
+            self.assertEqual(approval["decision"], "decline", approval)
+            self.assertFalse(any(entry["command"] == "duty-executed" for entry in crash_trace))
+            for child in crashed_children:
+                self.assertFalse(self.process_is_live(child))
             recovered = worker.turns.codex_duty.run_codex_duty(
                 account, self.repo, "Recover.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
                 "fixture-duty", "high", thread_id=failed["telemetry"]["thread"],

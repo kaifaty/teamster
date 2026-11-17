@@ -38,6 +38,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -198,16 +199,11 @@ def duty_turn(request, thread):
             trace({"command": "duty-command-output", "stdout": completed.stdout, "stderr": completed.stderr})
         if "write" in step:
             Path(step["write"]).write_text(step.get("contents", "approved change\n"))
-        if "reader_input" in step:
-            output = Path(step["reader_output"])
-            with output.open("w") as stream:
-                reader = subprocess.Popen(["cat"], stdin=subprocess.PIPE, stdout=stream,
-                                          env=environment, start_new_session=True)
-                reader.stdin.write(step["reader_input"].encode())
-                reader.stdin.flush()
-                while output.stat().st_size < len(step["reader_input"].encode()):
-                    time.sleep(0.01)
-                trace({"command": "duty-write-stdin", "reader_pid": reader.pid, "input": step["reader_input"]})
+        if step.get("background"):
+            child = subprocess.Popen(shlex.split(approval["command"]), cwd=approval.get("cwd", os.getcwd()),
+                                     env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     start_new_session=True)
+            trace({"command": "duty-child", "child_pid": child.pid})
         if item is not None:
             emit({"method": "item/completed", "params": {
                   "threadId": thread["id"], "turnId": turn, "item": dict(item, status="completed")}})
