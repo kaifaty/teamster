@@ -196,8 +196,12 @@ def rollout_limits(path, on_limits=None, offset=0):
         size = f.seek(0, os.SEEK_END)
         f.seek(offset if on_limits else max(0, size - 262144))
         lines = f.read().splitlines()
+    return read_rollout_limits(lines if on_limits else reversed(lines), on_limits)
+
+
+def read_rollout_limits(lines, on_limits):
     limits = None
-    for event in config.ROLLOUT["read_events"](lines if on_limits else reversed(lines)):
+    for event in config.ROLLOUT["read_events"](lines):
         try:
             sample = config.ROLLOUT["decode_token_count"](event)
             raw = sample.rate_limits if sample is not None and sample.event_type == "event_msg" else None
