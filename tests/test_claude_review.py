@@ -359,6 +359,7 @@ class ClaudeReviewTests(RotationTestCase):
             ("command -v nohup && command -V pkill", None),
             ("env -S printf '%s' 'text; pkill'", None),
             ("trap 'rm -f run.pid' EXIT; make test", None),
+            ("pgrep target | >/dev/null\nkill 12345", None),
         )
         for command, expected in table:
             with self.subTest(command=command):
@@ -393,17 +394,22 @@ class ClaudeReviewTests(RotationTestCase):
         flags = "--no-ext-diff --no-textconv --no-show-signature --submodule=short"
         codex_refused = (
             "cat -", "head /dev/stdin", "tail /dev/fd/0", "wc /proc/self/fd/0", "rg x -", "cat stdin",
-            "cat", "cat -n", "head", "head -3", "head -n5", "head -c 5", "tail", "tail -n20", "wc -l",
+            "cat", "cat -n", "head", "head -3", "head -n5", "head -c 5", "tail", "tail -3", "tail -n20", "wc -l",
+            "head -3 README.md | wc -l", "tail -3 README.md | wc -l",
             "rg pattern", "rg -n pattern", "rg -e pattern", "rg -f patterns.txt", "rg -A 2 pattern",
             "rg -g '*.py' pattern", "rg -t py pattern", "rg -f- src", "rg -f /dev/stdin src",
             "tail -f log.txt", "tail -F log.txt", "tail --follow log.txt", "tail --follow=name log.txt",
             "tail -qf log.txt", "tail -qF log.txt",
             "head | cat", "teamster status | head; tail", "teamster status | head && tail",
             "teamster status | cat </dev/tty",
+            "ls | head 00</dev/tty", "ls | head <&3", "ls | head 0>/dev/null",
+            "ls | head <<'EOF'\nx\nEOF",
             "teamster status | tail -f", "teamster status | tail -F", "teamster status | tail --follow",
             "ls | >/dev/null\ncat", "ls | head ||\ncat", "ls ||\ncat",
             "teamster status || head", "teamster status | head\ntail",
             "ls | (head -n 1); cat", "ls | (head -n 1) </dev/tty",
+            "(ls | head -n 1) </dev/null", "ls | (head -n 1) 00</dev/tty",
+            "(ls | head -n 1) <<'EOF'\nx\nEOF",
             "cat > %s/brief.md <<'EOF'\nUse $HOME and `x` literally.\nEOF" % room,
         )
         allowed = (
@@ -434,6 +440,7 @@ class ClaudeReviewTests(RotationTestCase):
             "teamster status | cat | head -n 285 | tail -n 110 | rg -n status | wc -l",
             "ls | (head -n 1)", "ls | (head -n 1; tail -n 1)",
             "ls | head -n 1 3</dev/null", "ls |\nhead -n 1",
+            "ls | head -3 | tail -3",
             "teamster status |\nhead -n 3",
             git + " log " + flags + " --oneline | head -3 | wc -l",
             git + " log " + flags + " --oneline | head -n3 | wc -l",

@@ -167,7 +167,8 @@ class Shell:
 
     def parse(self, closer=None):
         """Read a command list up to EOF or, inside `$(`, its closing parenthesis."""
-        words, target, mark = [], False, len(self.names)
+        words, depth, target, mark = [], 0, False, len(self.names)
+        # Duty-only stdin metadata never changes the shared command-name/mark state.
         piped, inherited, active = False, False, False
         groups, group_commands, descriptor = [], None, None
         while self.pos < len(self.text):
@@ -178,8 +179,7 @@ class Shell:
                 self.pos += 2
             elif char == "\n":
                 self.pos += 1
-                if words:
-                    words, mark = self.end(words, mark, piped)
+                words, mark = self.end(words, mark, piped)
                 if active:
                     piped, active, group_commands = inherited, False, None
                 self.read_heredocs()
@@ -220,6 +220,7 @@ class Shell:
                     self.expansions += 1
                     self.skip_arithmetic()
                 else:
+                    depth += 1
                     words, mark = self.end(words, mark, piped)
                     groups.append((inherited, len(self.commands)))
                     inherited = piped
@@ -227,17 +228,19 @@ class Shell:
             elif char == ")":
                 self.pos += 1
                 words, mark = self.end(words, mark, piped)
-                if groups:
+                if depth:
+                    depth -= 1
                     inherited, first = groups.pop()
                     group_commands = (first, len(self.commands))
                     piped, active = inherited, True
                 elif closer == ")":
                     return
             elif char in "<>" and self.peek(1) != "(":
-                if char == "<" and descriptor in (None, "0"):
+                if (char == "<" and descriptor is None
+                        or descriptor is not None and not descriptor.strip("0")):
                     piped = False
                     if group_commands is not None:
-                        # A group's stdin redirection replaces its inherited pipe.
+                        # Conservatively revoke every pipe exemption inside a group with redirected stdin.
                         for index in range(*group_commands):
                             self.commands[index] = (self.commands[index][0], False)
                 descriptor, active = None, True
@@ -686,8 +689,8 @@ def codex_reader_denial(words, cwd, piped=False):
                     pattern_files.append(value)
             else:
                 return refusal
-        elif options and name == "head" and re.fullmatch(r"-[0-9]+", argument):
-            pass  # The historical finite line-count option, as in head -3.
+        elif options and piped and name in ("head", "tail") and re.fullmatch(r"-[0-9]+", argument):
+            pass  # Historical line-count options are allowed only at a piped stage.
         elif options and argument.startswith("-") and argument != "-":
             position = 1
             while position < len(argument):
