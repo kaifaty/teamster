@@ -93,6 +93,14 @@ class LifecycleTests(RotationTestCase):
             mock.call(cfg, "claude", "work", "fixture-claude", "fix"),
             mock.call(cfg, "codex", "work", "fixture-codex-work", "fix"),
         ])
+        cfg["role_profiles"]["work"].reverse()
+        a.effort = "ultra"
+        with mock.patch.object(worker.config, "provider_installed", return_value=True), \
+                mock.patch.object(worker.account_rotation, "role_can_start",
+                                  side_effect=lambda cfg, provider, *args: provider == "claude"):
+            executor, source, model, effort = worker.commands.work_route(a, cfg, "work")
+        self.assertEqual((executor.name, source, model[0], effort), (
+            "codex", "role profile", "fixture-codex-work", ("ultra", "flag")))
         output = self.start("only-codex-work")
         self.wait("only-codex-work")
         self.assertIn("executor codex (fallback)", output)

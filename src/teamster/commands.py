@@ -57,6 +57,11 @@ def work_route(a, cfg, role, profile=None, *, sandbox="off", directory=None):
         candidates.append((executors.get(other), "fallback"))
 
     def compatible(candidate):
+        if candidate.name == "claude":
+            try:
+                claude_runner.validate_work_effort(a.effort)
+            except ValueError:
+                return False
         return ((candidate.name not in ("codex", "claude") or config.provider_installed(candidate.name))
                 and (candidate.supports_sandbox or sandbox == "off")
                 and (role != "scout" or candidate.name != "claude" or git_worktree(directory)))
