@@ -15,6 +15,11 @@ import teamster
 from . import executors, procs, result_schema, reviewers
 
 
+TASK_TYPE_PATTERN = re.compile(r"[a-z0-9-]{1,32}")
+MODEL_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+ROUTABLE_ROLES = ("work", "review", "scout", "reflect", "duty")
+
+
 def env(legacy_name, default=None):
     """Read a Teamster override first, retaining the old variable as a fallback."""
     name = legacy_name.removeprefix("CODEX_TASK_").removeprefix("CODEX_WORKER_")
@@ -194,21 +199,31 @@ def data_layout():
     return getattr(teamster, "DATA_LAYOUT", 1)
 
 
-def resolve_codex():
+def _find_codex():
     override = env("CODEX_TASK_CODEX")
     if override:
         return str(Path(override).expanduser())
     if CHATGPT_CODEX.is_file():
         return str(CHATGPT_CODEX)
-    binary = shutil.which("codex")
-    if binary:
-        return binary
+    return shutil.which("codex")
+
+
+def _missing_codex():
     procs.die("Codex CLI was not found. Install it with npm install -g @openai/codex, "
         "run codex login, or set TEAMSTER_CODEX to its executable path.")
 
 
+def resolve_codex():
+    return _find_codex() or _missing_codex()
+
+
+def _installed_codex():
+    path = CODEX["path"] or _find_codex()
+    return shutil.which(str(Path(path).expanduser())) if path else None
+
+
 def codex_binary():
-    return CODEX["path"] or resolve_codex()
+    return _installed_codex() or _missing_codex()
 
 
 def claude_binary():
@@ -216,10 +231,71 @@ def claude_binary():
     return shutil.which(str(Path(override).expanduser()) if override else "claude")
 
 
+def provider_installed(provider):
+    if provider == "codex":
+        return _installed_codex() is not None
+    if provider == "claude":
+        return claude_binary() is not None
+    raise ValueError(f"Unknown provider: {provider!r}")
+
+
 def require_claude():
     if not claude_binary():
         procs.die("Claude Code CLI was not found. Install Claude Code or set "
                   "TEAMSTER_CLAUDE to its executable path to use --executor claude or --reviewer claude.")
+
+
+def task_profiles(cfg):
+    profiles = cfg.get("task_profiles", {})
+    if not isinstance(profiles, dict):
+        procs.die("task_profiles must be an object")
+    for label, profile in profiles.items():
+        if not TASK_TYPE_PATTERN.fullmatch(label):
+            procs.die(f"invalid task profile label: {label!r}")
+        if not isinstance(profile, dict):
+            procs.die(f"task_profiles.{label} must be an object")
+        for key, value in profile.items():
+            if key not in ("executor", "model", "effort"):
+                procs.die(f"unknown task profile field: task_profiles.{label}.{key}")
+            if not isinstance(value, str) or not value.strip():
+                procs.die(f"task_profiles.{label}.{key} must be a nonempty string")
+            if key == "executor" and value not in executors.names():
+                procs.die(f"unknown executor in task_profiles.{label}: {value!r}")
+            if key == "model" and not MODEL_NAME_PATTERN.fullmatch(value):
+                procs.die(f"invalid model in task_profiles.{label}: {value!r}")
+    return profiles
+
+
+def role_routes(cfg, role):
+    return cfg.get("role_profiles", {}).get(role, ())
+
+
+def role_route(cfg, role, provider):
+    return next((route for route in role_routes(cfg, role) if route["provider"] == provider), {})
+
+
+def validate_role_profiles(profiles):
+    if not isinstance(profiles, dict):
+        procs.die("role_profiles must be an object")
+    for role, routes in profiles.items():
+        label = f"role_profiles.{role}"
+        if role not in ROUTABLE_ROLES:
+            procs.die(f"unknown role: {label}")
+        if not isinstance(routes, list) or not routes:
+            procs.die(f"{label} must be a nonempty list of routes")
+        seen = set()
+        for route in routes:
+            if not isinstance(route, dict) or route.keys() - {"provider", "model", "effort"}:
+                procs.die(f"{label} routes must be objects with provider and optional model and effort")
+            provider = route.get("provider")
+            if provider not in ("codex", "claude") or provider in seen:
+                procs.die(f"{label} has an unknown or duplicate provider: {provider!r}")
+            seen.add(provider)
+            if "model" in route and (not isinstance(route["model"], str) or route["model"] == "default"
+                                     or not MODEL_NAME_PATTERN.fullmatch(route["model"])):
+                procs.die(f"{label} has an invalid model for {provider}")
+            if "effort" in route and (not isinstance(route["effort"], str) or not route["effort"].strip()):
+                procs.die(f"{label} effort for {provider} must be a nonempty string")
 
 
 def accounts_config():
@@ -243,6 +319,7 @@ def accounts_config():
     cfg.setdefault("max_review_minutes", 30)
     cfg.setdefault("executor", "codex")
     cfg.setdefault("reviewer", "codex")
+    validate_role_profiles(cfg.get("role_profiles", {}))
     cfg.setdefault("claude", {})
     cfg.setdefault("ci", False)
     cfg.setdefault("ci_timeout_minutes", 30)
@@ -332,7 +409,7 @@ def accounts_config():
         procs.die("duty.chat_auto_turns_per_hour must be a nonnegative integer")
     task_types = duty_settings["claude_only_task_types"]
     if not isinstance(task_types, list) or not all(
-            isinstance(label, str) and re.fullmatch(r"[a-z0-9-]{1,32}", label) for label in task_types):
+            isinstance(label, str) and TASK_TYPE_PATTERN.fullmatch(label) for label in task_types):
         procs.die("duty.claude_only_task_types must be a list of task types (1-32 characters of a-z, 0-9 and '-')")
     if cfg["sandbox"] not in ("off", "workspace"):
         procs.die('sandbox must be "off" or "workspace"')

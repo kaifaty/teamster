@@ -307,6 +307,7 @@ def cmd_login(a):
 def _cmd_login(a, events=None):
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,40}", a.name):
         procs.die("invalid account name")
+    binary = config.codex_binary()
     cfg = config.accounts_config()
     account = next((i for i in cfg["accounts"] if i["name"] == a.name), None)
     if account is None:
@@ -319,7 +320,6 @@ def _cmd_login(a, events=None):
         tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
         tmp.replace(path)
     accounts.prepare_home(account)
-    binary = config.codex_binary()
     try:
         argv = [binary, "login"] + ([] if a.browser else ["--device-auth"])
         if events:

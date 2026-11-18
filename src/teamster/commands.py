@@ -11,13 +11,91 @@ import sys
 import time
 from pathlib import Path
 
-from . import account_commands, accounts, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
+from . import account_commands, account_rotation, accounts, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
 
 
 def main_repo(path):
     """The main checkout of the repository `path` belongs to (including worktrees)."""
     common = Path(procs.sh(config.GIT + ["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=path))
     return common.parent
+
+
+def start_option(flag, profile, route, key):
+    if flag is not None:
+        return flag, "flag"
+    if key in profile:
+        return profile[key], "profile"
+    if key in route:
+        return route[key], "role profile"
+    return None, "default"
+
+
+def git_worktree(directory):
+    inside = subprocess.run(config.GIT + ["rev-parse", "--is-inside-work-tree"], cwd=directory,
+                            text=True, capture_output=True)
+    return inside.returncode == 0 and inside.stdout.strip() == "true"
+
+
+def work_route(a, cfg, role, profile=None, *, sandbox="off", directory=None):
+    """Resolve once, before the first turn can start, and keep model defaults provider-local."""
+    profile = profile or {}
+    explicit = getattr(a, "executor", None)
+    model_flag = getattr(a, "model", None)
+    routes = config.role_routes(cfg, role)
+    if role == "work":
+        preferred, source, _ = executors.for_start(explicit, profile, cfg)
+    else:
+        preferred = executors.get(explicit or ("codex" if role == "scout" else "claude"))
+        source = "flag" if explicit else "default"
+    candidates = [(preferred, source)]
+    if routes and not explicit:
+        configured = [(executors.get(route["provider"]), "role profile") for route in routes]
+        candidates = (candidates + [entry for entry in configured if entry[0] is not preferred]
+                      if source == "profile" else configured)
+    elif not explicit and preferred.name in ("codex", "claude"):
+        other = "claude" if preferred.name == "codex" else "codex"
+        candidates.append((executors.get(other), "fallback"))
+
+    def compatible(candidate):
+        if candidate.name == "claude":
+            try:
+                claude_runner.validate_work_effort(a.effort)
+            except ValueError:
+                return False
+        return ((candidate.name not in ("codex", "claude") or config.provider_installed(candidate.name))
+                and (candidate.supports_sandbox or sandbox == "off")
+                and (role != "scout" or candidate.name != "claude" or git_worktree(directory)))
+
+    target, source = candidates[0]
+    if not explicit and model_flag in (None, "default"):
+        if routes:
+            usable = [entry for entry in candidates if compatible(entry[0])]
+            if usable:
+                # Preserve the existing waiting policy when none of the installed pools can start yet.
+                target, source = usable[0]
+            if len(usable) > 1:
+                for candidate, candidate_source in usable:
+                    _, _, defaults = executors.for_start(candidate.name, profile, cfg)
+                    route = config.role_route(cfg, role, candidate.name)
+                    model, _ = start_option(model_flag, defaults, route, "model")
+                    if account_rotation.role_can_start(cfg, candidate.name, role,
+                                                       None if model == "default" else model,
+                                                       getattr(a, "task_type", None)):
+                        target, source = candidate, candidate_source
+                        break
+            if target is not candidates[0][0]:
+                source = "fallback"
+        elif len(candidates) > 1 and not config.provider_installed(target.name) and compatible(candidates[1][0]):
+            target, source = candidates[1]
+    _, _, defaults = executors.for_start(target.name, profile, cfg)
+    role_defaults = config.role_route(cfg, role, target.name)
+    return (target, source, start_option(model_flag, defaults, role_defaults, "model"),
+            start_option(a.effort, defaults, role_defaults, "effort"))
+
+
+def print_route(label, target, source, model, effort):
+    print(f"  routing {label}: executor {target.name} ({source}), "
+          f"model {model[0] or 'default'} ({model[1]}), effort {effort[0] or 'default'} ({effort[1]})")
 
 
 def cmd_start(a):
@@ -27,17 +105,18 @@ def cmd_start(a):
     no_push = getattr(a, "no_push", False)
     if no_push and (a.ci or a.ci_command is not None):
         procs.die("--no-push cannot be combined with --ci or --ci-command; CI requires a published branch")
-    executor = (executors.get(a.executor) if getattr(a, "executor", None)
-                else executors.from_state(cfg))
-    reviewer = getattr(a, "reviewer", None) or executor.reviewer(cfg)
+    profile = config.task_profiles(cfg).get(a.task_type)
     sandbox = a.sandbox if a.sandbox is not None else cfg["sandbox"]
+    executor, source, model_option, effort_option = work_route(a, cfg, "work", profile, sandbox=sandbox)
+    model, effort = model_option[0], effort_option[0]
     if not executor.supports_sandbox and sandbox != "off":
         procs.die(f"--executor {executor.name} supports only --sandbox off; --sandbox workspace is not supported")
     try:
-        executor.prepare(a.effort, cfg)
+        executor.prepare(effort, cfg)
     except ValueError as exc:
         procs.die(str(exc))
-    reviewers.get(reviewer).prepare(cfg)
+    review = {"reviewer": executor.reviewer(cfg)}
+    review_cycle.configure_reviewer(review, cfg, getattr(a, "reviewer", None), required=a.review)
     if (config.TASKS / a.slug).exists():
         procs.die(f"task {a.slug!r} exists; pick another slug or clean it")
     busy = task_state.running_tasks()
@@ -82,8 +161,8 @@ def cmd_start(a):
             'report that with the numbers instead of fixing it.'))
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "repo": str(repo), "worktree": str(wt), "branch": branch, "base": a.base,
-          "executor": executor.name, "effort": a.effort, "task_type": a.task_type,
-          "task_model": None if getattr(a, "model", None) == "default" else getattr(a, "model", None),
+          "executor": executor.name, "effort": effort, "task_type": a.task_type,
+          "task_model": None if model == "default" else model,
           "review_model": None if getattr(a, "review_model", None) == "default" else getattr(a, "review_model", None),
           "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "check": a.check, "check_timeout": a.check_timeout,
@@ -91,7 +170,7 @@ def cmd_start(a):
           "guards": a.guard, "base_check": a.base_check,
           "sandbox": sandbox, "writable_dirs": cfg["writable_dirs"], "no_push": no_push,
           "review_angles": a.review_angles,
-          "reviewer": reviewer,
+          **review,
           "max_turn_minutes": max_minutes,
           "ci_enabled": not no_push and (a.ci or bool(a.ci_command) or cfg["ci"]), "ci_command": a.ci_command,
           "ci_rounds": a.ci_rounds if a.ci_rounds is not None else 1,
@@ -106,7 +185,7 @@ def cmd_start(a):
     if config.started_by():
         st["started_by"] = config.started_by()
     task_state.save(st)
-    proc = supervisor.spawn(st, prompt, a.effort, review_after=a.review, fix_rounds=a.fix_rounds or 0)
+    proc = supervisor.spawn(st, prompt, effort, review_after=a.review, fix_rounds=a.fix_rounds or 0)
     for _ in range(300):
         st = task_state.load(a.slug)
         if st["thread"] or executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
@@ -115,6 +194,8 @@ def cmd_start(a):
     account = executor.account(st)
     cursor = executor.cursor_label + " " + (executor.cursor(st) or "?")
     print(f"started {a.slug}: executor {executor.name}, account {account or '?'}, {cursor}, pid {st.get('pid')}\n  worktree {wt}\n  branch {branch}")
+    if profile is not None or config.role_routes(cfg, "work") or source == "fallback":
+        print_route(a.task_type or "work", executor, source, model_option, effort_option)
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
 
 
@@ -137,9 +218,9 @@ def cmd_scout(a):
     directory = Path(a.repo).expanduser().resolve()
     if not directory.is_dir():
         procs.die(f"scout directory does not exist: {directory}")
-    executor = executors.get(getattr(a, "executor", None) or "codex")
+    executor, source, model, effort = work_route(a, cfg, "scout", directory=directory)
     try:
-        executor.prepare_scout(a.effort, cfg, directory)
+        executor.prepare_scout(effort[0], cfg, directory)
     except ValueError as exc:
         procs.die(str(exc))
     d = config.TASKS / a.slug
@@ -147,13 +228,15 @@ def cmd_scout(a):
     prompt = prompts.scout_prompt(question, cfg)
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "kind": "scout", "repo": str(directory), "worktree": str(directory), "branch": "",
-          "executor": executor.name, "effort": a.effort,
+          "executor": executor.name, "effort": effort[0],
           "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "created": clock.CLOCK.time(), "turns": 0}
     if config.started_by():
         st["started_by"] = config.started_by()
+    if model[0] is not None:
+        st["task_model"] = None if model[0] == "default" else model[0]
     task_state.save(st)
-    proc = supervisor.spawn(st, prompt, a.effort, kind="scout")
+    proc = supervisor.spawn(st, prompt, effort[0], kind="scout")
     for _ in range(300):
         st = task_state.load(a.slug)
         if executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
@@ -161,6 +244,8 @@ def cmd_scout(a):
         time.sleep(0.1)
     print(f"started scout {a.slug}: account {executor.account(st) or '?'}, "
           f"{executor.cursor_label} {executor.cursor(st) or '?'}, pid {st.get('pid')}\n  directory {directory}")
+    if config.role_routes(cfg, "scout") or source == "fallback":
+        print_route("scout", executor, source, model, effort)
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
 
 
@@ -171,9 +256,9 @@ def cmd_reflect(a):
     if (config.TASKS / a.slug).exists():
         procs.die(f"task {a.slug!r} exists; pick another slug or clean it")
     order = Path(a.file).read_text() if a.file else a.order
-    executor = executors.get(a.executor)
+    executor, source, model, effort = work_route(a, cfg, "reflect")
     try:
-        executor.prepare(a.effort, cfg)
+        executor.prepare(effort[0], cfg)
     except ValueError as exc:
         procs.die(str(exc))
     archive = config.TASKS / ".archive"
@@ -197,16 +282,16 @@ def cmd_reflect(a):
               prompts.reflect_prompt(order, records, through, cfg))
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "kind": "reflect", "repo": str(archive), "worktree": str(room), "branch": "",
-          "executor": executor.name, "effort": a.effort,
+          "executor": executor.name, "effort": effort[0],
           "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "created": clock.CLOCK.time(), "turns": 0,
           "reflect_mode": "study" if study else "batch", "reflect_through": through, "reflect_records": records,
           "reflect_order": order if order and order.strip() else None, "reflect_turns": [],
           "max_turn_minutes": a.max_minutes}
-    if a.model is not None:
-        st["task_model"] = None if a.model == "default" else a.model
+    if model[0] is not None:
+        st["task_model"] = None if model[0] == "default" else model[0]
     task_state.save(st)
-    proc = supervisor.spawn(st, prompt, a.effort, kind="reflect")
+    proc = supervisor.spawn(st, prompt, effort[0], kind="reflect")
     for _ in range(300):
         st = task_state.load(a.slug)
         if executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
@@ -216,6 +301,8 @@ def cmd_reflect(a):
     print(f"started reflect {a.slug}: {selection}, executor {executor.name}, "
           f"account {executor.account(st) or '?'}, {executor.cursor_label} {executor.cursor(st) or '?'}, "
           f"pid {st.get('pid')}\n  reading room {room}")
+    if config.role_routes(cfg, "reflect") or source == "fallback":
+        print_route("reflect", executor, source, model, effort)
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
 
 
@@ -290,14 +377,13 @@ def cmd_review(a):
         procs.die(f"{st['kind']} is read-only; review is not supported")
     require_idle(st)
     cfg = config.accounts_config()
-    reviewer = getattr(a, "reviewer", None) or st["reviewer"]
-    reviewers.get(reviewer).prepare(cfg)
-    st["reviewer"] = reviewer
+    review_cycle.configure_reviewer(st, cfg, getattr(a, "reviewer", None), required=True)
     if getattr(a, "review_model", None) is not None:
         st["review_model"] = None if a.review_model == "default" else a.review_model
     budgets.set_weekly_budget(st, getattr(a, "max_weekly", None), cfg)
     st["review_angles"] = a.review_angles
-    supervisor.spawn(st, prompts.review_prompt(st, cfg), a.effort or st.get("effort"), kind="review")
+    effort = a.effort if config.role_routes(cfg, "review") else a.effort or st.get("effort")
+    supervisor.spawn(st, prompts.review_prompt(st, cfg), effort, kind="review")
     if move:
         print(move)
     print(f"reviewing {a.slug}, pid {st['pid']}")
@@ -430,9 +516,7 @@ def prepare_claude_work(effort, cfg):
 
 
 def prepare_claude_scout(effort, cfg, directory):
-    inside = subprocess.run(config.GIT + ["rev-parse", "--is-inside-work-tree"], cwd=directory,
-                            text=True, capture_output=True)
-    if inside.returncode != 0 or inside.stdout.strip() != "true":
+    if not git_worktree(directory):
         raise ValueError("scout --executor claude requires a directory inside a git work tree")
     prepare_claude_work(effort, cfg)
 
@@ -471,6 +555,17 @@ def print_claude_work_stats(st):
 
 executors.get("claude").bind(sys.modules[__name__], prepare="prepare_claude_work",
                              prepare_scout="prepare_claude_scout", stats="print_claude_work_stats")
+
+
+def prepare_codex(effort, cfg, directory=None):
+    config.codex_binary()
+
+
+def prepare_codex_review(cfg):
+    config.codex_binary()
+
+
+executors.get("codex").bind(sys.modules[__name__], prepare="prepare_codex", prepare_scout="prepare_codex")
 
 
 def cmd_report(a):
@@ -548,6 +643,7 @@ def cmd_clean(a):
 def clean_task(a, st):
     if procs.alive(st.get("pid")):
         procs.die("still running; stop it first")
+    cfg = config.accounts_config()
     if st.get("kind") in ("reflect", "duty"):
         shutil.rmtree(config.TASKS / a.slug / "room", ignore_errors=True)
     elif st.get("kind") != "scout":
@@ -557,7 +653,6 @@ def clean_task(a, st):
             shutil.rmtree(Path(wt).parent, ignore_errors=True)
         if not a.keep_branch:
             subprocess.run(config.GIT + ["branch", "-D", st["branch"]], cwd=repo, capture_output=True)
-    cfg = config.accounts_config()
     for entry in st["threads"] + st["reviews"]:
         reviewers.from_entry(entry).clean(entry, cfg)
     record = config.TASKS / a.slug
@@ -589,12 +684,15 @@ def clean_task(a, st):
 
 
 def clean_codex_review(entry, cfg):
+    if not config.provider_installed("codex"):
+        return
     account = accounts.account_named(cfg, entry["account"])
     accounts.prepare_home(account)
     subprocess.run([config.codex_binary(), "archive", entry["thread"]], env=accounts.account_env(account), capture_output=True)
 
 
-reviewers.CODEX_REVIEWER.bind(sys.modules[__name__], stats="print_codex_review_stats", clean="clean_codex_review")
+reviewers.CODEX_REVIEWER.bind(sys.modules[__name__], stats="print_codex_review_stats", clean="clean_codex_review",
+                              prepare="prepare_codex_review")
 reviewers.CLAUDE_REVIEWER.bind(sys.modules[__name__], prepare="prepare_claude_review")
 
 
@@ -610,16 +708,21 @@ def cmd_verdict(a):
 
 def cmd_accounts(a):
     cfg = config.accounts_config()
-    if getattr(a, "refresh", False):
+    has_claude = config.provider_installed("claude")
+    if getattr(a, "refresh", False) and has_claude:
         claude_review.refresh_limits(cfg)
     infos = accounts.snapshots(cfg)
     if getattr(a, "json", False):
-        print(json.dumps(accounts_json(infos, cfg), ensure_ascii=False))
+        report = accounts_json(infos, cfg)
+        if not has_claude:
+            report["claude"] = []
+        print(json.dumps(report, ensure_ascii=False))
         return
     record = duty.read_duty()
     print_accounts(infos, cfg, record)
-    print("\n".join(accounts.claude_account_lines(
-        cfg, record["account"] if record and record["family"] == "claude" else None)))
+    if has_claude:
+        print("\n".join(accounts.claude_account_lines(
+            cfg, record["account"] if record and record["family"] == "claude" else None)))
 
 
 def accounts_json(infos, cfg):
@@ -757,25 +860,19 @@ def cmd_duty_tick(a):
 def duty_tick(cfg, unpin=False):
     """Refresh stale limits and record the election as duty tick does; the caller holds duty_lock."""
     refreshed_at = clock.CLOCK.time()
-    try:
-        claude_review.refresh_limits(cfg)
-    except Exception as exc:
-        # Stale or unknown snapshots simply stay out of the election.
-        print(f"duty tick: Claude limit refresh failed: {exc}", file=sys.stderr)
-    # A fresh snapshot is not probed; mark a missing token as probes and selection do.
-    for account in claude_accounts.accounts(cfg):
-        if claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1]:
-            claude_accounts.token_available(account["name"])
-        else:
-            claude_accounts.mark_limited(account["name"], token_unavailable=True)
-    try:
-        config.CODEX["path"] = config.resolve_codex()
-    except SystemExit as exc:
-        # procs.die reports a missing Codex CLI; Claude accounts can still be elected.
-        print(f"duty tick: Codex accounts skipped: {exc}", file=sys.stderr)
-        infos = [dict(account, logged_in=None) for account in cfg["accounts"]]
-    else:
-        infos = accounts.snapshots(cfg)
+    if config.provider_installed("claude"):
+        try:
+            claude_review.refresh_limits(cfg)
+        except Exception as exc:
+            # Stale or unknown snapshots simply stay out of the election.
+            print(f"duty tick: Claude limit refresh failed: {exc}", file=sys.stderr)
+        # A fresh snapshot is not probed; mark a missing token as probes and selection do.
+        for account in claude_accounts.accounts(cfg):
+            if claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1]:
+                claude_accounts.token_available(account["name"])
+            else:
+                claude_accounts.mark_limited(account["name"], token_unavailable=True)
+    infos = accounts.snapshots(cfg)
     return duty.run_duty_tick(cfg, infos, refreshed_at, unpin)
 
 
@@ -805,6 +902,7 @@ def cmd_duty_set(a):
     family, account = duty_set_target(cfg, a.account, a.family)
     label, name, now = family + "/" + a.account, a.account, clock.CLOCK.time()
     if family == "claude":
+        config.require_claude()
         if not claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1]:
             procs.die(f"{label} has no token; sign it in with teamster claude-login {name}; nothing changed")
         info = claude_accounts.read_limits().get(name, {})
@@ -814,7 +912,7 @@ def cmd_duty_set(a):
         claude_accounts.token_available(name)
         candidate = duty.claude_duty_candidate(cfg, account, claude_accounts.read_limits().get(name, {}), now, now)
     else:
-        config.CODEX["path"] = config.resolve_codex()
+        config.codex_binary()
         info = next(item for item in accounts.snapshots(cfg) if item["name"] == name)
         if info["logged_in"] is False:
             procs.die(f"{label} is not logged in; run teamster login {name}; nothing changed")

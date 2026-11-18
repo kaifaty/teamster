@@ -56,12 +56,14 @@ merge the base outside the sandbox before continuing with `say`.
 
 ## Review provider
 
-`start`, `say`, and `review` accept `--reviewer codex|claude`. The default is the `reviewer` setting
-(`codex`); the task saves the selection, and follow-ups and standalone reviews inherit it unless
-overridden. `--reviewer` selects the provider; `--review` still enables automatic review.
+`start`, `say`, and `review` accept `--reviewer codex|claude`. With a [review role profile](settings.md#role-profiles),
+Teamster starts with the first installed provider in the profile and tries a later provider when
+the reviewer is unavailable. `--reviewer` pins the provider for the task. Without the profile,
+Claude workers prefer Codex reviews, Codex workers use the `reviewer` setting (`codex` by default),
+and the legacy Claude-to-Codex fallback applies. `--review` enables automatic review.
 
-With `--reviewer claude`, each review uses a fresh Claude Code CLI process with the same review prompt
-and result schema. Work and fix rounds remain in Codex. Before each review or angle, the supervisor
+Each Claude review uses a fresh Claude Code CLI process with the same review prompt and result
+schema. The saved work executor handles work and fix rounds. Before each review or angle, the supervisor
 selects an account from the role-neutral `claude.accounts` pool: below `soft_switch_at` in both the
 five-hour and seven-day windows first, then below `switch_at`, ordered by earliest seven-day reset.
 Unknown limits count as available. Angles in the same review prefer different available accounts.
@@ -83,19 +85,19 @@ one angle share its `max_review_minutes` budget; switching accounts uses only th
 An unreported
 reset is shown as `unknown`. `wait` prints
 `== claude account <a> limited until <time>; review by <b>` once for that switch, with
-` for model <model>` before `; review by` when only `claude.model` is limited on that account
-([accounts.md](accounts.md#claude-account-pool)). Only when no Claude
-account is available does this failure fall back to an ordinary Codex review.
-The Codex fallback starts a new review with its own full `max_review_minutes` budget.
+` for model <model>` before `; review by` when only the review's model is limited on that account
+([accounts.md](accounts.md#claude-account-pool)). If no Claude account remains available, the
+review can fall back to an eligible standby. Provider fallback starts a new review with a full
+`max_review_minutes` budget.
 A missing Keychain token marks that account unavailable for one hour and retries another account
 within the same angle budget; the switch line includes `token unavailable`. After the hour the
 account is tried again: a successful token read clears the mark, a still missing token sets it for
 another hour, and `claude-login <name>` clears it at once.
-A missing executable
-during the cycle, error result, or invalid structured output retains the immediate Codex fallback;
-`wait` reports `== reviewer claude unavailable: <reason>; review by codex`. Review timeouts, `stop`, and external
-signals keep their usual outcomes and do not fall back. Cancellation sends SIGINT to Claude's
-process group, waits up to 10 seconds, then sends SIGTERM if needed.
+A missing executable during the cycle can make a reviewer unavailable. Claude also reports an
+error result or invalid structured output as unavailable. If Codex is the standby, `wait` reports
+`== reviewer claude unavailable: <reason>; review by codex`. Failed reviews, timeouts, `stop`, and
+external signals keep their outcomes. Cancellation sends SIGINT to Claude's process group, waits
+up to 10 seconds, then sends SIGTERM if needed.
 
 Account setup is in [accounts.md](accounts.md#claude-account-pool); optional model, effort and turn
 limits are in [settings.md](settings.md#claude-accounts).

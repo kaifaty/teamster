@@ -262,7 +262,7 @@ def record_timeout(st, minutes):
         st["turn_stop"], turn=st.get("turns", 0), at=clock.CLOCK.time()))
 
 
-def run(st, cfg, prompt, stopped, account, deadline=None):
+def run(st, cfg, prompt, stopped, account, deadline=None, *, model=None, effort=None):
     """Run one review angle; the caller owns review history and phase telemetry."""
     response = {"outcome": "unavailable", "result": None, "reason": None, "deadline": deadline,
                 "telemetry": {"usage": {}, "cost_usd": None, "session_id": None,
@@ -295,7 +295,7 @@ def run(st, cfg, prompt, stopped, account, deadline=None):
     try:
         response = claude_runner.run_claude(
             account, st["worktree"], prompt, stopped, deadline,
-            settings.get("model"), settings.get("effort"), settings["max_turns"],
+            model or settings.get("model"), effort or settings.get("effort"), settings["max_turns"],
             reviewing=True, started=started,
             task_dir=config.TASKS / st["slug"] if st.get("slug") else None)
         if response["outcome"] == "stopped":

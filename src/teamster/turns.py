@@ -168,9 +168,11 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
                 st["threads"].append({"account": name, "thread": cursor, "started": clock.CLOCK.time()})
             task_state.save(st)
 
-    model = (st.get("task_model") or settings["chat_model"] or cfg["claude"].get("model")
-             if family == "claude" else st.get("task_model") or settings["chat_codex_model"])
-    effort = effort or settings["chat_effort" if family == "claude" else "chat_codex_effort"]
+    route = config.role_route(cfg, "duty", family)
+    configured_model = (settings["chat_model"] or cfg["claude"].get("model") if family == "claude"
+                        else settings["chat_codex_model"])
+    model = st.get("task_model") or route.get("model") or configured_model
+    effort = effort or route.get("effort") or settings["chat_effort" if family == "claude" else "chat_codex_effort"]
     try:
         response = executor.call(
             "duty", account, st["worktree"], prompt, stopped, deadline, model, effort,

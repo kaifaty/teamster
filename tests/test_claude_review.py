@@ -1580,16 +1580,22 @@ class ClaudeReviewTests(RotationTestCase):
             {"reply": self.duty_answer("Choose a repository.", "needs_decision", "Which repository?", ["parser", "billing"])},
             {"reply": self.duty_answer("The question is still open.")},
             {"reply": self.duty_answer("Claude has the completed answer.")}], names=("main", "second"),
-            duty={"chat_model": "fixture-claude", "chat_codex_model": "gpt-6.1-sol"})
+            duty={"chat_model": "fixture-claude", "chat_codex_model": "gpt-6.1-sol", "chat_codex_effort": "low"},
+            role_profiles={"duty": [{"provider": "claude", "model": "fixture-claude-duty", "effort": "xhigh"},
+                                    {"provider": "codex", "model": "gpt-6-sol", "effort": "high"}]})
         self.codex_duty_runs([{"reply": self.duty_answer("Codex understood option 1.")},
                               {"reply": self.duty_answer("Codex is ready to hand off.")}])
         self.put_duty("main")
         self.cli("duty", "chat", "Fix the parser.", timeout=60)
         old_session = self.state("duty")["session_id"]
-        self.cli("say", "duty", "Continue.", "--model", "opus")
+        initial = self.claude_invocations()[-1]["argv"]
+        self.assertEqual(initial[initial.index("--model") + 1], "fixture-claude-duty")
+        self.assertEqual(initial[initial.index("--effort") + 1], "xhigh")
+        self.cli("say", "duty", "Continue.", "--model", "opus", "--effort", "low")
         self.cli("wait", "duty", timeout=60)
         overridden = self.claude_invocations()[-1]["argv"]
         self.assertEqual(overridden[overridden.index("--model") + 1], "opus")
+        self.assertEqual(overridden[overridden.index("--effort") + 1], "low")
         worker = self.worker()
         start_process = worker.supervisor.start_process
 
@@ -1619,17 +1625,19 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertIn("Codex understood option 1.", self.cli("duty", "chat", "1", timeout=60))
         self.assertEqual(self.state("duty")["duty_turns"][-1]["reply"], "Codex understood option 1.")
         first_codex = next(entry for entry in self.trace() if entry["command"] == "duty-thread")
-        self.assertEqual(first_codex["params"]["model"], "gpt-6.1-sol")
+        self.assertEqual(first_codex["params"]["model"], "gpt-6-sol")
         codex = self.codex_duty_invocations()[0]
+        self.assertEqual(codex["params"]["effort"], "high")
         text = codex["params"]["input"][0]["text"]
         for fragment in ("Fix the parser.", "Which repository?", "1. parser", "2. billing", "1",
                          "The question is still open."):
             self.assertIn(fragment, text)
         self.assertFalse(self.state("duty").get("session_id"))
-        self.cli("say", "duty", "Prepare the handoff.", "--model", "gpt-6-sol")
+        self.cli("say", "duty", "Prepare the handoff.", "--model", "gpt-6.1-sol", "--effort", "xhigh")
         self.cli("wait", "duty", timeout=60)
         second_codex = [entry for entry in self.trace() if entry["command"] == "duty-thread"][-1]
-        self.assertEqual(second_codex["params"]["model"], "gpt-6-sol")
+        self.assertEqual(second_codex["params"]["model"], "gpt-6.1-sol")
+        self.assertEqual(self.codex_duty_invocations()[-1]["params"]["effort"], "xhigh")
         self.put_duty("main")
         self.cli("say", "duty", "What happened?", "--model", "fixture-claude-return")
         self.assertIn("Claude has the completed answer.", self.cli("wait", "duty", timeout=60))
@@ -1637,6 +1645,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertNotIn("--resume", returned["argv"])
         self.assertNotEqual(returned["session_id"], old_session)
         self.assertEqual(returned["argv"][returned["argv"].index("--model") + 1], "fixture-claude-return")
+        self.assertEqual(returned["argv"][returned["argv"].index("--effort") + 1], "xhigh")
         for fragment in ("Codex understood option 1.", "Codex is ready to hand off.", "What happened?",
                          "Which repository?", "1. parser"):
             self.assertIn(fragment, returned["argv"][1])
@@ -2332,6 +2341,10 @@ class ClaudeReviewTests(RotationTestCase):
     def test_claude_scout_read_only_session_output_telemetry_and_clean(self):
         answers = ["The entry point reads tracked.txt.", "Its caller passes the current directory."]
         accounts = self.claude_pool_fixture(runs=[{"text": answer} for answer in answers])
+        self.env["TEAMSTER_CODEX"] = str(self.root / "missing-codex")
+        inventory = json.loads(self.cli("accounts", "--json"))
+        self.assertEqual(inventory["codex"], [])
+        self.assertEqual([account["name"] for account in inventory["claude"]], ["first", "second"])
         (self.repo / "tracked.txt").write_text("Existing uncommitted contents.\n")
         (self.repo / "pending.txt").write_text("Existing untracked contents.\n")
         worker = self.worker()
@@ -2683,17 +2696,26 @@ class ClaudeReviewTests(RotationTestCase):
                  ("auth403", {"mode": "auth_error", "status": 403}),
                  ("invalid-json", {"mode": "invalid_json"}),
                  ("invalid-schema", {"reply": {"verdict": "clean"}}),
-                 ("is-error", {"mode": "is_error"}))
+                 ("is-error", {"mode": "is_error"}),
+                 ("profile", {"mode": "invalid_json"}))
         for label, run in cases:
             with self.subTest(case=label):
-                self.claude_fixture(runs=[dict({"reply": self.review_result(False)}, **run)])
+                settings = {}
+                flags = ["--reviewer", "claude"]
+                if label == "profile":
+                    settings["role_profiles"] = {"review": [
+                        {"provider": "claude", "model": "fixture-claude-review", "effort": "medium"},
+                        {"provider": "codex", "model": "fixture-codex-review", "effort": "high"},
+                    ]}
+                    flags = []
+                self.claude_fixture(runs=[dict({"reply": self.review_result(False)}, **run)], **settings)
                 self.claude_fixture_path.with_suffix(".count").unlink(missing_ok=True)
                 (self.home / "exec-count").unlink(missing_ok=True)
                 self.account(self.home, "A", self.reset, runs=[
                     {"mode": "complete", "reply": self.work_result()},
                     {"mode": "complete", "reply": self.review_result(False)}])
                 slug = "claude-fallback-" + label
-                self.start(slug, "--review", "--reviewer", "claude")
+                self.start(slug, "--review", *flags)
                 output = self.wait(slug)
                 self.assertEqual(self.state(slug)["review_result"]["verdict"], "clean")
                 self.assertTrue(self.invocations()[-1]["review"])
@@ -2705,6 +2727,13 @@ class ClaudeReviewTests(RotationTestCase):
                 rows = [row for row in self.phase_telemetry_journal()
                         if row["slug"] == slug and row["phase"] == "review"]
                 self.assertTrue(any(row["reviewer"] == "codex" for row in rows), rows)
+                if label == "profile":
+                    claude_args = self.claude_invocations()[-1]["argv"]
+                    codex_args = self.review_invocations()[-1]["argv"]
+                    self.assertIn("fixture-claude-review", claude_args)
+                    self.assertIn("medium", claude_args)
+                    self.assertIn("fixture-codex-review", codex_args)
+                    self.assertIn('model_reasoning_effort="high"', codex_args)
                 if label == "rejected":
                     report = json.loads(self.cli("report", "--slug", slug, "--json"))
                     self.assertEqual(report["tasks"][0]["last_verdict"], "clean")
@@ -3853,14 +3882,19 @@ class ClaudeReviewTests(RotationTestCase):
         def candidate(name, room, family="claude", unavailable=None):
             return {"family": family, "name": name, "room": room, "unavailable": unavailable}
 
-        def elected(candidates, holder=None, family="claude"):
+        def elected(candidates, holder=None, family="claude", families=None):
             current = {"account": holder, "family": family} if holder else None
-            return duty.duty_label(duty.elect(candidates, current, settings))
+            return duty.duty_label(duty.elect(candidates, current, settings, families))
 
         codex = candidate("main", 5000, "codex")
         self.assertEqual(elected([codex, candidate("first", 10)]), "claude/first")
         self.assertEqual(elected([codex, candidate("first", 0, unavailable="limited")]), "codex/main")
         self.assertEqual(elected([codex, candidate("first", 1)], "main", "codex"), "claude/first")
+        codex_first = ("codex", "claude")
+        self.assertEqual(elected([codex, candidate("first", 6000)], "first", families=codex_first), "codex/main")
+        self.assertEqual(elected([dict(codex, unavailable="limited"), candidate("first", 10)],
+                                 "main", "codex", codex_first), "claude/first")
+        self.assertIsNone(elected([candidate("first", 10)], families=("codex",)))
         for holder_room, best_room, switched in ((400, 500, True), (400, 499, False),
                                                  (10, 14, False), (1000, 1200, False), (1000, 1300, True)):
             with self.subTest(holder=holder_room, best=best_room):

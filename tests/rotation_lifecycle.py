@@ -28,13 +28,14 @@ from worker_loader import WORKER_BOOTSTRAP
 
 class LifecycleTests(RotationTestCase):
     def test_task_type_validation_persistence_and_followups(self):
-        self.configure()
+        self.configure(task_profiles={"logic": {"executor": "claude"}})
+        self.env["TEAMSTER_CLAUDE"] = str(self.root / "missing-claude")
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result(False)},
             {"mode": "complete", "reply": self.work_result()}])
-        self.start("typed-task", "--task-type", "feature")
+        self.assertNotIn("routing ", self.start("typed-task", "--task-type", "feature"))
         self.wait("typed-task")
         self.assertEqual(self.state("typed-task")["task_type"], "feature")
         self.cli("say", "typed-task", "Continue the task.")
@@ -51,6 +52,69 @@ class LifecycleTests(RotationTestCase):
         self.assertEqual([row["task_type"] for row in rows], ["feature"] * 6 + ["logic"] * 2)
         report = json.loads(self.cli("report", "--json"))
         self.assertEqual(report["tasks"][0]["task_type"], "logic")
+
+        self.configure(executor="claude", task_profiles={
+            "refactor": {"executor": "codex", "model": "gpt-6.2-sol", "effort": "xhigh"},
+            "logic": {"model": "fixture-claude", "effort": "low"},
+        })
+        for slug, label, flags, model, effort, route in (
+                ("profiled-start", "refactor", (), "gpt-6.2-sol", "xhigh",
+                 "executor codex (profile), model gpt-6.2-sol (profile), effort xhigh (profile)"),
+                ("profile-overrides", "refactor", ("--executor", "codex", "--model", "default", "--effort", "high"),
+                 None, "high", "executor codex (flag), model default (flag), effort high (flag)"),
+                ("profile-other-executor", "logic", ("--executor", "codex"), None, None,
+                 "executor codex (flag), model default (default), effort default (default)")):
+            with self.subTest(slug=slug):
+                output = self.start(slug, "--task-type", label, *flags)
+                self.wait(slug)
+                self.assertIn(f"routing {label}: {route}\n", output)
+                state = self.state(slug)
+                self.assertEqual(state["outcome"], "completed")
+                self.assertEqual((state["executor"], state["task_model"], state["effort"]), ("codex", model, effort))
+                argv = self.invocations()[-1]["argv"]
+                self.assertEqual(argv[argv.index("--model") + 1] if "--model" in argv else None, model)
+                self.assertEqual([arg for arg in argv if arg.startswith("model_reasoning_effort=")],
+                                 [f'model_reasoning_effort="{effort}"'] if effort else [])
+
+        self.configure(role_profiles={
+            "work": [{"provider": "claude", "model": "fixture-claude", "effort": "low"},
+                     {"provider": "codex", "model": "fixture-codex-work", "effort": "medium"}],
+            "scout": [{"provider": "codex", "model": "fixture-codex-scout", "effort": "high"}],
+        })
+        worker = self.worker()
+        cfg = worker.config.accounts_config()
+        a = SimpleNamespace(executor=None, model=None, effort=None, task_type="fix")
+        with mock.patch.object(worker.config, "provider_installed", return_value=True), \
+                mock.patch.object(worker.account_rotation, "role_can_start", side_effect=[False, True]) as probe:
+            executor, source, model, effort = worker.commands.work_route(a, cfg, "work")
+        self.assertEqual((executor.name, source, model[0], effort[0]),
+                         ("codex", "fallback", "fixture-codex-work", "medium"))
+        self.assertEqual(probe.call_args_list, [
+            mock.call(cfg, "claude", "work", "fixture-claude", "fix"),
+            mock.call(cfg, "codex", "work", "fixture-codex-work", "fix"),
+        ])
+        cfg["role_profiles"]["work"].reverse()
+        a.effort = "ultra"
+        with mock.patch.object(worker.config, "provider_installed", return_value=True), \
+                mock.patch.object(worker.account_rotation, "role_can_start",
+                                  side_effect=lambda cfg, provider, *args: provider == "claude"):
+            executor, source, model, effort = worker.commands.work_route(a, cfg, "work")
+        self.assertEqual((executor.name, source, model[0], effort), (
+            "codex", "role profile", "fixture-codex-work", ("ultra", "flag")))
+        output = self.start("only-codex-work")
+        self.wait("only-codex-work")
+        self.assertIn("executor codex (fallback)", output)
+        state = self.state("only-codex-work")
+        self.assertEqual((state["task_model"], state["effort"], state["outcome"]),
+                         ("fixture-codex-work", "medium", "completed"))
+        self.cli("scout", "role-scout", "Read the repository.", "--repo", str(self.repo))
+        self.wait("role-scout")
+        scout = self.state("role-scout")
+        self.assertEqual((scout["task_model"], scout["effort"]), ("fixture-codex-scout", "high"))
+        argv = self.invocations()[-1]["argv"]
+        self.assertEqual(argv[argv.index("--model") + 1], "fixture-codex-scout")
+        self.assertEqual(json.loads(self.cli("accounts", "--json"))["claude"], [])
+
         self.assertEqual(self.worker().cli.task_type("a" * 32), "a" * 32)
         for label in ("Feature", "a" * 33):
             with self.subTest(label=label):

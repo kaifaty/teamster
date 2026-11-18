@@ -160,6 +160,16 @@ def from_state(st):
     return get(st.get("executor", "codex"))
 
 
+def for_start(name, profile, cfg):
+    """Select the work executor and keep only profile defaults for that executor."""
+    preferred, source = ((from_state(profile), "profile") if "executor" in profile
+                         else (from_state(cfg), "default"))
+    if name is None:
+        return preferred, source, profile
+    executor = get(name)
+    return executor, "flag", profile if executor is preferred else {}
+
+
 def for_turn(st):
     return get("codex") if st.get("kind") == "review" else from_state(st)
 

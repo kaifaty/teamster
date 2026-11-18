@@ -9,6 +9,46 @@ from pathlib import Path
 from . import budgets, checking, claude_accounts, claude_review, clock, config, executors, notifications, procs, prompts, reviewers, task_state, telemetry_log, threads, turns
 
 
+def reviewer_available(name):
+    # Extension reviewers supply their own preparation and transport.
+    return name not in ("codex", "claude") or config.provider_installed(name)
+
+
+def configure_reviewer(st, cfg, explicit=None, *, required=False):
+    """Choose the initial reviewer and preserve an explicit provider selection."""
+    if explicit is not None:
+        st.update(reviewer=explicit, reviewer_explicit=True)
+    elif not st.get("reviewer_explicit"):
+        preferred = reviewers.from_entry(st).name
+        providers = [route["provider"] for route in config.role_routes(cfg, "review")]
+        if not providers:
+            providers = [preferred]
+            if preferred in ("codex", "claude"):
+                providers.append("claude" if preferred == "codex" else "codex")
+        st["reviewer"] = next((name for name in providers if reviewer_available(name)), providers[0])
+    reviewer = reviewers.from_entry(st)
+    available = reviewer_available(reviewer.name)
+    if required or explicit is not None or available:
+        reviewer.prepare(cfg)
+        if not available:
+            procs.die(f"No installed {reviewer.name} provider for review")
+
+
+def fallback_reviewer(st, cfg, reviewer):
+    routes = config.role_routes(cfg, "review")
+    if routes:
+        if st.get("reviewer_explicit"):
+            return None
+        providers = [route["provider"] for route in routes]
+        if reviewer.name not in providers:
+            return None
+        return next((name for name in providers[providers.index(reviewer.name) + 1:]
+                     if reviewer_available(name)), None)
+    if reviewer.fallback and reviewer_available(reviewer.fallback):
+        return reviewer.fallback
+    return None
+
+
 def selected_review_angles(st, cfg):
     selection = st.get("review_angles")
     if selection != "auto":
@@ -77,10 +117,10 @@ def merge_reviews(angles):
 
 
 def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sleep=None, new_turn=False):
-    """Retry a limited Claude account before allowing a Codex fallback."""
+    """Retry a limited Claude account before handing the review back to the cycle."""
     attempted = set()
     deadline = None
-    model = cfg["claude"].get("model") or None
+    model = config.role_route(cfg, "review", "claude").get("model") or cfg["claude"].get("model") or None
     account = claude_review.select_account(cfg, "review", prefer_unused=used_accounts, stopped=stopped,
                                            task_type=st.get("task_type"), model=model)
     while account is not None:
@@ -99,7 +139,7 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
             task_state.save(st)
             last = config.TASKS / st["slug"] / "review.md"
             last.unlink(missing_ok=True)
-            response = claude_review.run(st, cfg, prompt, stopped, account, deadline)
+            response = claude_review.run(st, cfg, prompt, stopped, account, deadline, model=model, effort=effort)
             deadline = response["deadline"]
             if response["outcome"] == "completed":
                 last.write_text(json.dumps(response["result"], ensure_ascii=False, indent=2), encoding="utf-8")
@@ -109,6 +149,7 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
             phase.add_claude_usage(response["telemetry"], account=name)
             if response["outcome"] == "unavailable":
                 entry["unavailable"] = response["reason"]
+                entry["retry_account"] = None
                 if response["reason"] in ("usage limit", "authentication failed", "token unavailable") and not stopped():
                     if "limited_until" in response:  # The stream has already marked its own rejection.
                         until, limited_model = response["limited_until"], response["limited_model"]
@@ -123,7 +164,8 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
                                                            prefer_unused=used_accounts, stopped=stopped,
                                                            task_type=st.get("task_type"), model=model)
                     retry = account is not None
-                    entry["retry_account"] = account["name"] if retry else reviewers.CLAUDE_REVIEWER.fallback
+                    if retry:
+                        entry["retry_account"] = account["name"]
             elif response.get("reason"):
                 st["error"] = response["reason"]
             task_state.save(st)
@@ -135,7 +177,13 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
 
 
 def codex_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sleep=None, new_turn=False):
+    alternate = fallback_reviewer(st, cfg, reviewers.CODEX_REVIEWER)
+    if alternate:
+        cfg = dict(cfg, wait_for_reset=False)
     turns.run_turn(st, cfg, prompt, effort, False, stopped, sleep, new_turn=new_turn)
+    if alternate and (st["outcome"] == "exhausted"
+                      or (st["outcome"] == "failed" and st.get("needs_login") and not st.get("review_account"))):
+        return "unavailable"
     return st["outcome"]
 
 
@@ -148,6 +196,8 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
     records = []
     executor = executors.from_state(st)
     codex_effort = executor.review_effort(effort)
+    configured = bool(config.role_routes(cfg, "review"))
+    standalone = (st.get("cycle") or {}).get("kind") == "review"
     used_accounts = executor.review_accounts(st)
     result = None
     st.update(kind="review", outcome="running", reset_wait_seconds=0)
@@ -171,20 +221,40 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
             started = clock.CLOCK.time()
             st.update(review_angle=angle, outcome="running")
             focused = prompt + f"\n\nReview angle: {angle}. {prompts.review_angle(st, angle)}" if angle else prompt
-            reviewer = reviewers.from_entry(st)
+            primary = reviewer = reviewers.from_entry(st)
             while True:
-                try:
-                    outcome = reviewer.run(st, cfg, focused, stopped, used_accounts,
-                                           effort=codex_effort, sleep=sleep, new_turn=new_turn)
-                except (Exception, SystemExit) as exc:
-                    if reviewer is reviewers.from_entry(st):
-                        raise
-                    raise RuntimeError(f"Review fallback to {reviewer.name} failed: {exc}") from exc
-                if outcome != "unavailable" or stopped() or reviewer.fallback is None:
+                if configured and not reviewer_available(reviewer.name):
+                    outcome = st["outcome"] = "unavailable"
+                    st["error"] = f"No installed {reviewer.name} provider for review"
+                else:
+                    if configured:
+                        defaults = config.role_route(cfg, "review", reviewer.name)
+                        review_effort = defaults.get("effort")
+                        if standalone and reviewer is primary and effort is not None:
+                            review_effort = effort
+                    else:
+                        review_effort = None if reviewer is reviewers.CLAUDE_REVIEWER else codex_effort
+                    try:
+                        outcome = reviewer.run(st, cfg, focused, stopped, used_accounts,
+                                               effort=review_effort, sleep=sleep, new_turn=new_turn)
+                    except (Exception, SystemExit) as exc:
+                        if reviewer is primary:
+                            raise
+                        raise RuntimeError(f"Review fallback to {reviewer.name} failed: {exc}") from exc
+                if outcome != "unavailable" or stopped():
                     break
-                reviewer = reviewers.get(reviewer.fallback)
-                st["review_account"] = None
-            if outcome == "failed" and reviewer is not reviewers.from_entry(st) and st.get("error"):
+                alternate = fallback_reviewer(st, cfg, reviewer)
+                if not alternate:
+                    break
+                attempts = st.get("reviews", [])[start:]
+                if attempts and attempts[-1].get("unavailable"):
+                    attempts[-1]["retry_account"] = alternate
+                reviewer = reviewers.get(alternate)
+                start = len(st.get("reviews", []))
+                st.update(review_account=None, outcome="running")
+                st.pop("exhausted", None)
+                st.pop("error", None)
+            if outcome == "failed" and reviewer is not primary and st.get("error"):
                 st["error"] = f"Review fallback to {reviewer.name} failed: {st['error']}"
             reviews = [entry for entry in st.get("reviews", [])[start:] if not entry.get("unavailable")]
             outcome = task_state.stop_outcome(st, stopped) or st["outcome"]

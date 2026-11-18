@@ -379,32 +379,48 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(resumed["argv"][resumed["argv"].index("--resume") + 1], session_id)
         self.assertEqual(resumed["config_dir"], first["config_dir"])
 
-    def test_claude_executor_explicit_claude_reviewer_prefers_another_pool_account(self):
+    def test_claude_executor_review_prefers_another_pool_account_without_codex(self):
         self.fixture_timeout = 90
-        accounts = self.claude_pool_fixture(runs=[{"reply": self.work_result()},
-                                                  {"reply": self.review_result(False)}])
+        work_result = self.work_result()
+        review_result = self.review_result(False)
+        accounts = self.claude_pool_fixture(runs=[{"reply": result} for result in
+                                                  (work_result, review_result, review_result, work_result)])
+        self.env["TEAMSTER_CODEX"] = str(self.root / "missing-codex")
         worker = self.worker()
         worker.claude_accounts.save_limits(accounts[0]["name"], {
             "unifiedWindows": {"seven_day": {"utilization": 0.5, "resetsAt": self.reset}}})
         worker.claude_accounts.save_limits(accounts[1]["name"], {
             "unifiedWindows": {"seven_day": {"utilization": 0.9, "resetsAt": self.reset}}})
-        self.start("claude-executor-review", "--executor", "claude", "--review", "--reviewer", "claude")
-        self.wait("claude-executor-review")
-        state = self.state("claude-executor-review")
+        slug = "claude-executor-review"
+        self.start(slug, "--executor", "claude", "--review", "--no-push")
+        self.wait(slug)
+        state = self.state(slug)
         work, review = self.claude_invocations()
+        self.assertEqual(state["reviewer"], "claude")
+        self.assertEqual(state["review_result"]["verdict"], "clean")
         self.assertEqual(state["claude_account"], accounts[0]["name"])
         self.assertEqual(state["reviews"][-1]["account"], accounts[1]["name"])
         self.assertEqual([event["config_dir"] for event in (work, review)],
                          [account["config_dir"] for account in accounts])
         self.assertNotIn("--resume", review["argv"])
-        self.assertEqual(self.invocations(), [])
-        self.cli("review", "claude-executor-review")
-        self.wait("claude-executor-review")
-        resumed = self.state("claude-executor-review")
+        self.cli("review", slug)
+        self.wait(slug)
+        resumed = self.state(slug)
         self.assertEqual((resumed["executor"], resumed["claude_account"], resumed["session_id"]),
                          (state["executor"], state["claude_account"], state["session_id"]))
         self.assertEqual(resumed["reviews"][-1]["account"], accounts[1]["name"])
-        self.assertEqual(self.invocations(), [])
+        self.cli("say", slug, "Continue the work.")
+        self.wait(slug)
+        self.assertEqual(self.state(slug)["result"]["status"], "done")
+        follow_up = self.claude_invocations()[-1]["argv"]
+        self.assertEqual(follow_up[follow_up.index("--resume") + 1], state["session_id"])
+        self.cli("clean", slug)
+        tasks = self.home / "claude-tasks"
+        self.assertFalse((tasks / slug).exists())
+        self.assertFalse(Path(state["worktree"]).exists())
+        archive, = (tasks / ".archive").glob(f"{slug}-*")
+        self.assertEqual(json.loads((archive / "state.json").read_text())["executor"], "claude")
+        self.assertEqual(self.trace(), [])
 
     def test_claude_executor_rejects_workspace_and_stops_without_a_pool_account_or_rotation(self):
         self.fixture_timeout = 90
