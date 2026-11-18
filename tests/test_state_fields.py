@@ -148,7 +148,7 @@ st[dynamic_key] = 1
             "result": {"status": "done", "summary": "old-result"},
             "review_account": "old-review", "review_angle": "correctness",
             "review_angles": ["tests"], "review_result": {"verdict": "clean"},
-            "reviewer": "claude",
+            "reviewer": "claude", "reviewer_explicit": True,
             "review_skipped": "old-skip", "review_start": 17, "reviews": [{}, {}],
             "rotation_start": 16, "rotations": [{}, {}, {}, {}], "rounds": [{"round": 1}],
             "sandbox": "workspace", "signal": {"name": "SIGTERM", "at": 1001},

@@ -1,7 +1,7 @@
 """Delegate coding to Codex in a git worktree, with autonomous subscription rotation.
 
       teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--task-timeout SEC] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-loaded CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
-      teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E]  read-only research
+      teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E] [--model M]  read-only research
       teamster reflect <slug> ["order" | --file FILE] [--task SLUG ... | [--since YYYY-MM-DD|Nd] [--repo NAME ...]] [--executor codex|claude] [--effort E] [--model M] [--max-minutes M]  batch reflection or a study of chosen records
       teamster lesson "<entry>" accepted|applied|declined|proposed [--note TEXT]  record the user's decision on a lesson in INDEX.md
       teamster say <slug> "message" | --file FILE [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--max-minutes M] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci | --no-ci] [--ci-command CMD | --no-ci-command] [--ci-rounds N] [--check CMD | --no-check] [--check-loaded CMD] [--check-timeout SEC] [--no-base-check] [--upgrade] [--queue]
@@ -174,9 +174,9 @@ OPTION_REGISTRY = (
      "argparse": {"choices": executors.names(), "default": None,
                   "help": "work provider saved for the task (default: task profile or executor setting)"},
      "synopsis": "[--executor codex|claude]",
-     "commands": {"start": {}, "scout": {"default": "codex",
-                  "help": "scout provider (default: codex, ignores settings); claude requires a git directory"},
-                  "reflect": {"default": "claude", "help": "reflect provider (default: claude, ignores settings)"}}},
+     "commands": {"start": {}, "scout": {
+                  "help": "scout provider (default: role profile or codex); claude requires a git directory"},
+                  "reflect": {"help": "reflect provider (default: role profile or claude)"}}},
     {"names": ("--file",), "argparse": {},
      "synopsis": "--file FILE", "commands": {"say": {}}},
     {"names": ("--effort",), "argparse": {"default": None},
@@ -185,7 +185,7 @@ OPTION_REGISTRY = (
                   "say": {}, "review": {}, "reflect": {}}},
     {"names": ("--model",),
      "argparse": {"type": model_name, "metavar": "M", "help": "work model; default clears the saved override"},
-     "synopsis": "[--model M]", "commands": {"start": {}, "say": {}, "reflect": {}}},
+     "synopsis": "[--model M]", "commands": {"start": {}, "say": {}, "scout": {}, "reflect": {}}},
     {"names": ("--review-model",),
      "argparse": {"type": model_name, "metavar": "M", "help": "Codex review model; default clears the saved override"},
      "synopsis": "[--review-model M]", "commands": {"start": {}, "say": {}, "review": {}}},
@@ -492,9 +492,8 @@ def main():
         a.review = True
     if a.cmd in ("start", "say") and a.fix_rounds is not None and not a.review:
         p.error("--fix-rounds requires --review")
-    if (a.cmd in ("start", "scout", "reflect", "say", "review", "resume", "_run", "accounts", "reset-credit", "login", "clean")
-            and not (a.cmd == "login" and a.events)):
-        config.CODEX["path"] = config.resolve_codex()
+    if a.cmd == "reset-credit":
+        config.codex_binary()
     if a.cmd in HOME_LOCKED_COMMANDS:
         with config.home_lock():
             COMMAND_HANDLERS[a.cmd](a)

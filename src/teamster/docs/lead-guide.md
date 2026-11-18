@@ -92,8 +92,8 @@ when Teamster has no work overrides.
 Use `start --model M` for work and `--review-model M` on `start`, `say`, or `review` for Codex reviews; `say` inherits or replaces them, and `default` clears an override. Read `accounts --json` before choosing ([models and JSON fields](settings.md#task-models)).
 A task keeps the teamster version it started on after an upgrade: `say` and `review` re-run in it while it is installed; `say --upgrade` moves the task to the current version ([versioned installs](settings.md#versioned-installs)).
 Use `start --task-type LABEL` to select a configured [task profile](settings.md#task-profiles) and label telemetry. `say` and `review` inherit the label, and `say --task-type LABEL` replaces it ([labels and grouped reports](telemetry.md)).
-Use `start --executor codex|claude` to choose the task worker. By default, `start` uses the profile's executor, then `executor` in the settings, then `codex`. The choice is saved for `say`, review fixes, CI repairs and wrap-up and cannot change during a task. Claude work requires `--sandbox off`; its model and effort default to `claude.model` and `claude.effort`, with task `--model` and `--effort` taking precedence.
-Without `--reviewer`, Claude tasks use Codex reviews; Codex tasks keep the configured reviewer default. Use `--reviewer claude` on `start`, `say`, or `review` for reviews from the isolated Claude account pool, preferring another account when Claude also implements ([setup](accounts.md#claude-account-pool)).
+Use `start --executor codex|claude` to pin the task worker. Automatic selection starts with a task profile's executor when present, then follows the [work role profile](settings.md#role-profiles) or the configured executor default. The saved executor handles `say`, review fixes, CI repairs and wrap-up. Claude work requires `--sandbox off`.
+The [review role profile](settings.md#role-profiles) chooses the reviewer order. Without it, Claude tasks prefer Codex reviews and Codex tasks use the configured reviewer. Use `--reviewer claude` on `start`, `say`, or `review` to select the isolated Claude pool. It prefers another account when Claude also implements. See [account setup](accounts.md#claude-account-pool).
 
 | Step | Command |
 |---|---|
@@ -101,7 +101,7 @@ Without `--reviewer`, Claude tasks use Codex reviews; Codex tasks keep the confi
 | Find package files | `teamster path` prints the installed package directory |
 | Check the version | `teamster --version` |
 | Start a task | `teamster start <slug> --brief brief.md [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--task-type LABEL] [--executor codex\|claude] [--effort E] [--sandbox off\|workspace] --max-minutes M [--max-weekly P] --review [--review-angles LIST] --fix-rounds 2 [--ci] [--ci-rounds N] --check "<command from Checks>" [--check-timeout SEC] [--guard GLOB] [--base-check]` (base defaults to the remote's default branch; `--branch` overrides `codex/<slug>` and must pass `git check-ref-format --branch`; `--guard` is repeatable; `--no-push` keeps commits local through follow-ups, reviews, fixes and wrap-up, with no branch or PR publication and no CI) |
-| Scout code | `teamster scout <slug> "question"` or `teamster scout <slug> --file Q.md`, with `[--repo DIR] [--executor codex\|claude] [--effort E]`; read-only in the existing directory (default `.`), no worktree or branch |
+| Scout code | `teamster scout <slug> "question"` or `teamster scout <slug> --file Q.md`, with `[--repo DIR] [--executor codex\|claude] [--effort E] [--model M]`; read-only in the existing directory (default `.`), no worktree or branch |
 | Batch reflection | `teamster reflect <slug> ["order"]` or `teamster reflect <slug> --file FILE`, with `[--executor codex\|claude] [--effort E] [--model M] [--max-minutes M]`; read-only [batch](reflection.md#batch) over the archived records since the newest `batch-*.md`, in a reading room copy; teamster writes the batch file and `INDEX.md` rows from its answer |
 | Study records | `teamster reflect <slug> "order"` with `--task SLUG` (repeatable) or `[--since YYYY-MM-DD\|Nd] [--repo NAME]` (`--repo` repeatable); read-only [study](reflection.md#study) of the chosen records, written to `study-<date>-<slug>.md`; does not move the batch's `through:` |
 | Lesson decision | `teamster lesson "<entry>" accepted\|applied\|declined\|proposed [--note TEXT]`; replaces the status cell of that lesson's `INDEX.md` row (see [Applying](reflection.md#applying)) |
@@ -136,19 +136,18 @@ Scouts need no `--parallel`: run several at once, one question each, alongside t
 scout's read-only thread; `--check`, `--review`, `--review-angles`, `--fix-rounds` and `review` don't
 apply to scouts. `clean` on a scout archives its record the same way, never the inspected directory.
 
-Scouts default to Codex even when the `executor` setting is `claude`. Choose
-`scout --executor claude` when the Codex pool is exhausted or you want research from the Claude pool.
-A Claude scout needs a directory inside a git work tree. It uses review-role accounts and
-`max_review_minutes`; if every account is unavailable, it stops without waiting for a reset or
-falling back to Codex. Its answer is free text. `say` resumes the same session and account when
-available. Claude scouts use the review tool restrictions, and teamster compares git snapshots
+Scouts use their [role profile](settings.md#role-profiles) when configured and otherwise prefer Codex.
+Use `scout --executor claude` to pin the Claude pool. A Claude scout needs a directory inside a git
+work tree. It uses review-role accounts and `max_review_minutes`. After Claude is selected, an
+unavailable pool stops the scout. Its answer is free text. `say` resumes the same session and
+account when available. Claude scouts use the review tool restrictions, and teamster compares git snapshots
 before and after every turn: any change fails the turn and discards its answer, leaving the change
 visible for inspection. Existing uncommitted changes alone do not fail a turn.
 
 ### One Codex tool with your prompt
 
 When the instructions allow Codex only one tool for work kept for the lead, for example image generation, run
-it as a scout with `--repo` set to a new empty directory. Run `git init` there first: Codex refuses a
+it as a scout with `--executor codex` and `--repo` set to a new empty directory. Run `git init` there first: Codex refuses a
 directory that is neither trusted nor a git repository. Put your prompt in the question verbatim and ask
 only for the output file paths and the prompt as sent, not for an assessment. Judge the output yourself.
 

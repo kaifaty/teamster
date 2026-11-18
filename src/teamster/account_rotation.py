@@ -351,6 +351,19 @@ def claude_choice(st, cfg, stopped, exclude=()):
                                         task_type=st.get("task_type"), model=model)
 
 
+def role_can_start(cfg, provider, role, model=None, task_type=None):
+    """Check the existing pool's admission rules before choosing a configured route."""
+    if provider == "claude":
+        pool_role = "work" if role == "work" else "review"
+        return claude_review.select_account(cfg, pool_role, task_type=task_type,
+                                            model=model or cfg["claude"].get("model")) is not None
+    if provider != "codex":
+        return True
+    infos = accounts.snapshots(cfg)
+    reserved = duty.codex_reserved(infos, cfg)
+    return bool(accounts.available(infos, cfg, reserved) or accounts.credit_account(infos, cfg, reserved))
+
+
 def wait_for_claude_account(st, cfg, reason, stopped, sleep=None):
     """Sleep until the Claude pool's earliest reset, without credits or reset credits."""
     sleep = sleep or clock.CLOCK.sleep

@@ -251,6 +251,8 @@ def credit_account(infos, cfg, exclude=()):
 
 
 def snapshots(cfg, cancelled=lambda: False, prepare=False):
+    if not config.provider_installed("codex"):
+        return []
     result, seen = [], {}
     for a in cfg["accounts"]:
         if cancelled():

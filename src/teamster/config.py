@@ -17,6 +17,7 @@ from . import executors, procs, result_schema, reviewers
 
 TASK_TYPE_PATTERN = re.compile(r"[a-z0-9-]{1,32}")
 MODEL_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+ROUTABLE_ROLES = ("work", "review", "scout", "reflect", "duty")
 
 
 def env(legacy_name, default=None):
@@ -198,26 +199,44 @@ def data_layout():
     return getattr(teamster, "DATA_LAYOUT", 1)
 
 
-def resolve_codex():
+def _find_codex():
     override = env("CODEX_TASK_CODEX")
     if override:
         return str(Path(override).expanduser())
     if CHATGPT_CODEX.is_file():
         return str(CHATGPT_CODEX)
-    binary = shutil.which("codex")
-    if binary:
-        return binary
+    return shutil.which("codex")
+
+
+def _missing_codex():
     procs.die("Codex CLI was not found. Install it with npm install -g @openai/codex, "
         "run codex login, or set TEAMSTER_CODEX to its executable path.")
 
 
+def resolve_codex():
+    return _find_codex() or _missing_codex()
+
+
+def _installed_codex():
+    path = CODEX["path"] or _find_codex()
+    return shutil.which(str(Path(path).expanduser())) if path else None
+
+
 def codex_binary():
-    return CODEX["path"] or resolve_codex()
+    return _installed_codex() or _missing_codex()
 
 
 def claude_binary():
     override = env("CODEX_TASK_CLAUDE")
     return shutil.which(str(Path(override).expanduser()) if override else "claude")
+
+
+def provider_installed(provider):
+    if provider == "codex":
+        return _installed_codex() is not None
+    if provider == "claude":
+        return claude_binary() is not None
+    raise ValueError(f"Unknown provider: {provider!r}")
 
 
 def require_claude():
@@ -247,6 +266,38 @@ def task_profiles(cfg):
     return profiles
 
 
+def role_routes(cfg, role):
+    return cfg.get("role_profiles", {}).get(role, ())
+
+
+def role_route(cfg, role, provider):
+    return next((route for route in role_routes(cfg, role) if route["provider"] == provider), {})
+
+
+def validate_role_profiles(profiles):
+    if not isinstance(profiles, dict):
+        procs.die("role_profiles must be an object")
+    for role, routes in profiles.items():
+        label = f"role_profiles.{role}"
+        if role not in ROUTABLE_ROLES:
+            procs.die(f"unknown role: {label}")
+        if not isinstance(routes, list) or not routes:
+            procs.die(f"{label} must be a nonempty list of routes")
+        seen = set()
+        for route in routes:
+            if not isinstance(route, dict) or route.keys() - {"provider", "model", "effort"}:
+                procs.die(f"{label} routes must be objects with provider and optional model and effort")
+            provider = route.get("provider")
+            if provider not in ("codex", "claude") or provider in seen:
+                procs.die(f"{label} has an unknown or duplicate provider: {provider!r}")
+            seen.add(provider)
+            if "model" in route and (not isinstance(route["model"], str) or route["model"] == "default"
+                                     or not MODEL_NAME_PATTERN.fullmatch(route["model"])):
+                procs.die(f"{label} has an invalid model for {provider}")
+            if "effort" in route and (not isinstance(route["effort"], str) or not route["effort"].strip()):
+                procs.die(f"{label} effort for {provider} must be a nonempty string")
+
+
 def accounts_config():
     p = settings_path()
     cfg = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
@@ -268,6 +319,7 @@ def accounts_config():
     cfg.setdefault("max_review_minutes", 30)
     cfg.setdefault("executor", "codex")
     cfg.setdefault("reviewer", "codex")
+    validate_role_profiles(cfg.get("role_profiles", {}))
     cfg.setdefault("claude", {})
     cfg.setdefault("ci", False)
     cfg.setdefault("ci_timeout_minutes", 30)

@@ -300,8 +300,8 @@ def apply_say(st, options, cfg):
         st["ci_rounds"] = options["ci_rounds"]
     st["ci_timeout_minutes"] = cfg.get("ci_timeout_minutes", 30)
     st["review_angles"] = options.get("review_angles")
-    if options.get("reviewer") is not None:
-        st["reviewer"] = options["reviewer"]
+    if options.get("review") or options.get("reviewer") is not None:
+        review_cycle.configure_reviewer(st, cfg, options.get("reviewer"), required=bool(options.get("review")))
     if options.get("no_check"):
         st["check"] = None
         st["check_loaded"] = None

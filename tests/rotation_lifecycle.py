@@ -76,6 +76,37 @@ class LifecycleTests(RotationTestCase):
                 self.assertEqual([arg for arg in argv if arg.startswith("model_reasoning_effort=")],
                                  [f'model_reasoning_effort="{effort}"'] if effort else [])
 
+        self.configure(role_profiles={
+            "work": [{"provider": "claude", "model": "fixture-claude", "effort": "low"},
+                     {"provider": "codex", "model": "fixture-codex-work", "effort": "medium"}],
+            "scout": [{"provider": "codex", "model": "fixture-codex-scout", "effort": "high"}],
+        })
+        worker = self.worker()
+        cfg = worker.config.accounts_config()
+        a = SimpleNamespace(executor=None, model=None, effort=None, task_type="fix")
+        with mock.patch.object(worker.config, "provider_installed", return_value=True), \
+                mock.patch.object(worker.account_rotation, "role_can_start", side_effect=[False, True]) as probe:
+            executor, source, model, effort = worker.commands.work_route(a, cfg, "work")
+        self.assertEqual((executor.name, source, model[0], effort[0]),
+                         ("codex", "fallback", "fixture-codex-work", "medium"))
+        self.assertEqual(probe.call_args_list, [
+            mock.call(cfg, "claude", "work", "fixture-claude", "fix"),
+            mock.call(cfg, "codex", "work", "fixture-codex-work", "fix"),
+        ])
+        output = self.start("only-codex-work")
+        self.wait("only-codex-work")
+        self.assertIn("executor codex (fallback)", output)
+        state = self.state("only-codex-work")
+        self.assertEqual((state["task_model"], state["effort"], state["outcome"]),
+                         ("fixture-codex-work", "medium", "completed"))
+        self.cli("scout", "role-scout", "Read the repository.", "--repo", str(self.repo))
+        self.wait("role-scout")
+        scout = self.state("role-scout")
+        self.assertEqual((scout["task_model"], scout["effort"]), ("fixture-codex-scout", "high"))
+        argv = self.invocations()[-1]["argv"]
+        self.assertEqual(argv[argv.index("--model") + 1], "fixture-codex-scout")
+        self.assertEqual(json.loads(self.cli("accounts", "--json"))["claude"], [])
+
         self.assertEqual(self.worker().cli.task_type("a" * 32), "a" * 32)
         for label in ("Feature", "a" * 33):
             with self.subTest(label=label):

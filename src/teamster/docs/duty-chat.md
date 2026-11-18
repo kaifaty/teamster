@@ -23,8 +23,9 @@ removes the room and archives the record, and the next message starts a new conv
 
 Without a duty account (`duty.json` absent or its `account` null) the command fails with
 `no duty account` and starts nothing. Both Claude and Codex duties run the chat. The turn always runs
-on the current duty account, pinned by `duty set` or elected, and never on another one. A change of
-family or account moves the next turn by the rotation handoff: the brief, the messages so far and
+on the current duty account. `duty set` pins it, and elections prefer the first eligible family in
+the [duty role profile](settings.md#role-profiles). A change of family or account moves the next turn
+by the rotation handoff: the brief, the messages so far and
 the duty's earlier replies, including questions and answer options. Both session cursors are reset,
 so a return to a previous family starts with the handoff instead of resuming a stale session;
 saved model overrides are cleared when the family changes, before applying any new `--model`.
@@ -138,9 +139,9 @@ three read attempts; a persistently invalid cache produces the same refusal.
 
 The default model is teamster's usual `gpt-6.1-sol` when it is visible in the account catalogue,
 otherwise the first model with `visibility: "list"` in cache order. Teamster does not recompute
-the default from `model/list` or model priorities. `duty.chat_codex_model` and the
-conversation's `--model` select another name only while it remains in that catalogue. A missing
-or unavailable override uses the same fallback. Every `thread/start` and `thread/resume` receives
+the default from `model/list` or model priorities. The conversation's `--model`, the Codex duty
+role profile, and `duty.chat_codex_model` choose the requested model in that order. A missing
+or unavailable model uses the catalogue default. Every `thread/start` and `thread/resume` receives
 the selected model explicitly, so an unavailable model stored in a rollout recovers on the next
 turn without a new `--model` argument.
 
@@ -280,6 +281,9 @@ journaled twice in `messages.jsonl`. The duty conversation's own turns never not
 queue a note is logged in the task's `stderr.log`, never failing its cycle.
 
 ## Settings
+
+The elected or pinned family uses its [duty role profile](settings.md#role-profiles) for model and
+effort. Conversation overrides take precedence, and omitted profile fields use the settings below.
 
 | Key | Default | Effect |
 |---|---|---|

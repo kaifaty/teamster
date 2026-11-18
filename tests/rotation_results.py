@@ -565,7 +565,9 @@ class ResultScoutConfigTests(RotationTestCase):
             self.assertEqual(self.notification("scout-sleep", name)["kind"], "scout")
 
     def test_reflect_reads_new_records_in_a_room_and_records_the_batch_across_say(self):
-        self.configure(language="en")
+        self.configure(language="en", role_profiles={
+            "reflect": [{"provider": "codex", "model": "fixture-reflect", "effort": "medium"}],
+        })
         self.configure_notify()
         result = subprocess.run([PYTHON, "-I", str(SCRIPT), "reflect", "reflect-none", "--executor", "codex"],
                                 cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
@@ -595,7 +597,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": first},
                                                        {"mode": "complete", "reply": second}])
 
-        self.cli("reflect", "reflect-batch", "Focus on the checks.", "--executor", "codex")
+        self.cli("reflect", "reflect-batch", "Focus on the checks.")
         output = self.wait("reflect-batch")
         state = self.state("reflect-batch")
         room = self.home / "claude-tasks" / "reflect-batch" / "room"
@@ -604,6 +606,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertEqual((state["reflect_through"], state["reflect_records"], state["reflect_file"]),
                          ("20260103T000000Z", ["new-task-20260103T000000Z"], name))
         self.assertEqual(state["max_turn_minutes"], 45)
+        self.assertEqual((state["task_model"], state["effort"]), ("fixture-reflect", "medium"))
         self.assertEqual(state["result"], first)
         self.assertEqual(self.git("-C", str(room), "rev-list", "--count", "HEAD"), "1")
         self.assertEqual(self.git("-C", str(room), "status", "--porcelain", "--untracked-files=all"), "")

@@ -152,7 +152,7 @@ def duty_window_known(window, now):
             or result_schema.is_finite_number(reset) and reset <= now)
 
 
-def claude_duty_candidate(cfg, account, info, now, refreshed_at):
+def claude_duty_candidate(cfg, account, info, now, refreshed_at, model=None):
     """Room and availability of a Claude account from its cached limits snapshot.
 
     A snapshot is fresh within claude.limits_max_age_minutes, or when it was
@@ -168,9 +168,9 @@ def claude_duty_candidate(cfg, account, info, now, refreshed_at):
         now - updated <= cfg["claude"].get("limits_max_age_minutes", 30) * 60 or updated >= refreshed_at)
     if claude_accounts.token_marked(info, now):
         candidate["unavailable"] = "token unavailable"
-    elif claude_accounts.limited(info, now):
+    elif claude_accounts.limited(info, now, model):
         candidate["unavailable"] = ("limited until "
-                                    + config.local_time(info.get("limited_until", info.get("resetsAt"))))
+                                    + config.local_time(claude_accounts.limit_end(info, now, model)))
     elif not duty_window_known(weekly, now):
         candidate["unavailable"] = "limits unknown"
     elif not fresh:
@@ -215,21 +215,24 @@ def codex_duty_candidate(cfg, info):
     return candidate
 
 
-def elect(candidates, current, settings):
+def elect(candidates, current, settings, families=None):
     """Choose the duty account without I/O.
 
     ``candidates`` have family, name, room and unavailable (None or a reason);
     ``current`` is the present duty's account and family, or None; ``settings``
-    has relative_margin (percent) and absolute_margin (room units). Any
-    available Claude account outranks Codex. Within a family the current duty
-    yields only to the largest room, and only when it wins by both margins.
+    has relative_margin (percent) and absolute_margin (room units). The first
+    available family in the supplied order wins, with Claude first by default.
+    Within a family the current duty yields only to the largest room, and only
+    when it wins by both margins.
     Equal rooms go to the first name. Returns account, family and reason.
     """
-    available = [candidate for candidate in candidates if candidate["unavailable"] is None]
+    order = families if families is not None else DUTY_FAMILIES
+    available = [candidate for candidate in candidates
+                 if candidate["unavailable"] is None and candidate["family"] in order]
     if not available:
         return {"account": None, "family": None, "reason": "no account available"}
-    pool = [candidate for candidate in available if candidate["family"] == "claude"] or available
-    best = min(pool, key=lambda candidate: (-candidate["room"], candidate["name"]))
+    best = min(available, key=lambda candidate: (order.index(candidate["family"]), -candidate["room"],
+                                                candidate["name"]))
 
     def decision(candidate, reason):
         return {"account": candidate["name"], "family": candidate["family"], "reason": reason}
@@ -244,7 +247,9 @@ def elect(candidates, current, settings):
     if holder["unavailable"] is not None:
         return decision(best, f"{label} unavailable: {holder['unavailable']}; largest room {best['room']:g}")
     if holder["family"] != best["family"]:
-        return decision(best, f"a Claude account is available again; largest room {best['room']:g}")
+        preference = (f"duty profile prefers {best['family']}" if families is not None
+                      else "a Claude account is available again")
+        return decision(best, f"{preference}; largest room {best['room']:g}")
     if best["room"] == holder["room"]:
         return decision(holder, f"largest room {holder['room']:g}")
     relative = best["room"] >= holder["room"] * (1 + settings["relative_margin"] / 100)
@@ -268,9 +273,15 @@ def run_duty_tick(cfg, infos, refreshed_at, unpin=False):
     """
     now = clock.CLOCK.time()
     limits = claude_accounts.read_limits()
-    candidates = ([claude_duty_candidate(cfg, account, limits.get(account["name"], {}), now, refreshed_at)
-                   for account in claude_accounts.accounts(cfg)]
-                  + [codex_duty_candidate(cfg, info) for info in infos])
+    claude_pool = claude_accounts.accounts(cfg)
+    if config.provider_installed("claude"):
+        model = config.role_route(cfg, "duty", "claude").get("model")
+        candidates = [claude_duty_candidate(cfg, account, limits.get(account["name"], {}), now, refreshed_at, model)
+                      for account in claude_pool]
+    else:
+        candidates = [{"family": "claude", "name": account["name"], "room": 0,
+                       "unavailable": "Claude Code CLI was not found"} for account in claude_pool]
+    candidates.extend(codex_duty_candidate(cfg, info) for info in infos)
     rooms = {family: {candidate["name"]: candidate["room"] for candidate in candidates
                       if candidate["family"] == family and candidate["unavailable"] is None}
              for family in DUTY_FAMILIES}
@@ -284,7 +295,8 @@ def run_duty_tick(cfg, infos, refreshed_at, unpin=False):
         write_duty(record)
         return record, False
     current = {"account": previous["account"], "family": previous["family"]} if previous else None
-    decision = elect(candidates, current, cfg["duty"])
+    families = tuple(route["provider"] for route in config.role_routes(cfg, "duty"))
+    decision = elect(candidates, current, cfg["duty"], families or None)
     changed = duty_label(previous) != duty_label(decision)
     reason = ("pin removed; " if pinned else "") + decision["reason"]
     record = {"account": decision["account"], "family": decision["family"],
@@ -305,6 +317,8 @@ def duty_account(family):
 
 def claude_available(cfg):
     """Whether a Claude account is available now by the election rules (cached limits)."""
+    if not config.provider_installed("claude"):
+        return False
     limits, now = claude_accounts.read_limits(), clock.CLOCK.time()
     return any(claude_duty_candidate(cfg, account, limits.get(account["name"], {}), now, now)["unavailable"] is None
                for account in claude_accounts.accounts(cfg))

@@ -9,6 +9,7 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `max_turn_minutes` | none | `--max-minutes` default for implementation turns; with neither set, a turn has no time cap |
 | `max_review_minutes` | `30` | cap for reviews and scouts, separate from implementation time |
 | `task_profiles` | `{}` | work defaults by `--task-type` at `start` ([Task profiles](#task-profiles)) |
+| `role_profiles` | `{}` | ordered providers and their model and effort defaults by [role](#role-profiles) |
 | `reviewer` | `"codex"` | default review provider: `"codex"` or `"claude"`; saved per task and overridden by `--reviewer` |
 | `max_task_weekly_percent` | none | task weekly budget in percentage points (0 < P ≤ 100); `start --max-weekly P` overrides it, and `say` and `review` inherit or replace the saved task budget |
 | `repeat_limit` | `3` | identical failures before a `stuck` stop ([results.md](results.md)) |
@@ -65,12 +66,56 @@ same label format as `--task-type` (`[a-z0-9-]{1,32}`). Each profile is an objec
 
 Explicit `--executor`, `--model` and `--effort` values take precedence. Pass `--model default` to use
 the selected executor's configured model. Profile model and effort defaults belong to the profile's
-executor, or to the global `executor` setting when the profile omits it. Choosing a different
-executor uses that executor's own model and effort settings unless the flags supply them.
+executor, or to the global `executor` setting when the profile omits it. Those defaults override
+matching provider values in `role_profiles.work`. Choosing a different executor uses its own role
+profile or provider defaults unless the flags supply them.
 
 On a match, `start` prints the choices and their sources. The task saves the resolved work settings
-for follow-ups. Profile effort works like `start --effort`, including when reviews inherit the
-task's effort. `say --task-type` changes the saved label only.
+for follow-ups. Without a review role profile, profile effort works like `start --effort` for reviews
+that inherit the task's effort. `say --task-type` changes the saved label only.
+
+## Role profiles
+
+Set `role_profiles` in `config.json` to choose the provider order and defaults for each role.
+
+```json
+{
+  "role_profiles": {
+    "work": [
+      {"provider": "codex", "model": "gpt-6.2-sol", "effort": "xhigh"},
+      {"provider": "claude"}
+    ],
+    "review": [{"provider": "claude"}, {"provider": "codex", "effort": "high"}]
+  }
+}
+```
+
+The supported roles are `work`, `review`, `scout`, `reflect`, and `duty`. Each configured role has a
+nonempty list, ordered from first choice to standby. An entry has a unique `provider` (`codex` or
+`claude` within that role) and optional `model` and `effort` strings. Omit a field to use the
+provider's defaults for the role. Each standby uses its own model and effort defaults.
+
+- `work`, `scout`, and `reflect` choose a provider before the first turn. `start` tries a matching
+  `task_profiles` executor first, then the configured work order. `--executor` pins the provider
+  directly. `--model M` also pins the preferred provider when `M` is a model name. `--effort E`
+  overrides the selected provider's effort.
+  Teamster checks provider compatibility, including sandbox and directory requirements, and can use
+  a configured standby with an available account. If no compatible pool can start immediately, the
+  first compatible provider applies its usual limit and waiting rules. The saved executor stays
+  with the task for later turns and account rotation.
+- `review` uses the first installed provider in the list and can use a later provider if the
+  reviewer is unavailable. With a review role profile, `--reviewer` pins the provider.
+  `review --effort E` overrides the preferred reviewer's effort for that standalone review.
+  `--review-model M` overrides the model for Codex review attempts only.
+- `duty` elects from the first eligible family in the list and uses that family's model and effort
+  for its chat turns. `duty set` still pins the account. Overrides selected with `say duty` take
+  precedence over the profile for the current family.
+
+For an unconfigured role, `start` prefers a matching task profile's executor or the global
+`executor` setting (Codex by default). `scout` prefers Codex and `reflect` prefers Claude. An
+automatic choice can use the installed peer if the preferred CLI is missing and the peer can run
+the role. Reviews use their existing defaults and fallback, and duty elections prefer Claude
+when eligible.
 
 ## Task models
 
@@ -82,8 +127,9 @@ reasoning effort, falling back to the task's effort override or `default` when n
 
 `start`, `say`, and `review` accept `--review-model M` for Codex reviews, including each review angle.
 It is saved separately from the work model; follow-ups and later reviews inherit it. Passing
-`--review-model default` clears it. Without a review override, Codex uses its existing review defaults.
-Claude reviews continue to use `claude.model`.
+`--review-model default` clears it. Reviews take model defaults from their matching
+[role profile](#role-profiles) when configured. Otherwise Codex uses its configured review defaults
+and Claude uses `claude.model`.
 
 Model names must match `[A-Za-z0-9._-]{1,64}`. The worker checks the name's format, not whether the
 model exists or is available to an account. `default` is reserved for clearing an override.
@@ -91,6 +137,7 @@ model exists or is available to an account. `default` is reserved for clearing a
 ## Account JSON
 
 `accounts --json` emits one JSON object. Plain `accounts` retains its text table and Claude lines.
+The JSON lists no accounts for a provider whose CLI is missing.
 All timestamps below are UTC ISO 8601 strings; unknown values are `null`.
 
 | Field | Contents |
@@ -146,9 +193,9 @@ seven-day windows; Claude work uses `min(work_switch_at, soft_switch_at)` and th
 seven-day reset first in each group. Unknown limits count as available. Legacy settings, including
 a missing `claude` object, remain a one-account pool named `default`.
 
-The executable is `TEAMSTER_CLAUDE`, or `claude` on `PATH`. `start` and `review` fail before
-launching when Claude is selected but its CLI is missing. See [accounts.md](accounts.md#claude-account-pool)
-for `claude-login` and token setup, and [review-cycle.md](review-cycle.md#review-provider) for retries
+The executable is `TEAMSTER_CLAUDE`, or `claude` on `PATH`. A command that requires Claude fails
+before launching if its CLI is missing. See [accounts.md](accounts.md#claude-account-pool) for
+`claude-login` and token setup, and [review-cycle.md](review-cycle.md#review-provider) for retries
 and fallback behavior.
 
 ## Task CI options
