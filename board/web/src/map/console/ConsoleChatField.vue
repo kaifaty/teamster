@@ -4,7 +4,7 @@
 // sends, Shift+Enter breaks the line, Escape folds the conversation. The microphone dictates into the field through
 // pauses until it is pressed again or Escape ends the dictation, and never sends by itself: the words stay a draft to
 // edit. When the chat cannot work, a plain sentence stands instead.
-import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import micActive from "../art/console-mic-active.png";
 import micIdle from "../art/console-mic-idle.png";
 import { createVoice, voiceTitle } from "./voice";
@@ -91,14 +91,27 @@ function stopOnEscape(event: KeyboardEvent) {
   event.stopPropagation();
   voice.stop();
 }
+// A field hidden with its panel (the board's view, the folded sheet) still stands in the page: hidden, it stops the
+// dictation, whose microphone and stop the user no longer sees.
+const root = ref<HTMLElement | null>(null);
+let watcher: ResizeObserver | null = null;
+onMounted(() => {
+  if (typeof ResizeObserver === "undefined" || !root.value) return;
+  const element = root.value;
+  watcher = new ResizeObserver(() => {
+    if (element.getClientRects().length === 0) voice.stop();
+  });
+  watcher.observe(element);
+});
 onBeforeUnmount(() => {
+  watcher?.disconnect();
   voice.dispose();
   emit("grow", 0);
 });
 </script>
 
 <template>
-  <div class="chat-field" :class="{ sheet, off: !!unavailable }">
+  <div ref="root" class="chat-field" :class="{ sheet, off: !!unavailable }">
     <p v-if="unavailable" class="chat-off" :title="unavailable">{{ unavailable }}</p>
     <button v-if="unavailable && pickDuty" type="button" class="pick-duty" aria-haspopup="dialog" aria-label="Выбрать дежурного" title="Выбрать дежурного" @click="emit('pickDuty', null)">Выбрать</button>
     <template v-else-if="!unavailable">
@@ -106,9 +119,9 @@ onBeforeUnmount(() => {
         type="button"
         class="mic"
         :class="voice.state.value"
-        :disabled="voice.state.value === 'off'"
+        :aria-disabled="voice.state.value === 'off' ? 'true' : undefined"
         :aria-pressed="listening"
-        :aria-label="listening ? 'Закончить диктовку' : 'Надиктовать задачу'"
+        aria-label="Диктовка"
         :aria-describedby="voice.note.value ? noteId : undefined"
         :title="voiceTitle(voice.state.value, voice.why.value)"
         @click="voice.toggle"
@@ -266,7 +279,7 @@ onBeforeUnmount(() => {
   }
 }
 
-.mic:hover:not(:disabled) img {
+.mic:hover:not([aria-disabled="true"]) img {
   filter: brightness(1.15);
 }
 
@@ -275,11 +288,11 @@ onBeforeUnmount(() => {
   outline-offset: 1px;
 }
 
-.mic:disabled {
+.mic[aria-disabled="true"] {
   cursor: default;
 }
 
-.mic:disabled img {
+.mic[aria-disabled="true"] img {
   filter: saturate(0.2) brightness(0.6);
 }
 
