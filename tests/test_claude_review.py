@@ -4001,7 +4001,8 @@ class ClaudeReviewTests(RotationTestCase):
         limits = json.loads(limits_path.read_text())
         limits["second"]["limited_until"] = self.reset
         limits_path.write_text(json.dumps(limits))
-        with mock.patch.object(worker.duty, "duty_log_path", side_effect=OSError("interrupted")), \
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.duty, "duty_log_path", side_effect=OSError("interrupted")), \
                 self.assertRaises(OSError):
             worker.duty.run_duty_tick(cfg, [], time.time())
         self.assertEqual(json.loads(duty_path.read_text())["account"], "first")
@@ -4030,8 +4031,9 @@ class ClaudeReviewTests(RotationTestCase):
             "primary": {"used": used, "minutes": 10080, "reset": self.reset},
             "secondary": {"used": 2, "minutes": 300, "reset": self.reset}}}
             for name, used in (("main", 10), ("second", 99))]
-        self.assertEqual(worker.accounts.available(infos, cfg, worker.duty.codex_reserved(infos, cfg))["name"],
-                         "main")
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(worker.accounts.available(infos, cfg, worker.duty.codex_reserved(infos, cfg))["name"],
+                             "main")
 
     def test_duty_selection_skips_duty_for_new_claude_work_and_reviews_with_exceptions(self):
         self.claude_pool_fixture()
@@ -4084,7 +4086,8 @@ class ClaudeReviewTests(RotationTestCase):
                 "secondary": {"used": 2, "minutes": 300, "reset": self.reset}}}
 
         def codex_choice(infos):
-            chosen = worker.accounts.available(infos, cfg, worker.duty.codex_reserved(infos, cfg))
+            with mock.patch.dict(os.environ, self.env, clear=True):
+                chosen = worker.accounts.available(infos, cfg, worker.duty.codex_reserved(infos, cfg))
             return chosen and chosen["name"]
 
         infos = [info("main", 10), info("second", 10)]
@@ -4106,8 +4109,9 @@ class ClaudeReviewTests(RotationTestCase):
         st = {"slug": "duty-sleep", "account": "second", "thread": "", "rotations": []}
         (worker.config.TASKS / "duty-sleep").mkdir()
         slept = []
-        self.assertIsNone(worker.account_rotation.wait_for_account(
-            st, sleeping, cfg, "all accounts unavailable", lambda: bool(slept), slept.append))
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertIsNone(worker.account_rotation.wait_for_account(
+                st, sleeping, cfg, "all accounts unavailable", lambda: bool(slept), slept.append))
         self.assertEqual(st["sleeping"]["account"], "second")
         self.assertAlmostEqual(st["sleeping"]["until"], now + 3600 + worker.config.RESET_MARGIN, delta=1)
 
@@ -4119,8 +4123,9 @@ class ClaudeReviewTests(RotationTestCase):
             "availableCount": 1, "credits": [{"id": name + "-credit", "status": "available",
                                               "resetType": "codexRateLimits", "expiresAt": now + expires}]})
             for name, expires in (("main", 3600), ("second", 7200))]
-        with mock.patch.object(worker.credit_resets, "reset_credit_action",
-                               return_value={"outcome": "failed", "credit": {"id": "spent"}}) as action:
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.credit_resets, "reset_credit_action",
+                                  return_value={"outcome": "failed", "credit": {"id": "spent"}}) as action:
             self.assertIsNone(worker.account_rotation.try_reset_credit(
                 st, credited, dict(cfg, use_reset_credits=True), lambda: False))
         self.assertEqual(action.call_args.args[0]["name"], "second")

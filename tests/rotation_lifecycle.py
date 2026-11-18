@@ -1838,6 +1838,7 @@ worker.notifications.reap_notifications = reap
 
     def test_accounts_identifies_duplicates_missing_login_and_rpc_error(self):
         self.configure()
+        self.env["TEAMSTER_CLAUDE"] = str(self.fake)
         self.account(self.other, "A", self.reset)
         config_path = self.home / "claude-accounts.json"
         config = json.loads(config_path.read_text())
