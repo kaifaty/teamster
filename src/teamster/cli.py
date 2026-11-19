@@ -17,6 +17,7 @@
       teamster accounts [--json] [--refresh]        read account limits and login status
       teamster reset-credit <account> [--credit ID] [--yes]  preview/use a free limit reset
       teamster login <name> [--browser] [--events]   add/sign in to an isolated account
+      teamster account-remove <name>                remove a Codex account from the pool
       teamster claude-login <name> [--config-dir DIR] [--keychain SERVICE] [--events]  add/sign in to a Claude account
       teamster claude-probe <name>                  check a Claude token and cache usage limits
       teamster claude-rename <old> <new>            rename a Claude account without moving credentials
@@ -332,10 +333,11 @@ COMMAND_HANDLERS = {
     "accounts": commands.cmd_accounts,
     "reset-credit": commands.cmd_reset_credit,
     "login": account_commands.cmd_login,
+    "account-remove": account_commands.cmd_account_remove,
     "claude-login": account_commands.cmd_claude_login,
     "claude-probe": account_commands.cmd_claude_probe,
     "claude-rename": account_commands.cmd_claude_rename,
-    "claude-remove": account_commands.cmd_claude_remove,
+    "claude-remove": account_commands.cmd_account_remove,
     "duty": commands.cmd_duty,
     "docs": commands.cmd_docs,
     "path": commands.cmd_path,
@@ -427,6 +429,7 @@ def main():
     s.add_argument("name")
     s.add_argument("--browser", action="store_true", help="use browser login instead of device auth")
     s.add_argument("--events", action="store_true", help="emit JSON events without a terminal")
+    sub.add_parser("account-remove", help="remove a Codex account without deleting credentials").add_argument("name")
     s = sub.add_parser("claude-login", help="sign in interactively to an isolated Claude account")
     s.add_argument("--events", action="store_true", help="emit JSON events and accept codes on stdin")
     s.add_argument("name")

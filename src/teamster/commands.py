@@ -496,8 +496,17 @@ def cmd_stats(a):
         reviewers.from_entry(entry).stats(entry, cfg)
 
 
+def codex_thread_account(entry, cfg):
+    account = next((a for a in cfg["accounts"] if a["name"] == entry["account"]), None)
+    if account is None:
+        print(f"Skipping thread {entry['thread']}: Codex account {entry['account']!r} is no longer configured")
+    return account
+
+
 def print_codex_review_stats(entry, cfg):
-    account = accounts.account_named(cfg, entry["account"])
+    account = codex_thread_account(entry, cfg)
+    if account is None:
+        return
     path = threads.rollout_path(account["home"], entry["thread"])
     print(f"== {entry['account']}: {entry['thread']}", flush=True)
     if path:
@@ -686,7 +695,9 @@ def clean_task(a, st):
 def clean_codex_review(entry, cfg):
     if not config.provider_installed("codex"):
         return
-    account = accounts.account_named(cfg, entry["account"])
+    account = codex_thread_account(entry, cfg)
+    if account is None:
+        return
     accounts.prepare_home(account)
     subprocess.run([config.codex_binary(), "archive", entry["thread"]], env=accounts.account_env(account), capture_output=True)
 

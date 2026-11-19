@@ -831,12 +831,21 @@ else:
             finally:
                 release.touch()
             first.result(timeout=10)
-        saved = json.loads(path.read_text())
-        pool = saved["claude"].pop("accounts")
-        self.assertEqual(saved, {"language": "en", "switch_at": 87,
-                                 "claude": {"model": "fixture-updated-model"}})
-        self.assertEqual([account["name"] for account in pool], ["default", "third", "first"])
-        self.assertEqual(pool[0], default, "unrelated account paths must remain unchanged")
+            saved = json.loads(path.read_text())
+            pool = saved["claude"].pop("accounts")
+            self.assertEqual(saved, {"language": "en", "switch_at": 87,
+                                     "claude": {"model": "fixture-updated-model"}})
+            self.assertEqual([account["name"] for account in pool], ["default", "third", "first"])
+            self.assertEqual(pool[0], default, "unrelated account paths must remain unchanged")
+
+            def remove_during_sign_in():
+                self.cli("claude-remove", "first")
+                return str(terminal)
+
+            with mock.patch.object(worker.account_commands, "terminal_device", side_effect=remove_during_sign_in), \
+                    self.assertRaisesRegex(SystemExit, "was removed"):
+                worker.account_commands.cmd_claude_login(SimpleNamespace(name="first", config_dir=None, keychain=None))
+        self.assertEqual([a["name"] for a in json.loads(path.read_text())["claude"]["accounts"]], ["default", "third"])
 
     def claude_probe_fixture(self):
         token = "fixture-claude-probe-private-token"
@@ -1064,6 +1073,20 @@ else:
                          "войди заново другим аккаунтом: teamster login second")
         self.assertEqual([(row["account"], row["status"]) for row in self.telemetry_journal()[before:]],
                          [("third", "duplicate"), ("second", "duplicate")])
+
+        credentials = third / "auth.json"
+        credentials.write_text("fixture credential")
+        self.cli("account-remove", "third")
+        self.assertEqual(credentials.read_text(), "fixture credential")
+        self.cli("account-remove", "second")
+        settings = self.home / "codex-worker.json"
+        saved = settings.read_bytes()
+        self.assertEqual([a["name"] for a in json.loads(saved)["accounts"]], ["main"])
+        worker = self.worker()
+        with mock.patch.object(worker.cli.sys, "argv", ["teamster", "account-remove", "main"]), \
+                self.assertRaisesRegex(SystemExit, "Cannot remove the last Codex account"):
+            worker.cli.main()
+        self.assertEqual(settings.read_bytes(), saved)
 
     def test_claude_login_probes_after_saving_and_preserves_account_on_probe_failure(self):
         token, fixture, trace = self.claude_probe_fixture()

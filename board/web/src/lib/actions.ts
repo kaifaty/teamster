@@ -20,6 +20,7 @@ export type ActionRoute =
   | "login/input"
   | "login/cancel"
   | "account-refresh"
+  | "account-remove"
   | "duty-chat"
   | "duty";
 
@@ -134,6 +135,7 @@ export interface ActionBodies {
   "login/input": LoginInputBody;
   "login/cancel": LoginCancelBody;
   "account-refresh": AccountBody;
+  "account-remove": AccountBody;
   "duty-chat": DutyChatBody;
   duty: DutyBody;
 }
@@ -149,13 +151,18 @@ export type ActionResult =
 
 export type ActionSender = <R extends ActionRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
 
-/** What the server's own error codes mean; any other error is teamster's text and is shown as it is. */
+/** Known refusals in the board's language; other errors keep teamster's text. */
 const CODES: Record<string, string> = {
   read_only: "Доска запущена с --read-only",
   no_teamster: "Команда teamster не найдена",
   forbidden: "Сервер доски отклонил запрос",
   timeout: "teamster не ответил вовремя",
   old_teamster: "Установленный teamster не знает duty chat: обнови его",
+  account_login_in_progress: "Сначала заверши или отмени вход в подписку",
+  account_refresh_in_progress: "Дождись обновления данных подписки",
+  account_removal_in_progress: "Подписка уже удаляется",
+  "teamster: Cannot remove the last Codex account": "В настройках Teamster должна остаться хотя бы одна подписка Codex",
+  "teamster: Cannot remove the last Claude account; switch reviewer to codex": "В настройках Teamster должна остаться хотя бы одна подписка Claude",
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;

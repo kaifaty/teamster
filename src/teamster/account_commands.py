@@ -308,13 +308,13 @@ def _cmd_login(a, events=None):
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,40}", a.name):
         procs.die("invalid account name")
     binary = config.codex_binary()
-    cfg = config.accounts_config()
-    account = next((i for i in cfg["accounts"] if i["name"] == a.name), None)
-    if account is None:
-        account = {"name": a.name, "home": str(config.CODEX_HOME.parent / ".codex-accounts" / a.name)}
-        cfg["accounts"].append(account)
-    cfg.pop("enabled", None)
     with config.home_lock(exclusive=True):
+        cfg = config.accounts_config()
+        account = next((i for i in cfg["accounts"] if i["name"] == a.name), None)
+        if account is None:
+            account = {"name": a.name, "home": str(config.CODEX_HOME.parent / ".codex-accounts" / a.name)}
+            cfg["accounts"].append(account)
+        cfg.pop("enabled", None)
         path = config.data_path("settings")
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
@@ -393,13 +393,16 @@ def terminal_device():
 
 
 @contextmanager
-def _locked_claude_settings():
+def _locked_account_pool(family):
     path = config.data_path("settings")
     with config.home_lock(exclusive=True):
         source = config.settings_path()
         settings = json.loads(source.read_text(encoding="utf-8")) if source.exists() else {}
-        normalized = config.accounts_config()["claude"]["accounts"]
-        pool = settings.setdefault("claude", {}).setdefault("accounts", normalized)
+        cfg = config.accounts_config()
+        if family == "claude":
+            pool = settings.setdefault("claude", {}).setdefault("accounts", cfg["claude"]["accounts"])
+        else:
+            pool = settings.setdefault("accounts", cfg["accounts"])
         yield pool
         temporary = path.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -409,7 +412,7 @@ def _locked_claude_settings():
 def cmd_claude_rename(a):
     if not re.fullmatch(r"[a-z0-9-]+", a.new):
         procs.die("Claude account name must contain only a-z, 0-9 and '-'")
-    with _locked_claude_settings() as pool:
+    with _locked_account_pool("claude") as pool:
         account = next((item for item in pool if item["name"] == a.old), None)
         if account is None:
             procs.die(f"Claude account {a.old!r} does not exist")
@@ -420,18 +423,23 @@ def cmd_claude_rename(a):
     print(f"Claude account {a.old} renamed to {a.new}")
 
 
-def cmd_claude_remove(a):
-    with _locked_claude_settings() as pool:
+def cmd_account_remove(a):
+    family = "claude" if a.cmd == "claude-remove" else "codex"
+    with _locked_account_pool(family) as pool:
         account = next((item for item in pool if item["name"] == a.name), None)
         if account is None:
-            procs.die(f"Claude account {a.name!r} does not exist")
+            procs.die(f"{family.capitalize()} account {a.name!r} does not exist")
         if len(pool) == 1:
-            procs.die("Cannot remove the last Claude account; switch reviewer to codex")
+            if family == "claude":
+                procs.die("Cannot remove the last Claude account; switch reviewer to codex")
+            procs.die("Cannot remove the last Codex account")
         pool.remove(account)
-        claude_accounts.clear_limits(a.name)
-    print(f"Claude account {a.name} removed")
-    print(f"Remove the config directory manually: {account['config_dir']}")
-    print(f"Remove the Keychain service manually: {account['token_keychain']}")
+        if family == "claude":
+            claude_accounts.clear_limits(a.name)
+    print(f"{family.capitalize()} account {a.name} removed")
+    if family == "claude":
+        print(f"Remove the config directory manually: {account['config_dir']}")
+        print(f"Remove the Keychain service manually: {account['token_keychain']}")
 
 
 def cmd_claude_probe(a):
@@ -523,12 +531,14 @@ def _cmd_claude_login(a, events=None):
                         procs.die("Claude login failed; account settings were not changed")
         except OSError:
             procs.die("Claude login requires a terminal and the Claude CLI and Keychain tools")
-    with _locked_claude_settings() as pool:
-        previous = next((item for item in pool if item["name"] == a.name), None)
-        if previous is None:
+    with _locked_account_pool("claude") as pool:
+        current = next((item for item in pool if item["name"] == a.name), None)
+        if current is None:
+            if previous is not None:
+                procs.die(f"Claude account {a.name!r} was removed from the settings during the sign-in")
             pool.append(account)
         else:
-            previous.update(account)
+            current.update(account)
         claude_accounts.clear_limits(a.name)
     if events:
         # The check already answered for the saved token: book it instead of probing again.

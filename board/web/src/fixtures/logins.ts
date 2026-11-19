@@ -3,9 +3,10 @@
 // its page, asks for the code and, once it is pasted (or after a while, as if the page called back), saves the token,
 // checks and succeeds. A finished sign-in brings its subscription back to work in every later accounts message.
 import type { AccountBody, ActionBodies, ActionResult, LoginCancelBody, LoginInputBody } from "../lib/actions";
+import { parseAccounts } from "../lib/accounts";
 import type { Accounts, Login, ServerMessage } from "../types";
 
-export type LoginRoute = "login" | "login/input" | "login/cancel" | "account-refresh";
+export type LoginRoute = "login" | "login/input" | "login/cancel" | "account-refresh" | "account-remove";
 
 export interface FixtureLogins {
   act<R extends LoginRoute>(route: R, body: ActionBodies[R]): ActionResult;
@@ -20,6 +21,7 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
   const logins = new Map<string, Login>();
   const timers = new Map<string, ReturnType<typeof setTimeout>[]>();
   const signedIn = new Set<string>();
+  const removed = new Set<string>();
   let refreshedAt: number | null = null;
   /** Claude subscriptions whose limits a refresh read anew, with when. */
   const probed = new Map<string, number>();
@@ -55,10 +57,12 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
     later(id, from + 3800, () => ({ stage: "done", status: "ok", ok: true, message: "" }));
   }
 
+  function signingIn(family: AccountBody["family"], account: string) {
+    return [...logins.values()].some((login) => login.family === family && login.account === account && LIVE.has(login.stage));
+  }
+
   function start({ family, account }: AccountBody): ActionResult {
-    for (const login of logins.values()) {
-      if (login.family === family && login.account === account && LIVE.has(login.stage)) return { ok: false, error: "Вход уже идёт" };
-    }
+    if (signingIn(family, account)) return { ok: false, error: "Вход уже идёт" };
     const id = `login-${++counter}`;
     const now = clock();
     const login: Login = {
@@ -127,20 +131,35 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
     return { ok: true, output: "" };
   }
 
+  function remove({ family, account }: AccountBody): ActionResult {
+    const current = accounts();
+    const rows = (parseAccounts(current?.data, clock()).items ?? []).flatMap((item) =>
+      item.kind === "row" && item.row.executor === family ? [item.row] : []);
+    if (!current || !rows.some((row) => row.name === account)) return { ok: false, error: "Account not found" };
+    if (signingIn(family, account)) return { ok: false, error: "Вход уже идёт" };
+    if (rows.length === 1) return { ok: false, error: `Нужна хотя бы одна подписка ${family === "codex" ? "Codex" : "Claude"}.` };
+    removed.add(`${family}:${account}`);
+    refreshedAt = clock();
+    emit(patch({ type: "accounts", accounts: current }));
+    return { ok: true, output: "" };
+  }
+
   function patchData(data: unknown): unknown {
     if (typeof data !== "object" || data === null) return data;
     const root = data as Record<string, unknown>;
     const fix = (family: "codex" | "claude") =>
       Array.isArray(root[family])
-        ? (root[family] as unknown[]).map((entry) => {
-            if (typeof entry !== "object" || entry === null) return entry;
+        ? (root[family] as unknown[]).flatMap((entry) => {
+            if (typeof entry !== "object" || entry === null) return [entry];
             const item = { ...(entry as Record<string, unknown>) };
+            const key = `${family}:${String(item.name)}`;
+            if (removed.has(key)) return [];
             const read = family === "claude" ? probed.get(String(item.name)) : undefined;
             if (read !== undefined) item.updated_at = new Date(read * 1000).toISOString();
-            if (!signedIn.has(`${family}:${String(item.name)}`)) return item;
-            return family === "codex"
+            if (!signedIn.has(key)) return [item];
+            return [family === "codex"
               ? { ...item, status: "available", plan: item.plan ?? "plus", primary: item.primary ?? { used_percent: 3, resets_at: null, window_minutes: 10080 } }
-              : { ...item, token_unavailable: null, needs_login: null, limited_until: null };
+              : { ...item, token_unavailable: null, needs_login: null, limited_until: null }];
           })
         : root[family];
     return { ...root, codex: fix("codex"), claude: fix("claude") };
@@ -170,6 +189,7 @@ export function fixtureLogins(clock: () => number, emit: (message: ServerMessage
       if (route === "login") return start(body as AccountBody);
       if (route === "login/input") return input(body as LoginInputBody);
       if (route === "login/cancel") return cancel(body as LoginCancelBody);
+      if (route === "account-remove") return remove(body as AccountBody);
       return refresh(body as AccountBody);
     },
     patch,

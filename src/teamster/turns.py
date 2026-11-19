@@ -472,7 +472,6 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
     if new_turn:
         st.update(auth_excluded=[], auth_excluded_ids=[], auth_transitions=0, auth_failures={})
         st.pop("reset_reconciled", None)
-    account = accounts.account_named(cfg, st["account"])
     quota_snapshot = None
     if cfg["enabled"]:
         infos = account_rotation.task_snapshots(st, cfg, stopped, new_turn=new_turn)
@@ -509,9 +508,11 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
                 return
         if resuming and chosen["name"] != st["account"]:
             prompt = threads.handoff(st, current_message=current_message, cfg=cfg)
+            reason = floor_reason or account_rotation.limit_reason(current, cfg, soft=soft_rotation)
+            if not any(a["name"] == st["account"] for a in cfg["accounts"]):
+                reason = "account removed"
             st["rotations"].append({"at": clock.CLOCK.time(), "from": st["account"], "to": chosen["name"],
-                                    "reason": floor_reason or account_rotation.limit_reason(current, cfg, soft=soft_rotation),
-                                    "thread": ""})
+                                    "reason": reason, "thread": ""})
             floor_rotation = floor_reason is not None
             rotation = st["rotations"][-1]
             if not soft_rotation:
@@ -524,6 +525,8 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
         quota_snapshot = chosen.get("limits")
         if not reviewing:
             st["account"] = account["name"]
+    else:
+        account = accounts.account_named(cfg, st["account"])
     if reviewing:
         st["review_account"] = account["name"]
     task_state.save(st)

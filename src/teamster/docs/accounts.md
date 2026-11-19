@@ -25,6 +25,12 @@ It also exits 1 when the account is not logged in, or its status cannot be read.
 the settings in every case. A finished sign-in appends an [`account_login` row](telemetry.md#the-journal)
 to the journal, which makes the board (`board/` in the repository) refresh accounts at once.
 
+`teamster account-remove <name>` removes a Codex subscription from the settings and preserves its
+home and sign-in. At least one Codex account must remain. When a task resumes with the updated
+settings, it hands off to an available subscription. For a task pinned to an older Teamster release,
+use `say --upgrade` to resume with the updated worker. `stats` and `clean` skip threads whose account home
+is no longer configured and print their thread IDs.
+
 ### Sign-in without a terminal
 
 `teamster login <name> --events` and `teamster claude-login <name> --events` support background

@@ -1704,6 +1704,21 @@ worker.notifications.reap_notifications = reap
                         prompt.index("Текущее сообщение — выполни его"))
         self.assertEqual(len(self.invocations()), 3)
 
+        removed_thread = self.state("say-switch")["thread"]
+        self.cli("account-remove", "second")
+        self.account(self.home, "A", self.reset)
+        self.cli("say", "say-switch", "Continue after removing second")
+        self.wait("say-switch")
+        state = self.state("say-switch")
+        self.assertEqual((state["outcome"], state["account"], state["rotations"][-1]["reason"]),
+                         ("completed", "main", "account removed"))
+        self.assertFalse(self.invocations()[-1]["resume"])
+        self.assertIn("Continue after removing second", self.invocations()[-1]["prompt"])
+        skipped = f"Skipping thread {removed_thread}: Codex account 'second' is no longer configured"
+        self.assertIn(skipped, self.cli("stats", "say-switch"))
+        self.assertIn(skipped, self.cli("clean", "say-switch"))
+        self.assertFalse(Path(state["worktree"]).exists())
+
     def test_without_accounts_file_resumes_legacy_thread(self):
         self.start("legacy")
         self.wait("legacy")

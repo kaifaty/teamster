@@ -184,6 +184,8 @@ start to prefer another subscription and where they leave it, `thresholds`), «�
 executor works on it now; a click opens the task's bridge over the screen) and the card «Подписка» (plan and e-mail,
 credits above the floor and free resets for Codex; the share of the pool and the limits' age for Claude; the reserve and
 the last sign-in from `last_logins`). «Обновить» reads the limits again (`POST /api/actions/account-refresh`).
+«Удалить подписку» asks for confirmation before removing that account from Teamster and returning to the map.
+Provider billing and saved credentials are unaffected. Teamster requires at least one account per provider.
 «Войти заново» runs the sign-in on the board server (`POST /api/actions/login`) and shows it live from the `login`
 messages: its steps, the sign-in page to open and, for Codex, the one-time code to enter there with its countdown; for
 Claude, a field for the code the page shows, sent with `login/input`; «Отменить вход» (`login/cancel`), how it ended, the

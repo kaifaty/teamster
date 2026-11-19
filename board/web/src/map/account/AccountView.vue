@@ -2,7 +2,7 @@
 // A subscription's own screen. Clicking a fuel tank on the map opens it over the galaxy, like a ship's bridge: a header,
 // then «Сейчас» across the screen — the state in words and, when the subscription needs it, the sign-in the board runs —
 // and under it its limits and its tasks beside its card. The board server signs in and refreshes the data itself.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { postAction, type AccountBody, type ActionBodies, type ActionRoute } from "../../lib/actions";
 import type { BoardSource } from "../../lib/source";
 import type { Accounts, Login, TaskSummary } from "../../types";
@@ -39,6 +39,7 @@ const props = defineProps<{
   source: BoardSource;
   now: number;
   frame: string;
+  scenario?: boolean;
   /** A task's bridge or a machine's card stands over this screen: its keys and focus are theirs. */
   covered?: boolean;
 }>();
@@ -86,6 +87,30 @@ const working = computed(() => tasksOn(props.tasks, family.value, name.value));
 // Orders: each answers at once; the sign-in's steps then come from the server.
 function act<R extends ActionRoute>(route: R, payload: ActionBodies[R]) {
   return postAction(route, payload, { send: props.source.act });
+}
+
+const confirmingRemoval = ref(false);
+const removing = ref(false);
+const removeError = ref<string | null>(null);
+const removeButton = ref<HTMLButtonElement | null>(null);
+const cancelButton = ref<HTMLButtonElement | null>(null);
+
+async function confirmRemoval(open: boolean) {
+  if (removing.value) return;
+  confirmingRemoval.value = open;
+  removeError.value = null;
+  await nextTick();
+  (open ? cancelButton.value : removeButton.value)?.focus();
+}
+
+async function removeAccount() {
+  if (!confirmingRemoval.value || removing.value || props.scenario || !row.value) return;
+  removing.value = true;
+  removeError.value = null;
+  const result = await act("account-remove", body.value);
+  removing.value = false;
+  if (result.ok) emit("close");
+  else removeError.value = result.error;
 }
 
 const starting = ref(false);
@@ -162,6 +187,10 @@ const back = ref<HTMLButtonElement | null>(null);
 function onKey(event: KeyboardEvent) {
   if (event.key !== "Escape" || event.isComposing || props.covered) return;
   event.preventDefault();
+  if (confirmingRemoval.value) {
+    void confirmRemoval(false);
+    return;
+  }
   // Escape in a field leaves the field; the next one leaves the screen.
   const field = event.target instanceof HTMLElement && event.target.closest("input, textarea, select");
   if (field) {
@@ -206,7 +235,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="key"
-            :disabled="!!refreshing"
+            :disabled="!!refreshing || removing"
             :title="family === 'claude' ? 'Отправить короткий запрос и прочитать лимиты заново' : 'Прочитать лимиты подписок заново'"
             @click="refresh"
           >
@@ -216,21 +245,38 @@ onBeforeUnmount(() => {
             v-if="row && !nowView?.relogin && !loginLive(shownLogin)"
             type="button"
             class="key"
-            :disabled="starting"
+            :disabled="starting || removing"
             title="Войти в аккаунт этой подписки ещё раз, например в другой аккаунт"
             @click="signIn"
           >
             Войти заново
           </button>
+          <button
+            v-if="row && !scenario"
+            ref="removeButton"
+            type="button"
+            class="key danger"
+            :disabled="confirmingRemoval || starting || loginLive(login) || !!refreshing"
+            @click="confirmRemoval(true)"
+          >
+            Удалить подписку
+          </button>
         </nav>
       </header>
 
+      <div v-if="confirmingRemoval && row" class="links note" role="alertdialog" aria-labelledby="remove-question">
+        <span id="remove-question">Удалить подписку {{ FAMILY_NAMES[family] }} «{{ name }}» из Teamster? Новые задачи перестанут её использовать.</span>
+        <button ref="cancelButton" type="button" class="key" :disabled="removing" @click="confirmRemoval(false)">Отмена</button>
+        <button type="button" class="key danger" :disabled="removing" @click="removeAccount">{{ removing ? "Удаляю…" : "Удалить" }}</button>
+      </div>
+      <p v-if="removeError" class="note bad" role="alert">Не удалось удалить подписку: {{ removeError }}</p>
       <p v-if="refreshError" class="note bad" role="status">Не удалось обновить: {{ refreshError }}</p>
       <p v-if="!accounts?.data" class="note">Доска ещё не прочитала подписки.</p>
       <p v-else-if="!row" class="note">Подписки {{ name }} больше нет в настройках teamster.</p>
 
       <template v-if="row && nowView">
         <AccountNow
+          :inert="removing"
           :family="family"
           :name="name"
           :row="row"

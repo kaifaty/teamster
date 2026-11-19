@@ -4,9 +4,11 @@ import asyncio
 import json
 import logging
 import re
+import subprocess
 import time
 from pathlib import Path
 
+from .actions import error
 from .logins import stop_process
 
 ACCOUNTS_TIMEOUT = 60
@@ -121,6 +123,23 @@ class Accounts:
         self.duty = {"fetched_at": None, "error": None, "data": None}
         self._last_started = float("-inf")
         self._lock = asyncio.Lock()
+
+    def remove(self, family, account):
+        command = "account-remove" if family == "codex" else "claude-remove"
+        try:
+            result = subprocess.run(
+                ["python3", "-I", str(self.script), command, "--", account],
+                stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8", errors="replace",
+                cwd=Path.home(), timeout=ACCOUNTS_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return error(504, "timeout")
+        except OSError as exc:
+            return error(422, str(exc))
+        if result.returncode:
+            detail = (result.stderr.strip() or result.stdout.strip())[-2000:]
+            return error(422, detail or f"{command} exited with status {result.returncode}")
+        return None
 
     async def refresh(self, force=False):
         async with self._lock:
