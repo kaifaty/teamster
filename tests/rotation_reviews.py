@@ -1360,6 +1360,18 @@ class ReviewFixTests(RotationTestCase):
                                  env=self.env, text=True, capture_output=True, check=True)
         self.assertEqual(tracked.stdout, "")
 
+    def test_review_angles_auto_rejects_a_malformed_list(self):
+        for angles in ([], "design", ["design", "design"], ["design", 1]):
+            with self.subTest(angles=angles):
+                self.configure(review_angles_auto=angles)
+                result = subprocess.run([PYTHON, "-I", str(SCRIPT), "start", "angles-invalid-auto",
+                                         "--brief", str(self.brief), "--repo", str(self.repo),
+                                         "--review-angles", "auto"],
+                                        cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("review_angles_auto", result.stdout + result.stderr)
+                self.assertEqual(self.invocations(), [])
+
     def test_review_angles_minimum_lines_rejects_nonpositive_and_noninteger_settings(self):
         for threshold in (0, -1, True, "14"):
             with self.subTest(threshold=threshold):
@@ -1391,6 +1403,10 @@ class ReviewFixTests(RotationTestCase):
         config = {"review_angles_min_lines": 3}
         expected = ["correctness", "concurrency", "tests"]
         self.assertEqual(worker.review_cycle.selected_review_angles(state, config), expected)
+        configured = dict(config, review_angles_auto=["correctness", "design"])
+        self.assertEqual(worker.review_cycle.selected_review_angles(state, configured), ["correctness", "design"])
+        with self.assertRaises(SystemExit):
+            worker.review_cycle.selected_review_angles(state, dict(config, review_angles_auto=["style"]))
         self.assertFalse(marker.exists(), "counting a diff must not execute repository Git drivers")
         (self.repo / "tracked.txt").write_text("initial\n")
         (self.repo / "binary.bin").write_bytes(b"\0" + b"binary line\n" * 20)

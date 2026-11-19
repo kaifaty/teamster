@@ -28,6 +28,16 @@ REVIEW_ANGLES = {
     "security": "Focus on secrets, shell and path injection, untrusted input, permissions and sandbox boundaries.",
     "tests": ("Focus on ineffective or weakened tests, uncovered brief requirements, and mocks replacing the code under test. "
               + GREEN_TEST_RULE["en"] + " " + GREEN_TEST_SEVERITY["en"]),
+    "design": ("Focus on the quality of the code and of its design decisions, not on behavior. Look for: "
+               "code the brief does not need (unused code, speculative options and abstractions, public API beyond the brief, "
+               "bench, probe or debug branches left in the production path); "
+               "a copy of an existing function, formula or format constant instead of reusing it; "
+               "code in the wrong layer or module, new coupling between modules, a data format changed without a version, "
+               "new mutable global state; and a solution clearly more complex than the task needs. "
+               "Each finding names the concrete harm and the concrete replacement: for a copy, the original as file:line; "
+               "for complexity, the simpler design. A finding with both is P2; one that only makes later changes harder is P3. "
+               "Do not report taste: naming, formatting, style, or a different but equivalent structure. "
+               "Do not report what the brief or the repository rules ask for."),
 }
 AUTO_REVIEW_ANGLES = ["correctness", "concurrency", "tests"]
 # The board parses what this rule keeps as is: the markers, lesson headings and scope words.

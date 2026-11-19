@@ -36,7 +36,7 @@ All commands accept -h/--help.
 soft_switch_at (same as switch_at),
 credits (false), credits_floor (0), credits_floor_until (none),
 wait_for_reset (true), max_turn_minutes (no cap), max_task_weekly_percent (no cap), max_review_minutes (30),
-executor (codex), reviewer (codex), claude (isolated account pool settings), review_angles_min_lines (400), repeat_limit (3), sandbox (off), writable_dirs ([]), notify and notify_events.
+executor (codex), reviewer (codex), claude (isolated account pool settings), review_angles_min_lines (400), review_angles_auto (correctness,concurrency,tests), repeat_limit (3), sandbox (off), writable_dirs ([]), notify and notify_events.
 start --ci (or ci: true) enables PR CI for the task; say inherits it and --ci-rounds (initially 1).
 start/say --ci-command CMD enables CI via sh -c; say inherits it, and --no-ci-command removes it.
 say --ci/--no-ci enables/disables CI; --ci-rounds N replaces the saved round limit. ci_timeout_minutes defaults to 30, ci_queued_minutes to 20.
@@ -150,7 +150,7 @@ def review_angles(value):
     unknown = [angle for angle in angles if angle not in prompts.REVIEW_ANGLES]
     if unknown:
         raise argparse.ArgumentTypeError(f"unknown review angle: {','.join(unknown)!r}; "
-                                         "choose correctness,concurrency,security,tests or auto")
+                                         "choose " + ",".join(prompts.REVIEW_ANGLES) + " or auto")
     return list(dict.fromkeys(angles))
 
 

@@ -104,14 +104,18 @@ limits are in [settings.md](settings.md#claude-accounts).
 
 ## Angles
 
-`--review-angles auto` runs `correctness,concurrency,tests` when the diff from base, including
+`--review-angles auto` runs `correctness,concurrency,tests` (the setting `review_angles_auto` changes this list) when the diff from base, including
 uncommitted changes, reaches `review_angles_min_lines` changed lines; below that it runs one ordinary
 review. For a specific risk, pass a comma-separated list instead:
 
 - `correctness`: behavior and the brief's "Done when" conditions;
 - `concurrency`: races, processes, signals, shared files and state, retries, and recovery;
 - `security`: secrets, shell and path injection, untrusted input, permissions, and sandbox boundaries;
-- `tests`: weakened or ineffective tests, uncovered brief conditions, and mocks replacing tested code.
+- `tests`: weakened or ineffective tests, uncovered brief conditions, and mocks replacing tested code;
+- `design`: code quality and design decisions: code the brief does not need, bench or debug branches
+  left in the production path, copies of existing functions, formulas or format constants, code in the
+  wrong layer, formats changed without a version, new mutable global state, and needless complexity.
+  A finding names the harm and the replacement; taste (naming, formatting, style) is not reported.
 
 On `start` and `say`, `--review-angles` implies `--review`.
 

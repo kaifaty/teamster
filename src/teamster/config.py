@@ -437,6 +437,13 @@ def accounts_config():
         procs.die("max_task_weekly_percent must be a finite number in (0, 100]")
     if type(cfg["review_angles_min_lines"]) is not int or cfg["review_angles_min_lines"] < 1:
         procs.die("review_angles_min_lines must be a positive integer")
+    auto_angles = cfg.get("review_angles_auto")
+    if auto_angles is not None:
+        # The angle names belong to prompts.py, a higher layer: review_cycle checks them.
+        if (not isinstance(auto_angles, list) or not auto_angles
+                or not all(isinstance(angle, str) for angle in auto_angles)
+                or len(set(auto_angles)) != len(auto_angles)):
+            procs.die("review_angles_auto must be a nonempty list of distinct review angle names")
     if cfg["language"] not in ("en", "ru"):
         procs.die('language must be "en" or "ru"')
     notification = cfg.get("notify")
