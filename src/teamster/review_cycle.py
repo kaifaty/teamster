@@ -90,7 +90,14 @@ def selected_review_angles(st, cfg):
                 tail = chunk[-1:]
         if not binary:
             lines += count + int(bool(tail) and tail != b"\n")
-    return list(prompts.AUTO_REVIEW_ANGLES) if lines >= cfg["review_angles_min_lines"] else []
+    if lines < cfg["review_angles_min_lines"]:
+        return []
+    angles = list(cfg.get("review_angles_auto") or prompts.AUTO_REVIEW_ANGLES)
+    unknown = [angle for angle in angles if angle not in prompts.REVIEW_ANGLES]
+    if unknown:
+        procs.die(f"unknown review angle in review_angles_auto: {','.join(unknown)!r}; "
+                  "choose " + ",".join(prompts.REVIEW_ANGLES))
+    return angles
 
 
 def merge_reviews(angles):

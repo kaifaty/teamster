@@ -1044,8 +1044,8 @@ Task and science station POST endpoints execute these commands:
   - `fix_rounds`: integer 0–5 → `--fix-rounds=<value>`.
   - `ci_rounds`: integer 0–5 → `--ci-rounds=<value>`.
   - `reviewer`: `codex` or `claude` → `--reviewer=<value>`.
-  - `review_angles`: `"auto"` or a list of 1–4 distinct values from `correctness`, `concurrency`,
-    `security`, `tests` → `--review-angles=auto` or `--review-angles=<comma-separated values>`.
+  - `review_angles`: `"auto"` or a list of 1–5 distinct values from `correctness`, `concurrency`,
+    `security`, `tests`, `design` → `--review-angles=auto` or `--review-angles=<comma-separated values>`.
 - `/api/actions/verdict`: `{slug: string, verdict: "accepted" | "revised" | "redone" | "dropped", note?: string}`
   runs `teamster verdict <slug> <verdict>`, adding `--note=<note>` for a nonempty trimmed note ≤ 200
   characters. Live and archived `work` and `review` tasks are allowed, even while alive; other kinds

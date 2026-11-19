@@ -27,7 +27,7 @@ export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as con
 export type Effort = (typeof EFFORTS)[number];
 export const REVIEWERS = ["codex", "claude"] as const;
 export type Reviewer = (typeof REVIEWERS)[number];
-export const ANGLES = ["correctness", "concurrency", "security", "tests"] as const;
+export const ANGLES = ["correctness", "concurrency", "security", "tests", "design"] as const;
 export type Angle = (typeof ANGLES)[number];
 /** `auto`, or 1–4 distinct presets. */
 export type ReviewAngles = "auto" | Angle[];

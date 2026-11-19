@@ -41,7 +41,7 @@ SAY_KINDS = ("work", "review", "reflect")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
-ANGLES = ("correctness", "concurrency", "security", "tests")
+ANGLES = ("correctness", "concurrency", "security", "tests", "design")
 OPTION_NAMES = ("model", "effort", "max_minutes", "max_weekly", "fix_rounds", "ci_rounds",
                 "reviewer", "review_angles")
 LOGGER = logging.getLogger("uvicorn.error")
@@ -123,7 +123,7 @@ def option_flags(options):
         elif name == "reviewer":
             valid = value in ("codex", "claude")
         else:  # review_angles
-            valid = value == "auto" or (isinstance(value, list) and 1 <= len(value) <= 4
+            valid = value == "auto" or (isinstance(value, list) and 1 <= len(value) <= len(ANGLES)
                                         and all(angle in ANGLES for angle in value)
                                         and len(set(value)) == len(value))
             if valid and isinstance(value, list):

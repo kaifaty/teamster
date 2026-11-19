@@ -15,6 +15,7 @@ Settings live in `config.json` in the [data home](#data-home) (`~/.teamster`). A
 | `repeat_limit` | `3` | identical failures before a `stuck` stop ([results.md](results.md)) |
 | `capacity_retry_minutes` | `[1, 5, 15, 30]` | pauses in minutes (positive numbers) before each continuation after a model `at capacity` error in one turn; an error after the last pause fails the turn ([accounts.md](accounts.md#sign-in-errors)) |
 | `review_angles_min_lines` | `400` | changed lines from which `--review-angles auto` runs angles |
+| `review_angles_auto` | `["correctness", "concurrency", "tests"]` | angles that `--review-angles auto` runs; add `design` to review code quality and design on every large diff |
 | `ci` | `false` | initial task CI setting; see [Task CI options](#task-ci-options) |
 | `ci_timeout_minutes` | `30` | maximum wait for CI checks or a CI command per attempt |
 | `ci_queued_minutes` | `20` | how long GitHub CI waits when only never-started checks remain before it records `skipped`; see [ci.md](ci.md) |

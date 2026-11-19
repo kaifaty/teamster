@@ -252,7 +252,7 @@ Ordinary PRs use one review. For large or risky PRs involving processes, concurr
 add `--review-angles auto` to `start`, `say`, or `review`. At 400 changed lines across `base..HEAD` and
 uncommitted changes (configurable with `review_angles_min_lines`), `auto` runs `correctness,concurrency,tests`;
 smaller diffs keep one review. To choose the focus explicitly, pass a comma-separated list from
-`correctness,concurrency,security,tests`. Each angle runs sequentially in a fresh thread; findings are
+`correctness,concurrency,security,tests,design`. Each angle runs sequentially in a fresh thread; findings are
 merged and duplicates combined, with their angles shown by `wait`. Later fix rounds repeat only
 angles with findings, plus `correctness`; a single review stays single. The flag implies `--review`
 on `start` and `say`. Scouts do not support review angles.
@@ -354,6 +354,7 @@ A minimal configuration is:
 | `max_review_minutes` | `30` | Separate active exec budget for each review or scout turn. |
 | `max_task_weekly_percent` | Absent | Default task weekly budget for `start`; `--max-weekly P` overrides it, and `say` and `review` inherit the task budget. |
 | `review_angles_min_lines` | `400` | Changed-line threshold for `--review-angles auto`; counts `base..HEAD` and uncommitted changes. |
+| `review_angles_auto` | `["correctness", "concurrency", "tests"]` | Angles that `--review-angles auto` runs. |
 | `ci` | `false` | Enable PR CI when creating a task; follow-ups inherit it. `say --ci` enables it, `say --no-ci` disables it. |
 | `ci_timeout_minutes` | `30` | Maximum wait for PR checks per CI attempt. |
 | `ci_queued_minutes` | `20` | Stop waiting for PR checks once only never-started (queued) checks have remained this long; CI is recorded as `skipped`. |
