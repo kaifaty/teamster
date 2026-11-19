@@ -9,6 +9,7 @@ Layer 0:
 Layer 1:
     config (implemented): paths, settings, binaries, and account configuration.
 Layer 2:
+    harness_updates (implemented): selected coding harness updates.
     clock (implemented): real and simulated clocks.
     sandboxing (implemented): workspace filters and sandbox rules.
     notifications (implemented): notification processes and delivery.

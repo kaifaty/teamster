@@ -26,6 +26,7 @@
       teamster path                                  print the package directory
       teamster migrate-home [--apply]                print or apply the move of legacy data out of ~/.codex
       teamster upgrade [--source URL|PATH] [--ref REF] [--yes]  preview/install a version side by side
+      teamster update-harnesses [--plist] HARNESS [HARNESS ...]  update selected harnesses or print a daily launchd job
       teamster versions [--prune]                    list installed versions; move unused ones to trash
       teamster duty tick | status [--json] | clear | plist [--minutes N]  elect, show, clear or schedule the duty account
       teamster duty set <account> [--family codex|claude] | auto  pin the duty account by hand, or return to election
@@ -53,7 +54,7 @@ import math
 import re
 import sys
 
-from . import account_commands, commands, config, executors, home_migration, installs, prompts, reviewers, supervisor, telemetry_log, wait_view
+from . import account_commands, commands, config, executors, harness_updates, home_migration, installs, prompts, reviewers, supervisor, telemetry_log, wait_view
 
 
 HELP_TEXT = __doc__
@@ -341,13 +342,14 @@ COMMAND_HANDLERS = {
     "path": commands.cmd_path,
     "migrate-home": home_migration.cmd_migrate_home,
     "upgrade": installs.cmd_upgrade,
+    "update-harnesses": commands.cmd_update_harnesses,
     "versions": installs.cmd_versions,
     "_run": supervisor.cmd__run,
 }
 # Commands that write task records, journals or cached limits hold the settings
 # lock shared, so migrate-home cannot move the data home under them.
 HOME_LOCKED_COMMANDS = ("start", "scout", "reflect", "lesson", "say", "review", "resume", "clean", "verdict", "accounts", "reset-credit",
-                        "claude-probe", "upgrade", "versions")
+                        "claude-probe", "upgrade", "versions", "update-harnesses")
 
 
 def main():
@@ -445,6 +447,9 @@ def main():
     s.add_argument("--source", metavar="URL|PATH", help="repository URL or local clone (default: the project repository)")
     s.add_argument("--ref", metavar="REF", help="revision to install (default: origin/main)")
     s.add_argument("--yes", action="store_true", help="install and switch (default: print the plan only)")
+    s = sub.add_parser("update-harnesses", help="update selected harnesses or print a daily launchd job")
+    s.add_argument("--plist", action="store_true", help="print the daily launchd job for these harnesses")
+    s.add_argument("harnesses", nargs="+", choices=harness_updates.COMMANDS)
     s = sub.add_parser("versions", help="list installed versions and the supervisors that use them")
     s.add_argument("--prune", action="store_true", help="move unused, non-current versions to versions/.trash")
     s = sub.add_parser("duty", help="elect, pin, show, clear or schedule the duty account")

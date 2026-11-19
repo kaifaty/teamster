@@ -199,13 +199,17 @@ def data_layout():
     return getattr(teamster, "DATA_LAYOUT", 1)
 
 
-def _find_codex():
+def codex_override():
     override = env("CODEX_TASK_CODEX")
     if override:
         return str(Path(override).expanduser())
     if CHATGPT_CODEX.is_file():
         return str(CHATGPT_CODEX)
-    return shutil.which("codex")
+    return None
+
+
+def _find_codex():
+    return codex_override() or shutil.which("codex")
 
 
 def _missing_codex():

@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import account_commands, account_rotation, accounts, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
+from . import account_commands, account_rotation, accounts, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, harness_updates, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
 
 
 def main_repo(path):
@@ -809,27 +809,44 @@ def home_environment():
     return environment
 
 
-def duty_launchd_plist(minutes):
-    """A launchd job for duty tick; printing it never installs or loads anything."""
-    environment = {"PATH": os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local/bin"),
-                                            "/usr/bin", "/bin", "/usr/sbin", "/sbin"])}
-    environment.update(home_environment())
-    for key in ("CODEX_TASK_CODEX", "CODEX_TASK_CLAUDE"):
-        if config.env(key):
-            environment["TEAMSTER_" + key.removeprefix("CODEX_TASK_")] = config.env(key)
-    log = str(config.data_path("duty_launchd_log"))
+def launchd_plist(label, arguments, interval, log, path, harnesses=None):
+    """Run a Teamster command under launchd using this installation and data home."""
+    environment = {**home_environment(), "PATH": path}
+    for name in ("codex", "claude"):
+        if harnesses is not None and name not in harnesses:
+            continue
+        override = config.env("CODEX_TASK_" + name.upper())
+        if override:
+            if harnesses is not None and os.path.dirname(override):
+                override = os.path.abspath(os.path.expanduser(override))
+            environment["TEAMSTER_" + name.upper()] = override
     command = Path(sys.executable).parent / "teamster"
     if installs.running_from_versions():
         # The launcher follows the current link, so the job survives upgrades and prunes.
-        program = [str(installs.bin_dir() / "teamster"), "duty", "tick"]
+        program = [str(installs.bin_dir() / "teamster")]
     elif command.is_file():
-        program = [str(command), "duty", "tick"]
+        program = [str(command)]
     else:
-        program = [sys.executable, "-I", str(config.SCRIPT_RESOLVED), "duty", "tick"]
-    return {"Label": DUTY_LAUNCHD_LABEL,
-            "ProgramArguments": program,
-            "StartInterval": minutes * 60, "RunAtLoad": True, "EnvironmentVariables": environment,
-            "StandardOutPath": log, "StandardErrorPath": log}
+        program = [sys.executable, "-I", str(config.SCRIPT_RESOLVED)]
+    return {"Label": label, "ProgramArguments": program + arguments,
+            "StartInterval": interval, "RunAtLoad": True, "EnvironmentVariables": environment,
+            "StandardOutPath": str(log), "StandardErrorPath": str(log)}
+
+
+def duty_launchd_plist(minutes):
+    """A launchd job for duty tick; printing it never installs or loads anything."""
+    path = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local/bin"),
+                            "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    return launchd_plist(DUTY_LAUNCHD_LABEL, ["duty", "tick"], minutes * 60, config.data_path("duty_launchd_log"), path)
+
+
+def cmd_update_harnesses(a):
+    if not a.plist:
+        harness_updates.update(a.harnesses)
+        return
+    job = launchd_plist("teamster.update-harnesses", ["update-harnesses", *a.harnesses], 24 * 60 * 60,
+                        config.DATA_HOME / "harness-updates.log", harness_updates.search_path(), a.harnesses)
+    sys.stdout.write(plistlib.dumps(job).decode("utf-8"))
 
 
 def duty_rooms_text(record):

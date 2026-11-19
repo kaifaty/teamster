@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import subprocess
@@ -74,6 +75,54 @@ class VersionInstallTests(unittest.TestCase):
 
     def current(self):
         return os.readlink(self.data / "versions/current")
+
+    def test_selected_harness_updates_and_daily_plist(self):
+        tools = self.root / "harness tools"
+        tools.mkdir()
+        calls = Path(self.env["HOME"]) / "calls"
+        opencode = tools / "opencode"
+        opencode.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/calls"\n')
+        opencode.chmod(0o700)
+        self.env.update(PATH=os.pathsep.join((".", "", str(tools), "relative")),
+                        TEAMSTER_CLAUDE=str(tools / "missing-claude"))
+
+        job = plistlib.loads(self.cli("update-harnesses", "--plist", "claude", "opencode").encode())
+        self.assertEqual(job["ProgramArguments"][-3:], ["update-harnesses", "claude", "opencode"])
+        self.assertEqual((job["Label"], job["StartInterval"], job["RunAtLoad"]),
+                         ("teamster.update-harnesses", 86400, True))
+        self.assertEqual(job["EnvironmentVariables"]["PATH"], str(tools))
+        self.assertEqual(job["EnvironmentVariables"]["TEAMSTER_CLAUDE"], self.env["TEAMSTER_CLAUDE"])
+        log = str(self.data / "harness-updates.log")
+        self.assertEqual((job["StandardOutPath"], job["StandardErrorPath"]), (log, log))
+        self.assertTrue(self.data.is_dir())
+        self.assertFalse(calls.exists())
+
+        report = self.cli("update-harnesses", "claude", "opencode", "opencode", code=1)
+        self.assertIn("claude", report.lower())
+        self.assertEqual(calls.read_text().splitlines(), ["upgrade"])
+
+    def test_harness_updates_use_the_selected_installation(self):
+        prefix = self.root / "global npm"
+        tools = prefix / "bin"
+        tools.mkdir(parents=True)
+        bundled = self.root / "ChatGPT.app/Contents/MacOS/codex"
+        qwen = prefix / "lib/node_modules/@qwen-code/qwen-code/bin/qwen.js"
+        for binary in (bundled, qwen):
+            binary.parent.mkdir(parents=True)
+            binary.write_text('#!/bin/sh\necho unexpected > "$HOME/harness-called"\n')
+            binary.chmod(0o700)
+        (tools / "qwen").symlink_to(qwen)
+        npm = tools / "npm"
+        npm.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$HOME/npm-args"\n')
+        npm.chmod(0o700)
+        self.env.update(PATH=str(tools), TEAMSTER_CODEX=str(bundled))
+
+        report = self.cli("update-harnesses", "codex", "qwen", code=1)
+        self.assertIn("app", report)
+        home = Path(self.env["HOME"])
+        self.assertFalse((home / "harness-called").exists())
+        self.assertEqual((home / "npm-args").read_text().splitlines(),
+                         ["install", "--global", "--prefix", str(prefix), "@qwen-code/qwen-code@latest"])
 
     def fake_supervisor(self, slug, version):
         """A live process whose command line runs the version's __main__.py, like _run does."""
