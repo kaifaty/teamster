@@ -11,7 +11,70 @@ import sys
 import time
 from pathlib import Path
 
-from . import account_commands, account_rotation, accounts, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
+from . import account_commands, account_rotation, accounts, acp, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
+
+
+def acp_update(update):
+    kind = update["sessionUpdate"]
+    if kind == "agent_message_chunk":
+        content = update["content"]
+        if content["type"] == "text":
+            print(content["text"], end="", flush=True)
+    elif kind in ("tool_call", "tool_call_update"):
+        title = update.get("title") or update["toolCallId"]
+        print(f"[{update.get('status') or 'tool'}] {title}", file=sys.stderr, flush=True)
+
+
+def acp_permission(params):
+    if not sys.stdin.isatty() or not sys.stderr.isatty():
+        print("ACP permission request cancelled (no interactive terminal).", file=sys.stderr, flush=True)
+        return None
+    print("\nPermission requested for", json.dumps(params["toolCall"], ensure_ascii=False), file=sys.stderr)
+    choices = {}
+    for number, option in enumerate(params["options"], 1):
+        choices[str(number)] = option["optionId"]
+        print(f"  {number}. {option['name']} ({option['kind']})", file=sys.stderr)
+    print("Choose an option, or press Enter to cancel: ", file=sys.stderr, end="", flush=True)
+    return choices.get(sys.stdin.readline().strip())
+
+
+def cmd_acp(a):
+    """Run a user-driven conversation in one ACP session."""
+    interactive = sys.stdin.isatty()
+
+    def exit_session(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    handlers = {sig: signal.signal(sig, exit_session) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        # Loading can replay the entire transcript. Only new turns belong on stdout.
+        with acp.AcpClient([a.program, *a.agent_args], a.repo, lambda update: None, acp_permission) as client:
+            session_id = client.open_session(session_id=a.resume, auth_method=a.auth_method)
+            client.on_update = acp_update
+            print(f"ACP session: {session_id}", file=sys.stderr, flush=True)
+            while True:
+                if interactive:
+                    print("> ", file=sys.stderr, end="", flush=True)
+                line = sys.stdin.readline()
+                if not line:
+                    return
+                text = line.rstrip("\r\n")
+                if not text.strip():
+                    continue
+                reason = client.prompt(text)
+                print(flush=True)
+                if reason != "end_turn":
+                    message = f"Agent stopped: {reason}"
+                    if not interactive:
+                        raise SystemExit(message)
+                    print(message, file=sys.stderr, flush=True)
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
+    except (ValueError, OSError) as exc:
+        raise SystemExit(f"teamster acp: {exc}") from None
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
 
 
 def main_repo(path):

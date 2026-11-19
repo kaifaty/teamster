@@ -24,6 +24,7 @@
       teamster --version                              print the installed version
       teamster docs [<name>]                         list documents or print one
       teamster path                                  print the package directory
+      teamster acp [--repo DIR] [--resume SESSION_ID] [--auth-method ID] -- PROGRAM [ARG ...]  chat with a local ACP agent
       teamster migrate-home [--apply]                print or apply the move of legacy data out of ~/.codex
       teamster upgrade [--source URL|PATH] [--ref REF] [--yes]  preview/install a version side by side
       teamster versions [--prune]                    list installed versions; move unused ones to trash
@@ -339,6 +340,7 @@ COMMAND_HANDLERS = {
     "duty": commands.cmd_duty,
     "docs": commands.cmd_docs,
     "path": commands.cmd_path,
+    "acp": commands.cmd_acp,
     "migrate-home": home_migration.cmd_migrate_home,
     "upgrade": installs.cmd_upgrade,
     "versions": installs.cmd_versions,
@@ -357,6 +359,12 @@ def main():
     s = sub.add_parser("docs", help="list documents or print a document")
     s.add_argument("name", nargs="?")
     sub.add_parser("path", help="print the package directory")
+    s = sub.add_parser("acp", help="chat with a local ACP v1 agent over stdio")
+    s.add_argument("--repo", default=".", metavar="DIR", help="session working directory (default: current directory)")
+    s.add_argument("--resume", metavar="SESSION_ID", help="load a previous agent session")
+    s.add_argument("--auth-method", metavar="ID", help="use an authentication method advertised by the agent")
+    s.add_argument("program", metavar="PROGRAM", help="ACP agent executable")
+    s.add_argument("agent_args", nargs=argparse.REMAINDER, metavar="ARG", help="arguments passed to the agent")
     s = sub.add_parser("start")
     s.add_argument("slug")
     add_command_options(s, "start")

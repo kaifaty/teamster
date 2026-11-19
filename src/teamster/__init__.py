@@ -7,6 +7,7 @@ Layer 0:
     result_schema (implemented): result schemas, parsing, and output lines.
     terminal_screen (implemented): a terminal screen model for reading redrawn tool output.
 Layer 1:
+    acp (implemented): interactive Agent Client Protocol sessions over stdio.
     config (implemented): paths, settings, binaries, and account configuration.
 Layer 2:
     clock (implemented): real and simulated clocks.

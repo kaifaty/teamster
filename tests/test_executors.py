@@ -5,7 +5,9 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
+import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -33,6 +35,75 @@ def fixture_messages(st):
 
 
 class ExecutorTests(RotationTestCase):
+    def test_acp_stdio_conversation(self):
+        self.env["HOME"] = str(self.root)
+        repo = self.root / "work tree"
+        repo.mkdir()
+        agent = self.root / "acp agent.py"
+        agent.write_text(textwrap.dedent('''\
+            import json
+            from pathlib import Path
+            import sys
+
+            def receive(method):
+                message = json.loads(input())
+                assert message["method"] == method, message
+                return message
+
+            def send(**message):
+                print(json.dumps({"jsonrpc": "2.0", **message}), flush=True)
+
+            def reply(request, **result):
+                send(id=request["id"], result=result)
+
+            mode, argument = sys.argv[1:]
+            assert argument == "--literal=two words; *"
+            assert Path.cwd() == Path(__file__).parent / "work tree"
+            init = receive("initialize")
+            assert init["params"]["protocolVersion"] == 1
+            reply(init, protocolVersion=1, agentCapabilities={"loadSession": True},
+                  authMethods=[{"id": "fixture", "name": "Fixture"}])
+            if mode == "load":
+                auth = receive("authenticate")
+                assert auth["params"]["methodId"] == "fixture"
+                reply(auth)
+            session = receive("session/" + mode)
+            assert session["params"]["cwd"] == str(Path.cwd())
+            if mode == "new":
+                reply(session, sessionId="session-1")
+            else:
+                assert session["params"]["sessionId"] == "session-1"
+                send(method="session/update", params={"sessionId": "session-1",
+                     "update": {"sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": "Old reply"}}})
+                reply(session)
+
+            for text in ("first turn", "1"):
+                prompt = receive("session/prompt")
+                assert prompt["params"]["sessionId"] == "session-1"
+                assert prompt["params"]["prompt"] == [{"type": "text", "text": text}]
+                if text == "first turn":
+                    # Both peers can use the same ID at the same time.
+                    send(id=prompt["id"], method="session/request_permission",
+                         params={"sessionId": "session-1", "toolCall": {"toolCallId": "call-1"},
+                                 "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"}]})
+                    decision = json.loads(input())
+                    assert decision["id"] == prompt["id"]
+                    assert decision["result"]["outcome"] == {"outcome": "cancelled"}, decision
+                send(method="session/update", params={"sessionId": "session-1",
+                     "update": {"sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": "Reply to " + text}}})
+                reply(prompt, stopReason="end_turn")
+            '''))
+        for mode, options in (("new", []), ("load", ["--resume", "session-1", "--auth-method", "fixture"])):
+            with self.subTest(mode=mode):
+                cmd = [sys.executable, "-I", str(SCRIPT), "acp", "--repo", str(repo), *options,
+                       "--", sys.executable, "-I", str(agent), mode, "--literal=two words; *"]
+                run = subprocess.run(cmd, cwd=self.root, env=self.env, text=True, input="first turn\n1\n",
+                                     capture_output=True, timeout=15)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertEqual(run.stdout, "Reply to first turn\nReply to 1\n")
+
     def test_executor_selection_stays_in_contract(self):
         violations = []
         for path in SCRIPT.parent.glob("*.py"):

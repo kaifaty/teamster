@@ -151,6 +151,29 @@ it as a scout with `--executor codex` and `--repo` set to a new empty directory.
 directory that is neither trusted nor a git repository. Put your prompt in the question verbatim and ask
 only for the output file paths and the prompt as sent, not for an assessment. Judge the output yourself.
 
+## ACP conversations
+
+`teamster acp` starts a local Agent Client Protocol v1 agent over stdio. Pass the
+executable and its arguments after `--`. The agent runs with your environment
+and its own permissions in the directory selected by `--repo DIR` (default: the current
+directory). To chat in a task's worktree, pass that worktree as the directory.
+
+```sh
+teamster acp --repo . -- opencode acp
+teamster acp --repo . -- agy acp
+```
+
+Sign in using the agent's own CLI, or select an agent-managed authentication method with
+`--auth-method ID`. Enter one message per line. Teamster streams the reply to stdout and
+prints the session ID, tool activity and permission choices to stderr. Choose a numbered
+option at a terminal. An empty choice or piped input cancels the permission request.
+Ctrl-C during a turn requests cancellation. EOF at the prompt ends the conversation.
+
+To continue a conversation, use the same agent and directory with `--resume SESSION_ID`
+if the agent supports restoring sessions. The agent restores its context, and the CLI
+prints replies to new messages. These conversations are driven by their caller and use
+the agent's own session storage.
+
 ## Budgets and checks
 
 Pass `--max-minutes M` on every implementation `start` and `say`, sized to the task. Use
