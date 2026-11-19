@@ -2,7 +2,7 @@
 import json
 import sys
 
-from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, duty, duty_chat, executors, notifications, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
+from . import account_rotation, accounts, agy_runner, budgets, checking, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, duty, duty_chat, executors, notifications, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
 
 
 LIMIT_REASONS = ("usage limit", "authentication failed", "token unavailable")
@@ -80,10 +80,10 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
             st["result"] = response["result"]
             message = json.dumps(response["result"], ensure_ascii=False)
             last.write_text(message, encoding="utf-8")
-            threads.record_claude_message(st, message)
+            threads.record_saved_message(st, message)
         elif st["outcome"] == "completed":
             last.write_text(response["result"], encoding="utf-8")
-            threads.record_claude_message(st, response["result"])
+            threads.record_saved_message(st, response["result"])
         elif reason:
             st["error"] = reason
         if st["outcome"] == "budget_exhausted":
@@ -210,7 +210,7 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
         message = json.dumps(response["result"], ensure_ascii=False)
         last.write_text(message, encoding="utf-8")
         if family == "claude":
-            threads.record_claude_message(st, message)
+            threads.record_saved_message(st, message)
         duty_chat.record_chat_turn(st)
     elif st["outcome"] == "unavailable" and reason in LIMIT_REASONS:
         if family == "claude" and "limited_until" not in response:  # The stream has already marked its own rejection.
@@ -303,8 +303,8 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
         last.write_text(response["raw_message"] or json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         if outcome != "unavailable":
             # Handoffs to another account read summaries from structured results.
-            threads.record_claude_message(st, json.dumps(result, ensure_ascii=False) if result is not None
-                                          else response["raw_message"])
+            threads.record_saved_message(st, json.dumps(result, ensure_ascii=False) if result is not None
+                                         else response["raw_message"])
     reason = response.get("reason")
     if outcome == "unavailable":
         reason = reason or "account unavailable"
@@ -388,6 +388,63 @@ def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, ne
         task_state.save(st)
 
 
+def agy_work_turn(st, prompt, effort, stopped, minutes, wrapup=False):
+    """Persist a single Antigravity conversation across work, fix and wrap-up attempts."""
+    directory = config.TASKS / st["slug"]
+    last = directory / "last.md"
+    last.unlink(missing_ok=True)
+    st.pop("error", None)
+    st.update(model=st.get("task_model"), reasoning_effort=effort)
+    deadline = None if minutes is None else clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
+
+    def started(proc):
+        st["agy_pid"] = proc.pid
+        task_state.save(st)
+
+    def session_started(session_id):
+        st["session_id"] = session_id
+        task_state.save(st)
+
+    try:
+        response = agy_runner.run_agy_work(
+            st["worktree"], directory, prompt, stopped, session_id=st.get("session_id") or None, model=st.get("task_model"),
+            effort=effort, deadline=deadline, started=started, session_started=session_started)
+    finally:
+        st.pop("agy_pid", None)
+        task_state.save(st)
+    if response.get("session_id"):
+        st["session_id"] = response["session_id"]
+    st["model"] = response.get("model") or st.get("task_model")
+    phase = telemetry_log.telemetry_phase(st)
+    if phase is not None:
+        phase.model, phase.reasoning_effort = st["model"], st["reasoning_effort"]
+    outcome = task_state.stop_outcome(st, stopped) or response["outcome"]
+    target = st["wrapup"] if wrapup else st
+    target.update(outcome=outcome, result=response["result"] if outcome == "completed" else None)
+    if outcome == "completed":
+        message = json.dumps(response["result"], ensure_ascii=False)
+        last.write_text(message, encoding="utf-8")
+        threads.record_saved_message(st, message)
+    elif response.get("reason"):
+        target["error"] = response["reason"]
+    task_state.save(st)
+    return outcome
+
+
+def run_agy_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
+    minutes = st.get("max_turn_minutes", cfg.get("max_turn_minutes"))
+    outcome = agy_work_turn(st, prompt, effort, stopped, minutes)
+    if outcome == "budget_exhausted" and not stopped():
+        phase = telemetry_log.telemetry_phase(st)
+        if phase is not None:
+            phase.finish(outcome=outcome)
+        wrapup_turn(st, cfg, None, effort, stopped, {"outcome": outcome, "minutes": minutes})
+
+
+def agy_wrapup_turn(st, cfg, account, prompt, effort, stopped, thread):
+    return agy_work_turn(st, prompt, effort, stopped, 10, wrapup=True)
+
+
 def wrapup_turn(st, cfg, account, effort, stopped, reason, review_entry=None):
     with telemetry_log.record_phase(st, "wrapup", stopped) as phase:
         _wrapup_turn(st, cfg, account, effort, stopped, reason, review_entry)
@@ -402,7 +459,8 @@ def _wrapup_turn(st, cfg, account, effort, stopped, reason, review_entry=None):
     st["review_skipped"] = reason["outcome"]
     st["wrapup"] = {"outcome": "not_run", "result": None}
     task_state.save(st)
-    notifications.notify(st, cfg, reason["outcome"], turn_monitor.turn_stop_message(reason), account=account["name"], **reason)
+    notifications.notify(st, cfg, reason["outcome"], turn_monitor.turn_stop_message(reason),
+                         account=account["name"] if account else None, **reason)
     executor = executors.for_turn(st)
     thread = ((review_entry or {}).get("thread") if st.get("kind") == "review"
               else executor.cursor(st))
@@ -760,3 +818,4 @@ executors.get("codex").bind(sys.modules[__name__], turn="_run_turn", scout="_run
 executors.get("codex").bind(codex_duty, duty="run_codex_duty")
 executors.get("claude").bind(sys.modules[__name__], turn="run_claude_turn", scout="run_claude_scout_turn",
                              wrapup="claude_wrapup_turn", duty="run_claude_duty")
+executors.get("agy").bind(sys.modules[__name__], turn="run_agy_turn", wrapup="agy_wrapup_turn")

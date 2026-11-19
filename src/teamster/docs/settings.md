@@ -47,6 +47,27 @@ model from it, including when a resumed conversation stored an unavailable model
 outside writes or network access request escalation, then pass the same exact-command guard for
 that call. See [duty chat](duty-chat.md#limits) for the catalogue requirement and sandbox limits.
 
+## Antigravity CLI
+
+Install Antigravity CLI (`agy`) on the supervisor's `PATH` and export `GEMINI_API_KEY` in the
+environment that launches Teamster. Use a CLI version with session-scoped `--settings`
+and structured streaming output (verified with 1.5.12).
+
+```sh
+teamster start agy-work --brief brief.md --executor agy --sandbox off --check 'make test'
+teamster say agy-work "Cover the empty-input case as well"
+```
+
+Teamster runs `agy -p` in the task's git worktree, selects the Gemini API for that invocation
+and saves the conversation ID for follow-ups, fixes and wrap-up. Requests use your API project's
+billing. Teamster passes `--mode accept-edits` so the worker can edit the worktree. The CLI
+applies its configured permissions to shell commands. Headless commands requiring approval can be
+denied while the session still succeeds. Configure the agy permissions needed for this repository,
+including git operations, and use a saved check to verify the expected result. Optional reviews use
+the configured Codex or Claude reviewer. The weekly percentage budget measures supported subscription
+usage during those reviews. Use `--max-minutes` or `--task-timeout` to bound elapsed work.
+[Headless CLI guide](https://antigravity.google/docs/cli/headless/) · [Gemini API authentication](https://antigravity.google/docs/install/#using-a-gemini-api-key)
+
 ## Task profiles
 
 Add `task_profiles` to `config.json` to choose work defaults by task type.
@@ -61,7 +82,7 @@ Add `task_profiles` to `config.json` to choose work defaults by task type.
 
 `teamster start <slug> --brief FILE --task-type refactor` selects the example profile. Keys use the
 same label format as `--task-type` (`[a-z0-9-]{1,32}`). Each profile is an object with optional fields
-`executor` (`"codex"` or `"claude"`), `model` (see [Task models](#task-models)) and `effort`
+`executor` (`"codex"`, `"claude"` or `"agy"`), `model` (see [Task models](#task-models)) and `effort`
 (reasoning effort). `start` rejects invalid entries and unknown fields.
 
 Explicit `--executor`, `--model` and `--effort` values take precedence. Pass `--model default` to use
@@ -91,8 +112,8 @@ Set `role_profiles` in `config.json` to choose the provider order and defaults f
 ```
 
 The supported roles are `work`, `review`, `scout`, `reflect`, and `duty`. Each configured role has a
-nonempty list, ordered from first choice to standby. An entry has a unique `provider` (`codex` or
-`claude` within that role) and optional `model` and `effort` strings. Omit a field to use the
+nonempty list, ordered from first choice to standby. An entry has a unique `provider` and optional `model` and `effort` strings.
+Every role supports `codex` and `claude`. The `work` role also supports `agy`. Omit a field to use the
 provider's defaults for the role. Each standby uses its own model and effort defaults.
 
 - `work`, `scout`, and `reflect` choose a provider before the first turn. `start` tries a matching

@@ -16,7 +16,7 @@ const props = defineProps<{ board: Board }>();
 const board = props.board;
 const now = useNow();
 
-type ExecutorFilter = "all" | "codex" | "claude";
+type ExecutorFilter = "all" | TaskSummary["executor"];
 interface Prefs {
   repo: string; // "" = all
   executor: ExecutorFilter;
@@ -30,7 +30,7 @@ const isPrefs = (value: unknown): value is Prefs => {
   return (
     !!v &&
     typeof v.repo === "string" &&
-    (v.executor === "all" || v.executor === "codex" || v.executor === "claude") &&
+    (v.executor === "all" || v.executor === "codex" || v.executor === "claude" || v.executor === "agy") &&
     typeof v.closedCollapsed === "boolean" &&
     typeof v.accountsCollapsed === "boolean"
   );
@@ -217,6 +217,7 @@ onBeforeUnmount(() => {
               { id: 'all', label: 'Все' },
               { id: 'codex', label: '◆ Codex' },
               { id: 'claude', label: '✳ Claude' },
+              { id: 'agy', label: '✦ Antigravity' },
             ] as const"
             :key="option.id"
             type="button"

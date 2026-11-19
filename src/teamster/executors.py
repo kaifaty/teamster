@@ -139,6 +139,29 @@ class ClaudeExecutor(Executor):
         return "\n\n".join(self.call("messages", st))
 
 
+class AgyExecutor(Executor):
+    supports_sandbox = False
+    event_log = False
+    inherit_pr_text = True
+    provider = "agy"
+
+    def __init__(self):
+        super().__init__("agy", cursor_field="session_id", cursor_label="conversation")
+
+    def account(self, st):
+        # The saved Codex account is available for review phases only.
+        return None
+
+    def status_account(self, st):
+        return "Gemini API"
+
+    def review_effort(self, effort):
+        return None if effort == "max" else effort
+
+    def status_error(self, st):
+        return "\n" + st["error"] if st.get("error") else ""
+
+
 EXECUTORS = {}
 
 
@@ -176,3 +199,4 @@ def for_turn(st):
 
 register(Executor("codex"))
 register(ClaudeExecutor())
+register(AgyExecutor())

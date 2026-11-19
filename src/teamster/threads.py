@@ -139,7 +139,7 @@ def last_message(st):
     return executors.from_state(st).call("last_message", st)
 
 
-def claude_last_message(st):
+def saved_last_message(st):
     last = config.TASKS / st["slug"] / "last.md"
     return last.read_text(encoding="utf-8").strip() if last.exists() else ""
 
@@ -256,18 +256,22 @@ def rollout_usage(path, offset=0):
     return first, last
 
 
-def claude_messages(st):
-    """Final messages of the task's recent Claude attempts, oldest first."""
+def saved_message_path(st):
+    return config.TASKS / st["slug"] / (executors.from_state(st).name + "-messages.json")
+
+
+def saved_messages(st):
+    """Final messages of the task's recent session attempts, oldest first."""
     try:
-        messages = json.loads((config.TASKS / st["slug"] / "claude-messages.json").read_text(encoding="utf-8"))
+        messages = json.loads(saved_message_path(st).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     return [message for message in messages if isinstance(message, str)] if isinstance(messages, list) else []
 
 
-def record_claude_message(st, message):
-    path = config.TASKS / st["slug"] / "claude-messages.json"
-    path.write_text(json.dumps((claude_messages(st) + [message])[-3:], ensure_ascii=False), encoding="utf-8")
+def record_saved_message(st, message):
+    messages = (saved_messages(st) + [message])[-3:]
+    saved_message_path(st).write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
 
 
 def handoff(st, current_message=False, cfg=None):
@@ -369,5 +373,6 @@ def codex_pr_messages(st):
 
 executors.get("codex").bind(sys.modules[__name__], last_message="codex_last_message",
                             messages="thread_messages", pr_messages="codex_pr_messages", status_message="last_message")
-executors.get("claude").bind(sys.modules[__name__], last_message="claude_last_message",
-                             messages="claude_messages", pr_messages="claude_messages")
+for name in ("claude", "agy"):
+    executors.get(name).bind(sys.modules[__name__], last_message="saved_last_message",
+                             messages="saved_messages", pr_messages="saved_messages")

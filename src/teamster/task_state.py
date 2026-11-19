@@ -169,6 +169,7 @@ STATE_FIELDS = {
     "pid": StateField("runtime"),
     "codex_pid": StateField("runtime"),
     "claude_pid": StateField("runtime"),
+    "agy_pid": StateField("runtime", spawn_reset=STATE_DELETE),
     "check_pid": StateField("runtime"),
     "account_ids": StateField("task"),  # Task-wide identity cache, refreshed by probes.
     # Auth retry bookkeeping is reset by _run_turn(new_turn=True), not spawn.
@@ -278,6 +279,14 @@ def duty_process(st):
     return None, None
 
 
+def agy_orphan_message(st):
+    """An agy session can leave tools in its process group after its supervisor dies."""
+    pid = st.get("agy_pid")
+    if pid and procs.signal_pgid(pid, 0):
+        return (f"{st['slug']}: agy process group {pid} may still be using the worktree; "
+                "verify and end the group before continuing")
+
+
 def busy_message(st, queue_hint=False):
     """Why no new turn may start beside the live supervisor of st, or None when it is idle.
 
@@ -289,7 +298,7 @@ def busy_message(st, queue_hint=False):
         if pid is not None:
             return (f"{family.title()} process {pid} of the previous duty turn outlived its supervisor and still "
                     f"holds the session; end it with {config.COMMAND} stop duty, then send the message again")
-        return None
+        return agy_orphan_message(st)
     if st.get("outcome") == "sleeping":
         return (f"waiting for limit reset until {config.local_time(st['sleeping']['until'])}; stop first to send a new message"
                 + ("; or queue it with say --queue" if queue_hint else ""))

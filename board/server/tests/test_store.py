@@ -515,22 +515,25 @@ def test_snapshot_closed_limit_combines_archive_and_live_folders_by_updated_at(t
     assert store.detail("archived-00")["column"] == "closed"
 
 
-@pytest.mark.parametrize("executor,task_model,cursor_model,expected", [
-    ("codex", "gpt-6.1-sol", "claude-opus-5-5", "gpt-6.1-sol"),
-    ("codex", None, "claude-opus-5-5", None),
-    ("claude", "claude-opus-5-5", "gpt-6.1-sol", "claude-opus-5-5"),
-    ("claude", None, "claude-opus-5-5", "claude-opus-5-5"),
+@pytest.mark.parametrize("executor,task_model,cursor_model,expected,account", [
+    ("codex", "gpt-6.1-sol", "claude-opus-5-5", "gpt-6.1-sol", "codex-main"),
+    ("codex", None, "claude-opus-5-5", None, "codex-main"),
+    ("claude", "claude-opus-5-5", "gpt-6.1-sol", "claude-opus-5-5", "claude-main"),
+    ("claude", None, "claude-opus-5-5", "claude-opus-5-5", "claude-main"),
+    ("agy", "gemini-pro", "gpt-6.1-sol", "gemini-pro", None),
 ])
-def test_model_always_belongs_to_executor_including_during_review(tmp_path, pids, executor, task_model, cursor_model, expected):
+def test_model_always_belongs_to_executor_including_during_review(tmp_path, pids, executor, task_model, cursor_model, expected, account):
     live, _ = pids
     for kind in ("work", "review"):
         write_state(tmp_path, kind, kind=kind, pid=live, executor=executor,
+                    account="codex-main", claude_account="claude-main",
                     task_model=task_model, model=cursor_model, review_model="reviewer-only-model",
                     reviews=[{"started": 30, "finished": None}])
     store = Store(tmp_path)
     store.poll()
     assert store.detail("work")["model"] == expected
     assert store.detail("review")["model"] == expected
+    assert store.detail("review")["account"] == account
     assert store.detail("review")["phase"] == "review"
 
 

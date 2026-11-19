@@ -133,7 +133,7 @@ st[dynamic_key] = 1
             "check_start": 19, "check_timeout": 42, "checks": [{}, {}, {}],
             "ci": {"status": "failed"}, "ci_enabled": True, "ci_command": "true", "ci_rounds": 3,
             "ci_reruns": [{"sha": "old-sha", "run_id": "42", "outcome": "failed"}],
-            "ci_timeout_minutes": 17, "codex_pid": 102, "claude_pid": 104, "created": 1000,
+            "ci_timeout_minutes": 17, "codex_pid": 102, "claude_pid": 104, "agy_pid": 105, "created": 1000,
             "effort": "high", "error": "old-error", "event_start": 18,
             "task_type": "fix", "model": "old-model", "reasoning_effort": "high",
             "task_model": "work-model", "task_model_family": "claude", "review_model": "review-model",
@@ -198,7 +198,7 @@ st[dynamic_key] = 1
         self.assertEqual(set(st) - set(before), set())
         deleted = {"sleeping", "turn_finished", "error", "review_skipped", "auto_fix_stop",
                    "auto_fix_escalations", "base_merges", "turn_stop", "wrapup", "review_result",
-                   "review_angle", "refusal", "stop_request", "signal", "ci", "exec_event_start"}
+                   "review_angle", "refusal", "stop_request", "signal", "ci", "exec_event_start", "agy_pid"}
         self.assertEqual(set(before) - set(st), deleted)
         expected = {
             "pending": {"prompt": "new-prompt", "effort": "medium", "current_message": True,

@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import account_commands, account_rotation, accounts, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
+from . import account_commands, account_rotation, accounts, agy_runner, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
 
 
 def main_repo(path):
@@ -57,11 +57,13 @@ def work_route(a, cfg, role, profile=None, *, sandbox="off", directory=None):
         candidates.append((executors.get(other), "fallback"))
 
     def compatible(candidate):
-        if candidate.name == "claude":
-            try:
+        try:
+            if candidate.name == "agy":
+                candidate.prepare(a.effort, cfg)
+            elif candidate.name == "claude":
                 claude_runner.validate_work_effort(a.effort)
-            except ValueError:
-                return False
+        except ValueError:
+            return False
         return ((candidate.name not in ("codex", "claude") or config.provider_installed(candidate.name))
                 and (candidate.supports_sandbox or sandbox == "off")
                 and (role != "scout" or candidate.name != "claude" or git_worktree(directory)))
@@ -191,7 +193,7 @@ def cmd_start(a):
         if st["thread"] or executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
             break
         time.sleep(0.1)
-    account = executor.account(st)
+    account = executor.status_account(st)
     cursor = executor.cursor_label + " " + (executor.cursor(st) or "?")
     print(f"started {a.slug}: executor {executor.name}, account {account or '?'}, {cursor}, pid {st.get('pid')}\n  worktree {wt}\n  branch {branch}")
     if profile is not None or config.role_routes(cfg, "work") or source == "fallback":
@@ -553,6 +555,7 @@ def print_claude_work_stats(st):
               flush=True)
 
 
+executors.get("agy").bind(agy_runner, prepare="prepare")
 executors.get("claude").bind(sys.modules[__name__], prepare="prepare_claude_work",
                              prepare_scout="prepare_claude_scout", stats="print_claude_work_stats")
 
@@ -583,6 +586,9 @@ def cmd_stop(a):
         st = task_state.load(a.slug)
         pid = st.get("pid")
         if not procs.alive(pid):
+            orphan_message = task_state.agy_orphan_message(st)
+            if orphan_message:
+                procs.die(orphan_message)
             family, orphan = task_state.duty_process(st)
             if orphan is None:
                 print("not running")
@@ -627,17 +633,20 @@ def cmd_stop(a):
 
 
 def cmd_clean(a):
-    st = task_state.load(a.slug)
-    if st.get("kind") == duty_chat.CHAT_KIND:
-        # A task note may start a duty turn at any moment: check and archive under the lock that delivery takes.
-        with task_state.state_lock(a.slug):
-            st = task_state.load(a.slug)
+    # A new turn can start at any moment: check and archive under the lock that spawn takes.
+    if not task_state.state_path(a.slug).is_file():
+        procs.die(f"no task {a.slug!r}")
+    with task_state.state_lock(a.slug):
+        st = task_state.load(a.slug)
+        if not procs.alive(st.get("pid")):
+            orphan_message = task_state.agy_orphan_message(st)
+            if orphan_message:
+                procs.die(orphan_message)
             family, orphan = task_state.duty_process(st)
-            if not procs.alive(st.get("pid")) and orphan is not None:
+            if orphan is not None:
                 procs.die(f"{family.title()} process {orphan} of the last duty turn is still running; "
                           f"end it with {config.COMMAND} stop duty, then clean")
-            return clean_task(a, st)
-    return clean_task(a, st)
+        return clean_task(a, st)
 
 
 def clean_task(a, st):

@@ -350,7 +350,7 @@ def phase(state, is_alive):
         latest = (last(reviews[start:]) if isinstance(reviews, list) else None) or {}
         started = number(latest.get("started")) if latest.get("finished") is None else None
         return "review", started
-    if state.get("outcome") == "running" or state.get("codex_pid") or state.get("claude_pid"):
+    if state.get("outcome") == "running" or state.get("codex_pid") or state.get("claude_pid") or state.get("agy_pid"):
         if state.get("rounds") or (ci.get("outcome") == "failed" and (integer(ci.get("rounds")) or 0) > 0):
             return "fix", None
         return "turn", number(state.get("turn_started"))
@@ -547,6 +547,7 @@ class Store:
         if started_at is None:
             started_at = record.phase_started_at
         executor = state.get("executor", "codex")
+        account_field = "claude_account" if executor == "claude" else "account"
         summary = text(result.get("summary"))
         ci = mapping(state.get("ci"))
         repo = Path(state.get("repo") or state.get("worktree") or "").name
@@ -560,7 +561,7 @@ class Store:
             "branch": text(state.get("branch")),
             "task_type": text(state.get("task_type")),
             "executor": executor,
-            "account": text(state.get("claude_account") if executor == "claude" else state.get("account")),
+            "account": text(state.get(account_field)) if executor != "agy" else None,
             "reviewer": text(state.get("reviewer")),
             "model": text(state.get("task_model") or (state.get("model") if executor == "claude" else None)),
             "effort": text(state.get("reasoning_effort") or state.get("effort")),

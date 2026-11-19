@@ -57,8 +57,8 @@ export interface TaskSummary {
   repo: string; // repository basename; see the session mapping in the contract
   branch: string | null;
   task_type: string | null; // e.g. "feature", "fix", "layout"
-  executor: "codex" | "claude";
-  account: string | null; // Codex account, or the Claude pool account for a Claude executor
+  executor: "codex" | "claude" | "agy";
+  account: string | null; // Codex or Claude pool account; null for an agy API-key task
   reviewer: "codex" | "claude" | null;
   model: string | null;
   effort: string | null;

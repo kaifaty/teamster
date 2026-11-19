@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 import unittest
@@ -33,6 +34,87 @@ def fixture_messages(st):
 
 
 class ExecutorTests(RotationTestCase):
+    def test_agy_work_and_followup_resume_the_returned_conversation(self):
+        self.fixture_timeout = 90
+        self.env["HOME"] = str(self.root)
+        self.env.pop("GEMINI_API_KEY", None)
+        self.configure()
+        personal = self.root / ".gemini" / "antigravity-cli" / "settings.json"
+        personal.parent.mkdir(parents=True)
+        personal.write_text('{"auth": {"type": "oauth-personal"}}\n')
+        fake = self.root / "agy"
+        fake.write_text("#!" + sys.executable + "\n" + """
+import json
+import os
+from pathlib import Path
+import sys
+
+root = Path(__file__).parent
+args = sys.argv[1:]
+assert os.environ["GEMINI_API_KEY"] == "fixture-api-key"
+assert json.loads(args[args.index("--settings") + 1])["modelProvider"] == "gemini"
+with (root / "agy-calls.jsonl").open("a") as calls:
+    print(json.dumps({"args": args, "cwd": os.getcwd()}), file=calls)
+if "--conversation" not in args:
+    Path("agy-proof.txt").write_text("created by agy")
+result = json.loads((root / "agy-result.json").read_text())
+print(json.dumps({"event": "init", "conversation_id": result["conversation_id"], "init": {}}))
+print(json.dumps({"event": "result", "result": result}))
+""")
+        fake.chmod(0o700)
+        conversation = "68d5e558-7f00-4a5a-af48-06e91b82fa93"
+        slug = "agy-followup"
+        rejected = subprocess.run([sys.executable, "-I", str(SCRIPT), "start", slug,
+                                   "--brief", str(self.brief), "--executor", "agy"],
+                                  cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=20)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("GEMINI_API_KEY", rejected.stderr)
+        self.assertFalse((self.root / "agy-calls.jsonl").exists())
+        self.env["GEMINI_API_KEY"] = "fixture-api-key"
+        response = self.root / "agy-result.json"
+        result = self.work_result()
+        envelope = {"conversation_id": conversation, "status": "SUCCESS",
+                    "structured_output": result, "response": json.dumps(result)}
+        response.write_text(json.dumps(envelope))
+        self.start(slug, "--executor", "agy", "--model", "gemini-fixture", "--effort", "high",
+                   "--no-push", "--check", "test -s agy-proof.txt")
+        self.wait(slug)
+        state = self.state(slug)
+        self.assertEqual(state["result"], result)
+        self.assertEqual(state["checks"][-1]["outcome"], "passed")
+
+        result = self.work_result(summary="Follow-up complete.")
+        envelope.update(structured_output=result, response=json.dumps(result))
+        response.write_text(json.dumps(envelope))
+        self.cli("say", slug, "Check it again.")
+        self.wait(slug)
+        self.assertEqual(self.state(slug)["result"], result)
+        first, second = [json.loads(line) for line in (self.root / "agy-calls.jsonl").read_text().splitlines()]
+        schema = self.worker().result_schema.RESULT_SCHEMA
+        for call in (first, second):
+            args = call["args"]
+            self.assertEqual(call["cwd"], state["worktree"])
+            self.assertEqual(args[args.index("--mode") + 1], "accept-edits")
+            self.assertEqual(Path(args[args.index("--add-dir") + 1]), Path(state["worktree"]).resolve())
+            self.assertEqual(args[args.index("--output-format") + 1], "stream-json")
+            self.assertEqual(args[args.index("--model") + 1], "gemini-fixture")
+            self.assertEqual(args[args.index("--effort") + 1], "high")
+            self.assertEqual(json.loads(args[args.index("--json-schema") + 1]), schema)
+        self.assertNotIn("--conversation", first["args"])
+        self.assertEqual(second["args"][second["args"].index("--conversation") + 1], conversation)
+        self.assertIn("Check it again.", second["args"][second["args"].index("-p") + 1])
+        self.assertEqual(self.invocations(), [])
+        self.assertEqual(json.loads(personal.read_text()), {"auth": {"type": "oauth-personal"}})
+
+        envelope.update(status="ERROR", error="model unavailable for fixture-api-key")
+        response.write_text(json.dumps(envelope))
+        self.cli("say", slug, "Try once more.")
+        self.cli("wait", slug, "--timeout", "30")
+        failed = self.state(slug)
+        self.assertEqual(failed["outcome"], "failed")
+        self.assertIn("model unavailable", failed["error"])
+        self.assertNotIn("fixture-api-key", failed["error"])
+
     def test_executor_selection_stays_in_contract(self):
         violations = []
         for path in SCRIPT.parent.glob("*.py"):
