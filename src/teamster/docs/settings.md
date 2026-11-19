@@ -331,6 +331,37 @@ their worktree paths go through `~/.teamster/worktrees`, which the rollback remo
    above first.
 4. Restart the launchd jobs and regenerate their plists; they set `CODEX_TASK_HOME` again.
 
+## Updating coding harnesses
+
+Run `teamster update-harnesses opencode qwen` to update the installed CLIs you use.
+Choose one or more of `opencode`, `qwen`, `claude`, `codex`, `agy`, and `orcacode`.
+Each selected updater runs once. If one fails or is missing, Teamster continues with the
+others and exits with an error. Concurrent runs in one data home are excluded.
+
+On macOS, `--plist` generates a launchd job that runs at load and then daily. For example,
+these commands enable daily updates for OpenCode:
+
+```sh
+mkdir -p "$HOME/Library/LaunchAgents"
+job="$HOME/Library/LaunchAgents/teamster.update-harnesses.plist"
+teamster update-harnesses --plist opencode > "$job"
+launchctl bootstrap "gui/$(id -u)" "$job"
+```
+
+The job uses the absolute directories on the PATH from which you generated it and logs to
+`harness-updates.log` in the Teamster data home. To stop it, run
+`launchctl bootout "gui/$(id -u)" "$job"` and remove the generated plist. On Linux, schedule
+the same `teamster update-harnesses` command with your existing scheduler.
+
+Teamster uses the harness's updater. For global npm installations of Qwen Code and Codex,
+it runs npm against the selected installation prefix. For Homebrew casks of Claude Code and
+Codex, it upgrades the installed cask using its own Homebrew prefix. Qwen standalone installations also work.
+For Claude and Codex, Teamster respects the same binary overrides used for tasks. Update a
+Codex bundled in ChatGPT.app through the app. The native Codex installer must support
+`codex update`. Leave Codex off the schedule on hosts that need the version pinned by
+[Codex Duty chat](duty-chat.md). After migrating your Teamster data home, regenerate and
+reload the job so its log follows the new home.
+
 ## Versioned installs
 
 `teamster upgrade [--source URL|PATH] [--ref REF] [--yes]` installs a version beside the others
