@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { BoardSource } from "../lib/source";
-import type { Accounts, TaskDetail, TaskFile, TaskSummary } from "../types";
+import type { Accounts, TaskFile, TaskSummary } from "../types";
 import { formatAge, formatClock, formatDuration, formatFullTime } from "../lib/format";
+import { useTaskDetail } from "../lib/taskDetail";
 import { useTaskFile } from "../lib/taskFile";
 import { cargoRows, findingLine, hasCargo } from "../lib/cargo";
 import TaskCommands from "./TaskCommands.vue";
@@ -19,9 +20,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ close: [] }>();
 
-const detail = ref<TaskDetail | null>(null);
-const detailError = ref<string | null>(null);
-const notFound = ref(false);
+const { detail, detailError, detailState, loadDetail, resetDetail } = useTaskDetail(() => props.source.fetchDetail(props.slug));
 const tab = ref<TaskFile | null>(null);
 const closeButton = ref<HTMLButtonElement | null>(null);
 
@@ -34,26 +33,10 @@ const files = computed(() =>
   session.value ? [] : (["brief", "last", "review", "check"] as const).filter((name) => detail.value?.files.includes(name)),
 );
 
-let detailRequest = 0;
-async function loadDetail() {
-  const request = ++detailRequest;
-  try {
-    const result = await props.source.fetchDetail(props.slug);
-    if (request !== detailRequest) return;
-    detailError.value = null;
-    notFound.value = result === null;
-    if (result) detail.value = result;
-  } catch (error) {
-    if (request !== detailRequest) return;
-    detailError.value = error instanceof Error ? error.message : String(error);
-  }
-}
-
 watch(
   () => props.slug,
   () => {
-    detail.value = null;
-    notFound.value = false;
+    resetDetail();
     tab.value = null;
     void loadDetail();
   },
@@ -143,7 +126,7 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
         <a class="btn app-link" :href="link">Открыть в Claude</a>
       </p>
       <p v-if="detailError" class="note bad">Не удалось загрузить задачу: {{ detailError }}</p>
-      <p v-else-if="notFound && !shown" class="note">Задача не найдена.</p>
+      <p v-else-if="detailState === 'missing' && !shown" class="note">Задача не найдена.</p>
 
       <TaskChat
         v-if="detail && task && ['work', 'review'].includes(task.kind) && source.openTaskChat"

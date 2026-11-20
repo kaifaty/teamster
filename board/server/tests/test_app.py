@@ -3759,11 +3759,11 @@ def test_landing_verdict_lookup_preserves_pending_board_events_and_logins(landin
     with journal.open("a") as stream:
         for row in rows:
             stream.write(json.dumps(row) + "\n")
-    cursor = actions.store._log_offset
+    cursor = actions.store._journal._log_offset
     actions.landing.run_once()
     assert task["lesson"](actions)["implementation"]["landing"]["stage"] == "landed"
     assert [row[0] for row in task["records"]("teamster")] == ["lesson", "clean"]
-    assert actions.store._log_offset == cursor
+    assert actions.store._journal._log_offset == cursor
     assert actions.store.take_logins() == 0
     messages = actions.store.poll()
     assert [(row["event"]["kind"], row["event"]["at"]) for row in messages if row["type"] == "event"] == [
