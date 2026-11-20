@@ -42,6 +42,13 @@ Progress and errors appear in `lesson.implementation.landing` and resume after a
 `--no-land` disables this automatic completion while leaving the other actions enabled; `--read-only`
 also disables it.
 
+On the map, choose **≡ → Добавить подписку** (**Ещё** on a phone) to add a native account or bind a
+connected OpenCode provider to a model. For a new OpenCode connection, run `opencode auth login`
+on the Board machine and refresh the list in the form. The Board reads `opencode auth list --format json`
+and `opencode models`, and saves one model per provider in `board-opencode.json` in its data home.
+The card gives the interactive command for the saved model, for example
+`opencode mini --model 'alibaba-token-plan/qwen4-max'`. **Снять с карты** removes the binding and keeps the OpenCode login.
+
 The server also supports subscription account actions for the account details page:
 
 - `POST /api/actions/login` with `{family: "codex" | "claude", account}` returns `{ok: true, login}`

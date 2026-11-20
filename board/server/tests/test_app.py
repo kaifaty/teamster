@@ -2096,8 +2096,9 @@ elif args == ['claude-probe', 'cl1']:
     hold('probe-block')
 else:
     assert Path.cwd() == root
-    command, account, flag = args
-    assert args == ['claude-login' if account.startswith('cl') else 'login', account, '--events']
+    command, account = args[:2]
+    assert args == ['claude-login' if account.startswith('cl') else 'login', account, '--events'] + (
+        ['--new'] if account == 'fresh' else [])
     assert os.getsid(0) == os.getpid()
     if account in ('child-result', 'child-no-result'):
         if account == 'child-result':
@@ -2142,10 +2143,15 @@ else:
 
     def requested(response):
         route = response.request.url.path
-        if response.status_code != 200 or route not in ("/api/actions/login", "/api/actions/account-refresh"):
+        if response.status_code != 200 or route not in ("/api/actions/login", "/api/actions/account-add",
+                                                         "/api/actions/account-refresh"):
             return
         data = json.loads(response.request.content)
-        if route == "/api/actions/login":
+        if route == "/api/actions/account-add":
+            response.read()
+            if response.json()["login"]["stage"] == "starting":
+                expected_commands.append(["login", data["account"], "--events", "--new"])
+        elif route == "/api/actions/login":
             command = "login" if data["family"] == "codex" else "claude-login"
             expected_commands.append([command, data["account"], "--events"])
         elif data["family"] == "claude":
@@ -2244,6 +2250,86 @@ else:
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     return start, calls, tmp_path
+
+
+@pytest.fixture
+def opencode_cli(duty_actions, monkeypatch):
+    start, _, root = duty_actions
+    monkeypatch.setenv("PATH", str(root) + os.pathsep + os.environ["PATH"])
+    cli = root / "opencode"
+    cli.write_text(f"#!{sys.executable}\n" + '''import sys
+from pathlib import Path
+root = Path(__file__).parent
+if sys.argv[1:] == ["auth", "list", "--format", "json"]:
+    print((root / "providers").read_text())
+elif sys.argv[1:] == ["models"]:
+    print((root / "models").read_text())
+else:
+    sys.exit("unexpected command")
+''')
+    cli.chmod(0o755)
+    provider = "alibaba-token-plan"
+    name = "Alibaba Token Plan"
+    model = provider + "/qwen4-max"
+    (root / "providers").write_text(json.dumps([{"id": provider, "name": name, "connections": [
+        {"type": "credential", "id": "cred_private", "label": "private label", "method": "key"}]}]))
+    (root / "models").write_text(f"opencode-go/global-model\n{provider}/other\n{model}\n")
+    return start, root, {"provider": provider, "name": name, "model": model}
+
+
+def test_opencode_bind_restart_and_detach(opencode_cli):
+    start, root, row = opencode_cli
+    auth = (root / "providers").read_bytes()
+    body = {"provider": row["provider"], "model": row["model"]}
+    add = "/api/actions/opencode-add"
+    remove = "/api/actions/opencode-remove"
+    with start() as client:
+        catalog = client.get("/api/opencode/providers").json()
+        assert catalog == {"status": "ok", "providers": [
+            {"id": row["provider"], "name": row["name"], "models": [row["provider"] + "/other", row["model"]]}]}
+        assert client.post(add, json={**body, "command": "opencode auth export"}).status_code == 400
+        wait_for_account(lambda: client.app.state.board.accounts.duty["fetched_at"] is not None)
+        with client.websocket_connect("/ws") as socket:
+            native = socket.receive_json()["snapshot"]["accounts"]["data"]
+            assert client.post(add, json=body).json() == {"ok": True}
+            published = receive_until(socket, "accounts")["accounts"]
+            assert published["opencode"] == [row]
+            assert published["data"] == native
+        assert client.post(add, json=body).json() == {"ok": True}
+        assert client.get("/api/snapshot").json()["accounts"]["opencode"] == [row]
+        assert client.post(add, json={**body, "model": "opencode-go/global-model"}).status_code >= 400
+        (root / "models").write_text("opencode-go/global-model\n")
+        assert client.post(add, json=body).status_code >= 400
+
+    with start() as restarted:
+        assert restarted.get("/api/snapshot").json()["accounts"]["opencode"] == [row]
+        for url, fields in ((add, body), (remove, {"provider": row["provider"]})):
+            assert restarted.post(url, json=fields, headers={"Origin": "https://example.test"}).status_code == 403
+        assert restarted.post(remove, json={"provider": row["provider"]}).json() == {"ok": True}
+        assert not restarted.get("/api/snapshot").json()["accounts"].get("opencode")
+        assert (root / "providers").read_bytes() == auth
+    with start(read_only=True) as locked:
+        assert not locked.get("/api/snapshot").json()["accounts"].get("opencode")
+        for url, fields in ((add, body), (remove, {"provider": row["provider"]})):
+            assert locked.post(url, json=fields).json() == {"ok": False, "error": "read_only"}
+
+
+def test_opencode_discovery_empty_broken_and_missing(opencode_cli, monkeypatch):
+    start, root, row = opencode_cli
+    with start() as client:
+        providers = root / "providers"
+        providers.write_text("[]")
+        discover = "/api/opencode/providers"
+        assert client.get(discover).json() == {"status": "ok", "providers": []}
+        providers.write_text("private diagnostic")
+        assert client.get(discover).json() == {"status": "error", "providers": []}
+        (root / "opencode").unlink()
+        # Restrict lookup to the temporary home even on machines with a real OpenCode.
+        (root / "python3").symlink_to(sys.executable)
+        monkeypatch.setenv("PATH", str(root))
+        assert client.get(discover).json() == {"status": "unavailable", "providers": []}
+        refused = client.post("/api/actions/opencode-add", json={"provider": row["provider"], "model": row["model"]})
+        assert refused.status_code >= 400 and refused.json()["ok"] is False
 
 
 def test_duty_action_shapes_data_and_accounts_publication(duty_actions):
@@ -2608,6 +2694,18 @@ def test_account_login_admission_and_removal(account_actions):
     for row in (first, second):
         assert client.post("/api/actions/login/cancel", json={"id": row["id"]}).status_code == 200
     wait_for_account(lambda: not board.logins.jobs)
+    add = "/api/actions/account-add"
+    new = {"family": "codex", "account": "fresh"}
+    for invalid in ({**new, "account": "../outside"}, {**new, "family": "claude", "account": "-flag"},
+                    {**new, "home": "/another"}, {**new, "family": "opencode"}):
+        assert client.post(add, json=invalid).status_code == 400
+    assert client.post(add, json={**new, "account": "c1"}).status_code == 409
+    initial = client.post(add, json=new).json()["login"]
+    wait_for_account(lambda: board.logins.rows[initial["id"]]["stage"] == "waiting")
+    assert client.post(add, json=new).json()["login"]["id"] == initial["id"]
+    assert client.post("/api/actions/login", json=new).status_code == 404
+    assert client.post("/api/actions/login/cancel", json={"id": initial["id"]}).json() == {"ok": True}
+    wait_for_account(lambda: not board.logins.jobs)
     refused = client.post(remove, json={"family": "codex", "account": "fail"})
     assert refused.status_code == 422 and refused.json()["error"] == "cannot remove the last account"
     with client.websocket_connect("/ws") as socket:
@@ -2623,12 +2721,12 @@ def test_account_login_admission_and_removal(account_actions):
             assert client.post("/api/actions/login", json=body).status_code == 404
 
 
-@pytest.mark.parametrize("route", ["login", "login/input", "login/cancel", "account-refresh", "account-remove"])
+@pytest.mark.parametrize("route", ["login", "login/input", "login/cancel", "account-refresh", "account-remove", "account-add"])
 def test_account_action_validation_protection_and_read_only(account_actions, route):
     client, board, _, calls = account_actions
     url = f"/api/actions/{route}"
     body = {"family": "codex", "account": "unknown", "id": "unknown", "text": "code"}
-    assert client.post(url, json=body).status_code == 404
+    assert client.post(url, json=body).status_code == (400 if route == "account-add" else 404)
     assert client.post(url, json={}).status_code == 400
     for headers in ({"Origin": None}, {"Origin": "http://evil.example"}, {"Host": "evil.example"},
                     {"X-Teamster-Board": None}, {"Content-Type": "text/plain"}):
