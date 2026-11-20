@@ -417,6 +417,8 @@ def chunk(text):
          "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}})
 
 root = Path.home()
+with (root / "opencode-calls").open("a") as calls:
+    print(json.dumps(sys.argv[1:]), file=calls)
 if sys.argv[1:] == ["auth", "list", "--format", "json"]:
     print((root / "providers").read_text())
     sys.exit()
@@ -2538,10 +2540,24 @@ def test_opencode_bind_restart_and_detach(opencode_cli):
         assert restarted.post(remove, json={"provider": row["provider"]}).json() == {"ok": True}
         assert not restarted.get("/api/snapshot").json()["accounts"].get("opencode")
         assert (root / "providers").read_bytes() == auth
+        assert all(json.loads(line) in (["auth", "list", "--format", "json"], ["models"])
+                   for line in (root / "opencode-calls").read_text().splitlines())
     with start(read_only=True) as locked:
         assert not locked.get("/api/snapshot").json()["accounts"].get("opencode")
         for url, fields in ((add, body), (remove, {"provider": row["provider"]})):
             assert locked.post(url, json=fields).json() == {"ok": False, "error": "read_only"}
+
+    saved = root / "board-opencode.json"
+    (root / "models").write_text(row["model"] + "\n")
+    for damaged in (b'{"version":', b'{"version":2,"bindings":[]}', b'{"version":1,"bindings":{}}'):
+        saved.write_bytes(damaged)
+        with start() as restarted:
+            wait_for_account(lambda: restarted.app.state.board.accounts.duty["fetched_at"] is not None)
+            assert restarted.get("/api/snapshot").json()["accounts"]["data"]["codex"] == native["codex"]
+            for url, fields in ((add, body), (remove, {"provider": row["provider"]})):
+                refused = restarted.post(url, json=fields)
+                assert refused.status_code == 503 and refused.json()["error"] == "opencode_bindings_unavailable"
+                assert saved.read_bytes() == damaged
 
 
 def test_opencode_discovery_empty_broken_and_missing(opencode_cli, monkeypatch):

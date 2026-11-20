@@ -172,6 +172,7 @@ const CODES: Record<string, string> = {
   "Harness unavailable": "Этот харнес недоступен на машине доски",
   opencode_unavailable: "На машине доски не найден OpenCode",
   opencode_error: "Не удалось прочитать список провайдеров и моделей OpenCode",
+  opencode_bindings_unavailable: "Не удалось обновить привязки OpenCode. Проверь формат и права доступа к board-opencode.json.",
   opencode_model_unavailable: "Модель больше не доступна у этого провайдера. Обновите список.",
   "teamster: Cannot remove the last Codex account": "В настройках Teamster должна остаться хотя бы одна подписка Codex",
   "teamster: Cannot remove the last Claude account; switch reviewer to codex": "В настройках Teamster должна остаться хотя бы одна подписка Claude",

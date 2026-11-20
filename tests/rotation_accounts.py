@@ -73,7 +73,10 @@ class AccountAuthTests(RotationTestCase):
         args = [PYTHON, "-I", str(SCRIPT), "login", "fresh", "--events", "--new"]
         self.env["CODEX_FAKE_DUTY_ACCOUNT_HOME"] = str(self.home)
         duplicate = subprocess.run(args, env=self.env, capture_output=True, text=True, timeout=20)
-        self.assertEqual(json.loads(duplicate.stdout.splitlines()[-1])["status"], "duplicate")
+        result = json.loads(duplicate.stdout.splitlines()[-1])
+        self.assertEqual((result["ok"], result["status"], result["message"]), (False, "duplicate",
+                         "Этот аккаунт ChatGPT уже подключён под именем «main». Выбери «Добавить подписку» "
+                         "и войди в другой аккаунт ChatGPT."))
         self.assertFalse(list(parent.glob("fresh-*")))
         self.assertNotIn("fresh", [a["name"] for a in self.worker().config.accounts_config()["accounts"]])
         alternate = self.root / "fresh-fixture"

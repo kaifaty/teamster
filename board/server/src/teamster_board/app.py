@@ -175,7 +175,11 @@ class Board:
                                no_land=settings.no_land, publish_research=self.publish_research)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
         self.bindings_path = settings.task_home / "board-opencode.json"
-        self.bindings = opencode.read_bindings(self.bindings_path)
+        try:
+            self.bindings = opencode.read_bindings(self.bindings_path)
+        except ValueError as exc:
+            LOGGER.warning("%s", exc)
+            self.bindings = {}
         self.duty = Duty(self.actions)
         self._duty_reason = self.actions.reason or "old_teamster"
         self._duty_mode = "off"
@@ -382,7 +386,10 @@ class Board:
             if binding is None:
                 return error(409, "opencode_model_unavailable")
         async with self.lock:
-            self.bindings = await asyncio.to_thread(opencode.update_binding, self.bindings_path, provider, binding)
+            try:
+                self.bindings = await asyncio.to_thread(opencode.update_binding, self.bindings_path, provider, binding)
+            except (ValueError, OSError):
+                return error(503, "opencode_bindings_unavailable")
             self.publish({"type": "accounts", "accounts": self.account_value})
         return {"ok": True}
 

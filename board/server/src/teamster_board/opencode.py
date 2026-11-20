@@ -9,6 +9,7 @@ from pathlib import Path
 
 PROVIDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*")
+BINDINGS_ERROR = "Cannot read board-opencode.json. Check its format, version and permissions."
 
 
 def _read(executable, *arguments):
@@ -58,10 +59,21 @@ def read_bindings(path):
         saved = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    if saved["version"] != 1:
-        raise ValueError("Unknown OpenCode bindings version")
-    return {row["provider"]: {key: row[key] for key in ("provider", "name", "model")}
-            for row in saved["bindings"]}
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError(BINDINGS_ERROR) from exc
+    if (not isinstance(saved, dict) or set(saved) != {"version", "bindings"}
+            or type(saved["version"]) is not int or saved["version"] != 1 or not isinstance(saved["bindings"], list)):
+        raise ValueError(BINDINGS_ERROR)
+    rows = {}
+    for row in saved["bindings"]:
+        if (not isinstance(row, dict) or set(row) != {"provider", "name", "model"}
+                or not all(isinstance(value, str) for value in row.values())):
+            raise ValueError(BINDINGS_ERROR)
+        provider, _, model = row["model"].partition("/")
+        if provider != row["provider"] or not PROVIDER.fullmatch(provider) or not MODEL.fullmatch(model) or provider in rows:
+            raise ValueError(BINDINGS_ERROR)
+        rows[provider] = row
+    return rows
 
 
 def update_binding(path, provider, binding):

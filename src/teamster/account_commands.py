@@ -392,7 +392,12 @@ def _cmd_login(a, events=None, pending=None):
             print(account_line(item, cfg))
     ru = cfg.get("language", "en") == "ru"
     message = ""
-    if other:
+    if other and pending:
+        message = (f"Этот аккаунт ChatGPT уже подключён под именем «{other}». Выбери «Добавить подписку» "
+                   "и войди в другой аккаунт ChatGPT." if ru else
+                   f"This ChatGPT account is already connected as {other}. Choose Add subscription "
+                   "and sign in with a different ChatGPT account.")
+    elif other:
         message = (f"{a.name} — тот же аккаунт ChatGPT, что и {other}; войди заново другим аккаунтом: "
               f"teamster login {a.name}" if ru else
               f"{a.name} is the same ChatGPT account as {other}; sign in again with another account: "
