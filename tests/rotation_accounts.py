@@ -107,12 +107,18 @@ class AccountAuthTests(RotationTestCase):
         fixture = self.root / "event-fixture.json"
         fixture.write_text("{}")
         values = []
+        receipt = None
 
         class Keychain(socketserver.StreamRequestHandler):
             def handle(handler):
+                nonlocal receipt
                 request = json.loads(handler.rfile.readline())
                 if "save" in request:
                     values.append(request["save"])
+                    receipt = request.get("receipt")
+                elif "delete" in request and request["delete"] == receipt:
+                    values.pop()
+                    receipt = None
                 token = values[-1] if values else ""
                 if json.loads(fixture.read_text()).get("mismatch"):
                     token = "different"
@@ -121,7 +127,7 @@ class AccountAuthTests(RotationTestCase):
         with socketserver.TCPServer(("127.0.0.1", 0), Keychain) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            source = r'''import fcntl, json, os, shlex, signal, socket, struct, sys, termios, time, tty
+            source = r'''import fcntl, json, os, re, shlex, signal, socket, struct, sys, termios, time, tty
 from pathlib import Path
 fixture = json.loads(Path(FIXTURE).read_text())
 def trace(**fields):
@@ -138,9 +144,17 @@ if Path(sys.argv[0]).name == 'security':
     request = {}
     if sys.argv[1:] == ['-i']:
         args = shlex.split(sys.stdin.readline())
-        update = [] if fixture.get('new') else ['-U']
-        assert args == ['add-generic-password', *update, '-s', service, '-a', 'fixture-user', '-w', token]
+        flags = ['-j', args[2]] if fixture.get('new') else ['-U']
+        assert args == ['add-generic-password', *flags, '-s', service, '-a', 'fixture-user', '-w', token]
         request = {'save': args[-1]}
+        if fixture.get('new'):
+            assert re.fullmatch('[0-9a-f]{32}', args[2])
+            if fixture.get('collision'):
+                sys.exit(45)
+            request['receipt'] = [service, 'fixture-user', args[2]]
+    elif sys.argv[1] == 'delete-generic-password':
+        assert sys.argv[1:-1] == ['delete-generic-password', '-s', service, '-a', 'fixture-user', '-j']
+        request = {'delete': [service, 'fixture-user', sys.argv[-1]]}
     else:
         assert sys.argv[1:] == ['find-generic-password', '-s', service, '-a', 'fixture-user', '-w']
         if os.environ.get('OLDER_PROBE_LOOKUP'):
@@ -347,6 +361,18 @@ else:
             blocked = self.run_claude_event_login("--new", "--keychain", "codex-worker-claude-reviewer")
             self.assertFalse(json.loads(blocked.stdout.splitlines()[-1])["ok"])
             self.assertFalse(trace.exists())
+            values.append("existing-item")
+            for failure in ("mismatch", "collision"):
+                fixture.write_text(json.dumps({"new": True, failure: True}))
+                failed = self.run_claude_event_login("--new")
+                self.assertFalse(json.loads(failed.stdout.splitlines()[-1])["ok"])
+                self.assertEqual(values, ["existing-item"])
+                rows = [json.loads(line) for line in trace.read_text().splitlines()]
+                self.assertEqual(sum(r["argv"][:1] == ["delete-generic-password"] for r in rows),
+                                 1 if failure == "mismatch" else 0)
+                trace.unlink()
+            values.clear()
+            fixture.write_text(json.dumps({"new": True}))
             self.assertEqual(self.run_claude_event_login("--new").returncode, 0)
             self.env["CODEX_FAKE_DUTY_ACCOUNT_HOME"] = str(self.home)
             self.assertTrue(json.loads(self.cli("login", "first", "--events", "--new").splitlines()[-1])["ok"])

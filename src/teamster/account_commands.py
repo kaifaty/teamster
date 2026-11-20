@@ -16,6 +16,7 @@ import tempfile
 import termios
 import time
 import unicodedata
+import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
@@ -512,6 +513,15 @@ def cmd_claude_login(a):
     return _cmd_claude_login(a)
 
 
+def _discard_new_claude_item(service, user, marker, environment):
+    try:
+        subprocess.run(["security", "delete-generic-password", "-s", service, "-a", user, "-j", marker],
+                       env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=config.ACCOUNT_TIMEOUT, start_new_session=True, check=True)
+    except (OSError, subprocess.SubprocessError):
+        print(f"Could not remove unregistered Claude Keychain item {service!r}", file=sys.stderr)
+
+
 def _cmd_claude_login(a, events=None, pending=None):
     if not re.fullmatch(r"[a-z0-9-]+", a.name):
         procs.die("Claude account name must contain only a-z, 0-9 and '-'")
@@ -555,6 +565,27 @@ def _cmd_claude_login(a, events=None, pending=None):
                                  "the Keychain item and account settings were not changed", code=1)
         events.saving = True
         events.send("stage", stage="saving")
+        # security's interactive command parser reads the password from a pipe,
+        # keeping it out of argv, the environment and the terminal.
+        user = environment.get("USER", "")
+        marker = uuid.uuid4().hex if pending else None
+        options = ["-j", marker] if pending else ["-U"]
+        arguments = ["add-generic-password", *options, "-s", service, "-a", user, "-w", events.token]
+        command = " ".join('"' + value + '"' for value in arguments) + "\n"
+        proc = subprocess.Popen(["security", "-i"], env=environment, stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        try:
+            proc.communicate(command.encode("utf-8"), timeout=config.ACCOUNT_TIMEOUT)
+            if proc.returncode:
+                return events.result("failed", "Claude login failed; account settings were not changed", code=1)
+            if pending:
+                # A successful add without -U created this item. Match its marker across keychains on rollback.
+                pending.callback(_discard_new_claude_item, service, user, marker, environment)
+        finally:
+            procs.terminate(proc)
+        if claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1] != events.token:
+            return events.result("failed", "Claude token could not be read back from Keychain", code=1)
     else:
         # setup-token displays the credential for the person to paste into the
         # Keychain prompt. Keep both interactive tools off captured command output.
@@ -571,23 +602,6 @@ def _cmd_claude_login(a, events=None, pending=None):
     with _locked_account_pool("claude", allow_empty_pools=bool(pending)) as pool:
         if pending:
             _require_new_name(pool, a.name)
-        if events:
-            # security's interactive command parser reads the password from a pipe,
-            # keeping it out of argv, the environment and the terminal.
-            arguments = ["add-generic-password", *([] if pending else ["-U"]), "-s", service,
-                         "-a", os.environ.get("USER", ""), "-w", events.token]
-            command = " ".join('"' + value + '"' for value in arguments) + "\n"
-            proc = subprocess.Popen(["security", "-i"], env=environment, stdin=subprocess.PIPE,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    start_new_session=True)
-            try:
-                proc.communicate(command.encode("utf-8"), timeout=config.ACCOUNT_TIMEOUT)
-                if proc.returncode:
-                    return events.result("failed", "Claude login failed; account settings were not changed", code=1)
-            finally:
-                procs.terminate(proc)
-            if claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1] != events.token:
-                return events.result("failed", "Claude token could not be read back from Keychain", code=1)
         current = next((item for item in pool if item["name"] == a.name), None)
         if current is None:
             if previous is not None:
