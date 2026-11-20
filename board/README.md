@@ -28,7 +28,9 @@ command, found on `PATH` at startup; `--teamster PATH` selects its executable ex
 Choose **Открыть чат** in a task's details to start a separate ACP conversation in its worktree.
 The Board uses the installed `teamster acp --events` and looks on its own `PATH` for
 `codex-acp`, `claude-agent-acp`, or `opencode acp`. It prefers the task's executor and
-shows which agent will receive your messages. Reply to permission requests in the chat.
+shows which agent will receive your messages. To use a map subscription, select its provider and
+model before opening the chat. The Board starts OpenCode and waits for it to confirm the model for
+that session before enabling the first message. Reply to permission requests in the chat.
 Closing the chat ends that session. Opening it again starts a fresh conversation.
 
 A local duty client can use the opt-in [external duty API v1](../src/teamster/docs/external-duty.md)
@@ -52,8 +54,8 @@ On the map, choose **≡ → Добавить подписку** (**Ещё** on 
 connected OpenCode provider to a model. For a new OpenCode connection, run `opencode auth login`
 on the Board machine and refresh the list in the form. The Board reads `opencode auth list --format json`
 and `opencode models`, and saves one model per provider in `board-opencode.json` in its data home.
-The card gives the interactive command for the saved model, for example
-`opencode mini --model 'alibaba-token-plan/qwen4-max'`. **Снять с карты** removes the binding and keeps the OpenCode login.
+For example, select **Alibaba Token Plan** and `alibaba-token-plan/qwen4-max` to use the provider's
+active OpenCode account in task chat. **Снять с карты** removes the binding and keeps the OpenCode login.
 
 The server also supports subscription account actions for the account details page:
 

@@ -2,11 +2,10 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { postAction } from "../../lib/actions";
 import type { BoardSource, OpenCodeProviders } from "../../lib/source";
-import type { Login } from "../../types";
-import type { Tank } from "../fleet";
+import type { Accounts, Login } from "../../types";
 import "../ship/ship.css";
 
-const props = defineProps<{ source: BoardSource; readOnly: boolean; tanks: Tank[] }>();
+const props = defineProps<{ source: BoardSource; readOnly: boolean; accounts: Accounts | null }>();
 const emit = defineEmits<{ close: []; open: [key: string, login?: Login] }>();
 const dialog = ref<HTMLDialogElement | null>(null);
 const provider = ref("");
@@ -37,13 +36,28 @@ const native = [
   { id: "openai", name: "OpenAI", harness: "codex" },
   { id: "anthropic", name: "Anthropic", harness: "claude" },
 ] as const;
+const labels = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
+const nativeInventory = computed(() => {
+  const data = props.accounts?.data;
+  if (!data && !props.accounts?.error) return { choices: [], note: "Жду список харнесов Teamster…" };
+  if (props.accounts?.error || !data || typeof data !== "object") {
+    return { choices: [], note: "Не удалось прочитать список харнесов Teamster." };
+  }
+  const report = data as Record<string, unknown>;
+  const supported = report.login_harnesses;
+  if (!Array.isArray(supported)) {
+    return { choices: [], note: "Установленная версия Teamster не подтверждает поддержку нового входа. Для добавления подписок Codex и Claude Code обнови Teamster." };
+  }
+  const choices = native.filter(({ harness }) => Array.isArray(report[harness]) && supported.includes(harness));
+  const missing = native.filter((item) => !choices.includes(item)).map((item) => labels[item.harness]).join(", ");
+  return { choices, note: missing ? `На машине Board недоступен вход через ${missing}.` : "" };
+});
 const choices = computed(() => [
-  ...native.filter((item) => props.tanks.some((row) => row.executor === item.harness)),
+  ...nativeInventory.value.choices,
   ...providers.value.map((item) => ({ ...item, harness: "opencode" as const })),
 ]);
 const names = computed(() => new Map(choices.value.map((item) => [item.id, item.name])));
 const harnesses = computed(() => choices.value.filter((item) => item.id === provider.value));
-const labels = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
 const models = computed(() => providers.value.find((item) => item.id === provider.value)?.models ?? []);
 watch(names, (available) => {
   if (!available.has(provider.value)) provider.value = "";
@@ -116,6 +130,7 @@ onMounted(() => {
         <p v-if="account && !validName" class="tone-bad">{{ harness === "codex" ? "До 41 символа: латинские буквы, цифры, дефис и подчёркивание. Начни с буквы или цифры." : "Используй строчные латинские буквы, цифры и дефис. Начни с буквы или цифры." }}</p>
       </template>
       <div v-if="source.fetchOpenCodeProviders">
+        <p v-if="nativeInventory.note" role="status">{{ nativeInventory.note }}</p>
         <p>Для нового подключения в OpenCode запусти <code>opencode auth login</code> в терминале на машине Board, выбери провайдера и пройди авторизацию.</p>
         <p v-if="status === 'unavailable'">OpenCode не установлен или недоступен серверу Board.</p>
         <p v-else-if="status === 'error'" class="tone-bad" role="status">Не удалось прочитать подключения и модели OpenCode.</p>

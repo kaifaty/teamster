@@ -336,11 +336,20 @@ else:
 
     def test_new_claude_login_keeps_existing_sign_in_locations(self):
         with self.claude_event_fixture() as (fixture, trace, values):
+            (self.home / "codex-worker.json").write_text(json.dumps({"accounts": [], "claude": {"accounts": []}}))
+            listing = json.loads(self.cli("accounts", "--json"))
+            self.assertEqual((listing["codex"], listing["claude"], listing["login_harnesses"]),
+                             ([], [], ["codex", "claude"]))
             fixture.write_text(json.dumps({"new": True}))
             blocked = self.run_claude_event_login("--new", "--keychain", "codex-worker-claude-reviewer")
             self.assertFalse(json.loads(blocked.stdout.splitlines()[-1])["ok"])
             self.assertFalse(trace.exists())
             self.assertEqual(self.run_claude_event_login("--new").returncode, 0)
+            self.env["CODEX_FAKE_DUTY_ACCOUNT_HOME"] = str(self.home)
+            self.assertTrue(json.loads(self.cli("login", "first", "--events", "--new").splitlines()[-1])["ok"])
+            listing = json.loads(self.cli("accounts", "--json"))
+            self.assertEqual(([a["name"] for a in listing["codex"]], [a["name"] for a in listing["claude"]]),
+                             (["first"], ["events"]))
             directory = self.worker().config.accounts_config()["claude"]["accounts"][-1]["config_dir"]
             setup = json.loads(trace.read_text().splitlines()[0])
             self.assertEqual(setup["env"]["CLAUDE_CONFIG_DIR"], directory)

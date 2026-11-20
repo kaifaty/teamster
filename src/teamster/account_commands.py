@@ -339,7 +339,7 @@ def _cmd_login(a, events=None, pending=None):
         procs.die("invalid account name")
     binary = config.codex_binary()
     with config.home_lock(exclusive=True):
-        cfg = config.accounts_config()
+        cfg = config.accounts_config(allow_empty_pools=bool(pending))
         parent = config.CODEX_HOME.parent / ".codex-accounts"
         if pending:
             _require_new_name(cfg["accounts"], a.name)
@@ -368,7 +368,7 @@ def _cmd_login(a, events=None, pending=None):
         events.send("stage", stage="checking")
     with config.home_lock(exclusive=bool(pending)):
         # Re-read the settings: another login may have added an account during this sign-in.
-        cfg = config.accounts_config()
+        cfg = config.accounts_config(allow_empty_pools=bool(pending))
         if pending:
             _require_new_name(cfg["accounts"], a.name)
             cfg["accounts"].append(account)
@@ -431,12 +431,12 @@ def terminal_device():
 
 
 @contextmanager
-def _locked_account_pool(family):
+def _locked_account_pool(family, *, allow_empty_pools=False):
     path = config.data_path("settings")
     with config.home_lock(exclusive=True):
         source = config.settings_path()
         settings = json.loads(source.read_text(encoding="utf-8")) if source.exists() else {}
-        cfg = config.accounts_config()
+        cfg = config.accounts_config(allow_empty_pools=allow_empty_pools)
         if family == "claude":
             pool = settings.setdefault("claude", {}).setdefault("accounts", cfg["claude"]["accounts"])
         else:
@@ -511,7 +511,7 @@ def _cmd_claude_login(a, events=None, pending=None):
     if not re.fullmatch(r"[a-z0-9-]+", a.name):
         procs.die("Claude account name must contain only a-z, 0-9 and '-'")
     config.require_claude()
-    cfg = config.accounts_config()
+    cfg = config.accounts_config(allow_empty_pools=bool(pending))
     pool = cfg["claude"]["accounts"]
     previous = next((account for account in pool if account["name"] == a.name), None)
     directory = a.config_dir or (previous["config_dir"] if previous else
@@ -521,6 +521,8 @@ def _cmd_claude_login(a, events=None, pending=None):
     if pending:
         if a.config_dir or a.keychain:
             procs.die("--new creates its own config directory and Keychain service")
+        if not shutil.which("security"):
+            procs.die("Claude sign-in requires the macOS Keychain security command")
         _require_new_name(pool, a.name)
         directory = _new_sign_in_dir(Path.home() / ".claude-accounts", a.name, pending)
         service = "codex-worker-claude-" + Path(directory).name
@@ -561,7 +563,7 @@ def _cmd_claude_login(a, events=None, pending=None):
                         procs.die("Claude login failed; account settings were not changed")
         except OSError:
             procs.die("Claude login requires a terminal and the Claude CLI and Keychain tools")
-    with _locked_account_pool("claude") as pool:
+    with _locked_account_pool("claude", allow_empty_pools=bool(pending)) as pool:
         if pending:
             _require_new_name(pool, a.name)
         if events:

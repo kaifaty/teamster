@@ -378,10 +378,9 @@ class Board:
             catalog = await asyncio.to_thread(opencode.discover)
             if catalog["status"] != "ok":
                 return error(503, "opencode_" + catalog["status"])
-            found = next((item for item in catalog["providers"] if item["id"] == provider), None)
-            if not found or data["model"] not in found["models"]:
+            binding = opencode.catalog_binding(catalog, provider, data["model"])
+            if binding is None:
                 return error(409, "opencode_model_unavailable")
-            binding = {"provider": provider, "name": found["name"], "model": data["model"]}
         async with self.lock:
             self.bindings = await asyncio.to_thread(opencode.update_binding, self.bindings_path, provider, binding)
             self.publish({"type": "accounts", "accounts": self.account_value})
@@ -621,7 +620,12 @@ def create_app(settings=None):
             if snapshot["error"] or not isinstance(snapshot["data"], dict):
                 return error(503, "Account list unavailable")
             rows = snapshot["data"].get(family)
-            if not rows:
+            if not isinstance(rows, list):
+                return error(503, "Account list unavailable")
+            supported = snapshot["data"].get("login_harnesses")
+            if not isinstance(supported, list):
+                return error(503, "New sign-in availability unknown; update the worker")
+            if family not in supported:
                 return error(422, "Harness unavailable")
             if any(isinstance(row, dict) and row.get("name") == name for row in rows):
                 return error(409, "Account already exists")

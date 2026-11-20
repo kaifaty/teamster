@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { BoardSource } from "../lib/source";
-import type { TaskDetail, TaskFile, TaskSummary } from "../types";
+import type { Accounts, TaskDetail, TaskFile, TaskSummary } from "../types";
 import { formatAge, formatClock, formatDuration, formatFullTime } from "../lib/format";
 import { useTaskFile } from "../lib/taskFile";
 import { cargoRows, findingLine, hasCargo } from "../lib/cargo";
@@ -13,6 +13,7 @@ const props = defineProps<{
   slug: string;
   /** The live summary from the board; null once the task is gone. */
   task: TaskSummary | null;
+  opencode?: Accounts["opencode"];
   source: BoardSource;
   now: number;
 }>();
@@ -146,7 +147,7 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
 
       <TaskChat
         v-if="detail && task && ['work', 'review'].includes(task.kind) && source.openTaskChat"
-        :key="slug" :slug="slug" :connect="source.openTaskChat" :actions="detail.actions"
+        :key="slug" :slug="slug" :connect="source.openTaskChat" :actions="detail.actions" :opencode="opencode"
       />
 
       <dl v-if="shown" class="fields">

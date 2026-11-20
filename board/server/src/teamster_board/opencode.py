@@ -11,18 +11,18 @@ PROVIDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*")
 
 
-def _read(*arguments):
+def _read(executable, *arguments):
     return subprocess.run(
-        ["opencode", *arguments], cwd=Path.home(), stdin=subprocess.DEVNULL,
+        [executable, *arguments], cwd=Path.home(), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8",
         timeout=15, check=True,
     ).stdout
 
 
-def discover():
+def discover(executable="opencode"):
     """Only offer catalog models belonging to an authenticated integration."""
     try:
-        integrations = json.loads(_read("auth", "list", "--format", "json"))
+        integrations = json.loads(_read(executable, "auth", "list", "--format", "json"))
         if not isinstance(integrations, list):
             raise ValueError("Invalid integration list")
         providers = {}
@@ -33,7 +33,7 @@ def discover():
             if connections and PROVIDER.fullmatch(provider):
                 providers[provider] = {"id": provider, "name": name, "models": []}
         if providers:
-            for model in _read("models").strip().splitlines():
+            for model in _read(executable, "models").strip().splitlines():
                 provider, slash, part = model.partition("/")
                 if not slash or not part:
                     raise ValueError("Invalid model list")
@@ -44,6 +44,13 @@ def discover():
         return {"status": "unavailable", "providers": []}
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         return {"status": "error", "providers": []}
+
+
+def catalog_binding(catalog, provider, model):
+    for item in catalog["providers"]:
+        if item["id"] == provider and model in item["models"]:
+            return {"provider": provider, "name": item["name"], "model": model}
+    return None
 
 
 def read_bindings(path):

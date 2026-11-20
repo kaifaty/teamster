@@ -41,7 +41,10 @@ match the ordinary commands; `result.ok` is true exactly when the command exits 
 The Board adds native subscriptions with `login <name> --events --new` or
 `claude-login <name> --events --new`. Both require a new pool name and allocate a private
 directory under the native accounts directory. Claude allocates a matching Keychain service.
+The inventory and this new-account flow accept explicitly empty account lists during initial setup.
 Codex adds the account to the pool only after a verified, distinct ChatGPT sign-in.
+Claude rejects a repeated pool name. Its setup-token check provides no subscription ID
+for identifying the same Claude account under two different names.
 
 The event protocol is:
 

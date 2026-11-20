@@ -248,6 +248,7 @@ interface Accounts {
   fetched_at: number | null;
   error: string | null;
   data: unknown | null;       // `accounts --json`, with duty and per-account selection fields below
+  opencode?: { provider: string; name: string; model: string }[]; // locally saved map subscriptions
   last_logins: { family: "codex" | "claude"; account: string; at: number; status: string | null }[];
 }
 
@@ -875,6 +876,13 @@ of the installed executable selected by `--teamster`:
   `python3 -I <settings.teamster> login <account> --events` for Codex, or
   `python3 -I <settings.teamster> claude-login <account> --events` for Claude, with no shell,
   piped stdin/stdout/stderr, a separate process group and the user's home as cwd.
+- `POST /api/actions/account-add` takes the same family and a new alias. It starts the worker login
+  with `--events --new`. Repeating an active request returns the same login. The worker reports
+  available sign-in mechanisms in `accounts.data.login_harnesses`, including for an empty account pool.
+- `GET /api/opencode/providers` returns connected providers with their model IDs and a status of
+  `ok`, `unavailable` or `error`. `POST /api/actions/opencode-add` takes `{provider, model}` and
+  stores one catalog-verified model per provider. `POST /api/actions/opencode-remove` takes
+  `{provider}` and detaches it from the map. Both writes publish the updated accounts snapshot.
 - `POST /api/actions/login/input` with `{id: string, text: string}` sends trimmed text plus `\n`
   to Claude's stdin and returns `{ok: true}`. Text must be 1–512 characters after trimming and
   contain no control characters (400 otherwise). Unknown id gets 404; a finished sign-in or a
@@ -1397,7 +1405,10 @@ Opening a task chat starts one ACP agent in the task's validated local Git workt
 The handshake requires write access, a matching HTTP(S) Origin and the `teamster-board-chat`
 subprotocol. A read-only Board rejects it with HTTP 403. Each connection owns a new session.
 
-- The server sends `{type: "ready", executor, agent}` with the task provider and actual ACP command.
+- Without a selection the server sends `{type: "ready", executor, agent}` with the task provider and actual ACP command.
+- With `?provider=…&model=…` the server checks both against the saved subscription and the local
+  OpenCode catalog. The session must confirm the saved model via `session/set_config_option` before
+  the server sends `ready` with the additional `provider` and `model` fields.
 - The browser sends `{type: "prompt", text}` (1–8000 characters after trimming) when ready.
   The agent streams `{type: "chunk", text}` and finishes the turn with `{type: "done", stopReason}`.
 - `{type: "permission", id, toolCall, options}` pauses the turn for a human choice.

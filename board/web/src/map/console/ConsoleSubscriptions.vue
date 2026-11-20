@@ -7,7 +7,7 @@ import type { SubscriptionRow } from "./texts";
 
 defineProps<{
   rows: readonly SubscriptionRow[];
-  opencode: Accounts["opencode"];
+  opencode?: Accounts["opencode"];
   /** Each subscription's portrait, by its key. */
   portraits: ReadonlyMap<string, string>;
   /** The subscription whose screen is open, or null. */

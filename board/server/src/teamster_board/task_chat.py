@@ -10,6 +10,7 @@ from pathlib import Path
 import anyio
 from fastapi import WebSocketDisconnect
 
+from . import opencode
 from .actions import BODY_LIMIT, error, same_origin, string
 from .store import Record, Store, text
 
@@ -46,7 +47,8 @@ def _worktree(state, root, slug):
     return cwd
 
 
-def _resolve_target(store, worktrees_path, slug):
+def _resolve_target(board, slug, selection):
+    store = board.store
     if not store._safe_slug(slug) or store.tasks_path.is_symlink():
         raise ValueError("Open a local Teamster task with an available worktree.")
     record = Record(store.tasks_path / slug, archived=False)
@@ -54,17 +56,35 @@ def _resolve_target(store, worktrees_path, slug):
     state = record.state
     if state.get("slug") != slug or state.get("kind", "work") not in ("work", "review"):
         raise ValueError("Open a local Teamster work or review task with an available worktree.")
-    cwd = _worktree(state, worktrees_path, slug)
+    cwd = _worktree(state, board.actions.worktrees_path, slug)
     executor = text(state.get("executor", "codex")) or "unknown"
     path = os.pathsep.join(entry for entry in os.get_exec_path() if os.path.isabs(entry))
-    for name in dict.fromkeys([executor, *AGENTS]):
+    adapters = ("opencode",) if selection else dict.fromkeys([executor, *AGENTS])
+    for name in adapters:
         command = AGENTS.get(name)
         if command and (executable := shutil.which(command[0], path=path)):
-            return cwd, [executable, *command[1:]], executor, " ".join(command)
-    raise ValueError("Install codex-acp, claude-agent-acp or OpenCode on the Board server's PATH, then reopen the chat.")
+            break
+    else:
+        if selection:
+            raise ValueError("Install OpenCode on the Board server and reopen the chat.")
+        raise ValueError("Install codex-acp, claude-agent-acp or OpenCode on the Board server's PATH, then reopen the chat.")
+
+    row = None
+    if selection:
+        if len(selection.multi_items()) != 2 or set(selection) != {"provider", "model"}:
+            raise ValueError("Select a saved OpenCode subscription and reopen the chat.")
+        row = opencode.read_bindings(board.bindings_path).get(selection["provider"])
+        if row is None or row["model"] != selection["model"]:
+            raise ValueError("The selected OpenCode subscription changed or was removed. Select it again.")
+        catalog = opencode.discover(executable)
+        if catalog["status"] != "ok":
+            raise ValueError("Could not read the connected providers and models from OpenCode.")
+        if not opencode.catalog_binding(catalog, row["provider"], row["model"]):
+            raise ValueError("The selected provider or model is no longer available in OpenCode.")
+    return cwd, [executable, *command[1:]], executor, " ".join(command), row
 
 
-async def _converse(socket, proc, agent, executor):
+async def _converse(socket, proc, agent, executor, binding):
     expected = None
 
     async def from_agent():
@@ -74,6 +94,8 @@ async def _converse(socket, proc, agent, executor):
             kind = event["type"]
             if kind == "ready":
                 event.update(agent=agent, executor=executor)
+                if binding:
+                    event.update(provider=binding["provider"], model=binding["model"])
             if kind in ("ready", "done"):
                 expected = "prompt"
             elif kind == "permission":
@@ -129,15 +151,16 @@ async def task_chat(socket, slug, board):
     try:
         if not board.actions.command:
             raise ValueError("Install teamster with ACP support on the Board server and reopen the chat.")
-        cwd, argv, executor, agent = await asyncio.to_thread(
-            _resolve_target, board.store, board.actions.worktrees_path, slug)
+        cwd, argv, executor, agent, binding = await asyncio.to_thread(
+            _resolve_target, board, slug, socket.query_params)
+        options = ["--model", binding["model"]] if binding else []
         with anyio.CancelScope(shield=True):
             proc = await asyncio.create_subprocess_exec(
-                board.actions.command, "acp", "--events", "--repo", str(cwd), "--", *argv,
+                board.actions.command, "acp", "--events", "--repo", str(cwd), *options, "--", *argv,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, cwd=Path.home(),
                 limit=1024 * 1024, start_new_session=True,
             )
-        await _converse(socket, proc, agent, executor)
+        await _converse(socket, proc, agent, executor, binding)
     except WebSocketDisconnect:
         pass
     except (ValueError, KeyError, OSError, RecursionError) as exc:

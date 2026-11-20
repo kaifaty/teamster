@@ -211,6 +211,7 @@ const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources
       v-if="shipOpen && selected && active"
       :slug="selected"
       :task="selectedTask"
+      :opencode="source.state.value.accounts?.opencode"
       :source="source.source"
       :now="now"
       :frame="frameLight"
@@ -224,7 +225,7 @@ const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources
       v-if="addOpener && active"
       :source="source.source"
       :read-only="subscriptionsReadOnly"
-      :tanks="source.state.value.accounts?.error ? [] : tankList"
+      :accounts="source.state.value.accounts"
       @open="finishAdd"
       @close="closeAdd"
     />
@@ -274,7 +275,8 @@ const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources
   position: absolute;
   left: 50%;
   top: 40%;
-  z-index: 2;
+  z-index: 1;
+  pointer-events: none;
   transform: translate(-50%, -50%);
 }
 
