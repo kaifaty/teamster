@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import type { TaskSummary } from "../types";
 import { formatAge, formatClock, formatDuration, formatFullTime, formatUntil } from "../lib/format";
-import { ACTIVITY, EXECUTORS, KINDS, PHASES, ciChip, claudeLink, isFlashing, prLabel, problemLabel, taskTitle } from "../lib/labels";
+import { ACTIVITY, EXECUTORS, EXECUTOR_GLYPHS, KINDS, PHASES, ciChip, claudeLink, isFlashing, prLabel, problemLabel, taskTitle } from "../lib/labels";
 
 const props = defineProps<{
   task: TaskSummary;
@@ -42,7 +42,7 @@ const showSummary = computed(() => !t.value.alive && !!t.value.summary);
         <button type="button" class="open" :title="session ? title : t.slug" @click="emit('open', t.slug)">{{ title }}</button>
       </h3>
       <span class="exec" :class="t.executor" :title="`Исполнитель: ${EXECUTORS[t.executor]}`">
-        <span class="glyph" aria-hidden="true">{{ t.executor === "codex" ? "◆" : "✳" }}</span>{{ EXECUTORS[t.executor] }}
+        <span class="glyph" aria-hidden="true">{{ EXECUTOR_GLYPHS[t.executor] }}</span>{{ EXECUTORS[t.executor] }}
       </span>
     </div>
 

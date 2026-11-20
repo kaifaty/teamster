@@ -1,7 +1,7 @@
 # teamster
 
 Let the lead plan and review while a worker implements in its own git worktree. The tool runs
-Codex or Claude as the worker through an installed Python command. A thin plugin supports Claude Code
+Codex, Claude or [Antigravity CLI](src/teamster/docs/settings.md#antigravity-cli) as the worker through an installed Python command. A thin plugin supports Claude Code
 as the lead; the lead writes the brief, reviews the result and decides when to merge.
 
 The lead writes a bounded brief, starts the worker, and waits in the background. Codex commits and pushes;

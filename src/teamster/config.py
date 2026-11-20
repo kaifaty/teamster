@@ -231,6 +231,10 @@ def claude_binary():
     return shutil.which(str(Path(override).expanduser()) if override else "claude")
 
 
+def agy_binary():
+    return shutil.which("agy")
+
+
 def provider_installed(provider):
     if provider == "codex":
         return _installed_codex() is not None
@@ -283,12 +287,13 @@ def validate_role_profiles(profiles):
             procs.die(f"unknown role: {label}")
         if not isinstance(routes, list) or not routes:
             procs.die(f"{label} must be a nonempty list of routes")
+        supported = executors.names() if role == "work" else ("codex", "claude")
         seen = set()
         for route in routes:
             if not isinstance(route, dict) or route.keys() - {"provider", "model", "effort"}:
                 procs.die(f"{label} routes must be objects with provider and optional model and effort")
             provider = route.get("provider")
-            if provider not in ("codex", "claude") or provider in seen:
+            if not isinstance(provider, str) or provider not in supported or provider in seen:
                 procs.die(f"{label} has an unknown or duplicate provider: {provider!r}")
             seen.add(provider)
             if "model" in route and (not isinstance(route["model"], str) or route["model"] == "default"

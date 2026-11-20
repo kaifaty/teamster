@@ -17,6 +17,7 @@ Layer 2:
     reflection (implemented): archive records, the reading room, batch reviews, studies and lesson decisions.
 Layer 3:
     duty (implemented): duty account elections, the duty record and the new-work exclusion.
+    agy_runner (implemented): headless Antigravity transport for writable work turns.
     claude_runner (implemented): isolated Claude transport and writable work turns.
     codex_duty (implemented): guarded Codex app-server duty turns.
     credit_resets (implemented): credit reset journal and actions.

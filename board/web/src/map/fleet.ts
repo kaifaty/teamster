@@ -1,9 +1,9 @@
 // The galaxy from the board's data: one star per repository; and the subscriptions, which the control panel shows.
 
-import { parseAccounts, type DutyInfo } from "../lib/accounts";
+import { parseAccounts, type AccountRow, type DutyInfo } from "../lib/accounts";
 import type { TaskSummary } from "../types";
 
-export type Family = "codex" | "claude";
+export type Family = TaskSummary["executor"];
 
 export interface Star {
   repo: string;
@@ -19,7 +19,7 @@ export interface Star {
 export interface Tank {
   key: string;
   name: string;
-  executor: Family;
+  executor: AccountRow["executor"];
   /** Weekly limit left, in percent; null when the account does not report it. */
   fuel: number | null;
   /** Limited, exhausted or logged out: the tank gives nothing. */

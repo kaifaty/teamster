@@ -1,6 +1,6 @@
 """Delegate coding to Codex in a git worktree, with autonomous subscription rotation.
 
-      teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--task-timeout SEC] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-loaded CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
+      teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude|agy] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--task-timeout SEC] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-loaded CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
       teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E] [--model M]  read-only research
       teamster reflect <slug> ["order" | --file FILE] [--task SLUG ... | [--since YYYY-MM-DD|Nd] [--repo NAME ...]] [--executor codex|claude] [--effort E] [--model M] [--max-minutes M]  batch reflection or a study of chosen records
       teamster lesson "<entry>" accepted|applied|declined|proposed [--note TEXT]  record the user's decision on a lesson in INDEX.md
@@ -173,7 +173,7 @@ OPTION_REGISTRY = (
     {"names": ("--executor",),
      "argparse": {"choices": executors.names(), "default": None,
                   "help": "work provider saved for the task (default: task profile or executor setting)"},
-     "synopsis": "[--executor codex|claude]",
+     "synopsis": "[--executor codex|claude|agy]",
      "commands": {"start": {}, "scout": {
                   "help": "scout provider (default: role profile or codex); claude requires a git directory"},
                   "reflect": {"help": "reflect provider (default: role profile or claude)"}}},
@@ -281,6 +281,8 @@ def command_options(command):
     for option in OPTION_REGISTRY:
         if command in option["commands"]:
             kwargs = dict(option["argparse"], **option["commands"][command])
+            if option["names"] == ("--executor",) and command in ("scout", "reflect"):
+                kwargs["choices"] = [name for name in executors.names() if "scout" in executors.get(name).hooks]
             group = kwargs.pop("group", None)
             yield option, kwargs, group
 

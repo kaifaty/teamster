@@ -21,7 +21,8 @@ export const PHASES: Record<Phase, string> = {
   idle: "простой",
 };
 
-export const EXECUTORS: Record<TaskSummary["executor"], string> = { codex: "Codex", claude: "Claude" };
+export const EXECUTORS: Record<TaskSummary["executor"], string> = { codex: "Codex", claude: "Claude", agy: "Antigravity" };
+export const EXECUTOR_GLYPHS: Record<TaskSummary["executor"], string> = { codex: "◆", claude: "✳", agy: "✦" };
 
 export const KINDS: Record<TaskSummary["kind"], string> = {
   work: "работа",

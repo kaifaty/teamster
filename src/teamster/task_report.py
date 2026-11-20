@@ -182,7 +182,7 @@ def _attribute(row, task):
         return
     if not (_is_work_phase(row) or (row["phase"] == "turn" and row.get("kind", "work") == "work")):
         return
-    executor = "claude" if row.get("provider") == "claude" else "codex"
+    executor = _identifier(row.get("provider")) or "codex"
     if executor not in task["executors"]:
         task["executors"].append(executor)
     if row["phase"] != "turn":

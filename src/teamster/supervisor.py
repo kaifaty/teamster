@@ -124,7 +124,7 @@ def start_process(st):
 RESUME_STEPS = ("work", "fix", "check", "review", "after_review", "ci")
 # Fields of the interrupted run that the resumed one must not inherit; the rest of the cycle is kept.
 RESUME_CLEARED = ("sleeping", "turn_finished", "error", "turn_stop", "wrapup", "refusal", "review_angle",
-                  "stop_request", "signal", "exec_event_start", "auto_fix_stop", "codex_pid", "claude_pid", "check_pid")
+                  "stop_request", "signal", "exec_event_start", "auto_fix_stop", "codex_pid", "claude_pid", "agy_pid", "check_pid")
 
 
 def legacy_cycle(st):
@@ -502,7 +502,7 @@ def finalize_cycle(st, cfg, check, stopped):
     telemetry_log.record_external_event(st)
     if cfg is not None:
         account = notifications.current_turn_account(st)
-        message = f"turn {st['outcome']} on {account}"
+        message = f"turn {st['outcome']}" + (f" on {account}" if account else "")
         result = st.get("result")
         message += ", result " + (result["status"] if result is not None else "unknown")
         if check is not None:

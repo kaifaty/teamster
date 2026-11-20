@@ -34,6 +34,7 @@ export const SPACE = {
 export const FLEET: Record<Family, { hull: string; engine: string }> = {
   codex: { hull: "#7ea6f5", engine: "#ffb648" },
   claude: { hull: "#e59472", engine: "#74d6e8" },
+  agy: { hull: "#9d9bfa", engine: "#abbbff" },
 };
 
 /**

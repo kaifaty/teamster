@@ -355,6 +355,11 @@ class PhaseTelemetry:
                 row.update(reviewers.get(self.reviewer).phase_fields(self.cost_usd))
             if self.provider is not None:
                 row.update(executors.from_state(st).phase_fields(st, last, self.cost_usd))
+            elif self.phase in ("check", "base_check") and not reviewing:
+                executor = executors.from_state(st)
+                row["account"] = executor.account(st)
+                if executor.provider:
+                    row["provider"] = executor.provider
             write_telemetry(st, row, self.stopped)
         except Exception as exc:
             telemetry_error(self.st, exc)

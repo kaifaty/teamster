@@ -6,7 +6,7 @@ import { formatAge, formatClock, formatDuration, formatFullTime } from "../lib/f
 import { useTaskFile } from "../lib/taskFile";
 import { cargoRows, findingLine, hasCargo } from "../lib/cargo";
 import TaskCommands from "./TaskCommands.vue";
-import { COLUMNS, EXECUTORS, FILES, KINDS, PHASES, RESULT, ciChip, claudeLink, prLabel, taskTitle } from "../lib/labels";
+import { COLUMNS, EXECUTORS, EXECUTOR_GLYPHS, FILES, KINDS, PHASES, RESULT, ciChip, claudeLink, prLabel, taskTitle } from "../lib/labels";
 
 const props = defineProps<{
   slug: string;
@@ -148,7 +148,7 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
         <dd>{{ columnTitle(shown.column) }}</dd>
         <dt>Исполнитель</dt>
         <dd>
-          <span class="exec" :class="shown.executor"><span class="glyph" aria-hidden="true">{{ shown.executor === "codex" ? "◆" : "✳" }}</span>{{ EXECUTORS[shown.executor] }}</span>
+          <span class="exec" :class="shown.executor"><span class="glyph" aria-hidden="true">{{ EXECUTOR_GLYPHS[shown.executor] }}</span>{{ EXECUTORS[shown.executor] }}</span>
           <span v-if="shown.reviewer" class="muted"> · ревьюер {{ EXECUTORS[shown.reviewer] }}</span>
         </dd>
         <template v-if="!session">
