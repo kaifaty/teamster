@@ -200,6 +200,7 @@ Run all commands as `teamster <command>`.
 
 | Command | Purpose |
 |---|---|
+| `acp [--repo DIR] -- PROGRAM [ARG ...]` | Chat with a local ACP agent in a checkout or worktree. See [ACP conversations](src/teamster/docs/lead-guide.md#acp-conversations) for authentication and resuming. |
 | `start <slug> --brief FILE [--repo DIR] [--base origin/BRANCH] [--no-push] [--model M] [--review-model M] [--effort E] [--sandbox off\|workspace] [--max-minutes M] [--max-weekly P] [--review [--review-angles LIST] [--fix-rounds N]] [--ci] [--ci-rounds N] [--check CMD] [--guard GLOB] [--base-check]` | Create a worktree and start implementation; `--brief -` reads stdin; repeat `--guard` for extra protected paths; `--no-push` keeps commits local and disables branch and PR publication throughout the task. |
 | `scout <slug> "question"` or `scout <slug> --file FILE [--repo DIR] [--effort E]` | Read the existing directory and return a concise report with source references. |
 | `wait <slug> [--timeout SEC] [--through-sleep]` | Wait for the turn, show its report and changes; optionally wait through limit resets. |
