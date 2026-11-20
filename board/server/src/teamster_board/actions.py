@@ -51,18 +51,22 @@ def error(status, message):
     return JSONResponse({"ok": False, "error": message}, status_code=status)
 
 
-async def action_body(request):
-    headers = request.headers
-    origins = headers.getlist("origin")
+def same_origin(request):
+    origins = request.headers.getlist("origin")
     try:
         origin = urlsplit(origins[0]) if len(origins) == 1 else None
         target = urlsplit(str(request.url))
-        allowed = (origin is not None and origin.scheme == target.scheme
-                   and origin.netloc.lower() == target.netloc.lower()
-                   and not origin.path and not origin.query and not origin.fragment)
+        scheme = {"ws": "http", "wss": "https"}.get(target.scheme, target.scheme)
+        return (origin is not None and origin.scheme == scheme
+                and origin.netloc.lower() == target.netloc.lower()
+                and not origin.path and not origin.query and not origin.fragment)
     except ValueError:
-        allowed = False
-    if (not allowed or headers.getlist("x-teamster-board") != ["1"]
+        return False
+
+
+async def action_body(request):
+    headers = request.headers
+    if (not same_origin(request) or headers.getlist("x-teamster-board") != ["1"]
             or len(headers.getlist("content-type")) != 1
             or headers["content-type"].split(";", 1)[0].strip().lower() != "application/json"):
         return error(403, "forbidden")

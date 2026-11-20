@@ -25,6 +25,12 @@ command, found on `PATH` at startup; `--teamster PATH` selects its executable ex
 `--read-only` disables all actions, including account login and refresh. They require a matching same-origin `Origin`,
 `Content-Type: application/json` and `X-Teamster-Board: 1`. The server never sends CORS headers.
 
+Choose **Открыть чат** in a task's details to start a separate ACP conversation in its worktree.
+The Board uses the installed `teamster acp --events` and looks on its own `PATH` for
+`codex-acp`, `claude-agent-acp`, or `opencode acp`. It prefers the task's executor and
+shows which agent will receive your messages. Reply to permission requests in the chat.
+Closing the chat ends that session. Opening it again starts a fresh conversation.
+
 A local duty client can use the opt-in [external duty API v1](../src/teamster/docs/external-duty.md)
 for allowlisted task reads, no-push starts, follow-ups, stops and a resumable event feed.
 
