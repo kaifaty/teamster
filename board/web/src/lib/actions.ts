@@ -19,6 +19,9 @@ export type ActionRoute =
   | "login"
   | "login/input"
   | "login/cancel"
+  | "account-add"
+  | "opencode-add"
+  | "opencode-remove"
   | "account-refresh"
   | "account-remove"
   | "duty-chat"
@@ -134,6 +137,9 @@ export interface ActionBodies {
   login: AccountBody;
   "login/input": LoginInputBody;
   "login/cancel": LoginCancelBody;
+  "account-add": AccountBody;
+  "opencode-add": { provider: string; model: string };
+  "opencode-remove": { provider: string };
   "account-refresh": AccountBody;
   "account-remove": AccountBody;
   "duty-chat": DutyChatBody;
@@ -161,6 +167,12 @@ const CODES: Record<string, string> = {
   account_login_in_progress: "Сначала заверши или отмени вход в подписку",
   account_refresh_in_progress: "Дождись обновления данных подписки",
   account_removal_in_progress: "Подписка уже удаляется",
+  "Account already exists": "Подписка с таким именем уже есть на карте",
+  "Account list unavailable": "Доска не смогла прочитать список подписок",
+  "Harness unavailable": "Этот харнес недоступен на машине доски",
+  opencode_unavailable: "На машине доски не найден OpenCode",
+  opencode_error: "Не удалось прочитать список провайдеров и моделей OpenCode",
+  opencode_model_unavailable: "Модель больше не доступна у этого провайдера. Обновите список.",
   "teamster: Cannot remove the last Codex account": "В настройках Teamster должна остаться хотя бы одна подписка Codex",
   "teamster: Cannot remove the last Claude account; switch reviewer to codex": "В настройках Teamster должна остаться хотя бы одна подписка Claude",
 };

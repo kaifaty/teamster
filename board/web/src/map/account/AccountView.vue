@@ -33,6 +33,7 @@ import AccountTasks from "./AccountTasks.vue";
 const props = defineProps<{
   /** The subscription's key, `<family>:<name>`, as its tank's. */
   accountKey: string;
+  initialLogin?: Login | null;
   accounts: Accounts | null;
   logins: Readonly<Record<string, Login>>;
   tasks: Readonly<Record<string, TaskSummary>>;
@@ -55,12 +56,13 @@ const row = computed(() => findAccount(data.value, props.accountKey, props.now))
 const context = computed(() => accountsContext(data.value));
 
 // The sign-in: the server's latest one for this subscription, or the one its answer just gave until the board knows it.
-const started = ref<Login | null>(null);
+const started = ref<Login | null>(props.initialLogin ?? null);
 watch(
   () => started.value && props.logins[started.value.id],
   (known) => {
     if (known) started.value = null;
   },
+  { immediate: true },
 );
 const login = computed(() => {
   const known = latestLogin(props.logins, family.value, name.value);
@@ -71,6 +73,7 @@ const login = computed(() => {
 /** A finished sign-in the person put away: «Сейчас» shows the subscription again. */
 const dismissed = ref<string | null>(null);
 const shownLogin = computed(() => (login.value && login.value.id !== dismissed.value ? login.value : null));
+const pendingNew = computed(() => !!props.initialLogin && !!shownLogin.value && !row.value);
 /** Signed in, but the subscription's data is older than the sign-in: it would still say a sign-in is needed. */
 const awaiting = computed(() => awaitingData(login.value, props.accounts?.fetched_at ?? null));
 
@@ -120,7 +123,7 @@ async function signIn() {
   starting.value = true;
   loginError.value = null;
   dismissed.value = null;
-  const result = await act("login", body.value);
+  const result = await act(row.value ? "login" : "account-add", body.value);
   starting.value = false;
   if (!result.ok) loginError.value = result.error;
   else if (result.login) started.value = result.login;
@@ -235,7 +238,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="key"
-            :disabled="!!refreshing || removing"
+            :disabled="!!refreshing || removing || !row"
             :title="family === 'claude' ? 'Отправить короткий запрос и прочитать лимиты заново' : 'Прочитать лимиты подписок заново'"
             @click="refresh"
           >
@@ -272,9 +275,9 @@ onBeforeUnmount(() => {
       <p v-if="removeError" class="note bad" role="alert">Не удалось удалить подписку: {{ removeError }}</p>
       <p v-if="refreshError" class="note bad" role="status">Не удалось обновить: {{ refreshError }}</p>
       <p v-if="!accounts?.data" class="note">Доска ещё не прочитала подписки.</p>
-      <p v-else-if="!row" class="note">Подписки {{ name }} больше нет в настройках teamster.</p>
+      <p v-else-if="!row && !pendingNew" class="note">Подписки {{ name }} больше нет в настройках teamster.</p>
 
-      <template v-if="row && nowView">
+      <template v-if="row || pendingNew">
         <AccountNow
           :inert="removing"
           :family="family"
@@ -292,7 +295,7 @@ onBeforeUnmount(() => {
           @cancel="cancel"
           @dismiss="dismiss"
         />
-        <main class="grid">
+        <main v-if="row" class="grid">
           <div class="col main-col">
             <AccountLimits :bars="limits" />
             <AccountTasks :tasks="working" :family="family" :now="now" @open="emit('open', $event)" />

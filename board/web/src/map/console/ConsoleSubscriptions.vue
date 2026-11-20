@@ -2,10 +2,12 @@
 // The subscriptions block: every subscription as a row with its small portrait, a bar of the week left, its figure and its
 // reset; the duty's row stands out. A click opens the subscription's screen.
 import fuelCell from "../art/fuel-cell.png";
+import type { Accounts } from "../../types";
 import type { SubscriptionRow } from "./texts";
 
 defineProps<{
   rows: readonly SubscriptionRow[];
+  opencode: Accounts["opencode"];
   /** Each subscription's portrait, by its key. */
   portraits: ReadonlyMap<string, string>;
   /** The subscription whose screen is open, or null. */
@@ -18,7 +20,7 @@ const emit = defineEmits<{ open: [key: string, opener: HTMLElement] }>();
 <template>
   <section class="console-block console-subscriptions" aria-labelledby="console-subscriptions-title">
     <h2 id="console-subscriptions-title" class="c-title">Подписки</h2>
-    <p v-if="!rows.length" class="c-note">Подписок нет</p>
+    <p v-if="!rows.length && !opencode?.length" class="c-note">Подписок нет</p>
     <ul v-else class="c-rows">
       <li v-for="row in rows" :key="row.key">
         <button
@@ -42,6 +44,19 @@ const emit = defineEmits<{ open: [key: string, opener: HTMLElement] }>();
             <span v-if="row.cells" class="s-cells" aria-hidden="true"><img v-for="cell in row.cells" :key="cell" class="cell" :src="fuelCell" alt="" /></span>
             <span v-if="row.until" class="s-until c-muted num">{{ row.until }}</span>
           </span>
+        </button>
+      </li>
+      <li v-for="binding in opencode" :key="`opencode:${binding.provider}`">
+        <button
+          type="button"
+          class="c-row s-row"
+          :class="{ current: open === `opencode:${binding.provider}` }"
+          :title="`${binding.name} · OpenCode · ${binding.model}`"
+          :data-account="`opencode:${binding.provider}`"
+          @click="emit('open', `opencode:${binding.provider}`, $event.currentTarget as HTMLElement)"
+        >
+          <span class="s-line"><span class="c-name">{{ binding.name }}</span></span>
+          <span class="s-line"><span class="s-why c-text">OpenCode · {{ binding.model.slice(binding.provider.length + 1) }}</span></span>
         </button>
       </li>
     </ul>

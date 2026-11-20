@@ -2,9 +2,12 @@
 // The fleet's map: a Pixi scene of the galaxy and its star systems, with HTML labels over it, the toolbar, the control
 // panel at the bottom (./console) and the panels. The composables in ./use hold its parts; the builders in ./overlay make
 // its labels' texts, and the components there draw them.
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import type { Board } from "../store/board";
+import type { Login } from "../types";
+import AddSubscription from "./account/AddSubscription.vue";
 import AccountView from "./account/AccountView.vue";
+import OpenCodeAccount from "./account/OpenCodeAccount.vue";
 import frameLight from "./art/frame-light.png";
 import MapConsole from "./console/MapConsole.vue";
 import DaySummary from "./DaySummary.vue";
@@ -41,6 +44,7 @@ const summaryButton = computed(() => mapConsole.value?.summaryButton ?? null);
 // The order matters: each part reads the ones made before it, and the scene comes last, after everything it draws.
 const sources = useMapSources(props);
 const { now, demo, sourceKind, source, loaded, tasks, emblemOf, events, eventsError, loadResearch } = sources;
+const subscriptionsReadOnly = computed(() => demo || sources.researchView.value?.actions?.reason === "read_only");
 
 const model = useGalaxyModel(props, sources);
 const { starList, systemNames, pickerGroups, station, tankList, machinesData } = model;
@@ -57,6 +61,18 @@ const panels = useMapPanels({
 });
 const { repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip, showOnMap } = panels;
 const { account, openAccount, closeAccount } = panels;
+const addOpener = ref<HTMLElement | null>(null);
+const initialLogin = ref<Login | null>(null);
+function finishAdd(key: string, login?: Login) {
+  initialLogin.value = login ?? null;
+  openAccount(key, addOpener.value);
+  addOpener.value = null;
+}
+function closeAdd() {
+  const opener = addOpener.value;
+  addOpener.value = null;
+  void nextTick(() => opener?.focus());
+}
 const { openMachine, enter, leave, goTo, openTask, summaryOpen, closeSummary } = panels;
 const { narrow, logOpen, fleetVisible, toggleFleet, showStation } = panels;
 
@@ -140,7 +156,8 @@ const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources
         :host="source"
         @go="goTo"
         @task="openTask"
-        @open-account="openAccount"
+        @open-account="(key, opener) => { initialLogin = null; openAccount(key, opener); }"
+        @add-subscription="addOpener = $event"
         @machine="openMachine"
         @open-research="openResearch"
       />
@@ -165,10 +182,20 @@ const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources
       @open="open"
       @ship="openShip"
     />
+    <OpenCodeAccount
+      v-if="active && account?.startsWith('opencode:')"
+      :provider="account.slice('opencode:'.length)"
+      :accounts="source.state.value.accounts"
+      :source="source.source"
+      :read-only="subscriptionsReadOnly"
+      :frame="frameLight"
+      @close="closeAccount"
+    />
     <AccountView
-      v-if="account && active"
+      v-else-if="account && active"
       :key="account"
       :account-key="account"
+      :initial-login="initialLogin"
       :scenario="sourceKind === 'scenario'"
       :covered="shipOpen || !!machine"
       :accounts="source.state.value.accounts"
@@ -193,6 +220,14 @@ const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources
       @task="board.put"
     />
     <DaySummary v-if="summaryOpen && active" :source="source.source" :events="events" :frame="frameLight" @close="closeSummary" />
+    <AddSubscription
+      v-if="addOpener && active"
+      :source="source.source"
+      :read-only="subscriptionsReadOnly"
+      :tanks="source.state.value.accounts?.error ? [] : tankList"
+      @open="finishAdd"
+      @close="closeAdd"
+    />
   </section>
 </template>
 

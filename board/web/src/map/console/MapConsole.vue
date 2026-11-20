@@ -63,6 +63,7 @@ const emit = defineEmits<{
   /** A counter was pressed: the next task of its queue. */
   task: [repo: string, slug: string];
   openAccount: [key: string, opener: HTMLElement];
+  addSubscription: [opener: HTMLElement];
   machine: [id: string, opener: HTMLElement];
   openResearch: [];
 }>();
@@ -247,7 +248,7 @@ function onKey(event: KeyboardEvent) {
         <ConsoleDuty v-if="!narrow" :duty="duty" :portrait="dutyPortrait" :line="pick.line.value" :expanded="pickOpen" @pick="openPick" />
         <ConsoleDutyPick v-if="pickOpen && !narrow" v-bind="pickPanel" @pick="pick.pick" @auto="pick.setAuto" @close="closePick()" />
         <i class="console-divider" aria-hidden="true"></i>
-        <ConsoleSubscriptions :rows="subscriptions" :portraits="portraits" :open="account" @open="(key, opener) => emit('openAccount', key, opener)" />
+        <ConsoleSubscriptions :rows="subscriptions" :opencode="host.state.value.accounts?.opencode" :portraits="portraits" :open="account" @open="(key, opener) => emit('openAccount', key, opener)" />
       </div>
       <div class="console-wing console-right">
         <ConsoleMachines :rows="machineRows" :note="machines?.config_error || null" :open="machine" @open="(id, opener) => emit('machine', id, opener)" />
@@ -262,6 +263,7 @@ function onKey(event: KeyboardEvent) {
         v-model:source-kind="sourceKind"
         class="console-settings"
         mode="sheet"
+        @add-subscription="emit('addSubscription', $event)"
         :ready="queues.review_me.length"
         :alarms="queues.attention.length"
         :demo="demo"
@@ -298,6 +300,7 @@ function onKey(event: KeyboardEvent) {
         v-model:source-kind="sourceKind"
         class="console-row"
         mode="row"
+        @add-subscription="emit('addSubscription', $event)"
         :ready="queues.review_me.length"
         :alarms="queues.attention.length"
         :demo="demo"

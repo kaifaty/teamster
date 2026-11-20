@@ -416,6 +416,7 @@ export interface Accounts {
   error: string | null;
   data: unknown | null; // `accounts --json`, with duty selection and per-account pin ability added
   last_logins?: LastLogin[]; // missing from an older server
+  opencode?: { provider: string; name: string; model: string }[];
 }
 
 export interface Gpu {

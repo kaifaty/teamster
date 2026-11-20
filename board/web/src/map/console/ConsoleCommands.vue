@@ -18,7 +18,7 @@ const props = defineProps<{
   /** `dev:fixture`: the map's source can be switched. */
   demo?: boolean;
 }>();
-const emit = defineEmits<{ next: [column: QueueColumn]; fold: [] }>();
+const emit = defineEmits<{ next: [column: QueueColumn]; fold: []; addSubscription: [opener: HTMLElement] }>();
 const summaryOpen = defineModel<boolean>("summaryOpen", { default: false });
 const sound = defineModel<boolean>("sound", { default: false });
 const sourceKind = defineModel<"board" | "scenario">("sourceKind", { default: "board" });
@@ -94,6 +94,12 @@ function fold() {
   emit("fold");
 }
 
+function addSubscription(event: MouseEvent) {
+  const opener = menuButton.value ?? event.currentTarget as HTMLElement;
+  menuOpen.value = false;
+  emit("addSubscription", opener);
+}
+
 function pickSource(kind: "board" | "scenario") {
   sourceKind.value = kind;
   closeMenu();
@@ -147,6 +153,7 @@ function pickSource(kind: "board" | "scenario") {
         </svg>
       </button>
       <div v-if="menuOpen" id="console-menu" ref="menu" class="menu" role="menu" aria-label="Настройки панели" @keydown="onMenuKey">
+        <button type="button" role="menuitem" class="item" tabindex="-1" @click="addSubscription">Добавить подписку</button>
         <button v-if="foldable" type="button" role="menuitem" class="item" tabindex="-1" @click="fold">Свернуть панель</button>
         <button type="button" role="menuitemcheckbox" class="item" :aria-checked="sound" tabindex="-1" @click="sound = !sound">
           <span class="mark" aria-hidden="true">{{ sound ? "✓" : "" }}</span>Звук уведомлений
@@ -159,6 +166,7 @@ function pickSource(kind: "board" | "scenario") {
       </div>
     </div>
     <template v-if="mode === 'sheet'">
+      <button type="button" class="cast" @click="addSubscription">Добавить подписку</button>
       <button type="button" class="cast" :aria-pressed="sound" @click="sound = !sound">
         <span class="mark" aria-hidden="true">{{ sound ? "✓" : "" }}</span>Звук уведомлений
       </button>
