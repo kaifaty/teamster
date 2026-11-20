@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { readOnlyReason } from "../lib/actions";
+import type { BoardSource } from "../lib/source";
 import { isSendKey } from "../map/station";
 import { useFollow } from "../map/station/feed";
-import type { TaskDetail } from "../types";
+import type { Accounts, TaskDetail } from "../types";
 
-const props = defineProps<{ slug: string; connect: (slug: string) => WebSocket; actions: TaskDetail["actions"] }>();
+const props = defineProps<{
+  slug: string;
+  connect: NonNullable<BoardSource["openTaskChat"]>;
+  actions: TaskDetail["actions"];
+  opencode?: Accounts["opencode"];
+}>();
 
 const permissionLabels: Record<string, string> = {
   allow_once: "разрешить один раз",
@@ -21,7 +27,7 @@ interface Permission {
   options: { optionId: string; name: string; kind: string }[];
 }
 
-interface Session { type: "ready"; agent: string; executor: string }
+interface Session { type: "ready"; agent: string; executor: string; provider?: string; model?: string }
 
 type ChatEvent =
   | Session
@@ -31,6 +37,9 @@ type ChatEvent =
   | { type: "error"; message: string };
 
 const expanded = ref(false);
+const model = ref("");
+const binding = computed(() => props.opencode?.find((item) => item.model === model.value));
+const stale = computed(() => !!model.value && !binding.value);
 const session = ref<Session | null>(null);
 const draft = ref("");
 const busy = ref(false);
@@ -80,6 +89,10 @@ function send(message: object) {
 function received(event: ChatEvent) {
   switch (event.type) {
     case "ready":
+      if (model.value && (event.model !== model.value || event.provider !== model.value.split("/")[0])) {
+        fail("Сервер не подтвердил выбранную модель. Откройте чат заново.");
+        return;
+      }
       session.value = event;
       void nextTick(() => field.value?.focus());
       break;
@@ -104,9 +117,10 @@ function received(event: ChatEvent) {
 }
 
 function open() {
+  if (!props.actions?.enabled || stale.value) return;
   expanded.value = true;
   try {
-    socket = props.connect(props.slug);
+    socket = props.connect(props.slug, binding.value);
   } catch (cause) {
     fail(cause instanceof Error ? cause.message : String(cause));
     return;
@@ -150,13 +164,22 @@ watch(() => props.actions?.enabled, (enabled) => {
 
 <template>
   <section class="task-chat" aria-label="Чат задачи">
-    <button type="button" class="btn key" :disabled="!actions?.enabled" :aria-expanded="expanded" @click="expanded ? close() : open()">
+    <label v-if="!expanded && (opencode?.length || model)" class="binding">
+      Подписка для чата
+      <select v-model="model" class="btn key" :disabled="!actions?.enabled">
+        <option value="">Автоматически</option>
+        <option v-if="stale" :value="model" disabled>{{ model }} · привязка изменилась</option>
+        <option v-for="item in opencode" :key="item.provider" :value="item.model">{{ item.name }} · OpenCode · {{ item.model }}</option>
+      </select>
+    </label>
+    <button type="button" class="btn key" :disabled="!actions?.enabled || (!expanded && stale)" :aria-expanded="expanded" @click="expanded ? close() : open()">
       {{ expanded ? "Закрыть чат" : "Открыть чат" }}
     </button>
     <span v-if="!actions?.enabled">Чат недоступен · {{ readOnlyReason(actions?.reason, !!actions) }}</span>
     <div v-if="expanded" class="conversation">
       <p>Это отдельный чат в рабочем дереве задачи. Закрытие чата завершает сессию.</p>
       <p v-if="session">Чат ведёт <strong>{{ session.agent }}</strong>. Исполнитель задачи — {{ session.executor }}.</p>
+      <p v-if="session?.provider">Провайдер {{ session.provider }} · Модель {{ session.model }}</p>
       <ol v-if="messages.length" ref="scroller" class="transcript" role="log" aria-label="Сообщения" tabindex="0" @scroll="follow.onScroll">
         <li v-for="(message, index) in messages" :key="index">
           <strong>{{ message.role === "agent" ? "Агент" : "Вы" }}</strong>
@@ -189,6 +212,8 @@ watch(() => props.actions?.enabled, (enabled) => {
 
 <style scoped>
 .task-chat { margin-bottom: 10px; }
+.binding { display: grid; gap: 4px; margin-bottom: 6px; }
+.binding select { min-width: 0; max-width: 100%; }
 .conversation {
   display: grid;
   gap: 8px;

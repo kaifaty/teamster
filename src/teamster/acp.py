@@ -11,6 +11,15 @@ import teamster
 from . import procs
 
 
+def _model_config(result):
+    options = result.get("configOptions")
+    if isinstance(options, list):
+        for item in options:
+            if isinstance(item, dict) and item.get("id") == "model" and item.get("type") == "select":
+                return item
+    return {}
+
+
 class AcpClient:
     """Run one agent, delivering session updates and permission requests to the caller.
 
@@ -136,8 +145,9 @@ class AcpClient:
                 self._send(method="session/cancel", params={"sessionId": self.session_id})
                 deadline = time.monotonic() + 3
 
-    def open_session(self, session_id=None, auth_method=None):
+    def open_session(self, session_id=None, auth_method=None, model=None):
         """Negotiate v1 and open a new session or load an existing session."""
+        self.session_id = None
         info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": {},
                                          "clientInfo": {"name": "teamster", "version": teamster.__version__}})
         if info.get("protocolVersion") != 1:
@@ -150,6 +160,7 @@ class AcpClient:
                 raise ValueError(f"Unsupported ACP auth method {auth_method!r}. Available: {available}")
             self._call("authenticate", {"methodId": auth_method})
         params = {"cwd": self.cwd, "mcpServers": []}
+        pending = []
         if session_id is not None:
             capabilities = info.get("agentCapabilities", {})
             if capabilities.get("sessionCapabilities", {}).get("resume") is not None:
@@ -158,17 +169,29 @@ class AcpClient:
                 method = "session/load"
             else:
                 raise ValueError("ACP agent does not support loading or resuming sessions")
-            self._call(method, {**params, "sessionId": session_id})
-            self.session_id = session_id
+            result = self._call(method, {**params, "sessionId": session_id})
         else:
-            pending = []
             result = self._call("session/new", params, pending)
-            self.session_id = result.get("sessionId")
-            if not isinstance(self.session_id, str) or not self.session_id:
+            session_id = result.get("sessionId")
+            if not isinstance(session_id, str) or not session_id:
                 raise ValueError("ACP agent returned no session ID")
-            for update in pending:
-                if update.get("sessionId") == self.session_id:
-                    self.on_update(update["update"])
+        if model is not None:
+            choices = _model_config(result).get("options")
+            if not isinstance(choices, list) or not any(
+                isinstance(choice, dict) and choice.get("value") == model for choice in choices
+            ):
+                raise ValueError(f"ACP agent does not offer model {model!r} in this session")
+            selection = {"sessionId": session_id, "configId": "model", "value": model}
+            try:
+                confirmed = self._call("session/set_config_option", selection, pending)
+            except ValueError:
+                raise ValueError(f"ACP agent could not select model {model!r}") from None
+            if _model_config(confirmed).get("currentValue") != model:
+                raise ValueError(f"ACP agent did not confirm model {model!r}")
+        self.session_id = session_id
+        for update in pending:
+            if update.get("sessionId") == session_id:
+                self.on_update(update["update"])
         return self.session_id
 
     def prompt(self, text):

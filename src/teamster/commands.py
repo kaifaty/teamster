@@ -83,7 +83,7 @@ def acp_event_session(client, args):
             acp_event("chunk", text=item["content"]["text"])
 
     threading.Thread(target=read_input, daemon=True).start()
-    client.open_session(session_id=args.resume, auth_method=args.auth_method)
+    client.open_session(session_id=args.resume, auth_method=args.auth_method, model=args.model)
     client.on_update = update
     client.on_permission = permission
     acp_event("ready")
@@ -96,7 +96,7 @@ def acp_event_session(client, args):
 
 def acp_terminal_session(client, a):
     interactive = sys.stdin.isatty()
-    session_id = client.open_session(session_id=a.resume, auth_method=a.auth_method)
+    session_id = client.open_session(session_id=a.resume, auth_method=a.auth_method, model=a.model)
     client.on_update = acp_update
     print(f"ACP session: {session_id}", file=sys.stderr, flush=True)
     while True:
@@ -858,13 +858,16 @@ def cmd_verdict(a):
 
 
 def cmd_accounts(a):
-    cfg = config.accounts_config()
+    cfg = config.accounts_config(allow_empty_pools=True)
     has_claude = config.provider_installed("claude")
     if getattr(a, "refresh", False) and has_claude:
         claude_review.refresh_limits(cfg)
     infos = accounts.snapshots(cfg)
     if getattr(a, "json", False):
         report = accounts_json(infos, cfg)
+        report["login_harnesses"] = ["codex"] if config.provider_installed("codex") else []
+        if has_claude and shutil.which("security"):
+            report["login_harnesses"].append("claude")
         if not has_claude:
             report["claude"] = []
         print(json.dumps(report, ensure_ascii=False))

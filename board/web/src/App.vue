@@ -274,6 +274,7 @@ onBeforeUnmount(() => {
       v-if="selected && view === 'board'"
       :slug="selected"
       :task="selectedTask"
+      :opencode="board.state.value.accounts?.opencode"
       :source="board.source"
       :now="now"
       @close="close"

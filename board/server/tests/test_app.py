@@ -404,20 +404,8 @@ def test_task_chat_requires_board_write_access(board):
 
 
 @pytest.fixture
-def task_chat_board(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "git").symlink_to(shutil.which("git"))
-    (bin_dir / "python3").symlink_to(sys.executable)
-    command = bin_dir / "teamster"
-    script = board_app.REPOSITORY / "src/teamster/__main__.py"
-    command.write_text(f"#!{sys.executable}\nimport os, sys\nos.execv(sys.executable, "
-                       f"[sys.executable, '-I', {str(script)!r}, *sys.argv[1:]])\n")
-    command.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
-    agent = bin_dir / "opencode"
+def fake_opencode(tmp_path):
+    agent = tmp_path / "opencode"
     agent.write_text(f"#!{sys.executable}\n" + '''import json, os, sys, time
 from pathlib import Path
 
@@ -428,6 +416,15 @@ def chunk(text):
     send(method="session/update", params={"sessionId": session, "update": {
          "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}})
 
+root = Path.home()
+with (root / "opencode-calls").open("a") as calls:
+    print(json.dumps(sys.argv[1:]), file=calls)
+if sys.argv[1:] == ["auth", "list", "--format", "json"]:
+    print((root / "providers").read_text())
+    sys.exit()
+if sys.argv[1:] == ["models"]:
+    print((root / "models").read_text())
+    sys.exit()
 assert sys.argv[1:] == (["acp"] if Path(sys.argv[0]).name == "opencode" else [])
 session = str(os.getpid())
 Path("agent.pid").write_text(session)
@@ -436,11 +433,23 @@ turns = 0
 for line in sys.stdin:
     req = json.loads(line)
     method, params = req["method"], req["params"]
+    with Path("agent.requests").open("a") as stream:
+        stream.write(line)
     if method == "initialize":
         result = {"protocolVersion": 1}
     elif method == "session/new":
         assert params["cwd"] == str(Path.cwd())
         result = {"sessionId": session}
+        if (root / "models").exists():
+            config = {"id": "model", "category": "model", "name": "Model", "type": "select",
+                      "currentValue": "opencode-go/global-model", "options": [
+                          {"value": m, "name": m} for m in (root / "models").read_text().splitlines()]}
+            result["configOptions"] = [config]
+    elif method == "session/set_config_option":
+        assert params["sessionId"] == session and params["configId"] == "model"
+        if not (root / "keep-default").exists():
+            config["currentValue"] = params["value"]
+        result = {"configOptions": [config]}
     else:
         assert method == "session/prompt" and params["sessionId"] == session
         turns += 1
@@ -461,6 +470,25 @@ for line in sys.stdin:
     send(id=req["id"], result=result)
 ''')
     agent.chmod(0o755)
+    return agent
+
+
+@pytest.fixture
+def task_chat_board(tmp_path, monkeypatch, fake_opencode):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git").symlink_to(shutil.which("git"))
+    (bin_dir / "python3").symlink_to(sys.executable)
+    command = bin_dir / "teamster"
+    script = board_app.REPOSITORY / "src/teamster/__main__.py"
+    command.write_text(f"#!{sys.executable}\nimport os, sys\nos.execv(sys.executable, "
+                       f"[sys.executable, '-I', {str(script)!r}, *sys.argv[1:]])\n")
+    command.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    agent = bin_dir / "opencode"
+    agent.symlink_to(fake_opencode)
 
     def git(*args):
         subprocess.run(["git", *args], check=True, capture_output=True)
@@ -482,14 +510,14 @@ for line in sys.stdin:
             "slug": slug, "kind": "work", "repo": str(repo), "worktree": str(worktree), "branch": slug,
             "executor": executor, "thread": "existing-worker-thread"}))
     with TestClient(create_app(settings), base_url="http://localhost", headers={"Host": "localhost"}) as client:
-        def chat(slug):
+        def chat(slug, params=None):
             return client.websocket_connect(f"/ws/tasks/{slug}/chat", headers={"Origin": "http://localhost"},
-                                            subprotocols=["teamster-board-chat"])
-        yield chat, settings, agent
+                                            subprotocols=["teamster-board-chat"], params=params)
+        yield chat, settings, agent, client
 
 
 def test_task_chat_streams_turns_and_reaps_disconnected_agents(task_chat_board):
-    chat, settings, agent = task_chat_board
+    chat, settings, agent, _ = task_chat_board
     for slug, executor in (("demo", "codex"), ("second", "opencode")):
         worktree = settings.path("worktrees") / f"claude-{slug}" / "repository"
         with chat(slug) as socket:
@@ -2237,10 +2265,14 @@ if args == ['accounts', '--json']:
     hold('accounts-block')
     if (root / 'accounts-fail').exists():
         sys.exit('accounts unavailable')
+    if (root / 'first-account.json').exists():
+        print((root / 'first-account.json').read_text())
+        sys.exit(0)
     names = {'codex': ['c1', 'c2', 'c3', 'fail', 'no-result', 'ignore', 'child-result', 'child-no-result'],
              'claude': ['cl1', '-second']}
-    print(json.dumps({family: [{'name': n} for n in group if not (root / f'{family}.{n}.removed').exists()]
-                      for family, group in names.items()}))
+    rows = {family: [{'name': n} for n in group if not (root / f'{family}.{n}.removed').exists()]
+            for family, group in names.items()}
+    print(json.dumps(dict(rows, login_harnesses=['codex', 'claude'])))
 elif args[0] in ('account-remove', 'claude-remove'):
     command, separator, account = args
     assert separator == '--' and Path.cwd() == root and sys.stdin.read() == ''
@@ -2256,8 +2288,9 @@ elif args == ['claude-probe', 'cl1']:
     hold('probe-block')
 else:
     assert Path.cwd() == root
-    command, account, flag = args
-    assert args == ['claude-login' if account.startswith('cl') else 'login', account, '--events']
+    command, account = args[:2]
+    assert args == ['claude-login' if account.startswith('cl') else 'login', account, '--events'] + (
+        ['--new'] if account in ('fresh', 'cl-fresh') else [])
     assert os.getsid(0) == os.getpid()
     if account in ('child-result', 'child-no-result'):
         if account == 'child-result':
@@ -2302,10 +2335,16 @@ else:
 
     def requested(response):
         route = response.request.url.path
-        if response.status_code != 200 or route not in ("/api/actions/login", "/api/actions/account-refresh"):
+        if response.status_code != 200 or route not in ("/api/actions/login", "/api/actions/account-add",
+                                                         "/api/actions/account-refresh"):
             return
         data = json.loads(response.request.content)
-        if route == "/api/actions/login":
+        if route == "/api/actions/account-add":
+            response.read()
+            if response.json()["login"]["stage"] == "starting":
+                command = "claude-login" if data["family"] == "claude" else "login"
+                expected_commands.append([command, data["account"], "--events", "--new"])
+        elif route == "/api/actions/login":
             command = "login" if data["family"] == "codex" else "claude-login"
             expected_commands.append([command, data["account"], "--events"])
         elif data["family"] == "claude":
@@ -2404,6 +2443,139 @@ else:
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     return start, calls, tmp_path
+
+
+@pytest.fixture
+def opencode_cli(duty_actions, monkeypatch, fake_opencode):
+    start, _, root = duty_actions
+    monkeypatch.setenv("PATH", str(fake_opencode.parent) + os.pathsep + os.environ["PATH"])
+    provider = "alibaba-token-plan"
+    name = "Alibaba Token Plan"
+    model = provider + "/qwen4-max"
+    (root / "providers").write_text(json.dumps([{"id": provider, "name": name, "connections": [
+        {"type": "credential", "id": "cred_private", "label": "private label", "method": "key"}]}]))
+    (root / "models").write_text(f"opencode-go/global-model\n{provider}/other\n{model}\n")
+    return start, root, {"provider": provider, "name": name, "model": model}
+
+
+def test_task_chat_applies_bound_model_before_prompt(opencode_cli, task_chat_board):
+    _, root, row = opencode_cli
+    chat, settings, agent, client = task_chat_board
+    provider, = client.get("/api/opencode/providers").json()["providers"]
+    assert row["model"] in provider["models"]
+    selection = {"provider": provider["id"], "model": row["model"]}
+    headers = {"Origin": "http://localhost", "X-Teamster-Board": "1"}
+    assert client.post("/api/actions/opencode-add", headers=headers, json=selection).json() == {"ok": True}
+    worktree = settings.path("worktrees") / "claude-demo" / "repository"
+    log = worktree / "agent.requests"
+    agent.with_name("codex-acp").symlink_to(agent)
+    with chat("demo") as socket:
+        assert socket.receive_json() == {"type": "ready", "executor": "codex", "agent": "codex-acp"}
+    assert [json.loads(line)["method"] for line in log.read_text().splitlines()] == ["initialize", "session/new"]
+    log.unlink()
+    with chat("demo", selection) as socket:
+        ready = socket.receive_json()
+        assert ready["type"] == "ready" and ready["agent"] == "opencode acp"
+        assert (ready["provider"], ready["model"]) == (row["provider"], row["model"])
+        socket.send_json({"type": "prompt", "text": "hello"})
+        assert socket.receive_json() == {"type": "chunk", "text": "demo turn 1"}
+        assert socket.receive_json() == {"type": "chunk", "text": "hello"}
+        assert socket.receive_json()["type"] == "done"
+    requests = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [r["method"] for r in requests] == ["initialize", "session/new", "session/set_config_option", "session/prompt"]
+    assert requests[2]["params"] == {"sessionId": requests[3]["params"]["sessionId"], "configId": "model",
+                                     "value": row["model"]}
+
+    def refuses(requested):
+        with chat("demo", requested) as socket:
+            answer = socket.receive_json()
+            assert answer["type"] == "error" and answer["message"]
+
+    log.unlink()
+    refuses({**selection, "model": row["provider"] + "/other"})
+    assert not log.exists()
+    (root / "keep-default").touch()
+    refuses(selection)
+    assert [json.loads(line)["method"] for line in log.read_text().splitlines()] == [
+        "initialize", "session/new", "session/set_config_option"]
+    log.unlink()
+    auth = (root / "providers").read_bytes()
+    (root / "providers").write_text("[]")
+    refuses(selection)
+    assert not log.exists()
+    (root / "providers").write_bytes(auth)
+    assert client.post("/api/actions/opencode-remove", headers=headers, json={"provider": row["provider"]}).json()["ok"]
+    refuses(selection)
+    assert not log.exists()
+
+
+def test_opencode_bind_restart_and_detach(opencode_cli):
+    start, root, row = opencode_cli
+    auth = (root / "providers").read_bytes()
+    body = {"provider": row["provider"], "model": row["model"]}
+    add = "/api/actions/opencode-add"
+    remove = "/api/actions/opencode-remove"
+    with start() as client:
+        catalog = client.get("/api/opencode/providers").json()
+        assert catalog == {"status": "ok", "providers": [
+            {"id": row["provider"], "name": row["name"], "models": [row["provider"] + "/other", row["model"]]}]}
+        assert client.post(add, json={**body, "command": "opencode auth export"}).status_code == 400
+        wait_for_account(lambda: client.app.state.board.accounts.duty["fetched_at"] is not None)
+        with client.websocket_connect("/ws") as socket:
+            native = socket.receive_json()["snapshot"]["accounts"]["data"]
+            assert client.post(add, json=body).json() == {"ok": True}
+            published = receive_until(socket, "accounts")["accounts"]
+            assert published["opencode"] == [row]
+            assert published["data"] == native
+        assert client.post(add, json=body).json() == {"ok": True}
+        assert client.get("/api/snapshot").json()["accounts"]["opencode"] == [row]
+        assert client.post(add, json={**body, "model": "opencode-go/global-model"}).status_code >= 400
+        (root / "models").write_text("opencode-go/global-model\n")
+        assert client.post(add, json=body).status_code >= 400
+
+    with start() as restarted:
+        assert restarted.get("/api/snapshot").json()["accounts"]["opencode"] == [row]
+        for url, fields in ((add, body), (remove, {"provider": row["provider"]})):
+            assert restarted.post(url, json=fields, headers={"Origin": "https://example.test"}).status_code == 403
+        assert restarted.post(remove, json={"provider": row["provider"]}).json() == {"ok": True}
+        assert not restarted.get("/api/snapshot").json()["accounts"].get("opencode")
+        assert (root / "providers").read_bytes() == auth
+        assert all(json.loads(line) in (["auth", "list", "--format", "json"], ["models"])
+                   for line in (root / "opencode-calls").read_text().splitlines())
+    with start(read_only=True) as locked:
+        assert not locked.get("/api/snapshot").json()["accounts"].get("opencode")
+        for url, fields in ((add, body), (remove, {"provider": row["provider"]})):
+            assert locked.post(url, json=fields).json() == {"ok": False, "error": "read_only"}
+
+    saved = root / "board-opencode.json"
+    (root / "models").write_text(row["model"] + "\n")
+    for damaged in (b'{"version":', b'{"version":2,"bindings":[]}', b'{"version":1,"bindings":{}}'):
+        saved.write_bytes(damaged)
+        with start() as restarted:
+            wait_for_account(lambda: restarted.app.state.board.accounts.duty["fetched_at"] is not None)
+            assert restarted.get("/api/snapshot").json()["accounts"]["data"]["codex"] == native["codex"]
+            for url, fields in ((add, body), (remove, {"provider": row["provider"]})):
+                refused = restarted.post(url, json=fields)
+                assert refused.status_code == 503 and refused.json()["error"] == "opencode_bindings_unavailable"
+                assert saved.read_bytes() == damaged
+
+
+def test_opencode_discovery_empty_broken_and_missing(opencode_cli, monkeypatch):
+    start, root, row = opencode_cli
+    with start() as client:
+        providers = root / "providers"
+        providers.write_text("[]")
+        discover = "/api/opencode/providers"
+        assert client.get(discover).json() == {"status": "ok", "providers": []}
+        providers.write_text("private diagnostic")
+        assert client.get(discover).json() == {"status": "error", "providers": []}
+        (root / "opencode").unlink()
+        # Restrict lookup to the temporary home even on machines with a real OpenCode.
+        (root / "python3").symlink_to(sys.executable)
+        monkeypatch.setenv("PATH", str(root))
+        assert client.get(discover).json() == {"status": "unavailable", "providers": []}
+        refused = client.post("/api/actions/opencode-add", json={"provider": row["provider"], "model": row["model"]})
+        assert refused.status_code >= 400 and refused.json()["ok"] is False
 
 
 def test_duty_action_shapes_data_and_accounts_publication(duty_actions):
@@ -2768,6 +2940,29 @@ def test_account_login_admission_and_removal(account_actions):
     for row in (first, second):
         assert client.post("/api/actions/login/cancel", json={"id": row["id"]}).status_code == 200
     wait_for_account(lambda: not board.logins.jobs)
+    add = "/api/actions/account-add"
+    new = {"family": "codex", "account": "fresh"}
+    for invalid in ({**new, "account": "../outside"}, {**new, "family": "claude", "account": "-flag"},
+                    {**new, "home": "/another"}, {**new, "family": "opencode"}):
+        assert client.post(add, json=invalid).status_code == 400
+    assert client.post(add, json={**new, "account": "c1"}).status_code == 409
+    inventory = root / "first-account.json"
+    for data, expected in (({"codex": [{"name": "existing"}]}, 503), ({"login_harnesses": ["codex"]}, 503),
+                           ({"codex": [], "login_harnesses": []}, 422)):
+        inventory.write_text(json.dumps(data))
+        client.portal.call(board.refresh_accounts)
+        assert client.post(add, json=new).status_code == expected
+    inventory.write_text(json.dumps({"codex": [], "claude": [], "login_harnesses": ["codex", "claude"]}))
+    client.portal.call(board.refresh_accounts)
+    for target in (new, {"family": "claude", "account": "cl-fresh"}):
+        initial = client.post(add, json=target).json()["login"]
+        wait_for_account(lambda: board.logins.rows[initial["id"]]["stage"] == "waiting")
+        assert client.post(add, json=target).json()["login"]["id"] == initial["id"]
+        assert client.post("/api/actions/login", json=target).status_code == 404
+        assert client.post("/api/actions/login/cancel", json={"id": initial["id"]}).json() == {"ok": True}
+    wait_for_account(lambda: not board.logins.jobs)
+    inventory.unlink()
+    client.portal.call(board.refresh_accounts)
     refused = client.post(remove, json={"family": "codex", "account": "fail"})
     assert refused.status_code == 422 and refused.json()["error"] == "cannot remove the last account"
     with client.websocket_connect("/ws") as socket:
@@ -2781,14 +2976,15 @@ def test_account_login_admission_and_removal(account_actions):
             snapshot = receive_until(socket, "accounts")["accounts"]
             assert all(row["name"] != name for row in snapshot["data"][family])
             assert client.post("/api/actions/login", json=body).status_code == 404
+        assert client.post(add, json=new).status_code == 503  # Failed read kept the previous rows.
 
 
-@pytest.mark.parametrize("route", ["login", "login/input", "login/cancel", "account-refresh", "account-remove"])
+@pytest.mark.parametrize("route", ["login", "login/input", "login/cancel", "account-refresh", "account-remove", "account-add"])
 def test_account_action_validation_protection_and_read_only(account_actions, route):
     client, board, _, calls = account_actions
     url = f"/api/actions/{route}"
     body = {"family": "codex", "account": "unknown", "id": "unknown", "text": "code"}
-    assert client.post(url, json=body).status_code == 404
+    assert client.post(url, json=body).status_code == (400 if route == "account-add" else 404)
     assert client.post(url, json={}).status_code == 400
     for headers in ({"Origin": None}, {"Origin": "http://evil.example"}, {"Host": "evil.example"},
                     {"X-Teamster-Board": None}, {"Content-Type": "text/plain"}):

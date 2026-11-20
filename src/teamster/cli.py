@@ -16,16 +16,16 @@
       teamster clean <slug> [--keep-branch]          remove worktree, archive all threads
       teamster accounts [--json] [--refresh]        read account limits and login status
       teamster reset-credit <account> [--credit ID] [--yes]  preview/use a free limit reset
-      teamster login <name> [--browser] [--events]   add/sign in to an isolated account
+      teamster login <name> [--browser] [--events [--new]]   add/sign in to an isolated account
       teamster account-remove <name>                remove a Codex account from the pool
-      teamster claude-login <name> [--config-dir DIR] [--keychain SERVICE] [--events]  add/sign in to a Claude account
+      teamster claude-login <name> [--config-dir DIR] [--keychain SERVICE] [--events [--new]]  add/sign in to a Claude account
       teamster claude-probe <name>                  check a Claude token and cache usage limits
       teamster claude-rename <old> <new>            rename a Claude account without moving credentials
       teamster claude-remove <name>                 remove a Claude account from the pool
       teamster --version                              print the installed version
       teamster docs [<name>]                         list documents or print one
       teamster path                                  print the package directory
-      teamster acp [--repo DIR] [--resume SESSION_ID] [--auth-method ID] [--events] -- PROGRAM [ARG ...]  chat with a local ACP agent
+      teamster acp [--repo DIR] [--resume SESSION_ID] [--auth-method ID] [--model ID] [--events] -- PROGRAM [ARG ...]  chat with a local ACP agent
       teamster migrate-home [--apply]                print or apply the move of legacy data out of ~/.codex
       teamster upgrade [--source URL|PATH] [--ref REF] [--yes]  preview/install a version side by side
       teamster versions [--prune]                    list installed versions; move unused ones to trash
@@ -365,6 +365,7 @@ def main():
     s.add_argument("--repo", default=".", metavar="DIR", help="session working directory (default: current directory)")
     s.add_argument("--resume", metavar="SESSION_ID", help="load a previous agent session")
     s.add_argument("--auth-method", metavar="ID", help="use an authentication method advertised by the agent")
+    s.add_argument("--model", metavar="ID", help="select and confirm the agent's session model before chatting")
     s.add_argument("--events", action="store_true", help="exchange chat and permission events as JSON lines")
     s.add_argument("program", metavar="PROGRAM", help="ACP agent executable")
     s.add_argument("agent_args", nargs=argparse.REMAINDER, metavar="ARG", help="arguments passed to the agent")
@@ -438,9 +439,11 @@ def main():
     s.add_argument("name")
     s.add_argument("--browser", action="store_true", help="use browser login instead of device auth")
     s.add_argument("--events", action="store_true", help="emit JSON events without a terminal")
+    s.add_argument("--new", action="store_true", help="with --events, add a new account only after verification")
     sub.add_parser("account-remove", help="remove a Codex account without deleting credentials").add_argument("name")
     s = sub.add_parser("claude-login", help="sign in interactively to an isolated Claude account")
     s.add_argument("--events", action="store_true", help="emit JSON events and accept codes on stdin")
+    s.add_argument("--new", action="store_true", help="with --events, add without replacing an existing account")
     s.add_argument("name")
     s.add_argument("--config-dir", metavar="DIR", help="isolated Claude config directory")
     s.add_argument("--keychain", metavar="SERVICE", help="Keychain service for the account token")

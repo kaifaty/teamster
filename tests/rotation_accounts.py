@@ -68,6 +68,30 @@ class AccountAuthTests(RotationTestCase):
         self.assertEqual([row["argv"] for row in self.trace() if row["command"] == "login"],
                          [["--device-auth"]] * 4 + [[]])
 
+        # Board additions enter the pool only after a distinct identity has been verified.
+        parent = self.root / ".codex-accounts"
+        args = [PYTHON, "-I", str(SCRIPT), "login", "fresh", "--events", "--new"]
+        self.env["CODEX_FAKE_DUTY_ACCOUNT_HOME"] = str(self.home)
+        duplicate = subprocess.run(args, env=self.env, capture_output=True, text=True, timeout=20)
+        result = json.loads(duplicate.stdout.splitlines()[-1])
+        self.assertEqual((result["ok"], result["status"], result["message"]), (False, "duplicate",
+                         "Этот аккаунт ChatGPT уже подключён под именем «main». Выбери «Добавить подписку» "
+                         "и войди в другой аккаунт ChatGPT."))
+        self.assertFalse(list(parent.glob("fresh-*")))
+        self.assertNotIn("fresh", [a["name"] for a in self.worker().config.accounts_config()["accounts"]])
+        alternate = self.root / "fresh-fixture"
+        alternate.mkdir()
+        self.account(alternate, "C", self.reset)
+        self.env["CODEX_FAKE_DUTY_ACCOUNT_HOME"] = str(alternate)
+        self.assertTrue(json.loads(self.cli("login", "fresh", "--events", "--new").splitlines()[-1])["ok"])
+        target = Path(self.worker().config.accounts_config()["accounts"][-1]["home"])
+        self.assertEqual(str(target), [event["home"] for event in self.trace() if event["command"] == "login"][-1])
+        self.assertTrue(target.is_dir())
+        self.cli("account-remove", "fresh")
+        self.assertTrue(json.loads(self.cli("login", "fresh", "--events", "--new").splitlines()[-1])["ok"])
+        self.assertNotEqual(str(target), self.worker().config.accounts_config()["accounts"][-1]["home"])
+        self.assertTrue(target.is_dir())
+
     # setup-token's sign-in frame, then its result frame drawn over it; TOKEN is the token.
     DIFF_FRAMES = (["Browser didn't open? Use the url below to sign in (c to copy)", "",
                     "https://login.example.test/claude", "", "Paste code here if prompted >"],
@@ -83,12 +107,18 @@ class AccountAuthTests(RotationTestCase):
         fixture = self.root / "event-fixture.json"
         fixture.write_text("{}")
         values = []
+        receipt = None
 
         class Keychain(socketserver.StreamRequestHandler):
             def handle(handler):
+                nonlocal receipt
                 request = json.loads(handler.rfile.readline())
                 if "save" in request:
                     values.append(request["save"])
+                    receipt = request.get("receipt")
+                elif "delete" in request and request["delete"] == receipt:
+                    values.pop()
+                    receipt = None
                 token = values[-1] if values else ""
                 if json.loads(fixture.read_text()).get("mismatch"):
                     token = "different"
@@ -97,7 +127,7 @@ class AccountAuthTests(RotationTestCase):
         with socketserver.TCPServer(("127.0.0.1", 0), Keychain) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            source = r'''import fcntl, json, os, shlex, signal, socket, struct, sys, termios, time, tty
+            source = r'''import fcntl, json, os, re, shlex, signal, socket, struct, sys, termios, time, tty
 from pathlib import Path
 fixture = json.loads(Path(FIXTURE).read_text())
 def trace(**fields):
@@ -107,16 +137,26 @@ def trace(**fields):
 token = 'sk-ant-' + 'oat01-' + 'event-secret-1234567890'
 if Path(sys.argv[0]).name == 'security':
     trace()
+    service = 'codex-worker-claude-' + (Path(os.environ['CLAUDE_CONFIG_DIR']).name if fixture.get('new') else 'events')
     if fixture.get('save_gate') and sys.argv[1:] == ['-i']:
         while not Path(fixture['save_gate']).exists():
             time.sleep(0.01)
     request = {}
     if sys.argv[1:] == ['-i']:
         args = shlex.split(sys.stdin.readline())
-        assert args == ['add-generic-password', '-U', '-s', 'codex-worker-claude-events', '-a', 'fixture-user', '-w', token]
+        flags = ['-j', args[2]] if fixture.get('new') else ['-U']
+        assert args == ['add-generic-password', *flags, '-s', service, '-a', 'fixture-user', '-w', token]
         request = {'save': args[-1]}
+        if fixture.get('new'):
+            assert re.fullmatch('[0-9a-f]{32}', args[2])
+            if fixture.get('collision'):
+                sys.exit(45)
+            request['receipt'] = [service, 'fixture-user', args[2]]
+    elif sys.argv[1] == 'delete-generic-password':
+        assert sys.argv[1:-1] == ['delete-generic-password', '-s', service, '-a', 'fixture-user', '-j']
+        request = {'delete': [service, 'fixture-user', sys.argv[-1]]}
     else:
-        assert sys.argv[1:] == ['find-generic-password', '-s', 'codex-worker-claude-events', '-a', 'fixture-user', '-w']
+        assert sys.argv[1:] == ['find-generic-password', '-s', service, '-a', 'fixture-user', '-w']
         if os.environ.get('OLDER_PROBE_LOOKUP'):
             # An older probe's lookup that finds no token once its gate opens.
             while not Path(fixture['lookup_gate']).exists():
@@ -310,6 +350,42 @@ else:
             self.assertEqual(limits["status"], "allowed")
             self.assertIn("probe_attempted_at", limits)
             self.assertIn("5h 25%", events[-1]["message"])
+
+    def test_new_claude_login_keeps_existing_sign_in_locations(self):
+        with self.claude_event_fixture() as (fixture, trace, values):
+            (self.home / "codex-worker.json").write_text(json.dumps({"accounts": [], "claude": {"accounts": []}}))
+            listing = json.loads(self.cli("accounts", "--json"))
+            self.assertEqual((listing["codex"], listing["claude"], listing["login_harnesses"]),
+                             ([], [], ["codex", "claude"]))
+            fixture.write_text(json.dumps({"new": True}))
+            blocked = self.run_claude_event_login("--new", "--keychain", "codex-worker-claude-reviewer")
+            self.assertFalse(json.loads(blocked.stdout.splitlines()[-1])["ok"])
+            self.assertFalse(trace.exists())
+            values.append("existing-item")
+            for failure in ("mismatch", "collision"):
+                fixture.write_text(json.dumps({"new": True, failure: True}))
+                failed = self.run_claude_event_login("--new")
+                self.assertFalse(json.loads(failed.stdout.splitlines()[-1])["ok"])
+                self.assertEqual(values, ["existing-item"])
+                rows = [json.loads(line) for line in trace.read_text().splitlines()]
+                self.assertEqual(sum(r["argv"][:1] == ["delete-generic-password"] for r in rows),
+                                 1 if failure == "mismatch" else 0)
+                trace.unlink()
+            values.clear()
+            fixture.write_text(json.dumps({"new": True}))
+            self.assertEqual(self.run_claude_event_login("--new").returncode, 0)
+            self.env["CODEX_FAKE_DUTY_ACCOUNT_HOME"] = str(self.home)
+            self.assertTrue(json.loads(self.cli("login", "first", "--events", "--new").splitlines()[-1])["ok"])
+            listing = json.loads(self.cli("accounts", "--json"))
+            self.assertEqual(([a["name"] for a in listing["codex"]], [a["name"] for a in listing["claude"]]),
+                             (["first"], ["events"]))
+            directory = self.worker().config.accounts_config()["claude"]["accounts"][-1]["config_dir"]
+            setup = json.loads(trace.read_text().splitlines()[0])
+            self.assertEqual(setup["env"]["CLAUDE_CONFIG_DIR"], directory)
+            self.assertTrue(Path(directory).is_dir())
+            repeat = self.run_claude_event_login("--new")
+            self.assertFalse(json.loads(repeat.stdout.splitlines()[-1])["ok"])
+            self.assertEqual(len(values), 1)
 
     def test_claude_login_events_prompt_again_after_an_invalid_code(self):
         with self.claude_event_fixture() as (fixture, trace, values):

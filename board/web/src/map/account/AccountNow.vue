@@ -10,8 +10,8 @@ import { codeLeft, loginCommand, loginLine, loginLive, loginSteps, type Family, 
 const props = defineProps<{
   family: Family;
   name: string;
-  row: AccountRow;
-  nowView: NowView;
+  row: AccountRow | null;
+  nowView: NowView | null;
   /** The latest sign-in to show, going or finished; null when there is none or it was put away. */
   login: Login | null;
   /** «Войти заново» was pressed and the server has not answered yet. */
@@ -88,13 +88,13 @@ watch(
 </script>
 
 <template>
-  <section ref="deck" class="deck now" :class="`tone-${nowView.tone}-deck`" aria-labelledby="account-now" tabindex="-1">
+  <section ref="deck" class="deck now" :class="nowView && `tone-${nowView.tone}-deck`" aria-labelledby="account-now" tabindex="-1">
     <div class="deck-head">
       <span class="sigil" aria-hidden="true">◉</span>
       <h3 id="account-now">Сейчас</h3>
     </div>
 
-    <div class="state">
+    <div v-if="nowView" class="state">
       <p class="lead" :class="`tone-${nowView.tone}`">{{ nowView.lead }}</p>
       <!-- While a sign-in goes, its own steps say what follows. -->
       <template v-if="!live">
@@ -109,7 +109,7 @@ watch(
     </div>
 
     <p v-if="loginError" class="error" role="alert">
-      Не удалось начать вход: {{ loginError }}. Можно войти в терминале: <code class="mono">{{ command }}</code>
+      Не удалось начать вход: {{ loginError }}<template v-if="row">. Можно войти в терминале: <code class="mono">{{ command }}</code></template>
     </p>
 
     <div v-if="login" ref="panel" class="login well" :class="{ live }" aria-live="polite" tabindex="-1">
@@ -125,7 +125,7 @@ watch(
       <ol v-if="family === 'codex' && live && (login.url || login.code)" class="todo">
         <li>
           <span class="n" aria-hidden="true">1</span>
-          <span>Открой страницу входа и войди в аккаунт ChatGPT этой подписки<template v-if="row.email"> ({{ row.email }})</template>.</span>
+          <span>Открой страницу входа и войди в аккаунт ChatGPT этой подписки<template v-if="row?.email"> ({{ row.email }})</template>.</span>
           <a v-if="login.url" class="key main" :href="login.url" target="_blank" rel="noopener noreferrer">Открыть страницу входа ↗</a>
         </li>
         <li v-if="login.code">
@@ -166,7 +166,7 @@ watch(
         <button v-if="live" type="button" class="key danger" @click="emit('cancel')">Отменить вход</button>
         <button v-if="failed" type="button" class="key main" :disabled="starting" @click="emit('signIn')">Попробовать снова</button>
         <button v-if="finished" type="button" class="key" @click="emit('dismiss')">Скрыть</button>
-        <span v-if="failed" class="dim">или в терминале: <code class="mono">{{ command }}</code></span>
+        <span v-if="failed && row" class="dim">или в терминале: <code class="mono">{{ command }}</code></span>
       </div>
 
       <!-- A failed sign-in opens the tool's own lines: the reason is usually there. -->

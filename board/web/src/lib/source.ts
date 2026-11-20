@@ -3,6 +3,11 @@ import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMess
 import type { DutyChatView } from "../dutyChatTypes";
 import { connectSocket, type ConnectionState } from "./socket";
 
+export interface OpenCodeProviders {
+  status: "ok" | "unavailable" | "error";
+  providers: { id: string; name: string; models: string[] }[];
+}
+
 /** Where the board gets its data: the real server, or the fixtures in `dev:fixture` mode. */
 export interface BoardSource {
   /** Shown in the header next to the connection state, e.g. "фикстуры". */
@@ -11,7 +16,7 @@ export interface BoardSource {
   /** null for an unknown task (404). */
   fetchDetail(slug: string): Promise<TaskDetail | null>;
   /** A new ACP conversation for this task. Fixture sources have no local agent. */
-  openTaskChat?(slug: string): WebSocket;
+  openTaskChat?(slug: string, binding?: { provider: string; model: string }): WebSocket;
   /** null when the file does not exist (404). */
   fetchFile(slug: string, name: TaskFile): Promise<string | null>;
   /**
@@ -27,6 +32,7 @@ export interface BoardSource {
   fetchResearch(): Promise<ResearchView | null>;
   /** The conversation with the duty; null when the server has no such route yet (404). Absent from sources without it. */
   fetchDutyChat?(): Promise<DutyChatView | null>;
+  fetchOpenCodeProviders?(): Promise<OpenCodeProviders>;
   /** Completed phases and verdicts between two Unix times, both inclusive. */
   fetchEvents(since: number, until: number): Promise<Events>;
   /** `teamster report` from the local date `since` (YYYY-MM-DD), grouped by `by` (e.g. "executor"). */
@@ -47,7 +53,14 @@ export function serverSource(): BoardSource {
   return {
     label: null,
     connect: (onMessage, onState) => connectSocket({ url: `${scheme}://${location.host}/ws`, onMessage, onState }),
-    openTaskChat: (slug) => new WebSocket(`${scheme}://${location.host}/ws/tasks/${encodeURIComponent(slug)}/chat`, "teamster-board-chat"),
+    openTaskChat(slug, binding) {
+      const url = new URL(`${scheme}://${location.host}/ws/tasks/${encodeURIComponent(slug)}/chat`);
+      if (binding) {
+        url.searchParams.set("provider", binding.provider);
+        url.searchParams.set("model", binding.model);
+      }
+      return new WebSocket(url, "teamster-board-chat");
+    },
     async fetchDetail(slug) {
       const response = await get(`/api/tasks/${encodeURIComponent(slug)}`);
       return response ? ((await response.json()) as TaskDetail) : null;
@@ -76,6 +89,11 @@ export function serverSource(): BoardSource {
     async fetchDutyChat() {
       const response = await get("/api/duty-chat");
       return response ? ((await response.json()) as DutyChatView) : null;
+    },
+    async fetchOpenCodeProviders() {
+      const response = await get("/api/opencode/providers");
+      if (!response) throw new Error("404");
+      return (await response.json()) as OpenCodeProviders;
     },
     async fetchEvents(since, until) {
       const response = await get(`/api/events?since=${Math.floor(since)}&until=${Math.ceil(until)}`);

@@ -17,6 +17,7 @@ import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
+from . import opencode
 from .accounts import Accounts, Reports, probe
 from .actions import Actions, action_body, error
 from .art import MEDIA_TYPES, art_file, art_index
@@ -173,6 +174,12 @@ class Board:
                                publish=self.publish_launch, worktrees_path=settings.path("worktrees"),
                                no_land=settings.no_land, publish_research=self.publish_research)
         self.accounts = Accounts(settings.teamster, settings.accounts_seconds)
+        self.bindings_path = settings.task_home / "board-opencode.json"
+        try:
+            self.bindings = opencode.read_bindings(self.bindings_path)
+        except ValueError as exc:
+            LOGGER.warning("%s", exc)
+            self.bindings = {}
         self.duty = Duty(self.actions)
         self._duty_reason = self.actions.reason or "old_teamster"
         self._duty_mode = "off"
@@ -231,6 +238,8 @@ class Board:
     @property
     def account_value(self):
         value = {**self.accounts.value, "last_logins": self.store.last_logins()}
+        if self.bindings:
+            value["opencode"] = list(self.bindings.values())
         data = value["data"]
         if not isinstance(data, dict) or not any(isinstance(data.get(family), list) for family in ("codex", "claude")):
             return value
@@ -362,6 +371,28 @@ class Board:
             await probe(self.settings.teamster, account)
         await self.refresh_accounts()
 
+    async def bind_opencode(self, data, add):
+        fields = {"provider", "model"} if add else {"provider"}
+        provider = data.get("provider")
+        if (set(data) != fields or not isinstance(provider, str) or not opencode.PROVIDER.fullmatch(provider)
+                or (add and not isinstance(data["model"], str))):
+            return error(400, "Invalid OpenCode binding")
+        binding = None
+        if add:
+            catalog = await asyncio.to_thread(opencode.discover)
+            if catalog["status"] != "ok":
+                return error(503, "opencode_" + catalog["status"])
+            binding = opencode.catalog_binding(catalog, provider, data["model"])
+            if binding is None:
+                return error(409, "opencode_model_unavailable")
+        async with self.lock:
+            try:
+                self.bindings = await asyncio.to_thread(opencode.update_binding, self.bindings_path, provider, binding)
+            except (ValueError, OSError):
+                return error(503, "opencode_bindings_unavailable")
+            self.publish({"type": "accounts", "accounts": self.account_value})
+        return {"ok": True}
+
     async def remove_account(self, family, account):
         target = (family, account)
         if any((row["family"], row["account"]) == target for row in self.logins.rows.values()
@@ -484,6 +515,10 @@ def create_app(settings=None):
         except ValueError as exc:
             raise HTTPException(422, str(exc))
 
+    @app.get("/api/opencode/providers")
+    async def opencode_providers():
+        return await asyncio.to_thread(opencode.discover)
+
     @app.get("/api/tasks/{slug}")
     async def detail(slug: str):
         task = await asyncio.to_thread(board.store.detail, slug)
@@ -560,6 +595,9 @@ def create_app(settings=None):
                 result = {**result, "task": task}
         return result
 
+    @app.post("/api/actions/opencode-add")
+    @app.post("/api/actions/opencode-remove")
+    @app.post("/api/actions/account-add")
     @app.post("/api/actions/login")
     @app.post("/api/actions/login/input")
     @app.post("/api/actions/login/cancel")
@@ -576,6 +614,31 @@ def create_app(settings=None):
             return await board.logins.input(data)
         if route == "/api/actions/login/cancel":
             return board.logins.cancel(data)
+        if route in ("/api/actions/opencode-add", "/api/actions/opencode-remove"):
+            return await board.bind_opencode(data, add=route.endswith("/opencode-add"))
+        if route == "/api/actions/account-add":
+            family, name = data.get("family"), data.get("account")
+            if set(data) != {"family", "account"} or family not in ("codex", "claude") or not isinstance(name, str):
+                return error(400, "Expected a native family and a new account name")
+            pattern = r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,40}" if family == "codex" else r"[a-z0-9][a-z0-9-]{0,254}"
+            if not re.fullmatch(pattern, name):
+                return error(400, "Invalid account name")
+            snapshot = board.accounts.value
+            if snapshot["error"] or not isinstance(snapshot["data"], dict):
+                return error(503, "Account list unavailable")
+            rows = snapshot["data"].get(family)
+            if not isinstance(rows, list):
+                return error(503, "Account list unavailable")
+            supported = snapshot["data"].get("login_harnesses")
+            if not isinstance(supported, list):
+                return error(503, "New sign-in availability unknown; update the worker")
+            if family not in supported:
+                return error(422, "Harness unavailable")
+            if any(isinstance(row, dict) and row.get("name") == name for row in rows):
+                return error(409, "Account already exists")
+            if (family, name) in board.removing_accounts:
+                return error(409, "account_removal_in_progress")
+            return board.logins.start(family, name, new=True)
         target, failure = board.account_target(data)
         if failure is not None:
             return failure

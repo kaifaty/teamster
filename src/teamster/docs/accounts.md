@@ -38,6 +38,14 @@ callers with pipes. stdout contains only JSON objects, one per line, flushed aft
 stderr remains plain text. Account tables and interactive instructions are omitted. Exit codes
 match the ordinary commands; `result.ok` is true exactly when the command exits zero.
 
+The Board adds native subscriptions with `login <name> --events --new` or
+`claude-login <name> --events --new`. Both require a new pool name and allocate a private
+directory under the native accounts directory. Claude allocates a matching Keychain service.
+The inventory and this new-account flow accept explicitly empty account lists during initial setup.
+Codex adds the account to the pool only after a verified, distinct ChatGPT sign-in.
+Claude rejects a repeated pool name. Its setup-token check provides no subscription ID
+for identifying the same Claude account under two different names.
+
 The event protocol is:
 
 - `{"event":"output","text":"…"}`: for Codex, each nonempty output line with ANSI and other
@@ -90,7 +98,7 @@ On any other reason (`authentication failed`, `request failed`, including timeou
 errors) the sign-in ends with `result` `ok: false` and that reason as `status`; the Keychain item,
 the account settings and the account's cached limits stay as they were, so a rejected token never
 replaces one that still works, and the journal row records the reason. A token that is saved is
-written using `security -i` and `add-generic-password -U`, read back with the same Keychain lookup
+written using `security -i` and `add-generic-password` (`-U` for ordinary sign-in), read back with the same Keychain lookup
 as tasks, and only then are the account settings saved; the check's answer is recorded as the
 account's limits and probe time, so the account is not probed a second time. The answer is recorded
 under the account's probe lock, after any probe of the replaced token still running, and first

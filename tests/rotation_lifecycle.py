@@ -1854,6 +1854,8 @@ worker.notifications.reap_notifications = reap
     def test_accounts_identifies_duplicates_missing_login_and_rpc_error(self):
         self.configure()
         self.env["TEAMSTER_CLAUDE"] = str(self.fake)
+        security = self.root / "security"
+        security.symlink_to(self.fake)
         self.account(self.other, "A", self.reset)
         config_path = self.home / "claude-accounts.json"
         config = json.loads(config_path.read_text())
@@ -1917,6 +1919,7 @@ worker.notifications.reap_notifications = reap
                    "credits": {"balance": None, "unlimited": None, "has_credits": None, "spendable": None},
                    "reset_credits": {"available_count": None, "expires_at": None}}
         self.assertEqual(report, {
+            "login_harnesses": ["codex", "claude"],
             "codex": [main, dict(main, name="second", status="duplicate",
                                  reset_credits={"available_count": 0, "expires_at": []}),
                       dict(missing, name="logged-out", status="not_logged_in"),
@@ -1932,6 +1935,11 @@ worker.notifications.reap_notifications = reap
             "credits_floor": 0, "credits_floor_until": None, "duty": None})
         for private in (token, str(self.home), str(self.other), str(claude_home)):
             self.assertNotIn(private, encoded)
+        with mock.patch.dict(self.env, {"TEAMSTER_CODEX": str(self.root / "absent"), "PATH": str(self.root)}):
+            self.assertEqual(json.loads(self.cli("accounts", "--json"))["login_harnesses"], ["claude"])
+            security.unlink()
+            without_keychain = json.loads(self.cli("accounts", "--json"))
+            self.assertEqual((without_keychain["login_harnesses"], without_keychain["claude"]), ([], report["claude"]))
         self.assertFalse(self.invocations())
 
     def test_account_read_distinguishes_explicit_logout_from_rpc_errors_and_timeouts(self):

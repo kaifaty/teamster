@@ -162,6 +162,11 @@ directory). To chat in a task's worktree, pass that worktree as the directory.
 teamster acp --repo . -- opencode acp
 ```
 
+To use a specific OpenCode subscription, pass the exact provider/model ID from
+`opencode models`, for example `--model alibaba-token-plan/qwen4-max` before
+`-- opencode acp`. Teamster waits for the agent to confirm the selected model
+before it accepts the first prompt. An unavailable or unconfirmed selection ends the session.
+
 Sign in using the agent's own CLI, or select an agent-managed authentication method with
 `--auth-method ID`. Enter one message per line. Teamster streams the reply to stdout and
 prints the session ID, tool activity and permission choices to stderr. Choose a numbered

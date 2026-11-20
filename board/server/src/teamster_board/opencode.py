@@ -1,0 +1,92 @@
+"""OpenCode provider discovery and the Board's local model bindings."""
+
+import fcntl
+import json
+import re
+import subprocess
+from pathlib import Path
+
+
+PROVIDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*")
+BINDINGS_ERROR = "Cannot read board-opencode.json. Check its format, version and permissions."
+
+
+def _read(executable, *arguments):
+    return subprocess.run(
+        [executable, *arguments], cwd=Path.home(), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, encoding="utf-8",
+        timeout=15, check=True,
+    ).stdout
+
+
+def discover(executable="opencode"):
+    """Only offer catalog models belonging to an authenticated integration."""
+    try:
+        integrations = json.loads(_read(executable, "auth", "list", "--format", "json"))
+        if not isinstance(integrations, list):
+            raise ValueError("Invalid integration list")
+        providers = {}
+        for item in integrations:
+            provider, name, connections = item["id"], item["name"], item["connections"]
+            if not isinstance(connections, list) or not isinstance(name, str):
+                raise ValueError("Invalid integration")
+            if connections and PROVIDER.fullmatch(provider):
+                providers[provider] = {"id": provider, "name": name, "models": []}
+        if providers:
+            for model in _read(executable, "models").strip().splitlines():
+                provider, slash, part = model.partition("/")
+                if not slash or not part:
+                    raise ValueError("Invalid model list")
+                if provider in providers and MODEL.fullmatch(part):
+                    providers[provider]["models"].append(model)
+        return {"status": "ok", "providers": list(providers.values())}
+    except FileNotFoundError:
+        return {"status": "unavailable", "providers": []}
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        return {"status": "error", "providers": []}
+
+
+def catalog_binding(catalog, provider, model):
+    for item in catalog["providers"]:
+        if item["id"] == provider and model in item["models"]:
+            return {"provider": provider, "name": item["name"], "model": model}
+    return None
+
+
+def read_bindings(path):
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError(BINDINGS_ERROR) from exc
+    if (not isinstance(saved, dict) or set(saved) != {"version", "bindings"}
+            or type(saved["version"]) is not int or saved["version"] != 1 or not isinstance(saved["bindings"], list)):
+        raise ValueError(BINDINGS_ERROR)
+    rows = {}
+    for row in saved["bindings"]:
+        if (not isinstance(row, dict) or set(row) != {"provider", "name", "model"}
+                or not all(isinstance(value, str) for value in row.values())):
+            raise ValueError(BINDINGS_ERROR)
+        provider, _, model = row["model"].partition("/")
+        if provider != row["provider"] or not PROVIDER.fullmatch(provider) or not MODEL.fullmatch(model) or provider in rows:
+            raise ValueError(BINDINGS_ERROR)
+        rows[provider] = row
+    return rows
+
+
+def update_binding(path, provider, binding):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        rows = read_bindings(path)
+        if binding is None:
+            rows.pop(provider, None)
+        else:
+            rows[provider] = binding
+        saved = {"version": 1, "bindings": list(rows.values())}
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(saved, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.replace(path)
+        return rows

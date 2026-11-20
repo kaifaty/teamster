@@ -7,14 +7,17 @@ import os
 import pty
 import re
 import selectors
+import shutil
 import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 import unicodedata
-from contextlib import contextmanager
+import uuid
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from . import accounts, claude_accounts, claude_review, claude_runner, config, credit_resets, procs, telemetry_log, terminal_screen
@@ -162,7 +165,11 @@ def run_login_events(a, command):
 
     handlers = {sig: signal.signal(sig, cancelled) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        command(a, events)
+        if getattr(a, "new", False):
+            with ExitStack() as pending:
+                command(a, events, pending)
+        else:
+            command(a, events)
     except (SystemExit, KeyboardInterrupt) as exc:
         if events.finished:
             raise
@@ -301,24 +308,49 @@ def claude_login_events(environment, events):
 def cmd_login(a):
     if getattr(a, "events", False):
         return run_login_events(a, _cmd_login)
+    if getattr(a, "new", False):
+        procs.die("--new requires --events")
     return _cmd_login(a)
 
 
-def _cmd_login(a, events=None):
+def _require_new_name(pool, name):
+    if any(item["name"] == name for item in pool):
+        procs.die("Account already exists")
+
+
+def _new_sign_in_dir(parent, name, pending):
+    # CLIs may key credentials to the absolute directory. Keep the verified location
+    # and clean up only this sign-in's private directory if registration fails.
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory = tempfile.mkdtemp(prefix=name[:40] + "-", dir=parent)
+    pending.callback(shutil.rmtree, directory)
+    return directory
+
+
+def _save_codex_config(cfg):
+    cfg.pop("enabled", None)
+    path = config.data_path("settings")
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def _cmd_login(a, events=None, pending=None):
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,40}", a.name):
         procs.die("invalid account name")
     binary = config.codex_binary()
     with config.home_lock(exclusive=True):
-        cfg = config.accounts_config()
-        account = next((i for i in cfg["accounts"] if i["name"] == a.name), None)
-        if account is None:
-            account = {"name": a.name, "home": str(config.CODEX_HOME.parent / ".codex-accounts" / a.name)}
-            cfg["accounts"].append(account)
-        cfg.pop("enabled", None)
-        path = config.data_path("settings")
-        tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
-        tmp.replace(path)
+        cfg = config.accounts_config(allow_empty_pools=bool(pending))
+        parent = config.CODEX_HOME.parent / ".codex-accounts"
+        if pending:
+            _require_new_name(cfg["accounts"], a.name)
+            account = {"name": a.name, "home": _new_sign_in_dir(parent, a.name, pending)}
+        else:
+            account = next((i for i in cfg["accounts"] if i["name"] == a.name), None)
+            if account is None:
+                account = {"name": a.name, "home": str(parent / a.name)}
+                cfg["accounts"].append(account)
+            _save_codex_config(cfg)
     accounts.prepare_home(account)
     try:
         argv = [binary, "login"] + ([] if a.browser else ["--device-auth"])
@@ -335,10 +367,12 @@ def _cmd_login(a, events=None):
         raise SystemExit(code if code > 0 else 128 - code)
     if events:
         events.send("stage", stage="checking")
-    # Like `accounts`, read the homes under the shared lock so migrate-home cannot move them meanwhile.
-    with config.home_lock():
+    with config.home_lock(exclusive=bool(pending)):
         # Re-read the settings: another login may have added an account during this sign-in.
-        cfg = config.accounts_config()
+        cfg = config.accounts_config(allow_empty_pools=bool(pending))
+        if pending:
+            _require_new_name(cfg["accounts"], a.name)
+            cfg["accounts"].append(account)
         infos = accounts.snapshots(cfg)
         info = next((item for item in infos if item["name"] == a.name), None)
         if info is None:
@@ -347,6 +381,11 @@ def _cmd_login(a, events=None):
         others = [item for item in infos if item.get("duplicate") == a.name]
         other = info.get("duplicate") or (others[0]["name"] if others else None)
         status = "duplicate" if other else codex_status(info, cfg) or "unknown"
+        if pending and status in ("available", "exhausted"):
+            events.saving = True
+            _save_codex_config(cfg)
+            pending.pop_all()
+            events.saving = False
         record_login("codex", a.name, status)
     if not events:
         print(ACCOUNTS_HEADER)
@@ -354,7 +393,12 @@ def _cmd_login(a, events=None):
             print(account_line(item, cfg))
     ru = cfg.get("language", "en") == "ru"
     message = ""
-    if other:
+    if other and pending:
+        message = (f"Этот аккаунт ChatGPT уже подключён под именем «{other}». Выбери «Добавить подписку» "
+                   "и войди в другой аккаунт ChatGPT." if ru else
+                   f"This ChatGPT account is already connected as {other}. Choose Add subscription "
+                   "and sign in with a different ChatGPT account.")
+    elif other:
         message = (f"{a.name} — тот же аккаунт ChatGPT, что и {other}; войди заново другим аккаунтом: "
               f"teamster login {a.name}" if ru else
               f"{a.name} is the same ChatGPT account as {other}; sign in again with another account: "
@@ -393,12 +437,12 @@ def terminal_device():
 
 
 @contextmanager
-def _locked_account_pool(family):
+def _locked_account_pool(family, *, allow_empty_pools=False):
     path = config.data_path("settings")
     with config.home_lock(exclusive=True):
         source = config.settings_path()
         settings = json.loads(source.read_text(encoding="utf-8")) if source.exists() else {}
-        cfg = config.accounts_config()
+        cfg = config.accounts_config(allow_empty_pools=allow_empty_pools)
         if family == "claude":
             pool = settings.setdefault("claude", {}).setdefault("accounts", cfg["claude"]["accounts"])
         else:
@@ -464,20 +508,39 @@ def probe_claude_account(name, login=False):
 def cmd_claude_login(a):
     if getattr(a, "events", False):
         return run_login_events(a, _cmd_claude_login)
+    if getattr(a, "new", False):
+        procs.die("--new requires --events")
     return _cmd_claude_login(a)
 
 
-def _cmd_claude_login(a, events=None):
+def _discard_new_claude_item(service, user, marker, environment):
+    try:
+        subprocess.run(["security", "delete-generic-password", "-s", service, "-a", user, "-j", marker],
+                       env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=config.ACCOUNT_TIMEOUT, start_new_session=True, check=True)
+    except (OSError, subprocess.SubprocessError):
+        print(f"Could not remove unregistered Claude Keychain item {service!r}", file=sys.stderr)
+
+
+def _cmd_claude_login(a, events=None, pending=None):
     if not re.fullmatch(r"[a-z0-9-]+", a.name):
         procs.die("Claude account name must contain only a-z, 0-9 and '-'")
     config.require_claude()
-    cfg = config.accounts_config()
+    cfg = config.accounts_config(allow_empty_pools=bool(pending))
     pool = cfg["claude"]["accounts"]
     previous = next((account for account in pool if account["name"] == a.name), None)
     directory = a.config_dir or (previous["config_dir"] if previous else
                                  str(Path.home() / ".claude-accounts" / a.name))
     service = a.keychain or (previous["token_keychain"] if previous else
                              "codex-worker-claude-" + a.name)
+    if pending:
+        if a.config_dir or a.keychain:
+            procs.die("--new creates its own config directory and Keychain service")
+        if not shutil.which("security"):
+            procs.die("Claude sign-in requires the macOS Keychain security command")
+        _require_new_name(pool, a.name)
+        directory = _new_sign_in_dir(Path.home() / ".claude-accounts", a.name, pending)
+        service = "codex-worker-claude-" + Path(directory).name
     if events and any(char in '\\"' or unicodedata.category(char).startswith("C")
                       for value in (service, os.environ.get("USER", "")) for char in value):
         return events.result("failed", "Keychain service and user must not contain control characters, "
@@ -504,8 +567,10 @@ def _cmd_claude_login(a, events=None):
         events.send("stage", stage="saving")
         # security's interactive command parser reads the password from a pipe,
         # keeping it out of argv, the environment and the terminal.
-        arguments = ["add-generic-password", "-U", "-s", service,
-                     "-a", os.environ.get("USER", ""), "-w", events.token]
+        user = environment.get("USER", "")
+        marker = uuid.uuid4().hex if pending else None
+        options = ["-j", marker] if pending else ["-U"]
+        arguments = ["add-generic-password", *options, "-s", service, "-a", user, "-w", events.token]
         command = " ".join('"' + value + '"' for value in arguments) + "\n"
         proc = subprocess.Popen(["security", "-i"], env=environment, stdin=subprocess.PIPE,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -514,6 +579,9 @@ def _cmd_claude_login(a, events=None):
             proc.communicate(command.encode("utf-8"), timeout=config.ACCOUNT_TIMEOUT)
             if proc.returncode:
                 return events.result("failed", "Claude login failed; account settings were not changed", code=1)
+            if pending:
+                # A successful add without -U created this item. Match its marker across keychains on rollback.
+                pending.callback(_discard_new_claude_item, service, user, marker, environment)
         finally:
             procs.terminate(proc)
         if claude_runner.account_environment(account, config.ACCOUNT_TIMEOUT)[1] != events.token:
@@ -531,7 +599,9 @@ def _cmd_claude_login(a, events=None):
                         procs.die("Claude login failed; account settings were not changed")
         except OSError:
             procs.die("Claude login requires a terminal and the Claude CLI and Keychain tools")
-    with _locked_account_pool("claude") as pool:
+    with _locked_account_pool("claude", allow_empty_pools=bool(pending)) as pool:
+        if pending:
+            _require_new_name(pool, a.name)
         current = next((item for item in pool if item["name"] == a.name), None)
         if current is None:
             if previous is not None:
@@ -540,6 +610,8 @@ def _cmd_claude_login(a, events=None):
         else:
             current.update(account)
         claude_accounts.clear_limits(a.name)
+    if pending:
+        pending.pop_all()
     if events:
         # The check already answered for the saved token: book it instead of probing again.
         # Like the probe, it must not run while the home moves.

@@ -298,7 +298,7 @@ def validate_role_profiles(profiles):
                 procs.die(f"{label} effort for {provider} must be a nonempty string")
 
 
-def accounts_config():
+def accounts_config(*, allow_empty_pools=False):
     p = settings_path()
     cfg = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
     if not isinstance(cfg, dict):
@@ -347,7 +347,7 @@ def accounts_config():
             "name": "default",
             "config_dir": claude.get("config_dir", "~/.claude-accounts/reviewer"),
             "token_keychain": claude.get("token_keychain", "codex-worker-claude-reviewer")}]
-    if not isinstance(claude["accounts"], list) or not claude["accounts"]:
+    if not isinstance(claude["accounts"], list) or (not allow_empty_pools and not claude["accounts"]):
         procs.die("claude.accounts must be a nonempty list")
     claude_names = set()
     for account in claude["accounts"]:
@@ -478,7 +478,7 @@ def accounts_config():
         procs.die("reset_credit_min_hours must be a finite nonnegative number")
     names = set()
     homes = set()
-    if not isinstance(cfg["accounts"], list) or not cfg["accounts"]:
+    if not isinstance(cfg["accounts"], list) or (not allow_empty_pools and not cfg["accounts"]):
         procs.die("accounts must be a nonempty list")
     for a in cfg["accounts"]:
         if not isinstance(a, dict):

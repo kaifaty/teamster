@@ -407,16 +407,8 @@ export interface TaskChanges {
   uncommitted: number;
 }
 
-// A subscription's sign-ins, and the journal's latest one per subscription.
-export type { LastLogin, Login, LoginStage } from "./loginTypes";
-import type { LastLogin, Login } from "./loginTypes";
-
-export interface Accounts {
-  fetched_at: number | null;
-  error: string | null;
-  data: unknown | null; // `accounts --json`, with duty selection and per-account pin ability added
-  last_logins?: LastLogin[]; // missing from an older server
-}
+export type { Accounts, LastLogin, Login, LoginStage } from "./loginTypes";
+import type { Accounts, Login } from "./loginTypes";
 
 export interface Gpu {
   name: string;

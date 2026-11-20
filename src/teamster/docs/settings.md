@@ -143,6 +143,7 @@ All timestamps below are UTC ISO 8601 strings; unknown values are `null`.
 
 | Field | Contents |
 |---|---|
+| `login_harnesses` | Available native new-account sign-ins. Codex requires its CLI. Claude requires Claude Code and the macOS Keychain `security` command. |
 | `codex` | List of account objects with `name`, `plan`, `primary`, `secondary`, `credits`, `reset_credits`, and `status` |
 | `codex[].primary`, `codex[].secondary` | Window object with `used_percent`, `window_minutes`, and `resets_at`, or `null` when unknown |
 | `codex[].credits` | Object with `balance`, `has_credits`, `unlimited`, and `spendable` (balance minus the active floor, at least 0); unknown fields are `null` |

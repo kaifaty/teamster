@@ -74,11 +74,14 @@ class Logins:
     def _finish(self, row, stage, **fields):
         self._change(row, stage=stage, finished_at=time.time(), prompt=False, **fields)
 
-    def start(self, family, account):
+    def start(self, family, account, *, new=False):
         self.snapshot()
         active = [row for row in self.rows.values() if row["stage"] not in FINISHED]
-        if any(row["family"] == family and row["account"] == account for row in active):
-            return error(409, "Вход уже идёт")
+        for row in active:
+            if row["family"] == family and row["account"] == account:
+                if new:
+                    return {"ok": True, "login": copy.deepcopy(row)}
+                return error(409, "Вход уже идёт")
         if len(active) >= 2:
             return error(429, "Too many sign-ins")
         identifier = uuid.uuid4().hex
@@ -89,7 +92,7 @@ class Logins:
         self.rows[identifier] = row
         initial = copy.deepcopy(row)
         self.publish({"type": "login", "login": initial})
-        job = asyncio.create_task(self._run(row))
+        job = asyncio.create_task(self._run(row, new))
         self.jobs[identifier] = job
         job.add_done_callback(lambda _: self.jobs.pop(identifier, None))
         return {"ok": True, "login": initial}
@@ -192,12 +195,12 @@ class Logins:
             return event
         return None
 
-    async def _run(self, row):
+    async def _run(self, row, new):
         proc, readers, tail = None, [], bytearray()
         try:
             command = "login" if row["family"] == "codex" else "claude-login"
             proc = await asyncio.create_subprocess_exec(
-                "python3", "-I", str(self.script), command, row["account"], "--events",
+                "python3", "-I", str(self.script), command, row["account"], "--events", *(["--new"] if new else []),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, start_new_session=True, cwd=Path.home(),
             )
