@@ -286,15 +286,15 @@ def handoff(st, current_message=False, cfg=None):
                    ("The duty moved to another account. Continue the conversation with the user "
                     "using the messages and your earlier replies below.\n\n"))
     elif has_threads and scouting:
-        prompt += (("Предыдущий разведчик остановился из-за лимита подписки. "
+        prompt += (("Предыдущий разведчик работал на другой подписке. "
                     "Продолжи изучение вопроса с учётом его сообщений ниже.\n\n") if ru else
-                   ("The previous scout stopped because its subscription reached its limit. "
+                   ("The previous scout used another subscription. "
                     "Continue investigating the question using its messages below.\n\n"))
     elif has_threads:
-        prompt += (("Предыдущий исполнитель остановился посреди работы, потому что у его подписки кончился лимит.\n"
+        prompt += (("Предыдущий исполнитель остановился посреди работы.\n"
                     "Его коммиты и незакоммиченные правки в этом worktree — отправная точка. "
                     "Не начинай заново и не откатывай сделанную работу.\n\n") if ru else
-                   ("The previous worker stopped partway through the task because its subscription reached its limit.\n"
+                   ("The previous worker stopped partway through the task.\n"
                     "Its commits and uncommitted changes in this worktree are your starting point. "
                     "Continue the existing work without starting over or reverting it.\n\n"))
     if chatting:

@@ -2075,8 +2075,19 @@ def emit(event, **fields):
 if args == ['accounts', '--json']:
     assert sys.stdin.read() == ''
     hold('accounts-block')
-    print(json.dumps({'codex': [{'name': name} for name in ['c1', 'c2', 'c3', 'fail', 'no-result', 'ignore', 'child-result', 'child-no-result']],
-                      'claude': [{'name': 'cl1'}, {'name': 'cl2'}]}))
+    if (root / 'accounts-fail').exists():
+        sys.exit('accounts unavailable')
+    names = {'codex': ['c1', 'c2', 'c3', 'fail', 'no-result', 'ignore', 'child-result', 'child-no-result'],
+             'claude': ['cl1', '-second']}
+    print(json.dumps({family: [{'name': n} for n in group if not (root / f'{family}.{n}.removed').exists()]
+                      for family, group in names.items()}))
+elif args[0] in ('account-remove', 'claude-remove'):
+    command, separator, account = args
+    assert separator == '--' and Path.cwd() == root and sys.stdin.read() == ''
+    if account == 'fail':
+        sys.exit('cannot remove the last account')
+    family = 'codex' if command == 'account-remove' else 'claude'
+    (root / f'{family}.{account}.removed').touch()
 elif args == ['claude-probe', 'cl1']:
     assert Path.cwd() == root
     assert sys.stdin.read() == ''
@@ -2579,13 +2590,15 @@ def test_account_login_termination_kills_after_grace(account_actions, monkeypatc
             assert time.monotonic() - started >= 3
 
 
-def test_account_login_admission_and_limits(account_actions):
-    client, board, _, _ = account_actions
+def test_account_login_admission_and_removal(account_actions):
+    client, board, root, _ = account_actions
     for family, account in (("codex", "c1 "), ("claude", "c1"), ("codex", "unknown")):
         assert client.post("/api/actions/login", json={"family": family, "account": account}).status_code == 404
     for body in ({}, {"family": "other", "account": "c1"}, {"family": "codex", "account": 2}):
         assert client.post("/api/actions/login", json=body).status_code == 400
     first = client.post("/api/actions/login", json={"family": "codex", "account": "c1"}).json()["login"]
+    remove = "/api/actions/account-remove"
+    assert client.post(remove, json={"family": "codex", "account": "c1"}).status_code == 409
     response = client.post("/api/actions/login", json={"family": "codex", "account": "c1"})
     assert response.status_code == 409 and response.json()["error"] == "Вход уже идёт"
     assert client.post("/api/actions/login/input", json={"id": first["id"], "text": "code"}).status_code == 409
@@ -2595,9 +2608,22 @@ def test_account_login_admission_and_limits(account_actions):
     for row in (first, second):
         assert client.post("/api/actions/login/cancel", json={"id": row["id"]}).status_code == 200
     wait_for_account(lambda: not board.logins.jobs)
+    refused = client.post(remove, json={"family": "codex", "account": "fail"})
+    assert refused.status_code == 422 and refused.json()["error"] == "cannot remove the last account"
+    with client.websocket_connect("/ws") as socket:
+        socket.receive_json()
+        for family, name in (("codex", "c1"), ("claude", "-second")):
+            if family == "claude":
+                (root / "accounts-fail").touch()
+            body = {"family": family, "account": name}
+            assert client.post(remove, json=body).json() == {"ok": True}
+            assert (root / f"{family}.{name}.removed").exists()
+            snapshot = receive_until(socket, "accounts")["accounts"]
+            assert all(row["name"] != name for row in snapshot["data"][family])
+            assert client.post("/api/actions/login", json=body).status_code == 404
 
 
-@pytest.mark.parametrize("route", ["login", "login/input", "login/cancel", "account-refresh"])
+@pytest.mark.parametrize("route", ["login", "login/input", "login/cancel", "account-refresh", "account-remove"])
 def test_account_action_validation_protection_and_read_only(account_actions, route):
     client, board, _, calls = account_actions
     url = f"/api/actions/{route}"

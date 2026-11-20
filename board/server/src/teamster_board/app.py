@@ -193,6 +193,7 @@ class Board:
         self._forced_at = float("-inf")
         self.logins = Logins(settings.teamster, self.publish, self.request_accounts)
         self.refresh_jobs = {}
+        self.removing_accounts = set()
         self._refresh_started = float("-inf")
 
     def publish(self, message):
@@ -265,12 +266,17 @@ class Board:
             return None, error(404, "Account not found")
         return (family, account), None
 
-    async def refresh_accounts(self):
+    async def refresh_accounts(self, removed=None):
         async with self._accounts_lock:
             value = await self.accounts.refresh(force=True)
             if value is not None:
                 data = value["data"]
                 if isinstance(data, dict) and any(isinstance(data.get(family), list) for family in ("codex", "claude")):
+                    if removed is not None and value["error"]:
+                        # A failed read retains the previous snapshot. It predates the confirmed removal.
+                        family, account = removed
+                        value["data"] = {**data, family: [row for row in data.get(family, [])
+                                                          if not isinstance(row, dict) or row.get("name") != account]}
                     self._duty_reason = await asyncio.to_thread(self.duty.reason)
                     if self._duty_reason is None:
                         await self.accounts.refresh_duty()
@@ -354,6 +360,23 @@ class Board:
         if family == "claude":
             await probe(self.settings.teamster, account)
         await self.refresh_accounts()
+
+    async def remove_account(self, family, account):
+        target = (family, account)
+        if any((row["family"], row["account"]) == target for row in self.logins.rows.values()
+               if row["id"] in self.logins.jobs):
+            return error(409, "account_login_in_progress")
+        if target in self.refresh_jobs:
+            return error(409, "account_refresh_in_progress")
+        self.removing_accounts.add(target)
+        try:
+            failure = await asyncio.to_thread(self.accounts.remove, family, account)
+            if failure is not None:
+                return failure
+            await self.refresh_accounts(removed=target)
+            return {"ok": True}
+        finally:
+            self.removing_accounts.discard(target)
 
     async def snapshot(self):
         async with self.lock:
@@ -536,6 +559,7 @@ def create_app(settings=None):
     @app.post("/api/actions/login/input")
     @app.post("/api/actions/login/cancel")
     @app.post("/api/actions/account-refresh")
+    @app.post("/api/actions/account-remove")
     async def account_action(request: Request):
         data = await action_body(request)
         if not isinstance(data, dict):
@@ -550,6 +574,10 @@ def create_app(settings=None):
         target, failure = board.account_target(data)
         if failure is not None:
             return failure
+        if target in board.removing_accounts:
+            return error(409, "account_removal_in_progress")
+        if route == "/api/actions/account-remove":
+            return await board.remove_account(*target)
         if route == "/api/actions/login":
             return board.logins.start(*target)
         return board.account_refresh(*target)

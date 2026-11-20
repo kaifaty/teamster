@@ -4,7 +4,7 @@ The board is a local web view of teamster tasks and Claude Code sessions from th
 desktop app. The server reads existing files and pushes changes over a WebSocket. Task orders and
 science station actions run the installed `teamster` command: replies, verdicts, reviews, stopping
 and cleaning tasks, lesson decisions, implementations and new reflection orders.
-Subscription sign-ins and refreshes use the accounts script's event login and probe commands.
+Subscription sign-ins, refreshes and removals use the configured accounts script.
 Duty selection and automatic elections run the installed `teamster` command.
 
 ## Sources
@@ -890,6 +890,12 @@ of the installed executable selected by `--teamster`:
   `python3 -I <settings.teamster> claude-probe <account>` with a 90-second timeout, then refreshes
   accounts, including after a failed or timed-out probe. The result uses the ordinary `accounts`
   WebSocket message, with `last_logins` included.
+- `POST /api/actions/account-remove` with `{family, account}` validates the target as for login.
+  The accounts script runs `account-remove -- <account>` for Codex or `claude-remove -- <account>`
+  for Claude. A running sign-in or refresh for this subscription gets 409. While removal is running,
+  another removal, sign-in or refresh of the same subscription also gets 409. A CLI refusal gets
+  422 with its reason. On success the board refreshes and publishes the ordinary `accounts` message
+  and returns `{ok: true}`. If the refresh fails, the cached snapshot still drops the removed entry.
 
 Duty selection uses the installed action executable selected by `--teamster`, rather than the
 accounts script. `POST /api/actions/duty` accepts exactly one of these complete bodies:
@@ -1283,8 +1289,9 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
 ## REST
 
 - `GET /api/snapshot` → `Snapshot`, including `logins` and `accounts.last_logins`.
-- `POST /api/actions/login`, `/api/actions/login/input`, `/api/actions/login/cancel` and
-  `/api/actions/account-refresh` → the immediate responses described under account actions above.
+- `POST /api/actions/login`, `/api/actions/login/input`, `/api/actions/login/cancel`,
+  `/api/actions/account-refresh` and `/api/actions/account-remove` → the responses described
+  under account actions above.
 - `GET /api/events?since=<unix>&until=<unix>` → `Events`. Both bounds are inclusive finite Unix
   seconds. `until` defaults to now; `since` defaults to 24 hours before `until`. Reversed windows,
   invalid numbers and windows longer than 31 days get 422. Only events retained for the last 31 days

@@ -161,7 +161,7 @@ export function fixtureSource(): BoardSource {
       await new Promise((resolve) => setTimeout(resolve, 300));
       return duty.act(body as never);
     }
-    if (route === "login" || route === "login/input" || route === "login/cancel" || route === "account-refresh") {
+    if (route === "login" || route === "login/input" || route === "login/cancel" || route === "account-refresh" || route === "account-remove") {
       await new Promise((resolve) => setTimeout(resolve, 250));
       return logins.act(route as LoginRoute, body as never);
     }

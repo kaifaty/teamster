@@ -169,6 +169,7 @@ const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources
       v-if="account && active"
       :key="account"
       :account-key="account"
+      :scenario="sourceKind === 'scenario'"
       :covered="shipOpen || !!machine"
       :accounts="source.state.value.accounts"
       :logins="source.state.value.logins"
