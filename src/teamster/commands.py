@@ -2,12 +2,14 @@
 import json
 import os
 import plistlib
+import queue
 import re
 import runpy
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -38,39 +40,114 @@ def acp_permission(params):
     return choices.get(sys.stdin.readline().strip())
 
 
+def acp_event(kind, **fields):
+    print(json.dumps({"type": kind, **fields}), flush=True)
+
+
+def acp_event_session(client, args):
+    incoming = queue.Queue()
+    permission_id = 0
+
+    def read_input():
+        # The controller can disconnect even while initialize or session/prompt is blocked.
+        with os.fdopen(os.dup(sys.stdin.fileno()), "rb") as stream:
+            for line in stream:
+                incoming.put(line)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    def receive(kind, *keys):
+        while client.process.poll() is None:
+            try:
+                event = json.loads(incoming.get(timeout=0.25))
+            except queue.Empty:
+                continue
+            if not isinstance(event, dict) or event.get("type") != kind or set(event) != {"type", *keys}:
+                raise ValueError(f"Expected an ACP {kind} event")
+            return event
+        raise ValueError(f"ACP agent exited with status {client.process.returncode}")
+
+    def permission(params):
+        nonlocal permission_id
+        permission_id += 1
+        acp_event("permission", id=permission_id, toolCall=params["toolCall"], options=params["options"])
+        answer = receive("permission", "id", "optionId")
+        if type(answer["id"]) is not int or answer["id"] != permission_id:
+            raise ValueError("The permission request is no longer pending")
+        choice = answer["optionId"]
+        if choice is not None and choice not in [option["optionId"] for option in params["options"]]:
+            raise ValueError("Unknown permission option")
+        return choice
+
+    def update(item):
+        if item["sessionUpdate"] == "agent_message_chunk" and item["content"]["type"] == "text":
+            acp_event("chunk", text=item["content"]["text"])
+
+    threading.Thread(target=read_input, daemon=True).start()
+    client.open_session(session_id=args.resume, auth_method=args.auth_method)
+    client.on_update = update
+    client.on_permission = permission
+    acp_event("ready")
+    while True:
+        text = receive("prompt", "text")["text"]
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Expected a nonempty ACP prompt")
+        acp_event("done", stopReason=client.prompt(text))
+
+
+def acp_terminal_session(client, a):
+    interactive = sys.stdin.isatty()
+    session_id = client.open_session(session_id=a.resume, auth_method=a.auth_method)
+    client.on_update = acp_update
+    print(f"ACP session: {session_id}", file=sys.stderr, flush=True)
+    while True:
+        if interactive:
+            print("> ", file=sys.stderr, end="", flush=True)
+        line = sys.stdin.readline()
+        if not line:
+            return
+        text = line.rstrip("\r\n")
+        if not text.strip():
+            continue
+        reason = client.prompt(text)
+        print(flush=True)
+        if reason != "end_turn":
+            message = f"Agent stopped: {reason}"
+            if not interactive:
+                raise SystemExit(message)
+            print(message, file=sys.stderr, flush=True)
+
+
 def cmd_acp(a):
     """Run a user-driven conversation in one ACP session."""
-    interactive = sys.stdin.isatty()
+    active = False
+    stopped = None
 
     def exit_session(signum, _frame):
-        raise SystemExit(128 + signum)
+        nonlocal active, stopped
+        stopped = signum
+        if active:
+            active = False
+            raise SystemExit(128 + signum)
 
     handlers = {sig: signal.signal(sig, exit_session) for sig in (signal.SIGTERM, signal.SIGHUP)}
     try:
         # Loading can replay the entire transcript. Only new turns belong on stdout.
         with acp.AcpClient([a.program, *a.agent_args], a.repo, lambda update: None, acp_permission) as client:
-            session_id = client.open_session(session_id=a.resume, auth_method=a.auth_method)
-            client.on_update = acp_update
-            print(f"ACP session: {session_id}", file=sys.stderr, flush=True)
-            while True:
-                if interactive:
-                    print("> ", file=sys.stderr, end="", flush=True)
-                line = sys.stdin.readline()
-                if not line:
-                    return
-                text = line.rstrip("\r\n")
-                if not text.strip():
-                    continue
-                reason = client.prompt(text)
-                print(flush=True)
-                if reason != "end_turn":
-                    message = f"Agent stopped: {reason}"
-                    if not interactive:
-                        raise SystemExit(message)
-                    print(message, file=sys.stderr, flush=True)
+            try:
+                # Defer termination across spawn and let __exit__ finish reaping the process group.
+                active = True
+                if stopped:
+                    raise SystemExit(128 + stopped)
+                if a.events:
+                    return acp_event_session(client, a)
+                return acp_terminal_session(client, a)
+            finally:
+                active = False
     except KeyboardInterrupt:
         raise SystemExit(130) from None
     except (ValueError, OSError) as exc:
+        if a.events:
+            acp_event("error", message=str(exc))
         raise SystemExit(f"teamster acp: {exc}") from None
     finally:
         for sig, handler in handlers.items():
