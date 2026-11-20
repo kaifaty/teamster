@@ -1,4 +1,12 @@
-// The board server's sign-ins to subscriptions (POST /api/actions/login) and the journal's `account_login` rows.
+// The Board's subscription snapshot, sign-ins and account_login journal rows.
+
+export interface Accounts {
+  fetched_at: number | null;
+  error: string | null;
+  data: unknown | null; // `accounts --json`, with duty selection and per-account pin ability added
+  last_logins?: LastLogin[]; // missing from an older server
+  opencode?: { provider: string; name: string; model: string }[];
+}
 
 /** The latest `account_login` row of the journal for one account. */
 export interface LastLogin {
