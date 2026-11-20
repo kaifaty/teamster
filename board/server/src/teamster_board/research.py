@@ -526,10 +526,16 @@ class Research:
         archive = self.tasks_path / ".archive"
         if self.tasks_path.is_symlink():
             return view
-        try:
-            names = [] if archive.is_symlink() else sorted(path.name for path in archive.iterdir())
-        except OSError:
-            names = []
+        names, archived_directories = [], []
+        if not archive.is_symlink():
+            try:
+                with os.scandir(archive) as iterator:
+                    entries = list(iterator)
+                names = sorted(entry.name for entry in entries)
+                archived_directories = [Path(entry.path) for entry in entries
+                                        if not entry.name.startswith(".") and entry.is_dir(follow_symlinks=False)]
+            except OSError:
+                pass
         self._batches = {name: value for name, value in self._batches.items() if name in names}
         view["lessons"] = self._lessons(archive)
         batches = sorted(self._batch_files(archive, names), key=lambda item: (item[1] or "", item[0]))
@@ -544,6 +550,7 @@ class Research:
         floor = previous if through is not None else None
         cutoff = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(time.time() - STUDY_SECONDS))
         wanted = set()
+        scanned_records = {}
         study_paths = set()
         pending = view["pending"]
         items = []
@@ -555,6 +562,7 @@ class Research:
             directory = archive / name
             wanted.add(directory)
             state = self._record(directory)
+            scanned_records[directory] = state
             # The duty chat's record is a conversation, not material for the reflection.
             if state is None or state.get("kind") == "duty":
                 continue
@@ -582,10 +590,10 @@ class Research:
         repo_paths = set()
         implementations = {}
         directories = [(path, False) for path in Store._directories(self.tasks_path)]
-        directories.extend((path, True) for path in Store._directories(archive))
+        directories.extend((path, True) for path in archived_directories)
         for directory, archived in directories:
             wanted.add(directory)
-            state = self._record(directory)
+            state = scanned_records[directory] if directory in scanned_records else self._record(directory)
             if state is None:
                 continue
             if state.get("kind") not in ("scout", "reflect", "duty"):

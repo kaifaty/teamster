@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from teamster_board import desktop_sessions
 from teamster_board.store import Store, alive, phase
 
 
@@ -791,7 +792,7 @@ def test_session_metadata_scan_cadence_cache_and_archived_memory(tmp_path, monke
     store.poll()
     assert sorted(read) == ["local_archived", "local_example"]
     assert "local_archived" not in store.session_records
-    assert store._session_signatures[archived] == (archived.stat().st_mtime_ns, archived.stat().st_size)
+    assert store._desktop_sessions._session_signatures[archived] == (archived.stat().st_mtime_ns, archived.stat().st_size)
     clock[0] = 106.0
     store.poll()
     assert len(read) == 2
@@ -817,7 +818,7 @@ def test_session_moved_transcript_search_is_cached_and_only_busy_sessions_read(t
     moved.parent.mkdir(parents=True)
     event = {"type": "assistant", "timestamp": "2026-11-05T10:00:00Z",
              "message": {"content": [{"type": "text", "text": "First update"}]}}
-    directories = Store._directories
+    directories = desktop_sessions.directories
     searches = []
 
     def count_searches(root, *, strict=False):
@@ -825,7 +826,7 @@ def test_session_moved_transcript_search_is_cached_and_only_busy_sessions_read(t
             searches.append(root)
         return directories(root, strict=strict)
 
-    monkeypatch.setattr(Store, "_directories", staticmethod(count_searches))
+    monkeypatch.setattr(desktop_sessions, "directories", count_searches)
     store = session_store(tmp_path)
     store.poll()
     assert searches == []
@@ -872,7 +873,7 @@ def test_session_transcript_direct_path_uses_ascii_and_retries_until_created(tmp
                         "message": {"content": [{"type": "text", "text": "Current update"}]}}) + "\n"
     if initially_exists:
         transcript.write_text(event)
-    directories = Store._directories
+    directories = desktop_sessions.directories
     searches = []
 
     def count_searches(root, *, strict=False):
@@ -880,7 +881,7 @@ def test_session_transcript_direct_path_uses_ascii_and_retries_until_created(tmp
             searches.append(root)
         return directories(root, strict=strict)
 
-    monkeypatch.setattr(Store, "_directories", staticmethod(count_searches))
+    monkeypatch.setattr(desktop_sessions, "directories", count_searches)
     store = session_store(tmp_path)
     store.poll()
     assert len(searches) == (0 if initially_exists else 1)

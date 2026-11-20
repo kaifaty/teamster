@@ -8,8 +8,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } fro
 import { postAction } from "../../lib/actions";
 import { claudeLink, prLabel, taskTitle } from "../../lib/labels";
 import type { BoardSource } from "../../lib/source";
+import { useTaskDetail } from "../../lib/taskDetail";
 import TaskChat from "../../components/TaskChat.vue";
-import type { Accounts, TaskDetail, TaskFile, TaskSummary } from "../../types";
+import type { Accounts, TaskFile, TaskSummary } from "../../types";
 import nebula from "../art/nebula.jpg";
 import { bridgeView, stateOf } from "./bridge";
 import { createShipDesk } from "./desk";
@@ -39,31 +40,13 @@ const props = defineProps<{
  */
 const emit = defineEmits<{ close: []; show: [repo: string]; task: [task: TaskSummary] }>();
 
-const detail = ref<TaskDetail | null>(null);
-const detailError = ref<string | null>(null);
-const loading = ref(true);
-
-let detailRequest = 0;
-async function loadDetail() {
-  const request = ++detailRequest;
-  try {
-    const result = await props.source.fetchDetail(props.slug);
-    if (request !== detailRequest) return;
-    detailError.value = null;
-    if (result) detail.value = result;
-  } catch (error) {
-    if (request !== detailRequest) return;
-    detailError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    if (request === detailRequest) loading.value = false;
-  }
-}
+const { detail, detailError, detailState, loadDetail, resetDetail } = useTaskDetail(() => props.source.fetchDetail(props.slug));
+const loading = computed(() => detailState.value === "loading");
 
 watch(
   () => props.slug,
   () => {
-    detail.value = null;
-    loading.value = true;
+    resetDetail();
     doc.value = null;
     void loadDetail();
   },
