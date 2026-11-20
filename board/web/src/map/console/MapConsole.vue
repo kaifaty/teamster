@@ -517,6 +517,8 @@ function onKey(event: KeyboardEvent) {
 
 .console-centre > .console-row {
   flex: none;
+  /* Over the conversation, so that the field's dictation note above it stays readable. */
+  z-index: 3;
   height: var(--row-height);
 }
 

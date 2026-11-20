@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // The duty chat's field at the head of the command row: the microphone, the message «Задача дежурному…» growing to a few
 // lines, the button that shows the conversation and the send button. Focusing the field opens the conversation; Enter
-// sends, Shift+Enter breaks the line, Escape folds the conversation. The microphone dictates into the field and never
-// sends by itself. When the chat cannot work, a plain sentence stands instead.
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+// sends, Shift+Enter breaks the line, Escape folds the conversation. The microphone dictates into the field through
+// pauses until it is pressed again or Escape ends the dictation, and never sends by itself: the words stay a draft to
+// edit. When the chat cannot work, a plain sentence stands instead.
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
 import micActive from "../art/console-mic-active.png";
 import micIdle from "../art/console-mic-idle.png";
 import { createVoice, voiceTitle } from "./voice";
@@ -51,6 +52,10 @@ function onKey(event: KeyboardEvent) {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     send();
+  } else if (event.key === "Escape" && voice.state.value === "listening") {
+    event.preventDefault();
+    event.stopPropagation();
+    voice.stop();
   } else if (event.key === "Escape" && props.open && !props.sheet) {
     event.preventDefault();
     event.stopPropagation();
@@ -61,25 +66,52 @@ function onKey(event: KeyboardEvent) {
 // The field grows with its text up to a few lines; how much it grew above one line moves the conversation up.
 const LINE = 18;
 const MAX_LINES = 5;
+/** How much the field grew above one line: the dictation's note stands above it. */
+const extra = ref(0);
 function grow() {
   const area = field.value;
   if (!area) return;
   area.style.height = "auto";
   const height = Math.min(area.scrollHeight, LINE * MAX_LINES + 12);
   area.style.height = `${height}px`;
-  emit("grow", Math.max(0, height - (LINE + 12)));
+  extra.value = Math.max(0, height - (LINE + 12));
+  emit("grow", extra.value);
 }
 watch(text, () => void nextTick(grow));
 
 const voice = createVoice({ text: () => text.value, onText: (value) => (text.value = value) });
+const listening = computed(() => voice.state.value === "listening");
+/** The note's id: the narrow window's sheet and the row may both hold a field. */
+const noteId = useId();
+
+/** Escape on the microphone ends a running dictation and goes no further. */
+function stopOnEscape(event: KeyboardEvent) {
+  if (!listening.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  voice.stop();
+}
+// A field hidden with its panel (the board's view, the folded sheet) still stands in the page: hidden, it stops the
+// dictation, whose microphone and stop the user no longer sees.
+const root = ref<HTMLElement | null>(null);
+let watcher: ResizeObserver | null = null;
+onMounted(() => {
+  if (typeof ResizeObserver === "undefined" || !root.value) return;
+  const element = root.value;
+  watcher = new ResizeObserver(() => {
+    if (element.getClientRects().length === 0) voice.stop();
+  });
+  watcher.observe(element);
+});
 onBeforeUnmount(() => {
+  watcher?.disconnect();
   voice.dispose();
   emit("grow", 0);
 });
 </script>
 
 <template>
-  <div class="chat-field" :class="{ sheet, off: !!unavailable }">
+  <div ref="root" class="chat-field" :class="{ sheet, off: !!unavailable }">
     <p v-if="unavailable" class="chat-off" :title="unavailable">{{ unavailable }}</p>
     <button v-if="unavailable && pickDuty" type="button" class="pick-duty" aria-haspopup="dialog" aria-label="Выбрать дежурного" title="Выбрать дежурного" @click="emit('pickDuty', null)">Выбрать</button>
     <template v-else-if="!unavailable">
@@ -87,15 +119,18 @@ onBeforeUnmount(() => {
         type="button"
         class="mic"
         :class="voice.state.value"
-        :disabled="voice.state.value === 'off'"
-        :aria-pressed="voice.state.value === 'listening'"
-        :aria-label="voice.state.value === 'listening' ? 'Диктовка: идёт' : 'Диктовка'"
+        :aria-disabled="voice.state.value === 'off' ? 'true' : undefined"
+        :aria-pressed="listening"
+        aria-label="Диктовка"
+        :aria-describedby="voice.note.value ? noteId : undefined"
         :title="voiceTitle(voice.state.value, voice.why.value)"
         @click="voice.toggle"
+        @keydown.esc="stopOnEscape"
       >
-        <img :src="voice.state.value === 'listening' ? micActive : micIdle" alt="" draggable="false" />
+        <img :src="listening ? micActive : micIdle" alt="" draggable="false" />
       </button>
       <div class="box">
+        <p :id="noteId" class="voice-note" :style="{ '--field-extra': `${extra}px` }" :class="{ shown: voice.note.value }" role="status">{{ voice.note.value ?? (listening ? "Идёт диктовка" : "") }}</p>
         <textarea
           ref="field"
           v-model="text"
@@ -104,7 +139,8 @@ onBeforeUnmount(() => {
           aria-label="Задача дежурному"
           :aria-expanded="sheet ? undefined : open"
           :aria-controls="sheet ? undefined : 'duty-chat'"
-          placeholder="Задача дежурному…"
+          :placeholder="listening ? 'Говори… Esc или микрофон — закончить' : 'Задача дежурному…'"
+          :aria-keyshortcuts="listening ? 'Escape' : undefined"
           :title="busy ? 'Дежурный работает: сообщение дождётся конца хода' : undefined"
           @focus="onFocus"
           @keydown="onKey"
@@ -205,6 +241,7 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   background: none;
   cursor: pointer;
+  position: relative;
 }
 
 .mic img {
@@ -213,7 +250,36 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
-.mic:hover:not(:disabled) img {
+/* A dictation runs: a slow ring pulses around the microphone until it is pressed again. */
+.mic.listening::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 2px solid rgba(243, 154, 46, 0.9);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: mic-pulse 1.4s ease-out infinite;
+}
+
+@keyframes mic-pulse {
+  from {
+    opacity: 0.9;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.12);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mic.listening::after {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+.mic:hover:not([aria-disabled="true"]) img {
   filter: brightness(1.15);
 }
 
@@ -222,12 +288,48 @@ onBeforeUnmount(() => {
   outline-offset: 1px;
 }
 
-.mic:disabled {
+.mic[aria-disabled="true"] {
   cursor: default;
 }
 
-.mic:disabled img {
+.mic[aria-disabled="true"] img {
   filter: saturate(0.2) brightness(0.6);
+}
+
+/* Why the dictation stopped or retries: a small plate over the field's left edge. The live text that a dictation
+   runs stays for screen readers only. */
+.voice-note {
+  position: absolute;
+  left: 0;
+  bottom: calc(50% + (var(--cast-height, 30px) + 2px) / 2 + var(--field-extra, 0px) + 4px);
+  z-index: 1;
+  max-width: 100%;
+  margin: 0;
+  padding: 3px 8px;
+  border: 1px solid rgba(214, 150, 70, 0.7);
+  border-radius: 5px;
+  background: rgba(14, 12, 10, 0.96);
+  color: #f3d9a6;
+  font-size: 12px;
+  line-height: 15px;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.voice-note:not(.shown) {
+  clip-path: inset(50%);
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* The narrow window's sheet has no room above the field: the note stands in the flow, over it. */
+.chat-field.sheet .voice-note.shown {
+  position: static;
+  margin-bottom: 4px;
 }
 
 /* The field: a dark inset in the bronze. */
