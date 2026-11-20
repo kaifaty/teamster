@@ -1391,6 +1391,21 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   backslash. No other names, no paths, and neither `board-art/`, the repository's folder nor the file may be a
   symbolic link. A client falls back to shared art for anything absent.
 
+## Task chat WebSocket `/ws/tasks/{slug}/chat`
+
+Opening a task chat starts one ACP agent in the task's validated local Git worktree.
+The handshake requires write access, a matching HTTP(S) Origin and the `teamster-board-chat`
+subprotocol. A read-only Board rejects it with HTTP 403. Each connection owns a new session.
+
+- The server sends `{type: "ready", executor, agent}` with the task provider and actual ACP command.
+- The browser sends `{type: "prompt", text}` (1–8000 characters after trimming) when ready.
+  The agent streams `{type: "chunk", text}` and finishes the turn with `{type: "done", stopReason}`.
+- `{type: "permission", id, toolCall, options}` pauses the turn for a human choice.
+  Reply with `{type: "permission", id, optionId}` using the pending request's ID
+  and one of its option IDs, or `null` to cancel the request.
+- A failure sends `{type: "error", message}` and closes the chat. Disconnecting ends the agent and
+  clears pending requests. Task history and Board-wide broadcasts are separate from this session.
+
 ## WebSocket `/ws`
 
 Server → client only; the server ignores client messages. Every message is one JSON object:

@@ -8,6 +8,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } fro
 import { postAction } from "../../lib/actions";
 import { claudeLink, prLabel, taskTitle } from "../../lib/labels";
 import type { BoardSource } from "../../lib/source";
+import TaskChat from "../../components/TaskChat.vue";
 import type { TaskDetail, TaskFile, TaskSummary } from "../../types";
 import nebula from "../art/nebula.jpg";
 import { bridgeView, stateOf } from "./bridge";
@@ -164,6 +165,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <p v-else-if="!shown && !loading" class="note">Задача не найдена.</p>
 
       <template v-if="shown">
+        <TaskChat
+          v-if="own && task && ['work', 'review'].includes(task.kind) && source.openTaskChat"
+          :key="slug" :slug="slug" :connect="source.openTaskChat" :actions="own.actions"
+        />
         <ShipNow :task="shown" :detail="own" :desk="desk" :now="now" />
         <main class="grid" :class="{ session: !view.commands }">
           <div v-if="view.commands" class="col main-col">
