@@ -29,6 +29,7 @@ from .logins import Logins
 from .machines import Machines
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
+from .task_chat import task_chat
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 PING_SECONDS = 20
@@ -538,6 +539,10 @@ def create_app(settings=None):
         if feed is None:
             raise HTTPException(404)
         return feed
+
+    @app.websocket("/ws/tasks/{slug}/chat")
+    async def chat(socket: WebSocket, slug: str):
+        await task_chat(socket, slug, board)
 
     @app.get("/api/research")
     async def research():

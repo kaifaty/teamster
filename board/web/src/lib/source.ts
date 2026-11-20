@@ -15,6 +15,8 @@ export interface BoardSource {
   connect(onMessage: (message: ServerMessage) => void, onState: (state: ConnectionState, retryInMs: number | null) => void): () => void;
   /** null for an unknown task (404). */
   fetchDetail(slug: string): Promise<TaskDetail | null>;
+  /** A new ACP conversation for this task. Fixture sources have no local agent. */
+  openTaskChat?(slug: string): WebSocket;
   /** null when the file does not exist (404). */
   fetchFile(slug: string, name: TaskFile): Promise<string | null>;
   /**
@@ -51,6 +53,7 @@ export function serverSource(): BoardSource {
   return {
     label: null,
     connect: (onMessage, onState) => connectSocket({ url: `${scheme}://${location.host}/ws`, onMessage, onState }),
+    openTaskChat: (slug) => new WebSocket(`${scheme}://${location.host}/ws/tasks/${encodeURIComponent(slug)}/chat`, "teamster-board-chat"),
     async fetchDetail(slug) {
       const response = await get(`/api/tasks/${encodeURIComponent(slug)}`);
       return response ? ((await response.json()) as TaskDetail) : null;

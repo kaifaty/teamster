@@ -160,7 +160,6 @@ directory). To chat in a task's worktree, pass that worktree as the directory.
 
 ```sh
 teamster acp --repo . -- opencode acp
-teamster acp --repo . -- agy acp
 ```
 
 Sign in using the agent's own CLI, or select an agent-managed authentication method with
@@ -168,6 +167,13 @@ Sign in using the agent's own CLI, or select an agent-managed authentication met
 prints the session ID, tool activity and permission choices to stderr. Choose a numbered
 option at a terminal. An empty choice or piped input cancels the permission request.
 Ctrl-C during a turn requests cancellation. EOF at the prompt ends the conversation.
+
+The Board uses `--events` for a bidirectional stream of JSON lines. After `ready`,
+send `{"type":"prompt","text":"..."}`. The client emits text in `chunk` events and
+ends each reply with `done` and its `stopReason`. A `permission` event contains the
+tool call, options and request ID. Reply with `{"type":"permission","id":1,"optionId":"..."}`
+using the displayed ID and one of its options, or `null` to cancel. Keep stdin open
+for the conversation. Closing it ends the agent, including a pending turn or permission.
 
 To continue a conversation, use the same agent and directory with `--resume SESSION_ID`
 if the agent supports restoring sessions. The agent restores its context, and the CLI

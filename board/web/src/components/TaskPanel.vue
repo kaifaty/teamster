@@ -6,6 +6,7 @@ import { formatAge, formatClock, formatDuration, formatFullTime } from "../lib/f
 import { useTaskFile } from "../lib/taskFile";
 import { cargoRows, findingLine, hasCargo } from "../lib/cargo";
 import TaskCommands from "./TaskCommands.vue";
+import TaskChat from "./TaskChat.vue";
 import { COLUMNS, EXECUTORS, FILES, KINDS, PHASES, RESULT, ciChip, claudeLink, prLabel, taskTitle } from "../lib/labels";
 
 const props = defineProps<{
@@ -142,6 +143,11 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
       </p>
       <p v-if="detailError" class="note bad">Не удалось загрузить задачу: {{ detailError }}</p>
       <p v-else-if="notFound && !shown" class="note">Задача не найдена.</p>
+
+      <TaskChat
+        v-if="detail && task && ['work', 'review'].includes(task.kind) && source.openTaskChat"
+        :key="slug" :slug="slug" :connect="source.openTaskChat" :actions="detail.actions"
+      />
 
       <dl v-if="shown" class="fields">
         <dt>Колонка</dt>

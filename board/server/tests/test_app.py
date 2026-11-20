@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -382,6 +383,165 @@ def test_foreign_websocket_origins_are_forbidden(board, origin):
         with client.websocket_connect("/ws", headers={"Origin": origin}):
             pass
     assert rejected.value.status_code == 403
+
+
+def test_task_chat_requires_board_write_access(board):
+    client, _, _, _, settings = board
+    for origin, protocols, read_only in (
+        ("http://localhost", [], False),
+        (None, ["teamster-board-chat"], False),
+        ("http://localhost:9000", ["teamster-board-chat"], False),
+        ("http://localhost", ["teamster-board-chat"], True),
+    ):
+        settings.read_only = read_only
+        headers = {"Origin": origin} if origin else {}
+        if read_only:
+            client = TestClient(create_app(settings), base_url="http://localhost", headers={"Host": "localhost"})
+        with pytest.raises(WebSocketDenialResponse) as rejected:
+            with client.websocket_connect("/ws/tasks/demo/chat", headers=headers, subprotocols=protocols):
+                pass
+        assert rejected.value.status_code == 403
+
+
+@pytest.fixture
+def task_chat_board(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git").symlink_to(shutil.which("git"))
+    (bin_dir / "python3").symlink_to(sys.executable)
+    command = bin_dir / "teamster"
+    script = board_app.REPOSITORY / "src/teamster/__main__.py"
+    command.write_text(f"#!{sys.executable}\nimport os, sys\nos.execv(sys.executable, "
+                       f"[sys.executable, '-I', {str(script)!r}, *sys.argv[1:]])\n")
+    command.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    agent = bin_dir / "opencode"
+    agent.write_text(f"#!{sys.executable}\n" + '''import json, os, sys, time
+from pathlib import Path
+
+def send(**message):
+    print(json.dumps({"jsonrpc": "2.0", **message}), flush=True)
+
+def chunk(text):
+    send(method="session/update", params={"sessionId": session, "update": {
+         "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}})
+
+assert sys.argv[1:] == (["acp"] if Path(sys.argv[0]).name == "opencode" else [])
+session = str(os.getpid())
+Path("agent.pid").write_text(session)
+owner = Path("task-slug").read_text()
+turns = 0
+for line in sys.stdin:
+    req = json.loads(line)
+    method, params = req["method"], req["params"]
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+    elif method == "session/new":
+        assert params["cwd"] == str(Path.cwd())
+        result = {"sessionId": session}
+    else:
+        assert method == "session/prompt" and params["sessionId"] == session
+        turns += 1
+        text = params["prompt"][0]["text"]
+        chunk(f"{owner} turn {turns}")
+        if text == "wait":
+            time.sleep(60)
+        if text == "ask":
+            send(id="permission", method="session/request_permission", params={
+                 "sessionId": session, "toolCall": {"toolCallId": "read-1", "title": "Read a file"},
+                 "options": [{"optionId": "no", "name": "Deny", "kind": "reject_once"},
+                             {"optionId": "yes", "name": "Allow", "kind": "allow_once"}]})
+            answer = json.loads(input())
+            assert answer["id"] == "permission"
+            text = answer["result"]["outcome"]["optionId"]
+        chunk(text)
+        result = {"stopReason": "end_turn"}
+    send(id=req["id"], result=result)
+''')
+    agent.chmod(0o755)
+
+    def git(*args):
+        subprocess.run(["git", *args], check=True, capture_output=True)
+
+    accounts = tmp_path / "accounts.py"
+    accounts.write_text("print('{}')\n")
+    settings = Settings(tmp_path, accounts, action_teamster=str(command), duty_seconds=0)
+    repo = tmp_path / "repository"
+    git("init", str(repo))
+    git("-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "--allow-empty", "-m", "Initial commit")
+    for slug, executor in (("demo", "codex"), ("second", "opencode")):
+        worktree = settings.path("worktrees") / f"claude-{slug}" / repo.name
+        git("-C", str(repo), "worktree", "add", "-b", slug, str(worktree))
+        (worktree / "task-slug").write_text(slug)
+        task_dir = settings.path("tasks") / slug
+        task_dir.mkdir(parents=True)
+        (task_dir / "state.json").write_text(json.dumps({
+            "slug": slug, "kind": "work", "repo": str(repo), "worktree": str(worktree), "branch": slug,
+            "executor": executor, "thread": "existing-worker-thread"}))
+    with TestClient(create_app(settings), base_url="http://localhost", headers={"Host": "localhost"}) as client:
+        def chat(slug):
+            return client.websocket_connect(f"/ws/tasks/{slug}/chat", headers={"Origin": "http://localhost"},
+                                            subprotocols=["teamster-board-chat"])
+        yield chat, settings, agent
+
+
+def test_task_chat_streams_turns_and_reaps_disconnected_agents(task_chat_board):
+    chat, settings, agent = task_chat_board
+    for slug, executor in (("demo", "codex"), ("second", "opencode")):
+        worktree = settings.path("worktrees") / f"claude-{slug}" / "repository"
+        with chat(slug) as socket:
+            assert socket.receive_json() == {"type": "ready", "executor": executor, "agent": "opencode acp"}
+            pid = int((worktree / "agent.pid").read_text())
+            socket.send_json({"type": "prompt", "text": "ask"})
+            assert socket.receive_json() == {"type": "chunk", "text": f"{slug} turn 1"}
+            permission = socket.receive_json()
+            assert permission["type"] == "permission" and permission["toolCall"]["title"] == "Read a file"
+            assert [option["optionId"] for option in permission["options"]] == ["no", "yes"]
+            if slug == "demo":
+                socket.send_json({"type": "permission", "id": permission["id"], "optionId": "no"})
+                assert socket.receive_json() == {"type": "chunk", "text": "no"}
+                assert socket.receive_json() == {"type": "done", "stopReason": "end_turn"}
+                socket.send_json({"type": "prompt", "text": "again"})
+                assert socket.receive_json() == {"type": "chunk", "text": "demo turn 2"}
+                assert socket.receive_json() == {"type": "chunk", "text": "again"}
+                assert socket.receive_json() == {"type": "done", "stopReason": "end_turn"}
+                socket.send_json({"type": "prompt", "text": "wait"})
+                assert socket.receive_json() == {"type": "chunk", "text": "demo turn 3"}
+            else:
+                os.kill(pid, signal.SIGTERM)
+                failure = socket.receive_json()
+                assert failure["type"] == "error" and failure["message"]
+                assert socket.receive()["type"] == "websocket.close"
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            assert time.monotonic() < deadline, f"ACP agent {pid} survived closing the chat"
+            time.sleep(0.01)
+
+    adapter = agent.with_name("codex-acp")
+    adapter.symlink_to(agent)
+    with chat("demo") as socket:
+        assert socket.receive_json() == {"type": "ready", "executor": "codex", "agent": "codex-acp"}
+        socket.send_json({"type": "prompt", "text": "hello", "cwd": str(worktree), "command": "other"})
+        assert socket.receive_json()["type"] == "error"
+    adapter.unlink()
+    agent.unlink()
+    with chat("second") as socket:
+        failure = socket.receive_json()
+        assert failure["type"] == "error" and "install" in failure["message"].lower()
+    path = settings.path("tasks") / "demo" / "state.json"
+    state = json.loads(path.read_text())
+    state["worktree"] = str(worktree)  # Another task's checkout may still exist.
+    path.write_text(json.dumps(state))
+    with chat("demo") as socket:
+        failure = socket.receive_json()
+        assert failure["type"] == "error" and "worktree" in failure["message"].lower()
 
 
 def test_websocket_snapshot_then_task_activity_and_archive(board):
