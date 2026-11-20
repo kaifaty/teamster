@@ -3,6 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import type { ActionResult } from "../../lib/actions";
 import type { BoardSource } from "../../lib/source";
+import { useTaskDetail } from "../../lib/taskDetail";
 import { createBoard } from "../../store/board";
 import type { TaskDetail, TaskSummary } from "../../types";
 import ShipView from "./ShipView.vue";
@@ -16,15 +17,35 @@ const ship: TaskSummary = {
   updated_at: NOW - 50, activity: null, check: "passed", review: "clean", findings_left: 0, stop: null, left: 0, lead_verdict: null, lead_verdict_at: null,
 };
 
+const shipDetail: TaskDetail = {
+  ...ship, timeline: [], files: [], cargo: null, limits: null, messages: [], activity_log: [], report: null, changes: null,
+  queue: { waiting: [], dropped: [] }, actions: { enabled: true, reason: null, queue: true },
+};
+
+it("keeps the current task detail when the previous task's request finishes late", async () => {
+  const pending = new Map<string, (result: TaskDetail) => void>();
+  let slug = ship.slug;
+  const { detail, loadDetail, resetDetail } = useTaskDetail(() =>
+    new Promise<TaskDetail>((resolve) => pending.set(slug, resolve)),
+  );
+
+  const older = loadDetail();
+  slug = "next";
+  resetDetail();
+  const newer = loadDetail();
+
+  pending.get("next")!({ ...shipDetail, slug: "next" });
+  await newer;
+  pending.get(ship.slug)!(shipDetail);
+  await older;
+  expect(detail.value?.slug).toBe("next");
+});
+
 describe("the ship's screen after «Принять»", () => {
   it("shows «Принято» with «Убрать задачу» at once, from the answer, and no «Принять»", async () => {
-    const detail: TaskDetail = {
-      ...ship, timeline: [], files: [], cargo: null, limits: null, messages: [], activity_log: [], report: null, changes: null,
-      queue: { waiting: [], dropped: [] }, actions: { enabled: true, reason: null, queue: true },
-    };
     const act = vi.fn(async (): Promise<ActionResult> => ({ ok: true, output: "verdict accepted recorded for t (repo)", task: { ...ship, lead_verdict: "accepted", lead_verdict_at: NOW } }));
     const source = {
-      label: null, act, connect: () => () => {}, fetchDetail: async () => detail, fetchFile: async () => null, fetchFeed: async () => null,
+      label: null, act, connect: () => () => {}, fetchDetail: async () => shipDetail, fetchFile: async () => null, fetchFeed: async () => null,
       fetchArt: async () => ({}), fetchConstellations: async () => ({ constellations: [], error: null }), fetchResearch: async () => null,
       fetchEvents: async () => ({ since: 0, until: 0, events: [] }), fetchReport: async () => ({}) as never,
     } as BoardSource;
