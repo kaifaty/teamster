@@ -276,18 +276,21 @@ class CheckGuardTests(RotationTestCase):
                                               ("unavailable", 75, 100, 30),
                                               ("stopped", -9, 100, 30), ("interrupted", -9, 100, 30)):
             with self.subTest(outcome=outcome, load=load, per_cpu=per_cpu):
-                st = {"slug": "no-load-rerun", "account": "main", "check": "fixture-check"}
+                st = {"slug": "no-load-rerun", "executor": "opencode", "account": None, "check": "fixture-check"}
                 check = {"cmd": st["check"], "outcome": outcome, "exit": code, "load": [load, load]}
                 with mock.patch.object(worker.checking, "run_check", return_value=check) as run, \
                         mock.patch.object(worker.checking, "_check_load") as sample, \
                         mock.patch.object(worker.checking.os, "cpu_count", return_value=2), \
                         mock.patch.object(worker.task_state, "save"), \
-                        mock.patch.object(worker.notifications, "notify"):
+                        mock.patch.object(worker.notifications, "notify") as notify:
                     result = worker.checking.saved_check(st, {"check_load_per_cpu": per_cpu}, lambda: False,
                                                         worker.clock.CLOCK.sleep)
                 self.assertIs(result, check)
                 run.assert_called_once()
                 sample.assert_not_called()
+                if outcome == "failed":
+                    notify.assert_called_once_with(st, {"check_load_per_cpu": per_cpu}, "check_failed",
+                                                   "check failed on opencode", outcome="failed")
 
     def test_unloaded_check_failure_still_notifies_when_stop_arrives_after_execution(self):
         worker = self.worker()

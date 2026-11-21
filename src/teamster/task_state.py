@@ -269,27 +269,27 @@ def save(st):
         write_state(st)
 
 
-def duty_process(st):
-    """The family and pid of a live duty transport, or (None, None)."""
-    if st.get("kind") == "duty":
-        for family in ("claude", "codex"):
-            pid = st.get(family + "_pid")
-            if procs.alive(pid):
-                return family, pid
+def session_process(st):
+    """The name and pid of a live duty transport or OpenCode worker holding its session."""
+    names = ("Claude", "Codex") if st.get("kind") == "duty" else ("OpenCode",)
+    for name in names:
+        pid = st.get(name.lower() + "_pid")
+        if procs.alive(pid):
+            return name, pid
     return None, None
 
 
 def busy_message(st, queue_hint=False):
     """Why no new turn may start beside the live supervisor of st, or None when it is idle.
 
-    queue_hint adds the say --queue alternative to the refusal of a say. A duty transport that outlived
-    its supervisor still holds the session, so the duty conversation is not idle then either.
+    queue_hint adds the say --queue alternative to the refusal of a say. A transport that outlived
+    its supervisor may still hold the session.
     """
     if not procs.alive(st.get("pid")):
-        family, pid = duty_process(st)
+        name, pid = session_process(st)
         if pid is not None:
-            return (f"{family.title()} process {pid} of the previous duty turn outlived its supervisor and still "
-                    f"holds the session; end it with {config.COMMAND} stop duty, then send the message again")
+            return (f"{name} process {pid} of the previous {st['kind']} turn outlived its supervisor and still "
+                    f"holds the session; end it with {config.COMMAND} stop {st['slug']}, then send the message again")
         return None
     if st.get("outcome") == "sleeping":
         return (f"waiting for limit reset until {config.local_time(st['sleeping']['until'])}; stop first to send a new message"

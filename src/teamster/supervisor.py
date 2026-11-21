@@ -190,7 +190,7 @@ def resume_refusal(st):
         if st.get("outcome") == "stopped":
             return f"{slug} was stopped with stop, not cut short by a signal; continue it with say"
         return f"{slug}: its last cycle ended {st.get('outcome')}, not cut short by a signal; continue it with say"
-    for key in ("codex_pid", "claude_pid", "opencode_pid", "check_pid"):
+    for key in ("codex_pid", "claude_pid", "check_pid"):
         if procs.alive(st.get(key)):
             return (f"{slug}: process {st[key]} of the interrupted cycle is still alive; "
                     "end it, then run resume again")
@@ -469,7 +469,7 @@ def deliver_duty_note(order):
             cfg = config.accounts_config()
             now = clock.CLOCK.time()
             if (not duty_chat.auto_turn_allowed(chat, cfg, now) or duty_chat.chat_account(cfg)[0] is None
-                    or task_state.duty_process(chat)[1] is not None):
+                    or task_state.session_process(chat)[1] is not None):
                 duty_chat.hold_notes([order])
                 return "held"
             orders = duty_chat.held_notes() + [order]
@@ -503,14 +503,12 @@ def finalize_cycle(st, cfg, check, stopped):
     telemetry_log.record_turn_result(st, stopped)
     telemetry_log.record_external_event(st)
     if cfg is not None:
-        account = notifications.current_turn_account(st)
-        worker = executors.for_turn(st)
-        message = f"turn {st['outcome']} on {worker.name if worker.account_field is None else account}"
+        message = f"turn {st['outcome']} on {notifications.turn_account_label(st)}"
         result = st.get("result")
         message += ", result " + (result["status"] if result is not None else "unknown")
         if check is not None:
             message += ", check " + check["outcome"]
-        notifications.notify(st, cfg, "turn_finished", message, outcome=st["outcome"], account=account, result=result,
+        notifications.notify(st, cfg, "turn_finished", message, outcome=st["outcome"], result=result,
                              guarded_changed=guarded_changed, ci=st.get("ci"))
         if st["outcome"] == "interrupted":
             notifications.notify(st, cfg, "interrupted", task_state.interruption_message(st), outcome=st["outcome"],

@@ -274,6 +274,25 @@ class ResumeTests(RotationTestCase):
         self.assertIsNone(state["resumed"][0]["signal"])
         self.assertIn("an external signal (unknown: the supervisor left no result)", self.invocations()[1]["prompt"])
 
+        # OpenCode has a separate process group and may keep writing after its supervisor dies.
+        binary = self.root / "opencode"
+        binary.write_text("#!/bin/sh\nexec sleep 90\n")
+        binary.chmod(0o700)
+        slug = "orphan-opencode"
+        self.start(slug, "--executor", "opencode", "--model", "offline/model", "--no-push")
+        self.until(lambda: self.state(slug).get("opencode_pid"), timeout=60)
+        state = self.state(slug)
+        orphan = state["opencode_pid"]
+        self.extra_pids.add(orphan)
+        os.kill(state["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(state["pid"]))
+        for args in (("say", slug, "Continue."), ("resume", slug), ("clean", slug)):
+            self.assertIn(f"teamster stop {slug}", self.refused(*args))
+        self.assertEqual(self.state(slug)["turns"], 1)
+        self.assertIn(f"ended OpenCode process {orphan}", self.cli("stop", slug))
+        self.assertFalse(self.process_is_live(orphan))
+        self.assertNotIn("opencode_pid", self.state(slug))
+
     def test_resume_refuses_stopped_and_running_tasks_and_say_still_continues(self):
         self.configure(language="en")
         self.account(self.home, "A", self.reset, runs=[
