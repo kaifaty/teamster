@@ -32,7 +32,7 @@ const meters = computed(() => metersOf(props.task, props.limits, props.cargo, pr
     </div>
     <div class="top">
       <div class="hangar" :class="{ alive: task.alive }">
-        <img :src="picture" :alt="alt" :style="{ width: `${frame.size}%`, height: `${frame.size}%`, left: `${frame.left}%`, top: `${frame.top}%` }" />
+        <img :src="picture" :alt="alt" :class="task.executor" :style="{ width: `${frame.size}%`, height: `${frame.size}%`, left: `${frame.left}%`, top: `${frame.top}%` }" />
         <span
           v-for="(mark, index) in marks"
           :key="index"
@@ -99,6 +99,10 @@ const meters = computed(() => metersOf(props.task, props.limits, props.cargo, pr
 .hangar img {
   position: absolute;
   object-fit: contain;
+}
+
+.hangar img.opencode {
+  filter: grayscale(1);
 }
 
 .hangar.alive img {

@@ -3,6 +3,7 @@
 // summary and the demo's source are in the control panel's command row.
 import type { ShipEntry } from "./scene";
 import type { GalaxyModel } from "./use/useGalaxyModel";
+import { EXECUTOR_OPTIONS } from "../lib/labels";
 
 defineProps<{
   /** The open system; null means the whole galaxy is shown. */
@@ -49,8 +50,7 @@ const hideImage = (event: Event) => {
       Задачи · {{ entries.length }}
     </button>
     <span class="legend" aria-hidden="true">
-      <span class="codex">◆ Codex</span>
-      <span class="claude">✳ Claude</span>
+      <span v-for="option in EXECUTOR_OPTIONS" :key="option.id" :class="option.id">{{ option.label }}</span>
       <template v-if="!repo">
         <span class="key"><i class="badge b-alarm" />тревоги</span>
         <span class="key"><i class="badge b-ready" />ждут тебя</span>

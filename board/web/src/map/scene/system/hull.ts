@@ -105,6 +105,7 @@ export function makeShip(kit: Kit, entry: ShipEntry, arrive: boolean, station: P
   const body = new Container();
   const engine = glow(FLEET[entry.task.executor].engine, 128);
   const hull = new Sprite(Texture.EMPTY);
+  if (entry.task.executor === "opencode") hull.filters = [kit.greyFilter];
   hull.anchor.set(0.5);
   const patches = new Graphics();
   const burn = glow(SPACE.burn, 128);
