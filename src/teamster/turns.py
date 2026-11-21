@@ -392,7 +392,8 @@ def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, ne
 def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
     last = config.TASKS / st["slug"] / "last.md"
     last.unlink(missing_ok=True)
-    if not st.get("session_id"):
+    resume = bool(st.get("session_id"))
+    if not resume:
         st["session_id"] = "ses_" + uuid.uuid4().hex
     st.update(model=st["task_model"], reasoning_effort=None)
     task_state.save(st)  # The exact cursor must survive interruption, even during the first turn.
@@ -409,7 +410,7 @@ def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
     try:
         outcome, message = opencode_runner.run_opencode(
             st["worktree"], prompt, st["model"], st["session_id"], stopped, deadline, started=started,
-            title=st["slug"])
+            title=st["slug"], resume=resume)
     finally:
         st.pop("opencode_pid", None)
         task_state.save(st)

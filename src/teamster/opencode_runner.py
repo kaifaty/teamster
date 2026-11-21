@@ -34,7 +34,7 @@ def _response(events, session_id, returncode, stderr):
     return "completed", "".join(parts)
 
 
-def run_opencode(worktree, prompt, model, session_id, stopped, deadline, started=None, *, title):
+def run_opencode(worktree, prompt, model, session_id, stopped, deadline, started=None, *, title, resume):
     """Return (outcome, final answer or error) for the caller's persisted session ID."""
     def interruption():
         if stopped():
@@ -42,20 +42,15 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, started
         if deadline is not None and clock.CLOCK.monotonic() >= deadline:
             return "budget_exhausted", "OpenCode reached the turn time budget"
 
-    argv = ["opencode", "run", "--standalone", "--auto", "--format", "json",
-            "--session", session_id, "--model", model, "--title", title]
-    # Tool events and long prompts can exceed a pipe buffer. Keep the process
-    # interruptible without retaining the whole tool transcript in memory.
-    with tempfile.TemporaryFile() as request, tempfile.TemporaryFile() as events, tempfile.TemporaryFile() as stderr:
-        request.write(prompt.encode())
-        request.seek(0)
+    def invoke(argv, stdin, stdout, stderr):
+        """Return the exit code, or the turn outcome if execution could not finish."""
         if reason := interruption():
-            return reason
+            return None, reason
         try:
-            proc = subprocess.Popen(argv, cwd=worktree, stdin=request, stdout=events, stderr=stderr,
+            proc = subprocess.Popen(argv, cwd=worktree, stdin=stdin, stdout=stdout, stderr=stderr,
                                     start_new_session=True)
         except OSError as error:
-            return "failed", f"Could not start OpenCode: {error}"
+            return None, ("failed", f"Could not start OpenCode: {error}")
         try:
             if started:
                 started(proc)
@@ -65,10 +60,34 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, started
                 except subprocess.TimeoutExpired:
                     pass
                 if reason := interruption():
-                    return reason
+                    return None, reason
                 if proc.returncode is not None:
-                    break
-            events.seek(0)
-            return _response(events, session_id, proc.returncode, stderr)
+                    return proc.returncode, None
         finally:
             procs.terminate(proc)
+
+    if resume:
+        # run --session creates the ID if absent. Check the saved cursor before giving run the prompt.
+        lookup = ["opencode", "api", "--standalone", "session.get", "--param", "sessionID=" + session_id]
+        with tempfile.TemporaryFile() as stderr:
+            code, failure = invoke(lookup, subprocess.DEVNULL, subprocess.DEVNULL, stderr)
+            if failure:
+                return failure
+            if code:
+                stderr.seek(0)
+                if b"HTTP 404 " in stderr.read(4096):
+                    return "failed", f"Saved OpenCode session {session_id} was not found"
+                return "failed", f"Could not verify saved OpenCode session {session_id} (exit {code})"
+
+    argv = ["opencode", "run", "--standalone", "--auto", "--format", "json",
+            "--session", session_id, "--model", model, "--title", title]
+    # Tool events and long prompts can exceed a pipe buffer. Keep the process
+    # interruptible without retaining the whole tool transcript in memory.
+    with tempfile.TemporaryFile() as request, tempfile.TemporaryFile() as events, tempfile.TemporaryFile() as stderr:
+        request.write(prompt.encode())
+        request.seek(0)
+        code, failure = invoke(argv, request, events, stderr)
+        if failure:
+            return failure
+        events.seek(0)
+        return _response(events, session_id, code, stderr)

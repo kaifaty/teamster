@@ -140,7 +140,9 @@ OpenCode work requires both `start --executor opencode` and an explicit `--model
 executor has no Teamster reasoning-effort setting, account pool, weekly quota collection or rotation.
 A weekly budget can still count usage from a separate Codex or Claude review. Use `--max-minutes`
 to bound the OpenCode work turn. Keep the same OpenCode data home across turns so the session
-can restore its transcript. OpenCode's own agent configuration applies, including any model
+can restore its transcript. Before a continuation, Teamster checks the saved session ID. If
+OpenCode cannot find the session, the turn fails before Teamster sends the prompt.
+OpenCode's own agent configuration applies, including any model
 explicitly configured for a subagent or compaction.
 
 ## Account JSON

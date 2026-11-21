@@ -113,6 +113,21 @@ def install_fake_opencode(root):
         import sys
 
         parser = argparse.ArgumentParser()
+        with (Path.home() / "opencode-calls").open("a") as calls:
+            print(sys.argv[1], file=calls)
+        if sys.argv[1] == "api":
+            parser.add_argument("operation", choices=["session.get"])
+            parser.add_argument("--standalone", action="store_true", required=True)
+            parser.add_argument("--param", required=True)
+            lookup = parser.parse_args(sys.argv[2:])
+            key, session_id = lookup.param.split("=", 1)
+            assert key == "sessionID" and sys.stdin.read() == ""
+            stored = Path.home() / session_id
+            if not stored.exists():
+                print(json.dumps({"_tag": "SessionNotFoundError"}))
+                sys.exit("HTTP 404 Not Found")
+            print(json.dumps({"id": session_id, "directory": stored.read_text()}))
+            sys.exit(0)
         parser.add_argument("command", choices=["run"])
         parser.add_argument("--standalone", action="store_true", required=True)
         parser.add_argument("--auto", action="store_true", required=True)
@@ -181,6 +196,23 @@ class ExecutorTests(RotationTestCase):
             self.assertEqual(self.trace(), [])
             report = json.loads(self.cli("report", "--json", "--by", "executor"))
             self.assertEqual([group["executor"] for group in report["groups"]], ["opencode"])
+
+            if real_binary:
+                subprocess.run(["opencode", "session", "delete", "--standalone", session], cwd=file.parent,
+                               env=self.env, stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=30)
+            else:
+                (self.root / session).unlink()
+            self.cli("say", slug, "Make a third change to tracked.txt.")
+            output = self.cli("wait", slug, "--timeout", "30", timeout=45)
+            failed = self.state(slug)
+            self.assertEqual((failed["session_id"], failed["outcome"], failed.get("result")), (session, "failed", None))
+            self.assertEqual(failed["error"], f"Saved OpenCode session {session} was not found")
+            self.assertIn(failed["error"], output)
+            summaries = [json.loads(msg)["summary"] for msg in self.worker().threads.session_messages(failed)]
+            self.assertEqual(summaries, ["Initial edit", "Follow-up edit"])
+            self.assertEqual(file.read_text(), "initial\nInitial edit\nFollow-up edit\n")
+            if not real_binary:
+                self.assertEqual((self.root / "opencode-calls").read_text().splitlines(), ["run", "api", "run", "api"])
 
     def test_acp_stdio_conversation(self):
         self.env["HOME"] = str(self.root)
