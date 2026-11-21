@@ -183,7 +183,7 @@ OPTION_REGISTRY = (
                   "help": "work provider saved for the task (default: task profile or executor setting)"},
      "synopsis": "[--executor codex|claude|opencode]",
      "commands": {"start": {}}},
-    {"names": ("--executor",), "argparse": {"choices": ("codex", "claude")},
+    {"names": ("--executor",), "argparse": {"choices": executors.scout_names},
      "synopsis": "[--executor codex|claude]",
      "commands": {"scout": {
                   "help": "scout provider (default: role profile or codex); claude requires a git directory"},
@@ -296,6 +296,8 @@ def command_options(command):
     for option in OPTION_REGISTRY:
         if command in option["commands"]:
             kwargs = dict(option["argparse"], **option["commands"][command])
+            if callable(kwargs.get("choices")):
+                kwargs["choices"] = kwargs["choices"]()
             group = kwargs.pop("group", None)
             yield option, kwargs, group
 

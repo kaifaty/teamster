@@ -346,6 +346,8 @@ class ExecutorTests(RotationTestCase):
         executor = FixtureExecutor(name, "fixture_account", "fixture_cursor", "position")
         executor.bind(sys.modules[__name__], turn="fixture_work_turn", last_message="fixture_last_message",
                       messages="fixture_messages", pr_messages="fixture_messages")
+        scout = mock.Mock(side_effect=lambda st, *args, **kwargs: st.update(outcome="completed"))
+        executor.bind(SimpleNamespace(run=scout), scout="run")
         worker.executors.register(executor)
         for path in SCRIPT.parent.glob("*.py"):
             self.assertNotIn(name, path.read_text())
@@ -401,6 +403,10 @@ class ExecutorTests(RotationTestCase):
             self.assertIn("review by main", cli("wait", "registered-task"))
             self.assertIn("account main  thread", cli("status", "registered-task"))
             self.assertEqual(self.notification("registered-task", "review_done")["account"], "main")
+
+            cli("scout", "registered-scout", "Read the fixture", "--repo", str(self.repo), "--executor", name)
+            scout.assert_called_once()
+            self.assertEqual(self.state("registered-scout")["outcome"], "completed")
 
 
 if __name__ == "__main__":

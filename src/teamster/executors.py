@@ -168,6 +168,10 @@ def names():
     return EXECUTORS.keys()
 
 
+def scout_names():
+    return [name for name, worker in EXECUTORS.items() if "scout" in worker.hooks]
+
+
 def configurable_names():
     """Workers eligible for profile and configuration defaults; accountless work is explicit."""
     return [name for name, worker in EXECUTORS.items() if worker.account_field is not None]
