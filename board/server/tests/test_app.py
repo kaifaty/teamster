@@ -4380,7 +4380,7 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         assert active["no_push"] is True and active["pr"] is None
         assert worker.state(active["slug"])["no_push"] is True
         assert client.get(f"{base}/tasks").json()["tasks"][0]["id"] == task_id
-        at_capacity = client.post(f"{base}/tasks", json=opencode_start)
+        at_capacity = client.post(f"{base}/tasks", json=dict(start, request_id="capacity-001"))
         assert at_capacity.status_code == 409, at_capacity.text
         assert at_capacity.json()["error"]["code"] == "parallel_limit"
         assert client.get(f"{base}/events").json()["events"] == []
@@ -4467,8 +4467,15 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
             "task_finished", running["id"], "stopped",
         )
 
-        last = client.post(f"{base}/tasks", json=dict(start, request_id="start-003"))
+        fake = worker.root / "opencode"
+        fake.write_text("#!/bin/sh\nexec sleep 60\n")
+        fake.chmod(0o700)
+        last = client.post(f"{base}/tasks", json=opencode_start)
         assert last.status_code == 201, last.text
+        assert last.json()["task"]["executor"] == "opencode"
+        slug = last.json()["task"]["slug"]
+        assert worker.state(slug)["task_model"] == opencode_start["model"]
+        worker.until(lambda: worker.state(slug).get("opencode_pid"))
         last_id = last.json()["task"]["id"]
         for attempt in range(5):
             current = card(client, last_id)

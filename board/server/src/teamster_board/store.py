@@ -212,7 +212,7 @@ def phase(state, is_alive):
         latest = (last(reviews[start:]) if isinstance(reviews, list) else None) or {}
         started = number(latest.get("started")) if latest.get("finished") is None else None
         return "review", started
-    if state.get("outcome") == "running" or state.get("codex_pid") or state.get("claude_pid"):
+    if state.get("outcome") == "running" or any(state.get(key) for key in ("codex_pid", "claude_pid", "opencode_pid")):
         if state.get("rounds") or (ci.get("outcome") == "failed" and (integer(ci.get("rounds")) or 0) > 0):
             return "fix", None
         return "turn", number(state.get("turn_started"))

@@ -34,6 +34,7 @@ def write_state(tasks, slug="task", **fields):
 
 @pytest.mark.parametrize("state,expected", [
     ({"outcome": "running"}, ("turn", 20.0)),
+    ({"kind": "work", "outcome": "budget_exhausted", "opencode_pid": 123}, ("turn", 20.0)),
     ({"outcome": "completed", "check_pid": 123}, ("check", None)),
     ({"kind": "review", "reviews": [{"started": 30, "finished": None}]}, ("review", 30.0)),
     ({"rounds": [{}], "outcome": "running"}, ("fix", None)),
