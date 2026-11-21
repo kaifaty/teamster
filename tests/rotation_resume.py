@@ -307,6 +307,13 @@ else:
         self.assertFalse(self.process_is_live(orphan))
         self.assertFalse(self.process_is_live(child))
         self.assertNotIn("opencode_pid", self.state(slug))
+        self.assertEqual(self.state(slug)["outcome"], "stopped")
+        self.assertIsNone(self.state(slug)["pid"])
+        self.assertIn("turn_finished", self.state(slug))
+        status = self.cli("status", slug)
+        self.assertIn(" idle ", status)
+        self.assertNotIn("continue: teamster resume", status)
+        self.assertIn("nothing to resume", self.resume("--all"))
 
         # Even a group leader in the same worktree is not a worker of this interrupted supervisor.
         worker = self.worker()
@@ -330,6 +337,17 @@ else:
                 self.assertRaisesRegex(SystemExit, "still running"):
             worker.commands.cmd_clean(SimpleNamespace(slug=slug, keep_branch=False))
         self.assertTrue(Path(stale["worktree"]).is_dir())
+
+        def check_clean_lock(args, state):
+            self.assertIn(slug, worker.task_state.HELD_STATE_LOCKS.slugs)
+
+        with mock.patch.object(worker.commands, "clean_task", side_effect=check_clean_lock) as clean:
+            worker.commands.cmd_clean(SimpleNamespace(slug=slug, keep_branch=False))
+            clean.assert_called_once()
+
+        self.cli("say", slug, "Continue after the stop.")
+        self.until(lambda: self.state(slug).get("opencode_pid") and self.state(slug)["turns"] == 2)
+        self.cli("stop", slug)
 
     def test_resume_refuses_stopped_and_running_tasks_and_say_still_continues(self):
         self.configure(language="en")

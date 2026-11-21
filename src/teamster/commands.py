@@ -769,7 +769,12 @@ def cmd_stop(a):
             if marker:
                 codex_duty.end_duty_terminals(marker)
             st.pop(name.lower() + "_pid", None)
-            task_state.write_state(st)
+            if name == "OpenCode":
+                now = clock.CLOCK.time()
+                st.update(outcome="stopped", turn_finished=now, stop_request={"at": now, "pid": pid})
+                supervisor.finish_cycle(st)
+            else:
+                task_state.write_state(st)
             print(f"stopped {a.slug}: ended {name} process {orphan}")
             return
         st["stop_request"] = {"at": clock.CLOCK.time(), "pid": pid}

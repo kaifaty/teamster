@@ -144,7 +144,7 @@ export interface DeskView {
 export function deskOf(task: Pick<TaskSummary, "slug" | "kind" | "alive" | "column" | "can_stop">, queue = false): DeskView {
   const session = task.kind === "session";
   const old = archived(task.slug);
-  const idle = !task.alive;
+  const idle = !task.alive && !task.can_stop;
   const words = task.kind === "work" || task.kind === "review" || task.kind === "reflect";
   const judged = task.kind === "work" || task.kind === "review";
   const queued = words && !old && task.alive && queue;
