@@ -7,6 +7,9 @@ import tempfile
 from . import acp, clock, procs
 
 
+PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
+
+
 def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, title, created, started=None):
     """Create a titled session if needed, then work only in that existing session."""
     def check_active():
@@ -20,6 +23,8 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
 
     parts = []
     message_id = None
+    env = dict(os.environ, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
+    env[PROCESS_MARKER] = str(os.getpid())
 
     def update(event):
         nonlocal message_id
@@ -38,7 +43,7 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
             # Giving the session its title at creation avoids a separate model call for an automatic title.
             argv = ["opencode", "api", "--standalone", "session.create", "--data", json.dumps({"title": title})]
             with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
-                proc = subprocess.Popen(argv, cwd=worktree, env={**os.environ, "PWD": os.path.realpath(worktree)},
+                proc = subprocess.Popen(argv, cwd=worktree, env=env,
                                         stdin=subprocess.DEVNULL, stdout=output, stderr=errors, start_new_session=True)
                 try:
                     if started:
@@ -67,7 +72,7 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
         check_active()
         # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
         with acp.AcpClient(["opencode", "acp"], worktree, lambda event: None, allow_once,
-                           check_active=check_active) as client:
+                           check_active=check_active, env=env) as client:
             if started:
                 started(client.process)
             client.open_session(session_id, model=model)

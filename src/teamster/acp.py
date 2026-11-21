@@ -27,9 +27,10 @@ class AcpClient:
     The harness owns model selection, credentials, tools and session storage.
     """
 
-    def __init__(self, argv, cwd, on_update, on_permission, *, check_active=None):
+    def __init__(self, argv, cwd, on_update, on_permission, *, check_active=None, env=None):
         self.argv = argv
         self.cwd = str(Path(cwd).resolve())
+        self.env = env
         self.on_update = on_update
         self.on_permission = on_permission
         self.check_active = check_active
@@ -40,7 +41,8 @@ class AcpClient:
         self.auth_methods = []
 
     def __enter__(self):
-        self.process = subprocess.Popen(self.argv, cwd=self.cwd, env={**os.environ, "PWD": self.cwd},
+        env = self.env if self.env is not None else {**os.environ, "PWD": self.cwd}
+        self.process = subprocess.Popen(self.argv, cwd=self.cwd, env=env,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
         if self.check_active:
             os.set_blocking(self.process.stdin.fileno(), False)

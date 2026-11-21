@@ -121,7 +121,7 @@ def install_fake_opencode(root):
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         home = Path.home()
         cwd = Path(os.environ["PWD"])
-        config = [{"id": "model", "type": "select", "options": [{"value": "offline/model"}]}]
+        config = [{"id": "model", "type": "select", "options": [{"value": "offline/other"}, {"value": "offline/model"}]}]
 
         def send(**message):
             print(json.dumps({"jsonrpc": "2.0", **message}), flush=True)
@@ -148,6 +148,7 @@ def install_fake_opencode(root):
             sys.exit(0)
 
         assert sys.argv[1:] == ["acp"]
+        assert os.environ.get("COPYFILE_DISABLE") == "1"
         for line in sys.stdin:
             request = json.loads(line)
             method, params = request["method"], request["params"]
@@ -174,10 +175,17 @@ def install_fake_opencode(root):
                 else:
                     assert method == "session/prompt" and config[0]["currentValue"] == "offline/model"
                     prompt = params["prompt"][0]["text"]
-                    if "label" in state:
+                    answer = json.loads((home / "response.json").read_text())
+                    wrapup = "The turn's time budget has expired." in prompt
+                    if wrapup:
+                        state["wrapup_context"] = prompt
+                        stored.write_text(json.dumps(state))
+                        answer["status"] = "partial"
+                    elif "label" in state:
                         assert "Make the second change" in prompt
                         summary = "Follow-up edit " + state["label"]
                     else:
+                        prompt = state.get("wrapup_context", "") + prompt
                         assert "Make the first change" in prompt
                         labels = [label for label in ("alpha", "beta") if f"[{label}]" in prompt]
                         assert len(labels) == 1
@@ -186,15 +194,28 @@ def install_fake_opencode(root):
                         summary = "Initial edit " + state["label"]
                         if "Retry the interrupted request" in prompt:
                             summary += " (retried)"
-                    with (cwd / "tracked.txt").open("a") as out:
-                        print(summary, file=out)
-                    answer = json.loads((home / "response.json").read_text())
-                    answer["summary"] = summary
-                    update = {"sessionUpdate": "agent_message_chunk",
-                              "content": {"type": "text", "text": json.dumps(answer)}}
+                    if not wrapup:
+                        send(id="edit", method="session/request_permission", params={
+                            "sessionId": session_id, "toolCall": {"toolCallId": "edit", "title": "Edit tracked.txt"},
+                            "options": [{"optionId": "deny", "kind": "reject_once", "name": "Deny"},
+                                        {"optionId": "allow", "kind": "allow_once", "name": "Allow once"}],
+                        })
+                        decision = json.loads(sys.stdin.readline())
+                        assert decision["id"] == "edit"
+                        assert decision["result"]["outcome"] == {"outcome": "selected", "optionId": "allow"}
+                        with (cwd / "tracked.txt").open("a") as out:
+                            print(summary, file=out)
+                        answer["summary"] = summary
                     reply = (home / "reply-mode").read_text() if (home / "reply-mode").exists() else "complete"
                     target = "ses_other" if reply == "wrong-session" else session_id
-                    send(method="session/update", params={"sessionId": target, "update": update})
+                    text = json.dumps(answer)
+                    middle = len(text) // 2
+                    for chunk in (text[:middle], text[middle:]):
+                        update = {"sessionUpdate": "agent_message_chunk", "messageId": "answer",
+                                  "content": {"type": "text", "text": chunk}}
+                        send(method="session/update", params={"sessionId": target, "update": update})
+                        if reply == "incomplete-json":
+                            break
                     if reply == "truncated":
                         sys.exit(0)
                     if reply == "provider-error":
@@ -213,8 +234,7 @@ def install_fake_opencode(root):
 class ExecutorTests(RotationTestCase):
     def test_opencode_start_and_say_resume_the_worker_session(self):
         self.env.update(HOME=str(self.root), PWD=str(self.repo), TEAMSTER_CLAUDE=str(self.root / "missing-claude"))
-        self.configure(accounts=[], claude={"accounts": []}, task_profiles={
-            "feature": {"executor": "codex", "model": "codex-only", "effort": "high"}})
+        profiles = {"feature": {"executor": "codex", "model": "codex-only", "effort": "high"}}
         real_binary = os.environ.get("TEAMSTER_TEST_OPENCODE")
         if real_binary:
             provider = local_opencode_provider(self.env, real_binary)
@@ -226,17 +246,20 @@ class ExecutorTests(RotationTestCase):
         labels = {"opencode-work": "alpha", "opencode-parallel": "beta"}
         with provider:
             worktrees = self.git("worktree", "list", "--porcelain")
-            refused = subprocess.run([sys.executable, "-I", str(SCRIPT), "start", "opencode-sandbox", "--brief",
-                                      str(self.brief), *flags, "--sandbox", "workspace"],
-                                     cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
-            self.assertNotEqual(refused.returncode, 0)
-            self.assertIn("--sandbox workspace is not supported", refused.stderr)
+            for configured, options in (("off", ["--sandbox", "workspace"]), ("workspace", [])):
+                self.configure(accounts=[], claude={"accounts": []}, task_profiles=profiles, sandbox=configured)
+                refused = subprocess.run([sys.executable, "-I", str(SCRIPT), "start", "opencode-sandbox",
+                                          "--brief", str(self.brief), *flags, *options],
+                                         cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("--sandbox workspace is not supported", refused.stderr)
             self.assertEqual(self.git("worktree", "list", "--porcelain"), worktrees)
             self.assertFalse((self.root / "opencode-calls").exists())
 
             for slug, label in labels.items():
                 self.brief.write_text(f"Make the first change to tracked.txt. Store this marker: [{label}].\n")
-                self.start(slug, *flags, "--parallel", "--check", f"grep -q 'Initial edit {label}' tracked.txt")
+                self.start(slug, *flags, "--sandbox", "off", "--parallel",
+                           "--check", f"grep -q 'Initial edit {label}' tracked.txt")
 
             sessions = {}
             for slug, label in labels.items():
@@ -334,23 +357,39 @@ class ExecutorTests(RotationTestCase):
         self.assertIn("Initial edit alpha (retried)", self.wait(slug))
         stop_at("session/resume", self.cli, "say", slug, "Make the second change to tracked.txt.")
 
-        # Expire the budget only after the peer has received session/resume.
-        state = self.state(slug)
-        worker = self.worker()
-        gate.write_text("session/resume")
-        try:
-            with mock.patch.dict(os.environ, self.env, clear=True), \
-                    mock.patch.object(worker.clock.CLOCK, "monotonic", side_effect=lambda: float(waiting.exists())):
-                outcome, _ = worker.turns.opencode_runner.run_opencode(
-                    state["worktree"], "Make the second change", "offline/model", state["session_id"],
-                    lambda: False, 1, title=slug, created=lambda _: self.fail("Resuming created a session"))
-            self.assertEqual(outcome, "budget_exhausted")
-            self.assertFalse(self.process_is_live(int(waiting.read_text())))
-        finally:
-            gate.unlink(missing_ok=True)
         calls = (self.root / "opencode-calls").read_text().splitlines()
         self.assertEqual(calls.count("session/prompt"), 1)
         self.assertEqual(calls[-1], "session/resume")
+
+    def test_opencode_first_turn_timeout_keeps_the_brief_for_say(self):
+        self.env.update(HOME=str(self.root), PWD=str(self.repo))
+        self.configure(language="en", accounts=[], claude={"accounts": []})
+        self.enable_fake_clock(auto_advance=False)
+        self.brief.write_text("Make the first change to tracked.txt. Store this marker: [alpha].")
+        install_fake_opencode(self.root)
+        (self.root / "response.json").write_text(json.dumps(self.work_result(checks=[])))
+        slug = "opencode-timeout"
+        gate = self.root / "hold-method"
+        waiting = self.root / "waiting-pid"
+        gate.write_text("session/prompt")
+        try:
+            self.start(slug, "--executor", "opencode", "--model", "offline/model", "--no-push", "--max-minutes", "1")
+            self.until(lambda: waiting.exists() and waiting.read_text().isdigit(), timeout=15)
+            worker_pid = int(waiting.read_text())
+            self.extra_pids.add(worker_pid)
+            session = self.state(slug)["session_id"]
+            self.advance_fake_clock(60)
+            self.until(lambda: not self.process_is_live(worker_pid), timeout=10)
+        finally:
+            gate.unlink(missing_ok=True)
+        self.wait(slug)
+        state = self.state(slug)
+        self.assertEqual((state["outcome"], state["result"]["status"]), ("budget_exhausted", "partial"))
+        phases = [(row["phase"], row["session_id"]) for row in self.phase_telemetry_journal()]
+        self.assertEqual(phases, [("work", session), ("wrapup", session)])
+        self.cli("say", slug, "Retry the interrupted request.")
+        self.assertIn("Initial edit alpha (retried)", self.wait(slug))
+        self.assertEqual(self.state(slug)["session_id"], session)
 
     def test_acp_stdio_conversation(self):
         self.env["HOME"] = str(self.root)
@@ -468,6 +507,15 @@ class ExecutorTests(RotationTestCase):
                         self.repo, "Make the first change [alpha]", "offline/model", None,
                         lambda: False, None, title="opencode-failure", created=lambda session: None)
                     self.assertEqual(outcome, "failed")
+
+        (self.root / "reply-mode").write_text("incomplete-json")
+        self.brief.write_text("Make the first change [alpha].")
+        slug = "opencode-incomplete"
+        self.start(slug, "--executor", "opencode", "--model", "offline/model", "--no-push", "--check", "touch check-ran")
+        self.assertIn("OpenCode returned an invalid work result", self.cli("wait", slug, "--timeout", "30", timeout=45))
+        state = self.state(slug)
+        self.assertEqual((state["outcome"], state["result"], state["checks"]), ("failed", None, []))
+        self.assertFalse((Path(state["worktree"]) / "check-ran").exists())
 
     def test_registered_executor_lifecycle(self):
         self.env.update(HOME=str(self.root), USER="fixture-user")

@@ -444,6 +444,9 @@ def run_opencode_turn(st, cfg, prompt, effort, current_message, stopped, sleep, 
 
 
 def opencode_wrapup_turn(st, cfg, account, prompt, effort, stopped, thread):
+    # The budget may have expired before OpenCode accepted its first work prompt.
+    if not threads.session_messages(st):
+        prompt = threads.handoff(st, cfg=cfg) + "\n\n" + prompt
     return opencode_work_turn(st, prompt, stopped, 10, wrapup=True)
 
 

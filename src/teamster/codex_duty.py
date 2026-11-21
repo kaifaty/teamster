@@ -3,7 +3,6 @@
 Commands and patches require guard approvals. Plain accept is never a
 session grant; the shared duty guard remains the boundary on sandbox retries.
 """
-import ctypes
 import json
 import os
 import re
@@ -68,34 +67,9 @@ def codex_duty_overrides(marker, room):
     return values
 
 
-def duty_process_environment(pid):
-    """Read actual environment entries, never flattened argv that could spoof ownership."""
-    try:
-        if sys.platform == "darwin":
-            library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-            mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2, pid.
-            size = ctypes.c_size_t()
-            if library.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0:
-                return []
-            buffer = ctypes.create_string_buffer(size.value)
-            if library.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0:
-                return []
-            data = buffer.raw[:size.value]
-            argc = int.from_bytes(data[:4], sys.byteorder)
-            position = data.index(b"\0", 4)
-            while position < len(data) and data[position] == 0:
-                position += 1
-            for _ in range(argc):
-                position = data.index(b"\0", position) + 1
-            return data[position:].split(b"\0")
-        return (Path("/proc") / str(pid) / "environ").read_bytes().split(b"\0")
-    except (OSError, ValueError):
-        return []
-
-
 def duty_process_marker(pid):
     prefix = (config.DUTY_PROCESS_MARKER + "=").encode()
-    return next((entry[len(prefix):].decode("ascii") for entry in duty_process_environment(pid)
+    return next((entry[len(prefix):].decode("ascii") for entry in procs.process_environment(pid)
                  if entry.startswith(prefix) and re.fullmatch(b"[0-9a-f]{32}", entry[len(prefix):])), None)
 
 

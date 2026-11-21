@@ -710,7 +710,7 @@ executors.get("claude").bind(sys.modules[__name__], prepare="prepare_claude_work
 
 def prepare_opencode_work(effort, cfg):
     if effort is not None:
-        raise ValueError("OpenCode does not support --effort; select a model variant with provider/model#variant")
+        raise ValueError("OpenCode work does not support --effort")
     if not shutil.which("opencode"):
         raise ValueError("OpenCode CLI was not found. Install opencode and add it to PATH.")
 
@@ -792,22 +792,18 @@ def cmd_stop(a):
 
 
 def cmd_clean(a):
-    st = task_state.load(a.slug)
-    if st.get("kind") == duty_chat.CHAT_KIND or st.get("opencode_pid"):
-        # Check the holder and archive under the same lock that starting or stopping a turn takes.
-        with task_state.state_lock(a.slug):
-            st = task_state.load(a.slug)
-            name, orphan = task_state.session_process(st)
-            if not procs.alive(st.get("pid")) and orphan is not None:
-                procs.die(f"{name} process {orphan} of the last {st['kind']} turn is still running; "
-                          f"end it with {config.COMMAND} stop {a.slug}, then clean")
-            return clean_task(a, st)
-    return clean_task(a, st)
+    with task_state.state_lock(a.slug):
+        st = task_state.load(a.slug)
+        if procs.alive(st.get("pid")):
+            procs.die("still running; stop it first")
+        name, orphan = task_state.session_process(st)
+        if orphan is not None:
+            procs.die(f"{name} process {orphan} of the last {st['kind']} turn is still running; "
+                      f"end it with {config.COMMAND} stop {a.slug}, then clean")
+        return clean_task(a, st)
 
 
 def clean_task(a, st):
-    if procs.alive(st.get("pid")):
-        procs.die("still running; stop it first")
     cfg = config.task_config(st)
     if st.get("kind") in ("reflect", "duty"):
         shutil.rmtree(config.TASKS / a.slug / "room", ignore_errors=True)
@@ -829,10 +825,11 @@ def clean_task(a, st):
         archive.parent.mkdir(parents=True, exist_ok=True)
         (record / "events.jsonl").unlink(missing_ok=True)
         (record / "claude-events.jsonl").unlink(missing_ok=True)
-        (record / "state.lock").unlink(missing_ok=True)
         record.rename(archive)
     except OSError as exc:
         procs.die(f"could not archive task record to {archive}: {exc}; record kept at {record}")
+    # Keep the live lock reachable at the task path until the entire record moves.
+    (archive / "state.lock").unlink()
     print(f"cleaned {a.slug}; record in {archive}")
     if st.get("kind") in ("scout", "reflect", "duty"):
         return

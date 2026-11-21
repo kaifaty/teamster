@@ -216,7 +216,7 @@ class LifecycleTests(RotationTestCase):
                     self.assertFalse(archive.exists())
                     self.assertEqual({path.name: path.read_bytes() for path in record.iterdir()},
                                      {name: value for name, value in contents.items()
-                                      if name not in ("events.jsonl", "state.lock")})
+                                      if name != "events.jsonl"})
 
     @contextmanager
     def prepared_cli(self):

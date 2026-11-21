@@ -17,7 +17,7 @@ from . import executors, procs, result_schema, reviewers
 
 TASK_TYPE_PATTERN = re.compile(r"[a-z0-9-]{1,32}")
 MODEL_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
-OPENCODE_MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/@+-]*(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?")
+OPENCODE_MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/@+-]*")
 ROUTABLE_ROLES = ("work", "review", "scout", "reflect", "duty")
 
 

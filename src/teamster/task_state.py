@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 from typing import Callable, Literal, NamedTuple, Optional
 
-from . import clock, config, procs, reviewers, threads
+from . import clock, config, opencode_runner, procs, reviewers, threads
 
 
 def interruption(st):
@@ -243,7 +243,11 @@ def state_lock(slug):
     if slug in held:
         yield
         return
-    with state_path(slug).with_suffix(".lock").open("a") as lock:
+    try:
+        lock = state_path(slug).with_suffix(".lock").open("a")
+    except FileNotFoundError:
+        procs.die(f"no task {slug!r}")
+    with lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         held.add(slug)
         try:
@@ -271,11 +275,22 @@ def save(st):
 
 def session_process(st):
     """The name and pid of a live duty transport or OpenCode worker holding its session."""
-    names = ("Claude", "Codex") if st.get("kind") == "duty" else ("OpenCode",)
-    for name in names:
-        pid = st.get(name.lower() + "_pid")
-        if procs.alive(pid):
-            return name, pid
+    if st.get("kind") == "duty":
+        for name in ("Claude", "Codex"):
+            pid = st.get(name.lower() + "_pid")
+            if procs.alive(pid):
+                return name, pid
+    elif st.get("opencode_pid"):
+        pid = st["opencode_pid"]
+        try:
+            if os.getpgid(pid) == pid:
+                env = procs.process_environment(pid)
+                owner = f"{opencode_runner.PROCESS_MARKER}={st['pid']}".encode()
+                directory = os.fsencode("PWD=" + os.path.realpath(st["worktree"]))
+                if owner in env and directory in env:
+                    return "OpenCode", pid
+        except ProcessLookupError:
+            pass
     return None, None
 
 
