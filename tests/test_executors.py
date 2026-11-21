@@ -1,5 +1,6 @@
 """Keep work-executor dispatch open to registered, test-only harnesses."""
 import ast
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import io
 import json
@@ -38,7 +39,9 @@ def local_opencode_provider(env, binary):
             # The second edit is possible only if OpenCode restored the first answer.
             resumed = any(m["role"] == "assistant" and "Initial edit" in (m.get("content") or "")
                           for m in messages)
-            summary = "Follow-up edit" if resumed else "Initial edit"
+            markers = [label for label in ("alpha", "beta") if f"[{label}]" in json.dumps(messages)]
+            assert len(markers) == 1, "expected only this task's brief in its history"
+            summary = ("Follow-up edit " if resumed else "Initial edit ") + markers[0]
             if messages[-1]["role"] == "user":
                 args = {"command": "echo '" + summary + "' >> tracked.txt"}
                 delta = {"tool_calls": [{"index": 0, "id": "edit-" + str(len(requests)), "type": "function",
@@ -58,7 +61,7 @@ def local_opencode_provider(env, binary):
             self.wfile.write(b"data: [DONE]\n\n")
 
     # Build the CLI's environment only from this test's fixture paths and Git identity.
-    keep = {"HOME", "PATH", "TEAMSTER_CLAUDE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+    keep = {"HOME", "PATH", "PWD", "TEAMSTER_CLAUDE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
             "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}
     for key in list(env):
         if key not in keep and not key.startswith(("CODEX_TASK_", "CODEX_FAKE_")):
@@ -85,7 +88,7 @@ def local_opencode_provider(env, binary):
         finally:
             server.shutdown()
             thread.join()
-    assert requests == [("/v1/chat/completions", "model")] * 4, requests
+    assert requests == [("/v1/chat/completions", "model")] * 8, requests
 
 
 def fixture_work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
@@ -107,64 +110,111 @@ def fixture_messages(st):
 def install_fake_opencode(root):
     fake = root / "opencode"
     fake.write_text("#!" + sys.executable + "\n" + textwrap.dedent('''\
-        import argparse
         import json
+        import os
         from pathlib import Path
+        import signal
         import sys
+        import time
+        import uuid
 
-        parser = argparse.ArgumentParser()
-        with (Path.home() / "opencode-calls").open("a") as calls:
-            print(sys.argv[1], file=calls)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        home = Path.home()
+        cwd = Path(os.environ["PWD"])
+        config = [{"id": "model", "type": "select", "options": [{"value": "offline/model"}]}]
+
+        def send(**message):
+            print(json.dumps({"jsonrpc": "2.0", **message}), flush=True)
+
+        def record(method):
+            with (home / "opencode-calls").open("a") as calls:
+                print(method, file=calls)
+            gate = home / "hold-method"
+            if gate.exists() and gate.read_text() == method:
+                (home / "waiting-pid").write_text(str(os.getpid()))
+                deadline = time.monotonic() + 15
+                while gate.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                if gate.exists():
+                    sys.exit("Timed out in fake " + method)
+
         if sys.argv[1] == "api":
-            parser.add_argument("operation", choices=["session.get"])
-            parser.add_argument("--standalone", action="store_true", required=True)
-            parser.add_argument("--param", required=True)
-            lookup = parser.parse_args(sys.argv[2:])
-            key, session_id = lookup.param.split("=", 1)
-            assert key == "sessionID" and sys.stdin.read() == ""
-            stored = Path.home() / session_id
-            if not stored.exists():
-                print(json.dumps({"_tag": "SessionNotFoundError"}))
-                sys.exit("HTTP 404 Not Found")
-            print(json.dumps({"id": session_id, "directory": stored.read_text()}))
+            assert sys.argv[2:5] == ["--standalone", "session.create", "--data"]
+            assert json.loads(sys.argv[5])["title"]
+            record("session.create")
+            session_id = "ses_" + uuid.uuid4().hex
+            (home / session_id).write_text(json.dumps({"cwd": str(cwd)}))
+            print(json.dumps({"data": {"id": session_id, "description": "PRIVATE-SESSION-METADATA"}}))
             sys.exit(0)
-        parser.add_argument("command", choices=["run"])
-        parser.add_argument("--standalone", action="store_true", required=True)
-        parser.add_argument("--auto", action="store_true", required=True)
-        parser.add_argument("--model", choices=["offline/model"], required=True)
-        parser.add_argument("--format", choices=["json"], required=True)
-        parser.add_argument("--title", required=True)
-        parser.add_argument("--session", required=True)
-        args = parser.parse_args()
-        prompt = sys.stdin.read()
-        session = Path.home() / args.session
-        if session.exists():
-            assert session.read_text() == str(Path.cwd())
-            assert "Make the second change" in prompt
-            summary = "Follow-up edit"
-        else:
-            assert "Make the first change" in prompt
-            session.write_text(str(Path.cwd()))
-            summary = "Initial edit"
-        with Path("tracked.txt").open("a") as out:
-            print(summary, file=out)
-        result = json.loads((Path.home() / "response.json").read_text())
-        result["summary"] = summary
-        for kind, fields in [("step_start", {}), ("text", {"text": json.dumps(result)}),
-                             ("step_finish", {"reason": "stop"})]:
-            part = {"type": kind.replace("_", "-"), "sessionID": args.session,
-                    "messageID": "msg_fixture", **fields}
-            print(json.dumps({"type": kind, "sessionID": args.session, "part": part}))
+
+        assert sys.argv[1:] == ["acp"]
+        for line in sys.stdin:
+            request = json.loads(line)
+            method, params = request["method"], request["params"]
+            record(method)
+            if method == "initialize":
+                result = {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}}}}
+            else:
+                session_id = params["sessionId"]
+                stored = home / session_id
+                if not stored.exists():
+                    missing = {"code": -32602, "message": "Invalid params: session not found: " + session_id,
+                               "data": {"sessionId": session_id}}
+                    send(id=request["id"], error=missing)
+                    continue
+                state = json.loads(stored.read_text())
+                assert state["cwd"] == str(cwd)
+                if method == "session/resume":
+                    assert Path(params["cwd"]) == Path.cwd()
+                    result = {"configOptions": config, "_meta": {"description": "PRIVATE-SESSION-METADATA"}}
+                elif method == "session/set_config_option":
+                    assert params["configId"] == "model" and params["value"] == "offline/model"
+                    config[0]["currentValue"] = params["value"]
+                    result = {"configOptions": config}
+                else:
+                    assert method == "session/prompt" and config[0]["currentValue"] == "offline/model"
+                    prompt = params["prompt"][0]["text"]
+                    if "label" in state:
+                        assert "Make the second change" in prompt
+                        summary = "Follow-up edit " + state["label"]
+                    else:
+                        assert "Make the first change" in prompt
+                        labels = [label for label in ("alpha", "beta") if f"[{label}]" in prompt]
+                        assert len(labels) == 1
+                        state["label"] = labels[0]
+                        stored.write_text(json.dumps(state))
+                        summary = "Initial edit " + state["label"]
+                        if "Retry the interrupted request" in prompt:
+                            summary += " (retried)"
+                    with (cwd / "tracked.txt").open("a") as out:
+                        print(summary, file=out)
+                    answer = json.loads((home / "response.json").read_text())
+                    answer["summary"] = summary
+                    update = {"sessionUpdate": "agent_message_chunk",
+                              "content": {"type": "text", "text": json.dumps(answer)}}
+                    reply = (home / "reply-mode").read_text() if (home / "reply-mode").exists() else "complete"
+                    target = "ses_other" if reply == "wrong-session" else session_id
+                    send(method="session/update", params={"sessionId": target, "update": update})
+                    if reply == "truncated":
+                        sys.exit(0)
+                    if reply == "provider-error":
+                        send(id=request["id"], error={"code": -32603, "message": "Unauthorized"})
+                        continue
+                    result = {"stopReason": "max_tokens" if reply == "length" else "end_turn"}
+            send(id=request["id"], result=result)
+            if method == "session/set_config_option" and (home / "delete-after-resume").exists():
+                stored.unlink()
+            if method == "session/prompt" and reply == "crash-after-answer":
+                sys.exit(1)
         '''))
     fake.chmod(0o700)
 
 
 class ExecutorTests(RotationTestCase):
     def test_opencode_start_and_say_resume_the_worker_session(self):
-        self.env.update(HOME=str(self.root), TEAMSTER_CLAUDE=str(self.root / "missing-claude"))
+        self.env.update(HOME=str(self.root), PWD=str(self.repo), TEAMSTER_CLAUDE=str(self.root / "missing-claude"))
         self.configure(accounts=[], claude={"accounts": []}, task_profiles={
             "feature": {"executor": "codex", "model": "codex-only", "effort": "high"}})
-        self.brief.write_text("Make the first change to tracked.txt.\n")
         real_binary = os.environ.get("TEAMSTER_TEST_OPENCODE")
         if real_binary:
             provider = local_opencode_provider(self.env, real_binary)
@@ -172,34 +222,57 @@ class ExecutorTests(RotationTestCase):
             install_fake_opencode(self.root)
             provider = contextlib.nullcontext()
         (self.root / "response.json").write_text(json.dumps(self.work_result(checks=[])))
-        slug = "opencode-work"
+        flags = ["--executor", "opencode", "--model", "offline/model", "--task-type", "feature", "--no-push"]
+        labels = {"opencode-work": "alpha", "opencode-parallel": "beta"}
         with provider:
-            self.start(slug, "--executor", "opencode", "--model", "offline/model", "--task-type", "feature",
-                       "--no-push", "--check", "grep -q 'Initial edit' tracked.txt")
-            self.assertIn("Initial edit", self.wait(slug))
-            first = self.state(slug)
-            self.assertEqual((first["executor"], first["task_model"], first["effort"], first["account"]),
-                             ("opencode", "offline/model", None, None))
-            session = first["session_id"]
-            self.assertTrue(session)
-            file = Path(first["worktree"]) / "tracked.txt"
-            self.assertEqual(file.read_text(), "initial\nInitial edit\n")
+            worktrees = self.git("worktree", "list", "--porcelain")
+            refused = subprocess.run([sys.executable, "-I", str(SCRIPT), "start", "opencode-sandbox", "--brief",
+                                      str(self.brief), *flags, "--sandbox", "workspace"],
+                                     cwd=self.repo, env=self.env, text=True, capture_output=True, timeout=15)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("--sandbox workspace is not supported", refused.stderr)
+            self.assertEqual(self.git("worktree", "list", "--porcelain"), worktrees)
+            self.assertFalse((self.root / "opencode-calls").exists())
 
-            self.cli("say", slug, "Make the second change to tracked.txt.")
-            self.assertIn("Follow-up edit", self.wait(slug))
-            second = self.state(slug)
-            self.assertEqual((second["session_id"], second["turns"]), (session, 2))
-            self.assertEqual(second["result"], self.work_result(summary="Follow-up edit", checks=[]))
-            self.assertEqual([check["outcome"] for check in second["checks"]], ["passed", "passed"])
-            self.assertEqual(file.read_text(), "initial\nInitial edit\nFollow-up edit\n")
-            self.assertEqual((self.repo / file.name).read_text(), "initial\n")
+            for slug, label in labels.items():
+                self.brief.write_text(f"Make the first change to tracked.txt. Store this marker: [{label}].\n")
+                self.start(slug, *flags, "--parallel", "--check", f"grep -q 'Initial edit {label}' tracked.txt")
+
+            sessions = {}
+            for slug, label in labels.items():
+                self.assertIn("Initial edit " + label, self.wait(slug))
+                first = self.state(slug)
+                self.assertEqual((first["executor"], first["task_model"], first["effort"], first["account"]),
+                                 ("opencode", "offline/model", None, None))
+                sessions[slug] = first["session_id"]
+                self.assertTrue(first["session_id"])
+                self.assertEqual((Path(first["worktree"]) / "tracked.txt").read_text(),
+                                 f"initial\nInitial edit {label}\n")
+            self.assertEqual(len(set(sessions.values())), 2)
+
+            for slug in labels:
+                self.cli("say", slug, "Make the second change to tracked.txt.")
+            for slug, label in labels.items():
+                summary = "Follow-up edit " + label
+                self.assertIn(summary, self.wait(slug))
+                second = self.state(slug)
+                self.assertEqual((second["session_id"], second["turns"]), (sessions[slug], 2))
+                self.assertEqual(second["result"], self.work_result(summary=summary, checks=[]))
+                self.assertEqual([check["outcome"] for check in second["checks"]], ["passed", "passed"])
+                self.assertEqual((Path(second["worktree"]) / "tracked.txt").read_text(),
+                                 f"initial\nInitial edit {label}\nFollow-up edit {label}\n")
+            self.assertEqual((self.repo / "tracked.txt").read_text(), "initial\n")
             self.assertEqual(self.trace(), [])
             report = json.loads(self.cli("report", "--json", "--by", "executor"))
             self.assertEqual([group["executor"] for group in report["groups"]], ["opencode"])
 
+            slug = "opencode-work"
+            session = sessions[slug]
+            worktree = Path(self.state(slug)["worktree"])
             if real_binary:
-                subprocess.run(["opencode", "session", "delete", "--standalone", session], cwd=file.parent,
-                               env=self.env, stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=30)
+                subprocess.run(["opencode", "session", "delete", "--standalone", session], cwd=worktree,
+                               env=dict(self.env, PWD=str(worktree)), stdin=subprocess.DEVNULL,
+                               capture_output=True, check=True, timeout=30)
             else:
                 (self.root / session).unlink()
             self.cli("say", slug, "Make a third change to tracked.txt.")
@@ -209,10 +282,75 @@ class ExecutorTests(RotationTestCase):
             self.assertEqual(failed["error"], f"Saved OpenCode session {session} was not found")
             self.assertIn(failed["error"], output)
             summaries = [json.loads(msg)["summary"] for msg in self.worker().threads.session_messages(failed)]
-            self.assertEqual(summaries, ["Initial edit", "Follow-up edit"])
-            self.assertEqual(file.read_text(), "initial\nInitial edit\nFollow-up edit\n")
+            self.assertEqual(summaries, ["Initial edit alpha", "Follow-up edit alpha"])
+            self.assertEqual((worktree / "tracked.txt").read_text(),
+                             "initial\nInitial edit alpha\nFollow-up edit alpha\n")
             if not real_binary:
-                self.assertEqual((self.root / "opencode-calls").read_text().splitlines(), ["run", "api", "run", "api"])
+                stderr = self.home / "claude-tasks" / slug / "stderr.log"
+                self.assertNotIn("PRIVATE-SESSION-METADATA", stderr.read_text())
+                calls = (self.root / "opencode-calls").read_text().splitlines()
+                self.assertEqual(calls.count("session/prompt"), 4)
+
+                (self.root / "delete-after-resume").touch()
+                other = "opencode-parallel"
+                self.cli("say", other, "Make a third change to tracked.txt.")
+                self.cli("wait", other, "--timeout", "30", timeout=45)
+                failed = self.state(other)
+                self.assertEqual((failed["outcome"], failed["session_id"], failed.get("result")),
+                                 ("failed", sessions[other], None))
+                self.assertEqual((Path(failed["worktree"]) / "tracked.txt").read_text(),
+                                 "initial\nInitial edit beta\nFollow-up edit beta\n")
+
+    def test_opencode_stops_during_session_start_and_resume(self):
+        self.env.update(HOME=str(self.root), PWD=str(self.repo))
+        self.configure(accounts=[], claude={"accounts": []})
+        self.brief.write_text("Make the first change to tracked.txt. Store this marker: [alpha].")
+        install_fake_opencode(self.root)
+        (self.root / "response.json").write_text(json.dumps(self.work_result(checks=[])))
+        slug = "opencode-stop"
+        gate = self.root / "hold-method"
+        waiting = self.root / "waiting-pid"
+
+        def stop_at(method, launch, *args):
+            gate.write_text(method)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                # start waits for a session ID. Stop its worker while creation is still pending.
+                launched = pool.submit(launch, *args)
+                try:
+                    self.until(lambda: waiting.exists() and waiting.read_text().isdigit(), timeout=15)
+                    pid = int(waiting.read_text())
+                    self.extra_pids.add(pid)
+                    self.cli("stop", slug)
+                    launched.result()
+                    self.assertEqual(self.state(slug)["outcome"], "stopped")
+                    self.assertFalse(self.process_is_live(pid))
+                finally:
+                    gate.unlink(missing_ok=True)
+                    waiting.unlink(missing_ok=True)
+
+        stop_at("session.create", self.start, slug, "--executor", "opencode", "--model", "offline/model", "--no-push")
+        self.assertFalse(self.state(slug).get("session_id"))
+        self.cli("say", slug, "Retry the interrupted request.")
+        self.assertIn("Initial edit alpha (retried)", self.wait(slug))
+        stop_at("session/resume", self.cli, "say", slug, "Make the second change to tracked.txt.")
+
+        # Expire the budget only after the peer has received session/resume.
+        state = self.state(slug)
+        worker = self.worker()
+        gate.write_text("session/resume")
+        try:
+            with mock.patch.dict(os.environ, self.env, clear=True), \
+                    mock.patch.object(worker.clock.CLOCK, "monotonic", side_effect=lambda: float(waiting.exists())):
+                outcome, _ = worker.turns.opencode_runner.run_opencode(
+                    state["worktree"], "Make the second change", "offline/model", state["session_id"],
+                    lambda: False, 1, title=slug, created=lambda _: self.fail("Resuming created a session"))
+            self.assertEqual(outcome, "budget_exhausted")
+            self.assertFalse(self.process_is_live(int(waiting.read_text())))
+        finally:
+            gate.unlink(missing_ok=True)
+        calls = (self.root / "opencode-calls").read_text().splitlines()
+        self.assertEqual(calls.count("session/prompt"), 1)
+        self.assertEqual(calls[-1], "session/resume")
 
     def test_acp_stdio_conversation(self):
         self.env["HOME"] = str(self.root)
@@ -318,17 +456,18 @@ class ExecutorTests(RotationTestCase):
         self.assertIn(marker, output.getvalue())
 
     def test_opencode_requires_a_successful_finish_in_the_requested_session(self):
+        self.env.update(HOME=str(self.root), PWD=str(self.repo))
+        install_fake_opencode(self.root)
+        (self.root / "response.json").write_text(json.dumps(self.work_result()))
         runner = self.worker().turns.opencode_runner
-        session = "ses_fixture"
-        answer = {"type": "text", "sessionID": session, "part": {"text": json.dumps(self.work_result())}}
-        finish = {"type": "step_finish", "sessionID": session, "part": {"reason": "stop"}}
-        error = {"type": "error", "sessionID": session, "error": {"message": "Unauthorized"}}
-        for tail in ([], [error, finish], [dict(finish, sessionID="ses_other")],
-                     [dict(finish, part={"reason": "length"})]):
-            with self.subTest(tail=tail):
-                events = [json.dumps(row).encode() for row in [answer, *tail]]
-                outcome, _ = runner._response(events, session, 0, io.BytesIO())
-                self.assertEqual(outcome, "failed")
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            for reply in ("truncated", "provider-error", "wrong-session", "length", "crash-after-answer"):
+                with self.subTest(reply=reply):
+                    (self.root / "reply-mode").write_text(reply)
+                    outcome, _ = runner.run_opencode(
+                        self.repo, "Make the first change [alpha]", "offline/model", None,
+                        lambda: False, None, title="opencode-failure", created=lambda session: None)
+                    self.assertEqual(outcome, "failed")
 
     def test_registered_executor_lifecycle(self):
         self.env.update(HOME=str(self.root), USER="fixture-user")

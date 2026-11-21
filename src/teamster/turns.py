@@ -1,7 +1,6 @@
 """Work turns, wrap-up turns and turn execution."""
 import json
 import sys
-import uuid
 
 from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, duty, duty_chat, executors, notifications, opencode_runner, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
 
@@ -392,11 +391,7 @@ def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, ne
 def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
     last = config.TASKS / st["slug"] / "last.md"
     last.unlink(missing_ok=True)
-    resume = bool(st.get("session_id"))
-    if not resume:
-        st["session_id"] = "ses_" + uuid.uuid4().hex
     st.update(model=st["task_model"], reasoning_effort=None)
-    task_state.save(st)  # The exact cursor must survive interruption, even during the first turn.
     phase = telemetry_log.telemetry_phase(st)
     if phase is not None:
         phase.model = st["model"]
@@ -405,12 +400,16 @@ def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
         st["opencode_pid"] = proc.pid
         task_state.save(st)
 
+    def created(session_id):
+        st["session_id"] = session_id
+        task_state.save(st)
+
     deadline = None if minutes is None else clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
     prompt += "\n\nReturn only a JSON object matching this schema:\n" + json.dumps(result_schema.RESULT_SCHEMA)
     try:
         outcome, message = opencode_runner.run_opencode(
-            st["worktree"], prompt, st["model"], st["session_id"], stopped, deadline, started=started,
-            title=st["slug"], resume=resume)
+            st["worktree"], prompt, st["model"], st.get("session_id"), stopped, deadline,
+            title=st["slug"], started=started, created=created)
     finally:
         st.pop("opencode_pid", None)
         task_state.save(st)
@@ -433,6 +432,9 @@ def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
 
 def run_opencode_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
     minutes = st.get("max_turn_minutes", cfg.get("max_turn_minutes"))
+    # The first process can stop after opening the session but before delivering the brief.
+    if current_message and st.get("session_id") and not threads.session_messages(st):
+        prompt = threads.handoff(st, current_message=True, cfg=cfg)
     outcome = opencode_work_turn(st, prompt, stopped, minutes)
     if outcome == "budget_exhausted" and not stopped():
         phase = telemetry_log.telemetry_phase(st)

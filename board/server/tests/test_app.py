@@ -4468,14 +4468,20 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         )
 
         fake = worker.root / "opencode"
-        fake.write_text("#!/bin/sh\nexec sleep 60\n")
+        fake.write_text("""#!/bin/sh
+case "$1" in
+    api) echo '{"data":{"id":"ses_board"}}' ;;
+    acp) touch acp-started; exec sleep 60 ;;
+    *) exit 1 ;;
+esac
+""")
         fake.chmod(0o700)
         last = client.post(f"{base}/tasks", json=opencode_start)
         assert last.status_code == 201, last.text
         assert last.json()["task"]["executor"] == "opencode"
         slug = last.json()["task"]["slug"]
         assert worker.state(slug)["task_model"] == opencode_start["model"]
-        worker.until(lambda: worker.state(slug).get("opencode_pid"))
+        worker.until((Path(worker.state(slug)["worktree"]) / "acp-started").exists)
         last_id = last.json()["task"]["id"]
         for attempt in range(5):
             current = card(client, last_id)

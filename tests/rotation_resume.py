@@ -276,11 +276,19 @@ class ResumeTests(RotationTestCase):
 
         # OpenCode has a separate process group and may keep writing after its supervisor dies.
         binary = self.root / "opencode"
-        binary.write_text("#!/bin/sh\nexec sleep 90\n")
+        binary.write_text("""#!/bin/sh
+case "$1" in
+    api) echo '{"data":{"id":"ses_recovery"}}' ;;
+    acp) echo $$ > orphan-acp.pid; exec sleep 90 ;;
+    *) exit 1 ;;
+esac
+""")
         binary.chmod(0o700)
         slug = "orphan-opencode"
         self.start(slug, "--executor", "opencode", "--model", "offline/model", "--no-push")
-        self.until(lambda: self.state(slug).get("opencode_pid"), timeout=60)
+        marker = Path(self.state(slug)["worktree"]) / "orphan-acp.pid"
+        self.until(lambda: marker.is_file() and marker.read_text().strip() == str(self.state(slug).get("opencode_pid")),
+                   timeout=60)
         state = self.state(slug)
         orphan = state["opencode_pid"]
         self.extra_pids.add(orphan)

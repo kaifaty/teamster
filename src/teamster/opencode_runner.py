@@ -1,93 +1,89 @@
 """Run one OpenCode work turn on its own private server."""
 import json
+import os
 import subprocess
 import tempfile
 
-from . import clock, procs
+from . import acp, clock, procs
 
 
-def _response(events, session_id, returncode, stderr):
-    parts = []
-    finished = False
-    for line in events:
-        try:
-            event = json.loads(line)
-        except (ValueError, UnicodeError):
-            return "failed", "Invalid OpenCode JSON output"
-        if not isinstance(event, dict) or event.get("sessionID") != session_id:
-            return "failed", "Unexpected OpenCode session ID"
-        kind = event.get("type")
-        part = event.get("part")
-        if kind == "error":
-            error = event.get("error")
-            return "failed", (error.get("message") if isinstance(error, dict) else None) or "OpenCode error"
-        if kind == "step_start":
-            parts.clear()
-        elif kind == "text" and isinstance(part, dict) and isinstance(part.get("text"), str):
-            parts.append(part["text"])
-        finished = kind == "step_finish" and isinstance(part, dict) and part.get("reason") == "stop"
-    if returncode:
-        stderr.seek(0)
-        return "failed", stderr.read(4096).decode(errors="replace").strip() or f"OpenCode exited with {returncode}"
-    if not finished or not parts:
-        return "failed", "OpenCode returned no complete final answer"
-    return "completed", "".join(parts)
-
-
-def run_opencode(worktree, prompt, model, session_id, stopped, deadline, started=None, *, title, resume):
-    """Return (outcome, final answer or error) for the caller's persisted session ID."""
-    def interruption():
+def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, title, created, started=None):
+    """Create a titled session if needed, then work only in that existing session."""
+    def check_active():
         if stopped():
-            return "stopped", "OpenCode stopped"
+            raise InterruptedError("OpenCode stopped")
         if deadline is not None and clock.CLOCK.monotonic() >= deadline:
-            return "budget_exhausted", "OpenCode reached the turn time budget"
+            raise TimeoutError("OpenCode reached the turn time budget")
 
-    def invoke(argv, stdin, stdout, stderr):
-        """Return the exit code, or the turn outcome if execution could not finish."""
-        if reason := interruption():
-            return None, reason
-        try:
-            proc = subprocess.Popen(argv, cwd=worktree, stdin=stdin, stdout=stdout, stderr=stderr,
-                                    start_new_session=True)
-        except OSError as error:
-            return None, ("failed", f"Could not start OpenCode: {error}")
-        try:
-            if started:
-                started(proc)
-            while True:
+    def allow_once(params):
+        return next((item["optionId"] for item in params["options"] if item["kind"] == "allow_once"), None)
+
+    parts = []
+    message_id = None
+
+    def update(event):
+        nonlocal message_id
+        kind = event.get("sessionUpdate")
+        if kind == "tool_call":
+            parts.clear()
+        elif kind == "agent_message_chunk" and event.get("content", {}).get("type") == "text":
+            if event.get("messageId") != message_id:
+                parts.clear()
+            message_id = event.get("messageId")
+            parts.append(event["content"]["text"])
+
+    try:
+        check_active()
+        if not session_id:
+            # Giving the session its title at creation avoids a separate model call for an automatic title.
+            argv = ["opencode", "api", "--standalone", "session.create", "--data", json.dumps({"title": title})]
+            with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+                proc = subprocess.Popen(argv, cwd=worktree, env={**os.environ, "PWD": os.path.realpath(worktree)},
+                                        stdin=subprocess.DEVNULL, stdout=output, stderr=errors, start_new_session=True)
                 try:
-                    proc.wait(timeout=0.2)
-                except subprocess.TimeoutExpired:
-                    pass
-                if reason := interruption():
-                    return None, reason
-                if proc.returncode is not None:
-                    return proc.returncode, None
-        finally:
-            procs.terminate(proc)
+                    if started:
+                        started(proc)
+                    while proc.poll() is None:
+                        check_active()
+                        try:
+                            proc.wait(timeout=0.2)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    if proc.returncode:
+                        errors.seek(0)
+                        detail = errors.read(4096).decode(errors="replace").strip()
+                        return "failed", detail or f"OpenCode session creation exited with {proc.returncode}"
+                    output.seek(0)
+                    try:
+                        session_id = json.load(output)["data"]["id"]
+                    except (KeyError, TypeError):
+                        session_id = None
+                    if not isinstance(session_id, str) or not session_id:
+                        return "failed", "OpenCode returned no session ID"
+                    created(session_id)
+                finally:
+                    procs.terminate(proc)
 
-    if resume:
-        # run --session creates the ID if absent. Check the saved cursor before giving run the prompt.
-        lookup = ["opencode", "api", "--standalone", "session.get", "--param", "sessionID=" + session_id]
-        with tempfile.TemporaryFile() as stderr:
-            code, failure = invoke(lookup, subprocess.DEVNULL, subprocess.DEVNULL, stderr)
-            if failure:
-                return failure
-            if code:
-                stderr.seek(0)
-                if b"HTTP 404 " in stderr.read(4096):
-                    return "failed", f"Saved OpenCode session {session_id} was not found"
-                return "failed", f"Could not verify saved OpenCode session {session_id} (exit {code})"
-
-    argv = ["opencode", "run", "--standalone", "--auto", "--format", "json",
-            "--session", session_id, "--model", model, "--title", title]
-    # Tool events and long prompts can exceed a pipe buffer. Keep the process
-    # interruptible without retaining the whole tool transcript in memory.
-    with tempfile.TemporaryFile() as request, tempfile.TemporaryFile() as events, tempfile.TemporaryFile() as stderr:
-        request.write(prompt.encode())
-        request.seek(0)
-        code, failure = invoke(argv, request, events, stderr)
-        if failure:
-            return failure
-        events.seek(0)
-        return _response(events, session_id, code, stderr)
+        check_active()
+        # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
+        with acp.AcpClient(["opencode", "acp"], worktree, lambda event: None, allow_once,
+                           check_active=check_active) as client:
+            if started:
+                started(client.process)
+            client.open_session(session_id, model=model)
+            client.on_update = update
+            reason = client.prompt(prompt)
+        check_active()
+        if client.process.returncode:
+            return "failed", f"OpenCode exited with {client.process.returncode}"
+        if reason != "end_turn" or not parts:
+            return "failed", f"OpenCode returned no complete final answer ({reason})"
+        return "completed", "".join(parts)
+    except InterruptedError as error:
+        return "stopped", str(error)
+    except TimeoutError as error:
+        return "budget_exhausted", str(error)
+    except (ValueError, OSError) as error:
+        if session_id and f"session not found: {session_id}" in str(error):
+            return "failed", f"Saved OpenCode session {session_id} was not found"
+        return "failed", str(error)

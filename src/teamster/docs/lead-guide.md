@@ -95,7 +95,7 @@ Use `start --task-type LABEL` to select a configured [task profile](settings.md#
 Use `start --executor codex|claude|opencode` to pin the task worker. Automatic selection starts with a task profile's executor when present, then follows the [work role profile](settings.md#role-profiles) or the configured executor default. The saved executor handles `say`, review fixes, CI repairs and wrap-up. Claude and OpenCode work require `--sandbox off`.
 The [review role profile](settings.md#role-profiles) chooses the reviewer order. Without it, Claude tasks prefer Codex reviews and other workers use the configured reviewer. Use `--reviewer claude` on `start`, `say`, or `review` to select the isolated Claude pool. It prefers another account when Claude also implements. See [account setup](accounts.md#claude-account-pool).
 
-To delegate to OpenCode, select the worker and its configured provider/model explicitly. The duty can use this command from either family. Use a model available to OpenCode on this machine.
+To delegate to OpenCode from either duty family, select the worker and its configured provider/model explicitly. A direct CLI launch can use `OPENAI_API_KEY`. Codex duty clears `OPENAI_*` variables before running commands, so a provider that relies on that key needs credentials saved in OpenCode and accessible to the worker.
 
 ```sh
 teamster start update-parser --brief brief.md --repo . --executor opencode --model provider/model --sandbox off --max-minutes 20
@@ -104,7 +104,7 @@ teamster say update-parser "Handle the empty input case."
 teamster wait update-parser
 ```
 
-Teamster runs each turn in the task worktree with OpenCode 2.3.2 on `PATH`. It uses a private server (`run --standalone`) and saves the exact session ID for follow-ups. In sandbox-off mode, `--auto` approves tool permissions except explicit denials in the OpenCode configuration. OpenCode supplies its own provider credentials. Separate reviews use the selected Teamster reviewer and its account. [OpenCode CLI commands](https://opencode.ai/docs/cli/commands/)
+Teamster starts a separate `opencode acp` process in the task worktree for each turn using OpenCode 2.3.2 on `PATH`. It saves the session ID returned by OpenCode and resumes that exact session on follow-ups. In sandbox-off mode the worker grants one-time tool permissions offered by OpenCode. Separate reviews use the selected Teamster reviewer and its account. [OpenCode CLI commands](https://opencode.ai/docs/cli/commands/)
 
 | Step | Command |
 |---|---|

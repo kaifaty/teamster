@@ -600,8 +600,9 @@ To run that same check with an installed OpenCode 2.3.2 binary and a localhost m
 opencode_path=$(command -v opencode) && TEAMSTER_TEST_OPENCODE="$opencode_path" python3 -I tests/test_executors.py ExecutorTests.test_opencode_start_and_say_resume_the_worker_session
 ```
 
-The real-CLI check uses a temporary repository, home, provider configuration and session store. It
-expects two edits to `tracked.txt`, two saved checks and one session across both worker processes.
+The real-CLI check uses a temporary repository, home, provider configuration and session store.
+It runs two tasks with distinct session IDs. Each task edits its own `tracked.txt` twice and passes
+both saved checks. Deleting one session makes its next follow-up fail.
 
 `python3 -I tests/package_smoke.py` installs the package into a temporary virtual environment and runs
 a task through the installed `teamster` command with a fake Codex. It needs network access to fetch
