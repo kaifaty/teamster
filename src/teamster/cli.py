@@ -1,6 +1,6 @@
 """Delegate coding to Codex in a git worktree, with autonomous subscription rotation.
 
-      teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--task-timeout SEC] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-loaded CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
+      teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude|opencode] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--task-timeout SEC] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-loaded CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
       teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E] [--model M]  read-only research
       teamster reflect <slug> ["order" | --file FILE] [--task SLUG ... | [--since YYYY-MM-DD|Nd] [--repo NAME ...]] [--executor codex|claude] [--effort E] [--model M] [--max-minutes M]  batch reflection or a study of chosen records
       teamster lesson "<entry>" accepted|applied|declined|proposed [--note TEXT]  record the user's decision on a lesson in INDEX.md
@@ -80,9 +80,15 @@ def task_type(value):
 
 
 def model_name(value):
-    if not config.MODEL_NAME_PATTERN.fullmatch(value):
-        raise argparse.ArgumentTypeError("model must be 1-64 characters of A-Z, a-z, 0-9, '.', '_' and '-'")
+    try:
+        config.validate_work_model(None, value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
     return value
+
+
+def work_model_name(value):
+    return value if config.OPENCODE_MODEL_PATTERN.fullmatch(value) else model_name(value)
 
 
 def check_timeout(value):
@@ -175,8 +181,11 @@ OPTION_REGISTRY = (
     {"names": ("--executor",),
      "argparse": {"choices": executors.names(), "default": None,
                   "help": "work provider saved for the task (default: task profile or executor setting)"},
+     "synopsis": "[--executor codex|claude|opencode]",
+     "commands": {"start": {}}},
+    {"names": ("--executor",), "argparse": {"choices": executors.scout_names},
      "synopsis": "[--executor codex|claude]",
-     "commands": {"start": {}, "scout": {
+     "commands": {"scout": {
                   "help": "scout provider (default: role profile or codex); claude requires a git directory"},
                   "reflect": {"help": "reflect provider (default: role profile or claude)"}}},
     {"names": ("--file",), "argparse": {},
@@ -187,7 +196,11 @@ OPTION_REGISTRY = (
                   "say": {}, "review": {}, "reflect": {}}},
     {"names": ("--model",),
      "argparse": {"type": model_name, "metavar": "M", "help": "work model; default clears the saved override"},
-     "synopsis": "[--model M]", "commands": {"start": {}, "say": {}, "scout": {}, "reflect": {}}},
+     "synopsis": "[--model M]",
+     "commands": {"start": {"type": str, "help": "work model; OpenCode requires provider/model"},
+                  "say": {"type": work_model_name, "help": "replace the work model; OpenCode requires provider/model, "
+                                                           "other workers accept default to clear the override"},
+                  "scout": {}, "reflect": {}}},
     {"names": ("--review-model",),
      "argparse": {"type": model_name, "metavar": "M", "help": "Codex review model; default clears the saved override"},
      "synopsis": "[--review-model M]", "commands": {"start": {}, "say": {}, "review": {}}},
@@ -283,6 +296,8 @@ def command_options(command):
     for option in OPTION_REGISTRY:
         if command in option["commands"]:
             kwargs = dict(option["argparse"], **option["commands"][command])
+            if callable(kwargs.get("choices")):
+                kwargs["choices"] = kwargs["choices"]()
             group = kwargs.pop("group", None)
             yield option, kwargs, group
 
@@ -499,6 +514,11 @@ def main():
                                  + ("--since" if a.since is not None else "--repo"))
     else:
         a = p.parse_args()
+    if a.cmd == "start":
+        try:
+            config.validate_work_model(a.executor, a.model)
+        except ValueError as exc:
+            p.error(str(exc))
     if a.cmd == "duty" and a.duty_command == "chat" and (a.text is None) == (a.file is None):
         duty_chat_parser.error("give the message as text or with --file, not both")
     if a.cmd == "say" and a.no_check and a.check_loaded is not None:

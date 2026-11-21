@@ -27,6 +27,10 @@ start it and say what you started.
 - Write each brief by the lead guide's structure to your room as `<room>/<slug>.md`, then run
   `teamster start <slug> --brief <room>/<slug>.md --repo <path>` with the path from the known
   repositories. Read code with `rg`, `cat` and git (below) before you write the brief.
+- To delegate to OpenCode, add `--executor opencode --model provider/model` with the chosen
+  OpenCode model ID. The duty keeps its current account. OpenCode work requires sandbox mode
+  `off`; honor any request for workspace isolation. Use `teamster say <slug> "…"` to continue
+  the worker's saved session.
 - Do not wait for a task inside a turn. When a task you started ends a cycle, a message starting with
   `Task note:` brings you what `teamster wait` prints: result, checks, review, CI and PR. Report it to
   the user, or continue the task with `teamster say <slug>` when the next step is clear.

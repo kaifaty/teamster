@@ -182,7 +182,7 @@ def _attribute(row, task):
         return
     if not (_is_work_phase(row) or (row["phase"] == "turn" and row.get("kind", "work") == "work")):
         return
-    executor = "claude" if row.get("provider") == "claude" else "codex"
+    executor = _identifier(row.get("provider")) or "codex"
     if executor not in task["executors"]:
         task["executors"].append(executor)
     if row["phase"] != "turn":
@@ -288,9 +288,8 @@ def _accumulate_usage(row, task, accounts, is_turn):
         name = _identifier(segment.get("account")) or _identifier(row.get("account"))
         if name is None:
             continue
-        provider = segment.get("provider") or row.get("provider")
-        provider = ("claude" if provider == "claude" else "codex") if provider else row.get(
-            "reviewer", LEGACY_REVIEWERS[0])
+        provider = (_identifier(segment.get("provider")) or _identifier(row.get("provider"))
+                    or row.get("reviewer", LEGACY_REVIEWERS[0]))
         key = (provider, name)
         account = accounts.setdefault(key, _account(provider, name))
         account["weekly_used_percent"] += delta

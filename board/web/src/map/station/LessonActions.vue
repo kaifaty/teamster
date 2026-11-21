@@ -9,6 +9,7 @@
 // While the board lands the lesson's PR by itself, «Внедрено» is not offered, and once it has landed the lesson offers
 // no buttons; a landing left to the human or failed keeps them.
 import { computed, ref } from "vue";
+import { OPENCODE_MODEL } from "../../lib/actions";
 import type { Lesson } from "../../types";
 import { landingOf } from "../landing";
 import { manualAssignment, outsideOf } from "../station";
@@ -41,6 +42,7 @@ const repo = computed({
   get: () => card.value.repo,
   set: (path: string) => desk.setRepo(props.lesson, path),
 });
+const worker = computed(() => desk.edit(props.lesson));
 const implementTitle = computed(
   () =>
     desk.implementOff.value ??
@@ -83,6 +85,17 @@ function submit() {
           <option v-for="item in repos" :key="item.path" :value="item.path" :title="item.path">{{ item.name }}</option>
         </select>
       </label>
+      <label class="field">
+        <span class="label">Исполнитель</span>
+        <select v-model="worker.executor" :disabled="!!card.busy">
+          <option value="claude">Claude</option>
+          <option value="opencode">OpenCode</option>
+        </select>
+      </label>
+      <label v-if="worker.executor === 'opencode'" class="field">
+        <span class="label">Модель OpenCode</span>
+        <input v-model.trim="worker.model" type="text" placeholder="provider/model" required :disabled="!!card.busy" />
+      </label>
       <p v-if="place.others.length" class="hint">
         Урок меняет ещё: {{ place.others.join(", ") }}. Их части агент перечислит в отчёте — запусти потом отдельно
       </p>
@@ -102,7 +115,7 @@ function submit() {
       <p v-else class="hint">Файлы вне репозиториев (~/.codex, ~/.claude) агент не трогает — перечислит их в отчёте.</p>
       <textarea v-model="note" rows="2" placeholder="Уточнение — необязательно" aria-label="Уточнение" :disabled="!!card.busy"></textarea>
       <span class="buttons">
-        <button type="submit" class="key gold" :disabled="!!card.busy || !repo">Запустить</button>
+        <button type="submit" class="key gold" :disabled="!!card.busy || !repo || (worker.executor === 'opencode' && !OPENCODE_MODEL.test(worker.model))">Запустить</button>
         <button type="button" class="chip" :disabled="!!card.busy" @click="desk.closeForm(lesson)">Отмена</button>
       </span>
     </form>

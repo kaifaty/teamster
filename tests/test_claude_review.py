@@ -417,6 +417,7 @@ class ClaudeReviewTests(RotationTestCase):
         )
         allowed = (
             "teamster start fix-parser --brief %s/fix-parser.md --repo /work/repo --review --fix-rounds 2" % room,
+            "teamster start fix-parser --brief=b.md --executor opencode --model local/worker --sandbox off",
             "teamster start fix-parser --brief=b.md --ci --ci-rounds 1 --check-timeout 60 --parallel",
             "teamster say fix-parser 'Also cover the empty line.' --queue", "teamster say fix-parser '- a dash first'",
             "teamster scout where 'Who reads it?' --repo /r", "teamster review fix-parser --review-angles tests",

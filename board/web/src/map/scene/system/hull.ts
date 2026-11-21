@@ -1,7 +1,8 @@
 // A ship of the system: what the scene keeps of it, and its art fitted to its task.
 
 import { Container, Graphics, Sprite, Texture } from "pixi.js";
-import type { Family, Hull } from "../../fleet";
+import { hullArt } from "../../ship/bridge";
+import type { Hull } from "../../fleet";
 import { HULL_SIZE, hullOf, patchSpots } from "../../fleet";
 import { hashName, type Point } from "../../layout";
 import { FLEET, SPACE } from "../../palette";
@@ -58,27 +59,11 @@ export interface Verdict {
   age: number;
 }
 
-function textureOf({ art }: Kit, family: Family, kind: Hull): Texture {
-  switch (kind) {
-    case "flagship":
-      return art("flagship");
-    case "scout":
-      return art("shipScout");
-    case "frigate":
-      return art(family === "codex" ? "shipBlueFrigate" : "shipCopperFrigate");
-    case "cruiser":
-      return art(family === "codex" ? "shipBlueCruiser" : "shipCopperCruiser");
-    default:
-      return art(family === "codex" ? "shipBlue" : "shipCopper");
-  }
-}
-
 /** Fits the ship's art to its task: the hull of its effort and family, and a patch per fix round. */
 export function dressShip(kit: Kit, item: Ship) {
   const { task } = item.entry;
   const kind = hullOf(task);
-  const family = task.executor;
-  const texture = textureOf(kit, family, kind);
+  const texture = kit.art(hullArt(task));
   if (kind !== item.kind || item.hull.texture !== texture) {
     item.kind = kind;
     item.size = HULL_SIZE[kind];
@@ -120,6 +105,7 @@ export function makeShip(kit: Kit, entry: ShipEntry, arrive: boolean, station: P
   const body = new Container();
   const engine = glow(FLEET[entry.task.executor].engine, 128);
   const hull = new Sprite(Texture.EMPTY);
+  if (entry.task.executor === "opencode") hull.filters = [kit.greyFilter];
   hull.anchor.set(0.5);
   const patches = new Graphics();
   const burn = glow(SPACE.burn, 128);

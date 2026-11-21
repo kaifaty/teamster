@@ -500,6 +500,6 @@ def saved_check(st, cfg, stopped, sleep, review_after=True):
         if review_after and not st.get("review_skipped"):
             st["review_skipped"] = "check " + check["outcome"]
         task_state.save(st)
-        notifications.notify(st, cfg, "check_failed", f"check {check['outcome']} on {st['account']}",
-               outcome=check["outcome"])
+        notifications.notify(st, cfg, "check_failed", f"check {check['outcome']} on {notifications.turn_account_label(st)}",
+                             outcome=check["outcome"])
     return check

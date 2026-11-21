@@ -133,7 +133,7 @@ st[dynamic_key] = 1
             "check_start": 19, "check_timeout": 42, "checks": [{}, {}, {}],
             "ci": {"status": "failed"}, "ci_enabled": True, "ci_command": "true", "ci_rounds": 3,
             "ci_reruns": [{"sha": "old-sha", "run_id": "42", "outcome": "failed"}],
-            "ci_timeout_minutes": 17, "codex_pid": 102, "claude_pid": 104, "created": 1000,
+            "ci_timeout_minutes": 17, "codex_pid": 102, "claude_pid": 104, "opencode_pid": 105, "created": 1000,
             "effort": "high", "error": "old-error", "event_start": 18,
             "task_type": "fix", "model": "old-model", "reasoning_effort": "high",
             "task_model": "work-model", "task_model_family": "claude", "review_model": "review-model",

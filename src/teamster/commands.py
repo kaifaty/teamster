@@ -241,7 +241,7 @@ def print_route(label, target, source, model, effort):
 def cmd_start(a):
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", a.slug):
         procs.die("slug: 2-41 chars of a-z, 0-9 and '-'")
-    cfg = config.accounts_config()
+    cfg = config.task_config({"executor": getattr(a, "executor", None) or "codex"})
     no_push = getattr(a, "no_push", False)
     if no_push and (a.ci or a.ci_command is not None):
         procs.die("--no-push cannot be combined with --ci or --ci-command; CI requires a published branch")
@@ -304,7 +304,8 @@ def cmd_start(a):
           "executor": executor.name, "effort": effort, "task_type": a.task_type,
           "task_model": None if model == "default" else model,
           "review_model": None if getattr(a, "review_model", None) == "default" else getattr(a, "review_model", None),
-          "account": cfg["accounts"][0]["name"], "thread": "", "threads": [],
+          "account": cfg["accounts"][0]["name"] if executor.account_field is not None else None,
+          "thread": "", "threads": [],
           "rotations": [], "reviews": [], "checks": [], "check": a.check, "check_timeout": a.check_timeout,
           "check_loaded": a.check_loaded,
           "guards": a.guard, "base_check": a.base_check,
@@ -331,9 +332,9 @@ def cmd_start(a):
         if st["thread"] or executor.cursor(st) or st.get("outcome") == "sleeping" or st.get("pid") is None or proc.poll() is not None:
             break
         time.sleep(0.1)
-    account = executor.account(st)
+    account = f"account {executor.account(st) or '?'}, " if executor.account_field is not None else ""
     cursor = executor.cursor_label + " " + (executor.cursor(st) or "?")
-    print(f"started {a.slug}: executor {executor.name}, account {account or '?'}, {cursor}, pid {st.get('pid')}\n  worktree {wt}\n  branch {branch}")
+    print(f"started {a.slug}: executor {executor.name}, {account}{cursor}, pid {st.get('pid')}\n  worktree {wt}\n  branch {branch}")
     if profile is not None or config.role_routes(cfg, "work") or source == "fallback":
         print_route(a.task_type or "work", executor, source, model_option, effort_option)
     print(f"  wait: {config.COMMAND} wait {a.slug}   (run it as a background command)")
@@ -491,7 +492,7 @@ def cmd_say(a):
     msg = Path(a.file).read_text() if a.file else a.message
     if not msg or not msg.strip():
         procs.die("empty message")
-    cfg = config.accounts_config()
+    cfg = config.task_config(st)
     supervisor.apply_say(st, options, cfg)
     if queued:
         # The supervisor applies the options again when it sends the queue, as a say then would.
@@ -516,7 +517,7 @@ def cmd_review(a):
     if st.get("kind") in ("scout", "reflect", "duty"):
         procs.die(f"{st['kind']} is read-only; review is not supported")
     require_idle(st)
-    cfg = config.accounts_config()
+    cfg = config.task_config(st)
     review_cycle.configure_reviewer(st, cfg, getattr(a, "reviewer", None), required=True)
     if getattr(a, "review_model", None) is not None:
         st["review_model"] = None if a.review_model == "default" else a.review_model
@@ -576,8 +577,9 @@ def describe(st, detail):
             account, thread = reviews[-1]["account"], reviews[-1]["thread"]
     location = st["worktree"] if scouting else st["branch"]
     label = "  " + st["kind"] if scouting else ("  review" if reviewing else "")
+    account_text = f"  account {account}" if reviewing or executor.account_field is not None else ""
     line = (f"{st['slug']:24} {state:8} turns {st.get('turns', 0)}  {location}  "
-            f"executor {executor.name}  account {account}  {'thread' if reviewing else executor.cursor_label} {thread[:13]}" + label
+            f"executor {executor.name}{account_text}  {'thread' if reviewing else executor.cursor_label} {thread[:13]}" + label
             + "  sandbox " + ("room" if st.get("kind") == "duty" else "read-only" if scouting else st.get("sandbox", "off")))
     if st.get("no_push"):
         line += "  push disabled (--no-push)"
@@ -630,7 +632,7 @@ def cmd_status(a):
 
 def cmd_stats(a):
     st = task_state.load(a.slug)
-    cfg = config.accounts_config()
+    cfg = config.task_config(st)
     executors.from_state(st).stats(st)
     for entry in st["threads"] + st["reviews"]:
         reviewers.from_entry(entry).stats(entry, cfg)
@@ -706,6 +708,20 @@ executors.get("claude").bind(sys.modules[__name__], prepare="prepare_claude_work
                              prepare_scout="prepare_claude_scout", stats="print_claude_work_stats")
 
 
+def prepare_opencode_work(effort, cfg):
+    if effort is not None:
+        raise ValueError("OpenCode work does not support --effort")
+    if not shutil.which("opencode"):
+        raise ValueError("OpenCode CLI was not found. Install opencode and add it to PATH.")
+
+
+def print_opencode_work_stats(st):
+    print(f"OpenCode work: model {st['task_model']}, session {st.get('session_id') or '?'}")
+
+
+executors.get("opencode").bind(sys.modules[__name__], prepare="prepare_opencode_work", stats="print_opencode_work_stats")
+
+
 def prepare_codex(effort, cfg, directory=None):
     config.codex_binary()
 
@@ -732,13 +748,13 @@ def cmd_stop(a):
         st = task_state.load(a.slug)
         pid = st.get("pid")
         if not procs.alive(pid):
-            family, orphan = task_state.duty_process(st)
+            name, orphan = task_state.session_process(st)
             if orphan is None:
                 print("not running")
                 return
-            # The duty's supervisor died before its transport, which still holds the conversation.
-            marker = codex_duty.duty_process_marker(orphan) if family == "codex" else None
-            if family == "codex":
+            # The supervisor died before its transport, which still holds the session.
+            marker = codex_duty.duty_process_marker(orphan) if name == "Codex" else None
+            if name == "Codex":
                 # App-server owns terminal groups separate from its own. Let
                 # its SIGTERM shutdown end those before the group fallback.
                 try:
@@ -752,9 +768,14 @@ def cmd_stop(a):
             procs.end_group(orphan)
             if marker:
                 codex_duty.end_duty_terminals(marker)
-            st.pop(family + "_pid", None)
-            task_state.write_state(st)
-            print(f"stopped {a.slug}: ended {family.title()} process {orphan}")
+            st.pop(name.lower() + "_pid", None)
+            if name == "OpenCode":
+                now = clock.CLOCK.time()
+                st.update(outcome="stopped", turn_finished=now, stop_request={"at": now, "pid": pid})
+                supervisor.finish_cycle(st)
+            else:
+                task_state.write_state(st)
+            print(f"stopped {a.slug}: ended {name} process {orphan}")
             return
         st["stop_request"] = {"at": clock.CLOCK.time(), "pid": pid}
         task_state.write_state(st)
@@ -776,23 +797,19 @@ def cmd_stop(a):
 
 
 def cmd_clean(a):
-    st = task_state.load(a.slug)
-    if st.get("kind") == duty_chat.CHAT_KIND:
-        # A task note may start a duty turn at any moment: check and archive under the lock that delivery takes.
-        with task_state.state_lock(a.slug):
-            st = task_state.load(a.slug)
-            family, orphan = task_state.duty_process(st)
-            if not procs.alive(st.get("pid")) and orphan is not None:
-                procs.die(f"{family.title()} process {orphan} of the last duty turn is still running; "
-                          f"end it with {config.COMMAND} stop duty, then clean")
-            return clean_task(a, st)
-    return clean_task(a, st)
+    with task_state.state_lock(a.slug):
+        st = task_state.load(a.slug)
+        if procs.alive(st.get("pid")):
+            procs.die("still running; stop it first")
+        name, orphan = task_state.session_process(st)
+        if orphan is not None:
+            procs.die(f"{name} process {orphan} of the last {st['kind']} turn is still running; "
+                      f"end it with {config.COMMAND} stop {a.slug}, then clean")
+        return clean_task(a, st)
 
 
 def clean_task(a, st):
-    if procs.alive(st.get("pid")):
-        procs.die("still running; stop it first")
-    cfg = config.accounts_config()
+    cfg = config.task_config(st)
     if st.get("kind") in ("reflect", "duty"):
         shutil.rmtree(config.TASKS / a.slug / "room", ignore_errors=True)
     elif st.get("kind") != "scout":
@@ -813,10 +830,11 @@ def clean_task(a, st):
         archive.parent.mkdir(parents=True, exist_ok=True)
         (record / "events.jsonl").unlink(missing_ok=True)
         (record / "claude-events.jsonl").unlink(missing_ok=True)
-        (record / "state.lock").unlink(missing_ok=True)
         record.rename(archive)
     except OSError as exc:
         procs.die(f"could not archive task record to {archive}: {exc}; record kept at {record}")
+    # Keep the live lock reachable at the task path until the entire record moves.
+    (archive / "state.lock").unlink()
     print(f"cleaned {a.slug}; record in {archive}")
     if st.get("kind") in ("scout", "reflect", "duty"):
         return

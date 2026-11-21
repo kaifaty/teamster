@@ -292,10 +292,10 @@ export function fixtureActions(view: ResearchView, clock: () => number, emit: (m
 
   const agents = new Map<string, { task: TaskSummary; since: number; step: number }>();
   const show = (task: TaskSummary) => emit({ type: "task", task: { ...task } });
-  function work(task: Implementation) {
+  function work(task: Implementation, worker?: Pick<TaskSummary, "executor" | "account" | "model">) {
     const at = clock();
     const own = agents.get(task.slug)?.task ?? agentTask(task, at);
-    Object.assign(own, { alive: true, column: "running", phase: "turn", phase_started_at: at, updated_at: at, result_status: null });
+    Object.assign(own, worker, { alive: true, column: "running", phase: "turn", phase_started_at: at, updated_at: at, result_status: null });
     agents.set(task.slug, { task: own, since: at, step: 0 });
     show(own);
   }
@@ -410,7 +410,7 @@ export function fixtureActions(view: ResearchView, clock: () => number, emit: (m
       finish(study, message(0, "analyst", "Принял ответ и обновил докладную. Новых вопросов нет.", { status: "done", file: study.file }));
       return { ok: true, output: `said to ${slug}` };
     },
-    implement({ entry, repo, note }) {
+    implement({ entry, repo, note, executor = "claude", model }) {
       const lesson = view.lessons.find((item) => item.entry === entry);
       if (!lesson) return fail(`Урок ${entry} не найден в индексе`);
       if (lesson.status === "applied" || lesson.status === "declined") return fail(`Урок ${entry} уже ${lesson.status === "applied" ? "внедрён" : "отклонён"}`);
@@ -443,7 +443,7 @@ export function fixtureActions(view: ResearchView, clock: () => number, emit: (m
           // The task shows up once its agent has started.
           then: () => {
             lesson.implementation = task({ slug, repo: target.name, alive: true, created: clock(), summary: note ?? null });
-            work(lesson.implementation);
+            work(lesson.implementation, { executor, account: executor === "opencode" ? null : "claude-pool-2", model: model ?? null });
             agentTurn(lesson, true);
           },
         },

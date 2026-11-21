@@ -3,6 +3,7 @@
 // its kind, its papers, the meters that have something to show, and the rest of its papers under «Все параметры».
 import { computed } from "vue";
 import type { Cargo, TaskLimits, TaskSummary } from "../../types";
+import { EXECUTORS } from "../../lib/labels";
 import { ART } from "../art";
 import { damageLine, hullArt, hullClass, hullFrame, hullMarks, metersOf, papersOf, roundsOf } from "./bridge";
 
@@ -15,7 +16,7 @@ const art = computed(() => hullArt(props.task));
 const frame = computed(() => hullFrame(art.value));
 const marks = computed(() => hullMarks(props.task.slug, holes.value, rounds.value, frame.value));
 const picture = computed(() => ART[art.value]);
-const crew = computed(() => `${props.task.executor === "codex" ? "Codex" : "Claude"}${props.task.effort ? `, усилие ${props.task.effort}` : ""}`);
+const crew = computed(() => `${EXECUTORS[props.task.executor]}${props.task.effort ? `, усилие ${props.task.effort}` : ""}`);
 const alt = computed(() => `${hullClass(props.task)}: исполнитель ${crew.value}`);
 const damage = computed(() => damageLine(holes.value, rounds.value));
 const papers = computed(() => papersOf(props.task, props.limits, props.cargo, props.now));
@@ -31,7 +32,7 @@ const meters = computed(() => metersOf(props.task, props.limits, props.cargo, pr
     </div>
     <div class="top">
       <div class="hangar" :class="{ alive: task.alive }">
-        <img :src="picture" :alt="alt" :style="{ width: `${frame.size}%`, height: `${frame.size}%`, left: `${frame.left}%`, top: `${frame.top}%` }" />
+        <img :src="picture" :alt="alt" :class="task.executor" :style="{ width: `${frame.size}%`, height: `${frame.size}%`, left: `${frame.left}%`, top: `${frame.top}%` }" />
         <span
           v-for="(mark, index) in marks"
           :key="index"
@@ -98,6 +99,10 @@ const meters = computed(() => metersOf(props.task, props.limits, props.cargo, pr
 .hangar img {
   position: absolute;
   object-fit: contain;
+}
+
+.hangar img.opencode {
+  filter: grayscale(1);
 }
 
 .hangar.alive img {

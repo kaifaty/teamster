@@ -19,6 +19,7 @@ Layer 2:
 Layer 3:
     duty (implemented): duty account elections, the duty record and the new-work exclusion.
     claude_runner (implemented): isolated Claude transport and writable work turns.
+    opencode_runner (implemented): private OpenCode CLI processes for writable work turns.
     codex_duty (implemented): guarded Codex app-server duty turns.
     credit_resets (implemented): credit reset journal and actions.
     threads (implemented): thread messages, rollout files, and handoffs.

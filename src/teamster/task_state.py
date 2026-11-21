@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 from typing import Callable, Literal, NamedTuple, Optional
 
-from . import clock, config, procs, reviewers, threads
+from . import clock, config, opencode_runner, procs, reviewers, threads
 
 
 def interruption(st):
@@ -169,6 +169,7 @@ STATE_FIELDS = {
     "pid": StateField("runtime"),
     "codex_pid": StateField("runtime"),
     "claude_pid": StateField("runtime"),
+    "opencode_pid": StateField("runtime"),
     "check_pid": StateField("runtime"),
     "account_ids": StateField("task"),  # Task-wide identity cache, refreshed by probes.
     # Auth retry bookkeeping is reset by _run_turn(new_turn=True), not spawn.
@@ -242,7 +243,11 @@ def state_lock(slug):
     if slug in held:
         yield
         return
-    with state_path(slug).with_suffix(".lock").open("a") as lock:
+    try:
+        lock = state_path(slug).with_suffix(".lock").open("a")
+    except FileNotFoundError:
+        procs.die(f"no task {slug!r}")
+    with lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         held.add(slug)
         try:
@@ -268,27 +273,38 @@ def save(st):
         write_state(st)
 
 
-def duty_process(st):
-    """The family and pid of a live duty transport, or (None, None)."""
+def session_process(st):
+    """The name and pid of a live duty transport or OpenCode worker holding its session."""
     if st.get("kind") == "duty":
-        for family in ("claude", "codex"):
-            pid = st.get(family + "_pid")
+        for name in ("Claude", "Codex"):
+            pid = st.get(name.lower() + "_pid")
             if procs.alive(pid):
-                return family, pid
+                return name, pid
+    elif st.get("opencode_pid"):
+        pid = st["opencode_pid"]
+        try:
+            if os.getpgid(pid) == pid:
+                env = procs.process_environment(pid)
+                owner = f"{opencode_runner.PROCESS_MARKER}={st['pid']}".encode()
+                directory = os.fsencode("PWD=" + os.path.realpath(st["worktree"]))
+                if owner in env and directory in env:
+                    return "OpenCode", pid
+        except ProcessLookupError:
+            pass
     return None, None
 
 
 def busy_message(st, queue_hint=False):
     """Why no new turn may start beside the live supervisor of st, or None when it is idle.
 
-    queue_hint adds the say --queue alternative to the refusal of a say. A duty transport that outlived
-    its supervisor still holds the session, so the duty conversation is not idle then either.
+    queue_hint adds the say --queue alternative to the refusal of a say. A transport that outlived
+    its supervisor may still hold the session.
     """
     if not procs.alive(st.get("pid")):
-        family, pid = duty_process(st)
+        name, pid = session_process(st)
         if pid is not None:
-            return (f"{family.title()} process {pid} of the previous duty turn outlived its supervisor and still "
-                    f"holds the session; end it with {config.COMMAND} stop duty, then send the message again")
+            return (f"{name} process {pid} of the previous {st['kind']} turn outlived its supervisor and still "
+                    f"holds the session; end it with {config.COMMAND} stop {st['slug']}, then send the message again")
         return None
     if st.get("outcome") == "sleeping":
         return (f"waiting for limit reset until {config.local_time(st['sleeping']['until'])}; stop first to send a new message"

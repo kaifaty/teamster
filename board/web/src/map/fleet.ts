@@ -12,7 +12,7 @@ export interface Star {
   ready: number;
   sleeping: number;
   /** What the small dots around the star show, one per ship. */
-  dots: { executor: Family; state: "work" | "attention" | "ready" | "sleep" }[];
+  dots: { executor: TaskSummary["executor"]; state: "work" | "attention" | "ready" | "sleep" }[];
 }
 
 /** A subscription, as the control panel shows it. */

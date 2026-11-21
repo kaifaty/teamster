@@ -57,8 +57,8 @@ export interface TaskSummary {
   repo: string; // repository basename; see the session mapping in the contract
   branch: string | null;
   task_type: string | null; // e.g. "feature", "fix", "layout"
-  executor: "codex" | "claude";
-  account: string | null; // Codex account, or the Claude pool account for a Claude executor
+  executor: "codex" | "claude" | "opencode";
+  account: string | null; // Codex or Claude work account, null for OpenCode
   reviewer: "codex" | "claude" | null;
   model: string | null;
   effort: string | null;
@@ -66,6 +66,7 @@ export interface TaskSummary {
   phase: Phase;
   phase_started_at: number | null;
   alive: boolean; // task supervisor running, or session PID running with status busy
+  can_stop?: boolean; // a surviving OpenCode worker can be checked and stopped by the CLI
   turn: number; // turns so far
   fix_round: number; // automatic fix rounds in the current cycle
   outcome: string | null; // state.json "outcome" as written by the plugin

@@ -1,10 +1,12 @@
 """Process execution, signaling and bounded termination."""
+import ctypes
 import os
 import select
 import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 def die(msg):
@@ -84,6 +86,31 @@ def terminate(proc):
             if not signal_group(proc, 0):
                 return
             time.sleep(0.05)
+
+
+def process_environment(pid):
+    """Read actual environment entries, never flattened argv that could spoof ownership."""
+    try:
+        if sys.platform == "darwin":
+            library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+            mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2, pid.
+            size = ctypes.c_size_t()
+            if library.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0:
+                return []
+            buffer = ctypes.create_string_buffer(size.value)
+            if library.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0:
+                return []
+            data = buffer.raw[:size.value]
+            argc = int.from_bytes(data[:4], sys.byteorder)
+            position = data.index(b"\0", 4)
+            while position < len(data) and data[position] == 0:
+                position += 1
+            for _ in range(argc):
+                position = data.index(b"\0", position) + 1
+            return data[position:].split(b"\0")
+        return (Path("/proc") / str(pid) / "environ").read_bytes().split(b"\0")
+    except (OSError, ValueError):
+        return []
 
 
 def alive(pid):

@@ -17,6 +17,7 @@ from . import executors, procs, result_schema, reviewers
 
 TASK_TYPE_PATTERN = re.compile(r"[a-z0-9-]{1,32}")
 MODEL_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+OPENCODE_MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:/@+-]*")
 ROUTABLE_ROLES = ("work", "review", "scout", "reflect", "duty")
 
 
@@ -245,6 +246,18 @@ def require_claude():
                   "TEAMSTER_CLAUDE to its executable path to use --executor claude or --reviewer claude.")
 
 
+def validate_work_model(provider, model):
+    if provider == "opencode":
+        if not OPENCODE_MODEL_PATTERN.fullmatch(model or ""):
+            raise ValueError("OpenCode requires --model provider/model")
+    elif model is not None and not MODEL_NAME_PATTERN.fullmatch(model):
+        raise ValueError("model must be 1-64 characters of A-Z, a-z, 0-9, '.', '_' and '-'")
+
+
+def task_config(st):
+    return accounts_config(allow_empty_pools=executors.from_state(st).account_field is None)
+
+
 def task_profiles(cfg):
     profiles = cfg.get("task_profiles", {})
     if not isinstance(profiles, dict):
@@ -259,7 +272,7 @@ def task_profiles(cfg):
                 procs.die(f"unknown task profile field: task_profiles.{label}.{key}")
             if not isinstance(value, str) or not value.strip():
                 procs.die(f"task_profiles.{label}.{key} must be a nonempty string")
-            if key == "executor" and value not in executors.names():
+            if key == "executor" and value not in executors.configurable_names():
                 procs.die(f"unknown executor in task_profiles.{label}: {value!r}")
             if key == "model" and not MODEL_NAME_PATTERN.fullmatch(value):
                 procs.die(f"invalid model in task_profiles.{label}: {value!r}")
@@ -317,7 +330,8 @@ def accounts_config(*, allow_empty_pools=False):
     cfg.setdefault("max_turn_minutes", None)
     cfg.setdefault("max_task_weekly_percent", None)
     cfg.setdefault("max_review_minutes", 30)
-    cfg.setdefault("executor", "codex")
+    if cfg.setdefault("executor", "codex") not in executors.configurable_names():
+        procs.die("executor must be " + " or ".join('"' + name + '"' for name in executors.configurable_names()))
     cfg.setdefault("reviewer", "codex")
     validate_role_profiles(cfg.get("role_profiles", {}))
     cfg.setdefault("claude", {})
@@ -331,10 +345,6 @@ def accounts_config(*, allow_empty_pools=False):
     cfg.setdefault("capacity_retry_minutes", [1, 5, 15, 30])
     cfg.setdefault("sandbox", "off")
     cfg.setdefault("writable_dirs", [])
-    try:
-        executors.from_state(cfg)
-    except (KeyError, TypeError):
-        procs.die("executor must be " + " or ".join('"' + name + '"' for name in executors.names()))
     try:
         reviewers.get(cfg["reviewer"])
     except (KeyError, TypeError):

@@ -41,6 +41,9 @@ connection and `Authorization: Bearer TOKEN`. Omit the configuration to leave th
 | `POST /tasks/{id}/stop` | `{"request_id":"…","version":"…"}` | `200 {"ok":true,"task":card}` |
 | `GET /events` | `after` (default `0`), `limit` (default `100`, 1–100) | `200 {"events":[event, ...],"next_cursor":0}` |
 
+To select OpenCode for a task, include `"executor":"opencode"` and `"model":"provider/model"`
+in the start request. The configured sandbox mode applies. OpenCode requires `off`.
+
 Send `Content-Type: application/json` with POST requests. Start always uses `--no-push` and takes
 a goal of up to 12,000 characters and 1–20 criteria of up to 1,000 characters each. The server
 fixes the arguments to Teamster. `say` takes a message of up to 4,000 characters, continues the
@@ -79,6 +82,7 @@ The card has these fields:
 | `blocker`, `question`, `summary`, `pr` | Text or null. `question` comes from an explicit request for a decision. `pr` is a URL when available. |
 | `checks` | `saved` is a recorded check (`command`, `outcome`, `exit`, `seconds`, `at`) or null. `reported` contains worker-reported `{command,outcome,details}` rows. `ci` is a summary (`outcome`, `passed`, `failed`, `total`, `failing`, `seconds`, `rounds`, `reason`) or null. |
 | `alive`, `stop_requested`, `archived`, `no_push` | Booleans about the supervisor and task record. |
+| `can_stop` | Present and true when the supervisor has exited and its recorded OpenCode worker PID is still live. The CLI verifies ownership before stopping it. |
 | `host_status`, `version` | `online` on a successful read and the current version for writes. |
 
 Statuses are `running` (including phase `sleeping`), `stopping`, `needs_decision`, `blocked`,

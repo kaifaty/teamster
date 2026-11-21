@@ -137,8 +137,8 @@ interface TaskSummary {
   repo: string;               // repository basename; see session mapping below
   branch: string | null;
   task_type: string | null;   // e.g. "feature", "fix", "layout"
-  executor: "codex" | "claude";
-  account: string | null;     // Codex account, or the Claude pool account for a Claude executor
+  executor: "codex" | "claude" | "opencode";
+  account: string | null;     // Codex or Claude work account, null for OpenCode
   reviewer: "codex" | "claude" | null;
   model: string | null;
   effort: string | null;
@@ -146,6 +146,7 @@ interface TaskSummary {
   phase: Phase;
   phase_started_at: number | null;
   alive: boolean;             // task supervisor running, or session PID running with status busy
+  can_stop?: true;            // the CLI can check a surviving OpenCode worker after its supervisor exits
   turn: number;               // turns so far
   fix_round: number;          // automatic fix rounds in the current cycle
   outcome: string | null;     // state.json "outcome" as written by the plugin
@@ -989,7 +990,8 @@ Task and science station POST endpoints execute these commands:
   runs `teamster lesson <entry> <status>`, adding `--note=<note>` only for a nonempty trimmed note.
   The trimmed entry must equal a lesson entry in the current view (404 otherwise); entry ≤ 200
   characters, note ≤ 1000.
-- `/api/actions/implement`: `{entry: string, repo: string, note?: string}` starts implementation of a lesson.
+- `/api/actions/implement`: `{entry: string, repo: string, note?: string, executor?: "claude" | "opencode", model?: string}` starts implementation of a lesson.
+  The default executor is Claude. Selecting OpenCode requires an explicit `provider/model` from its own configuration.
   The trimmed entry must equal a current lesson entry (404 otherwise); entry ≤ 200 characters,
   trimmed note ≤ 4000. Only `proposed` and `accepted` lessons are allowed; other statuses get 409 with
   `error: "Урок уже внедрён или отклонён"`. `repo` must exactly equal a `repos[].path` (400 otherwise).
@@ -1036,6 +1038,7 @@ Task and science station POST endpoints execute these commands:
   `teamster lesson <entry> accepted --note=внедряется: <slug>` (the note is one argv word).
   A nonzero exit marks the launch `failed`, prevents the start step and leaves the lesson `proposed`. Then run
   `teamster start <slug> --brief <temporary file> --repo <path> --executor claude --sandbox off --effort high --task-type feature --max-minutes 60 --review --fix-rounds 2 --parallel`.
+  An OpenCode selection uses `--executor opencode --model <provider/model>` and inherits the configured sandbox mode. OpenCode requires `off`.
   Append `--ci` when `git -C <path> remote get-url origin`, with stdin closed and a 10-second timeout,
   succeeds and its stdout contains `github.com`. A missing origin, failed probe or timeout omits `--ci`.
   A zero start exit marks the launch `done`; a nonzero start exit marks it `failed`, leaving the
@@ -1050,8 +1053,8 @@ Task and science station POST endpoints execute these commands:
   archived studies and implementations also return 409. Trimmed text must contain 1–8000 characters
   and is written to the temporary file, never passed as an argv word. Every option is optional;
   an unknown option key or invalid value gets 400. Flags appear in this order, before `--file`:
-  - `model`: matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` → `--model=<value>`.
-  - `effort`: `low`, `medium`, `high`, `xhigh`, `max` or `ultra` → `--effort=<value>`.
+  - `model`: OpenCode takes a qualified `provider/model` ID. A Codex or Claude model matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` → `--model=<value>`.
+  - `effort` (Codex or Claude): `low`, `medium`, `high`, `xhigh`, `max` or `ultra` → `--effort=<value>`.
   - `max_minutes`: integer 5–600 → `--max-minutes=<value>`.
   - `max_weekly`: finite JSON number 0.5–100, excluding booleans → `--max-weekly=<value>`;
     integral values have no `.0` suffix.
@@ -1069,8 +1072,9 @@ Task and science station POST endpoints execute these commands:
   runs `teamster review <slug>`, followed by `--effort`, `--reviewer`, `--review-angles` when present,
   each as one `--option=value` word. Values have the same rules as say options. Only non-archived,
   idle `work` and `review` tasks are allowed; other kinds, alive or archived tasks and sessions get 409.
-- `/api/actions/stop`: `{slug: string}` runs `teamster stop <slug>`. Only a non-archived, alive task
-  is allowed; idle or archived tasks and sessions get 409 with `error: "not running"`.
+- `/api/actions/stop`: `{slug: string}` runs `teamster stop <slug>` for a non-archived task when
+  `alive` or `can_stop` is true. The CLI checks ownership before terminating an orphaned OpenCode
+  worker. A missing worker, an archived task or a desktop session returns 409 with `error: "not running"`.
 - `/api/actions/clean`: `{slug: string, keep_branch?: boolean}` runs `teamster clean <slug>`, adding
   `--keep-branch` unless `keep_branch` is `false`. Only a non-archived, idle task is allowed; alive or
   archived tasks and sessions get 409. The branch is kept by default.

@@ -651,7 +651,7 @@ describe("dev:fixture", () => {
 
       // «Внедрить»: the start goes through its stages, then the agent works, asks, takes the answer and opens a PR.
       const implementation = () => source.fetchResearch().then((research) => research!.lessons.find((item) => item.entry === T1)!.implementation);
-      expect(await run(source.act!("implement", { entry: T1, repo: "/Users/demo/dev/teamster" }))).toMatchObject({
+      expect(await run(source.act!("implement", { entry: T1, repo: "/Users/demo/dev/teamster", executor: "opencode", model: "local/test" }))).toMatchObject({
         ok: true, output: "", slug: "lesson-t1", launch: { slug: "lesson-t1", kind: "implement", entry: T1, repo: "teamster", stage: "fetching" },
       });
       expect(await implementation()).toBeUndefined();
@@ -659,6 +659,7 @@ describe("dev:fixture", () => {
       await vi.advanceTimersByTimeAsync(3 * STAGE_MS);
       expect(launched.filter((launch) => launch.slug === "lesson-t1").map((launch) => launch.stage)).toEqual(["fetching", "worktree", "starting", "done"]);
       expect(await implementation()).toMatchObject({ slug: "lesson-t1", repo: "teamster", alive: true });
+      expect(await source.fetchDetail("lesson-t1")).toMatchObject({ executor: "opencode", account: null, model: "local/test" });
       expect(await run(source.act!("implement", { entry: T1, repo: "/Users/demo/dev/teamster" }))).toMatchObject({ ok: false });
       await vi.advanceTimersByTimeAsync(IMPLEMENT_MS);
       expect(await implementation()).toMatchObject({ alive: false, result_status: "needs_decision", questions: [expect.any(String)] });

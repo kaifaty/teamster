@@ -24,6 +24,11 @@ def current_turn_account(st):
     return executors.from_state(st).account(st)
 
 
+def turn_account_label(st):
+    worker = executors.for_turn(st)
+    return worker.name if worker.account_field is None else current_turn_account(st)
+
+
 def unblock_notification_signals():
     # The supervisor is single-threaded. Reset only the child's inherited mask
     # before exec so hooks remain cancellable during the parent's finalization.
@@ -32,7 +37,7 @@ def unblock_notification_signals():
 
 def notify(st, cfg, event, message, **fields):
     reap_notifications()
-    cfg = config.accounts_config() if cfg is None else cfg
+    cfg = config.task_config(st) if cfg is None else cfg
     setting = cfg.get("notify")
     if setting is None or ("notify_events" in cfg and event not in cfg["notify_events"]):
         return

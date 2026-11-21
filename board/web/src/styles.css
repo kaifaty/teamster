@@ -199,6 +199,11 @@ a {
   color: var(--claude);
 }
 
+.exec.opencode {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 .exec .glyph {
   font-size: 10px;
 }

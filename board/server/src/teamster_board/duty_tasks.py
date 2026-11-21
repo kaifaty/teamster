@@ -130,7 +130,7 @@ def _card(store, path, archived, allowed_repos):
     files = [_signature(store._file(path, name, strict=True)) for name in ("queue.json", "messages.jsonl")]
     verdict = (summary["lead_verdict"], summary["lead_verdict_at"])
     version = hashlib.sha256(json.dumps(
-        [state, record.signature, files, archived, is_alive, verdict], sort_keys=True,
+        [state, record.signature, files, archived, is_alive, summary.get("can_stop", False), verdict], sort_keys=True,
     ).encode("utf-8")).hexdigest()
     updated = max(record.updated_at, summary["lead_verdict_at"] or 0,
                   *(signature[0] / 1_000_000_000 for signature in files if signature is not None))
@@ -154,7 +154,8 @@ def _card(store, path, archived, allowed_repos):
         "pr": summary["pr"],
         "summary": summary["summary"],
         "alive": is_alive,
-        "stop_requested": stop_requested(state),
+        **({"can_stop": True} if summary.get("can_stop") else {}),
+        "stop_requested": is_alive and stop_requested(state),
         "archived": archived,
         "no_push": state.get("no_push") is True,
         "deadline_at": number(state.get("task_deadline")),

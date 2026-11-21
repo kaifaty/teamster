@@ -27,11 +27,13 @@ class AcpClient:
     The harness owns model selection, credentials, tools and session storage.
     """
 
-    def __init__(self, argv, cwd, on_update, on_permission):
+    def __init__(self, argv, cwd, on_update, on_permission, *, check_active=None, env=None):
         self.argv = argv
         self.cwd = str(Path(cwd).resolve())
+        self.env = env
         self.on_update = on_update
         self.on_permission = on_permission
+        self.check_active = check_active
         self.session_id = None
         self.process = None
         self.request_id = 0
@@ -39,8 +41,11 @@ class AcpClient:
         self.auth_methods = []
 
     def __enter__(self):
-        self.process = subprocess.Popen(self.argv, cwd=self.cwd, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, start_new_session=True)
+        env = self.env if self.env is not None else {**os.environ, "PWD": self.cwd}
+        self.process = subprocess.Popen(self.argv, cwd=self.cwd, env=env,
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+        if self.check_active:
+            os.set_blocking(self.process.stdin.fileno(), False)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -49,22 +54,41 @@ class AcpClient:
                 self.process.stdin.close()
             except BrokenPipeError:
                 pass
-            try:
-                self.process.wait(timeout=0.5)
-            except subprocess.TimeoutExpired:
-                pass
+            if self.check_active and exc_type is None:
+                # The worker needs the agent's own exit status, even if shutdown is slow.
+                while self.process.poll() is None:
+                    self.check_active()
+                    try:
+                        self.process.wait(timeout=0.2)
+                    except subprocess.TimeoutExpired:
+                        pass
+            else:
+                try:
+                    self.process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
         finally:
             self.process.stdout.close()
             # The leader may have exited with tool processes still in its group.
             procs.terminate(self.process)
 
     def _send(self, **message):
-        line = json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False)
-        self.process.stdin.write((line + "\n").encode("utf-8"))
-        self.process.stdin.flush()
+        line = (json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False) + "\n").encode()
+        if self.check_active:
+            # A large prompt may fill the pipe while the agent is unresponsive.
+            pending = memoryview(line)
+            while pending:
+                self.check_active()
+                if select.select([], [self.process.stdin], [], 0.2)[1]:
+                    pending = pending[os.write(self.process.stdin.fileno(), pending):]
+        else:
+            self.process.stdin.write(line)
+            self.process.stdin.flush()
 
     def _read(self, deadline):
         while True:
+            if self.check_active:
+                self.check_active()
             if deadline is not None and time.monotonic() >= deadline:
                 raise ValueError("ACP agent did not finish the cancelled turn")
             newline = self.buffer.find(b"\n")

@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -273,6 +274,80 @@ class ResumeTests(RotationTestCase):
         self.assertEqual(state["outcome"], "completed")
         self.assertIsNone(state["resumed"][0]["signal"])
         self.assertIn("an external signal (unknown: the supervisor left no result)", self.invocations()[1]["prompt"])
+
+        # OpenCode has a separate process group and may keep writing after its supervisor dies.
+        binary = self.root / "opencode"
+        binary.write_text("#!" + sys.executable + """
+import os, signal, subprocess, sys
+from pathlib import Path
+if sys.argv[1] == "api":
+    print('{"data":{"id":"ses_recovery"}}')
+else:
+    assert sys.argv[1] == "acp"
+    child = subprocess.Popen(["sleep", "90"])
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    Path("orphan-pids").write_text(f"{os.getpid()} {child.pid}")
+    child.wait()
+""")
+        binary.chmod(0o700)
+        slug = "orphan-opencode"
+        self.start(slug, "--executor", "opencode", "--model", "offline/model", "--no-push")
+        marker = Path(self.state(slug)["worktree"]) / "orphan-pids"
+        self.until(lambda: marker.is_file() and marker.read_text().startswith(f"{self.state(slug).get('opencode_pid')} "),
+                   timeout=60)
+        state = self.state(slug)
+        orphan, child = map(int, marker.read_text().split())
+        self.extra_pids.update((orphan, child))
+        os.kill(state["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(state["pid"]))
+        for args in (("say", slug, "Continue."), ("resume", slug), ("clean", slug)):
+            self.assertIn(f"teamster stop {slug}", self.refused(*args))
+        self.assertEqual(self.state(slug)["turns"], 1)
+        self.assertIn(f"ended OpenCode process {orphan}", self.cli("stop", slug))
+        self.assertFalse(self.process_is_live(orphan))
+        self.assertFalse(self.process_is_live(child))
+        self.assertNotIn("opencode_pid", self.state(slug))
+        self.assertEqual(self.state(slug)["outcome"], "stopped")
+        self.assertIsNone(self.state(slug)["pid"])
+        self.assertIn("turn_finished", self.state(slug))
+        status = self.cli("status", slug)
+        self.assertIn(" idle ", status)
+        self.assertNotIn("continue: teamster resume", status)
+        self.assertIn("nothing to resume", self.resume("--all"))
+
+        # Even a group leader in the same worktree is not a worker of this interrupted supervisor.
+        worker = self.worker()
+        stale = self.state(slug)
+        with subprocess.Popen(["sleep", "90"], cwd=stale["worktree"], start_new_session=True,
+                              env=dict(self.env, PWD=stale["worktree"])) as unrelated:
+            try:
+                with mock.patch.object(worker.task_state, "load", return_value=dict(stale, opencode_pid=unrelated.pid)), \
+                        mock.patch.object(worker.procs, "end_group") as end:
+                    worker.commands.cmd_stop(SimpleNamespace(slug=slug))
+                    end.assert_not_called()
+            finally:
+                unrelated.terminate()
+
+        # A say can win the state lock after clean is requested with an idle task.
+        def read_during_clean(slug):
+            locked = slug in getattr(worker.task_state.HELD_STATE_LOCKS, "slugs", set())
+            return dict(stale, pid=os.getpid()) if locked else stale
+
+        with mock.patch.object(worker.task_state, "load", side_effect=read_during_clean), \
+                self.assertRaisesRegex(SystemExit, "still running"):
+            worker.commands.cmd_clean(SimpleNamespace(slug=slug, keep_branch=False))
+        self.assertTrue(Path(stale["worktree"]).is_dir())
+
+        def check_clean_lock(args, state):
+            self.assertIn(slug, worker.task_state.HELD_STATE_LOCKS.slugs)
+
+        with mock.patch.object(worker.commands, "clean_task", side_effect=check_clean_lock) as clean:
+            worker.commands.cmd_clean(SimpleNamespace(slug=slug, keep_branch=False))
+            clean.assert_called_once()
+
+        self.cli("say", slug, "Continue after the stop.")
+        self.until(lambda: self.state(slug).get("opencode_pid") and self.state(slug)["turns"] == 2)
+        self.cli("stop", slug)
 
     def test_resume_refuses_stopped_and_running_tasks_and_say_still_continues(self):
         self.configure(language="en")

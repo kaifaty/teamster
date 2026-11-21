@@ -2,7 +2,7 @@
 import json
 import sys
 
-from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, duty, duty_chat, executors, notifications, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
+from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, duty, duty_chat, executors, notifications, opencode_runner, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
 
 
 LIMIT_REASONS = ("usage limit", "authentication failed", "token unavailable")
@@ -80,10 +80,10 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
             st["result"] = response["result"]
             message = json.dumps(response["result"], ensure_ascii=False)
             last.write_text(message, encoding="utf-8")
-            threads.record_claude_message(st, message)
+            threads.record_session_message(st, message)
         elif st["outcome"] == "completed":
             last.write_text(response["result"], encoding="utf-8")
-            threads.record_claude_message(st, response["result"])
+            threads.record_session_message(st, response["result"])
         elif reason:
             st["error"] = reason
         if st["outcome"] == "budget_exhausted":
@@ -210,7 +210,7 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
         message = json.dumps(response["result"], ensure_ascii=False)
         last.write_text(message, encoding="utf-8")
         if family == "claude":
-            threads.record_claude_message(st, message)
+            threads.record_session_message(st, message)
         duty_chat.record_chat_turn(st)
     elif st["outcome"] == "unavailable" and reason in LIMIT_REASONS:
         if family == "claude" and "limited_until" not in response:  # The stream has already marked its own rejection.
@@ -303,7 +303,7 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
         last.write_text(response["raw_message"] or json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         if outcome != "unavailable":
             # Handoffs to another account read summaries from structured results.
-            threads.record_claude_message(st, json.dumps(result, ensure_ascii=False) if result is not None
+            threads.record_session_message(st, json.dumps(result, ensure_ascii=False) if result is not None
                                           else response["raw_message"])
     reason = response.get("reason")
     if outcome == "unavailable":
@@ -388,6 +388,68 @@ def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, ne
         task_state.save(st)
 
 
+def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
+    last = config.TASKS / st["slug"] / "last.md"
+    last.unlink(missing_ok=True)
+    st.update(model=st["task_model"], reasoning_effort=None)
+    phase = telemetry_log.telemetry_phase(st)
+    if phase is not None:
+        phase.model = st["model"]
+
+    def started(proc):
+        st["opencode_pid"] = proc.pid
+        task_state.save(st)
+
+    def created(session_id):
+        st["session_id"] = session_id
+        task_state.save(st)
+
+    deadline = None if minutes is None else clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
+    prompt += "\n\nReturn only a JSON object matching this schema:\n" + json.dumps(result_schema.RESULT_SCHEMA)
+    try:
+        outcome, message = opencode_runner.run_opencode(
+            st["worktree"], prompt, st["model"], st.get("session_id"), stopped, deadline,
+            title=st["slug"], started=started, created=created)
+    finally:
+        st.pop("opencode_pid", None)
+        task_state.save(st)
+    outcome = task_state.stop_outcome(st, stopped) or outcome
+    result = None
+    if outcome == "completed":
+        last.write_text(message, encoding="utf-8")
+        result = result_schema.parse_result(message)
+        if result is None:
+            outcome, message = "failed", "OpenCode returned an invalid work result"
+        else:
+            threads.record_session_message(st, message)
+    state = st["wrapup"] if wrapup else st
+    state.update(outcome=outcome, result=result)
+    if outcome == "failed":
+        state["error"] = message
+    task_state.save(st)
+    return outcome
+
+
+def run_opencode_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
+    minutes = st.get("max_turn_minutes", cfg.get("max_turn_minutes"))
+    # The first process can stop after opening the session but before delivering the brief.
+    if current_message and st.get("session_id") and not threads.session_messages(st):
+        prompt = threads.handoff(st, current_message=True, cfg=cfg)
+    outcome = opencode_work_turn(st, prompt, stopped, minutes)
+    if outcome == "budget_exhausted" and not stopped():
+        phase = telemetry_log.telemetry_phase(st)
+        if phase is not None:
+            phase.finish(outcome=outcome)
+        wrapup_turn(st, cfg, None, effort, stopped, {"outcome": outcome, "minutes": minutes})
+
+
+def opencode_wrapup_turn(st, cfg, account, prompt, effort, stopped, thread):
+    # The budget may have expired before OpenCode accepted its first work prompt.
+    if not threads.session_messages(st):
+        prompt = threads.handoff(st, cfg=cfg) + "\n\n" + prompt
+    return opencode_work_turn(st, prompt, stopped, 10, wrapup=True)
+
+
 def wrapup_turn(st, cfg, account, effort, stopped, reason, review_entry=None):
     with telemetry_log.record_phase(st, "wrapup", stopped) as phase:
         _wrapup_turn(st, cfg, account, effort, stopped, reason, review_entry)
@@ -402,7 +464,8 @@ def _wrapup_turn(st, cfg, account, effort, stopped, reason, review_entry=None):
     st["review_skipped"] = reason["outcome"]
     st["wrapup"] = {"outcome": "not_run", "result": None}
     task_state.save(st)
-    notifications.notify(st, cfg, reason["outcome"], turn_monitor.turn_stop_message(reason), account=account["name"], **reason)
+    notifications.notify(st, cfg, reason["outcome"], turn_monitor.turn_stop_message(reason),
+                         account=account["name"] if account else None, **reason)
     executor = executors.for_turn(st)
     thread = ((review_entry or {}).get("thread") if st.get("kind") == "review"
               else executor.cursor(st))
@@ -473,6 +536,10 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
         st.update(auth_excluded=[], auth_excluded_ids=[], auth_transitions=0, auth_failures={})
         st.pop("reset_reconciled", None)
     quota_snapshot = None
+    if reviewing and not cfg["accounts"]:
+        st.update(outcome="unavailable", error="No Codex account configured for review")
+        task_state.save(st)
+        return
     if cfg["enabled"]:
         infos = account_rotation.task_snapshots(st, cfg, stopped, new_turn=new_turn)
         budgets.warn_weekly_headroom(st, cfg, infos)
@@ -525,6 +592,8 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
         quota_snapshot = chosen.get("limits")
         if not reviewing:
             st["account"] = account["name"]
+    elif reviewing and st["account"] is None:
+        account = cfg["accounts"][0]
     else:
         account = accounts.account_named(cfg, st["account"])
     if reviewing:
@@ -763,3 +832,4 @@ executors.get("codex").bind(sys.modules[__name__], turn="_run_turn", scout="_run
 executors.get("codex").bind(codex_duty, duty="run_codex_duty")
 executors.get("claude").bind(sys.modules[__name__], turn="run_claude_turn", scout="run_claude_scout_turn",
                              wrapup="claude_wrapup_turn", duty="run_claude_duty")
+executors.get("opencode").bind(sys.modules[__name__], turn="run_opencode_turn", wrapup="opencode_wrapup_turn")

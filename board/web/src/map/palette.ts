@@ -1,7 +1,7 @@
 // Colours the scene draws with. Space is dark in both of the board's themes; the fleets use the board's dark
 // --codex and --claude hues (styles.css), which read well on it.
 
-import type { Family } from "./fleet";
+import type { TaskSummary } from "../types";
 
 export const SPACE = {
   void: "#05070d",
@@ -31,9 +31,10 @@ export const SPACE = {
 } as const;
 
 /** `hull` also colours the inspection's scanner over a ship that the family reviews. */
-export const FLEET: Record<Family, { hull: string; engine: string }> = {
+export const FLEET: Record<TaskSummary["executor"], { hull: string; engine: string }> = {
   codex: { hull: "#7ea6f5", engine: "#ffb648" },
   claude: { hull: "#e59472", engine: "#74d6e8" },
+  opencode: { hull: "#dddddd", engine: "#dddddd" },
 };
 
 /**

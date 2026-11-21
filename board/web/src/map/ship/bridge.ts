@@ -75,18 +75,18 @@ const HULL_NAMES: Record<Hull, string> = { light: "Задача", frigate: "За
 
 /** The hull's picture: the same as the scene's, by the task's effort and its executor's colour. */
 export function hullArt(task: Pick<TaskSummary, "kind" | "effort" | "executor">): ArtName {
-  const codex = task.executor === "codex";
+  const copper = task.executor === "claude";
   switch (hullOf(task)) {
     case "flagship":
       return "flagship";
     case "scout":
       return "shipScout";
     case "frigate":
-      return codex ? "shipBlueFrigate" : "shipCopperFrigate";
+      return copper ? "shipCopperFrigate" : "shipBlueFrigate";
     case "cruiser":
-      return codex ? "shipBlueCruiser" : "shipCopperCruiser";
+      return copper ? "shipCopperCruiser" : "shipBlueCruiser";
     default:
-      return codex ? "shipBlue" : "shipCopper";
+      return copper ? "shipCopper" : "shipBlue";
   }
 }
 

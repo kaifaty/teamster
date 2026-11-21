@@ -31,11 +31,13 @@ export interface CardState {
   copied: Copied | null;
   /** «Репозиторий»: a repository's path, empty until one is picked. */
   repo: string;
+  executor: "claude" | "opencode";
+  model: string;
   /** The task an older server started before it answered, shown until the research carries it. */
   started: Started | null;
 }
 
-const BLANK_CARD: Readonly<CardState> = Object.freeze({ form: null, note: "", busy: null, error: "", done: null, copied: null, repo: "", started: null });
+const BLANK_CARD: Readonly<CardState> = Object.freeze({ form: null, note: "", busy: null, error: "", done: null, copied: null, repo: "", executor: "claude", model: "", started: null });
 
 export interface CardsContext {
   research: Ref<Research>;

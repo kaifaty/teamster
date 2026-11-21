@@ -68,8 +68,8 @@ watch(
         <summary>Изменить параметры <small>{{ view.queue ? "уйдёт с указанием в очередь" : "уйдёт со следующим ответом" }}</small></summary>
         <div class="body">
           <div class="refit">
-            <label>Модель<input v-model="refit.model" class="field mono" type="text" maxlength="64" :placeholder="asIs(task.model)" /></label>
-            <label
+            <label>Модель<input v-model="refit.model" class="field mono" type="text" :maxlength="task.executor === 'opencode' ? undefined : 64" :placeholder="asIs(task.model)" /></label>
+            <label v-if="efforts.length"
               >Усилие
               <select v-model="refit.effort" class="field">
                 <option value="">{{ `как сейчас${task.effort ? ` · ${task.effort}` : ""}` }}</option>

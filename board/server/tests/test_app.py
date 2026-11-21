@@ -1319,12 +1319,13 @@ def lesson_repo(station):
     return repo
 
 
-@pytest.mark.parametrize("status,origin,full", [
-    ("proposed", "git@github.com:owner/project.git", True),
-    ("accepted", "https://forge.example/owner/project.git", False),
+@pytest.mark.parametrize("status,origin,full,worker", [
+    ("proposed", "git@github.com:owner/project.git", True, {}),
+    ("accepted", "https://forge.example/owner/project.git", False, {}),
+    ("accepted", "https://forge.example/owner/project.git", False, {"executor": "opencode", "model": "local/test"}),
 ])
 def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, monkeypatch, caplog,
-                                                      status, origin, full):
+                                                      status, origin, full, worker):
     client, application, settings, entry, calls, control = station
     caplog.set_level("INFO", logger="uvicorn.error")
 
@@ -1349,7 +1350,7 @@ def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, mo
     assert before["repos"] == [{"name": lesson_repo.name, "path": str(lesson_repo)}]
     assert before["lessons"][0]["implementation"] is None
     response = client.post("/api/actions/implement", json={
-        "entry": f" {entry} ", "repo": str(lesson_repo), "note": "  Keep it focused.  " if full else "  ",
+        "entry": f" {entry} ", "repo": str(lesson_repo), "note": "  Keep it focused.  " if full else "  ", **worker,
     })
     slug = "lesson-w2-1109"
     assert response.status_code == 200
@@ -1364,8 +1365,9 @@ def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, mo
     start = records[-1]
     brief_path = start["argv"][3]
     assert start["argv"] == [
-        "start", slug, "--brief", brief_path, "--repo", str(lesson_repo), "--executor", "claude",
-        "--sandbox", "off", "--effort", "high", "--task-type", "feature", "--max-minutes", "60",
+        "start", slug, "--brief", brief_path, "--repo", str(lesson_repo), "--executor", worker.get("executor", "claude"),
+        *(["--model", worker["model"]] if worker else ["--sandbox", "off", "--effort", "high"]),
+        "--task-type", "feature", "--max-minutes", "60",
         "--review", "--fix-rounds", "2", "--parallel", *(["--ci"] if origin and "github.com" in origin else []),
     ]
     expected = ("""Внедрить урок «batch-2026-11-09.md W2»: Keep the latest check.
@@ -2046,8 +2048,15 @@ def ships(station):
     ("clean", {"keep_branch": False}, []),
 ])
 def test_ship_action_argv(ships, caplog, route, body, expected):
-    client, _, _, _, calls, _ = ships
-    slug = "work-alive" if route == "stop" else "work-idle"
+    client, application, settings, _, calls, _ = ships
+    slug = "work-idle"
+    if route == "stop":
+        # Only the fake CLI handles the stop request for this PID.
+        path = settings.path("tasks") / slug / "state.json"
+        path.write_text(json.dumps({"executor": "opencode", "pid": None, "opencode_pid": os.getpid()}))
+        application.state.board.store.poll()
+        task = client.get(f"/api/tasks/{slug}").json()
+        assert task["alive"] is False and task["can_stop"] is True
     caplog.set_level("INFO", logger="uvicorn.error")
     response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
     assert response.status_code == 200
@@ -4364,6 +4373,10 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
                                 json=dict(start, request_id="foreign-001", repository=str(worker.root)))
         assert forbidden.status_code == 403, forbidden.text
         assert forbidden.json()["error"]["code"] == "repository_not_allowed"
+        opencode_start = dict(start, request_id="opencode-001", executor="opencode", model="offline/model")
+        for model in ("default", "offline/model#high"):
+            invalid = client.post(f"{base}/tasks", json=dict(opencode_start, model=model))
+            assert invalid.status_code == 400 and invalid.json()["error"]["code"] == "invalid_request"
         created = client.post(f"{base}/tasks", json=start)
         assert created.status_code == 201, created.text
         initial = created.json()["task"]
@@ -4462,14 +4475,37 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
             "task_finished", running["id"], "stopped",
         )
 
-        last = client.post(f"{base}/tasks", json=dict(start, request_id="start-003"))
+        fake = worker.root / "opencode"
+        fake.write_text("#!" + sys.executable + """
+import os, sys, time
+from pathlib import Path
+if sys.argv[1] == "api":
+    print('{"data":{"id":"ses_board"}}')
+else:
+    assert sys.argv[1] == "acp"
+    Path("acp-started").write_text(str(os.getpid()))
+    time.sleep(60)
+""")
+        fake.chmod(0o700)
+        last = client.post(f"{base}/tasks", json=opencode_start)
         assert last.status_code == 201, last.text
+        assert last.json()["task"]["executor"] == "opencode"
+        slug = last.json()["task"]["slug"]
+        assert worker.state(slug)["task_model"] == opencode_start["model"]
+        marker = Path(worker.state(slug)["worktree"]) / "acp-started"
+        worker.until(lambda: marker.is_file() and marker.read_text() == str(worker.state(slug).get("opencode_pid")))
+        state = worker.state(slug)
+        worker.extra_pids.update((state["pid"], state["opencode_pid"]))
+        os.kill(state["pid"], signal.SIGKILL)
+        worker.until(lambda: not worker.process_is_live(state["pid"]))
         last_id = last.json()["task"]["id"]
         for attempt in range(5):
             current = card(client, last_id)
+            assert current["alive"] is False and current["can_stop"] is True
             accepted = client.post(f"{base}/tasks/{last_id}/stop",
                                    json={"request_id": f"stop-{attempt}", "version": current["version"]})
             if accepted.status_code != 409 or accepted.json()["error"]["code"] != "version_conflict":
                 break
         assert accepted.status_code == 200, accepted.text
-        assert wait_for(client, last_id, "stopped")["id"] == last_id
+        assert not worker.process_is_live(state["opencode_pid"])
+        assert "can_stop" not in card(client, last_id)

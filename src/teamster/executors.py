@@ -108,6 +108,18 @@ class Executor:
                 "cost_usd": cost_usd}
 
 
+class OpenCodeExecutor(Executor):
+    supports_sandbox = False
+    event_log = False
+    provider = "opencode"
+
+    def __init__(self):
+        super().__init__("opencode", None, "session_id", "session")
+
+    def status_error(self, st):
+        return "\n" + st["error"] if st.get("error") else ""
+
+
 class ClaudeExecutor(Executor):
     supports_sandbox = False
     event_log = False
@@ -156,6 +168,15 @@ def names():
     return EXECUTORS.keys()
 
 
+def scout_names():
+    return [name for name, worker in EXECUTORS.items() if "scout" in worker.hooks]
+
+
+def configurable_names():
+    """Workers eligible for profile and configuration defaults; accountless work is explicit."""
+    return [name for name, worker in EXECUTORS.items() if worker.account_field is not None]
+
+
 def from_state(st):
     return get(st.get("executor", "codex"))
 
@@ -176,3 +197,4 @@ def for_turn(st):
 
 register(Executor("codex"))
 register(ClaudeExecutor())
+register(OpenCodeExecutor())

@@ -179,6 +179,11 @@ def limits(state):
     }
 
 
+def opencode_stop_candidate(state):
+    # The CLI verifies process ownership under the task lock before sending a signal.
+    return state.get("executor") == "opencode" and alive(state.get("opencode_pid"))
+
+
 def phase(state, is_alive):
     """Derive the phase from the cursors the plugin persists, in priority order.
 
@@ -212,7 +217,7 @@ def phase(state, is_alive):
         latest = (last(reviews[start:]) if isinstance(reviews, list) else None) or {}
         started = number(latest.get("started")) if latest.get("finished") is None else None
         return "review", started
-    if state.get("outcome") == "running" or state.get("codex_pid") or state.get("claude_pid"):
+    if state.get("outcome") == "running" or any(state.get(key) for key in ("codex_pid", "claude_pid", "opencode_pid")):
         if state.get("rounds") or (ci.get("outcome") == "failed" and (integer(ci.get("rounds")) or 0) > 0):
             return "fix", None
         return "turn", number(state.get("turn_started"))
@@ -316,7 +321,8 @@ class Store:
             "branch": text(state.get("branch")),
             "task_type": text(state.get("task_type")),
             "executor": executor,
-            "account": text(state.get("claude_account") if executor == "claude" else state.get("account")),
+            "account": None if executor == "opencode" else text(
+                state.get("claude_account") if executor == "claude" else state.get("account")),
             "reviewer": text(state.get("reviewer")),
             "model": text(state.get("task_model") or (state.get("model") if executor == "claude" else None)),
             "effort": text(state.get("reasoning_effort") or state.get("effort")),
@@ -324,6 +330,7 @@ class Store:
             "phase": current_phase,
             "phase_started_at": started_at,
             "alive": is_alive,
+            **({"can_stop": True} if not is_alive and not record.archived and opencode_stop_candidate(state) else {}),
             "turn": state.get("turns", 0),
             "fix_round": (len(state["rounds"]) if isinstance(state.get("rounds"), list) else 0)
                          + (integer(ci.get("rounds")) or 0),

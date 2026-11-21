@@ -40,7 +40,7 @@ supervisor after the turn, without starting it in the background or through `noh
 fix prompts use the same rule. With no turn limit, fewer runs, or a median at or below the
 threshold, the instruction to run the full check stays unchanged.
 
-Codex and Claude executors, saved checks and base checks receive `COPYFILE_DISABLE=1`. On macOS,
+Codex, Claude and OpenCode work executors, saved checks and base checks receive `COPYFILE_DISABLE=1`. On macOS,
 this prevents `tar` and `cp` from adding AppleDouble `._*` metadata files to archives and copies
 that may be sent to Linux hosts.
 
