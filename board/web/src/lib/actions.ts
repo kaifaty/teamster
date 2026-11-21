@@ -27,7 +27,7 @@ export type ActionRoute =
   | "duty-chat"
   | "duty";
 
-export const OPENCODE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._:/@+-]*(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+export const OPENCODE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type Effort = (typeof EFFORTS)[number];
 export const REVIEWERS = ["codex", "claude"] as const;

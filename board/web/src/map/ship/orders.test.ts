@@ -120,6 +120,7 @@ describe("order groups", () => {
 
   it("offers only the orders the server accepts in each state", () => {
     expect(groups(deskOf(task()))).toEqual(["reply", "accept", "reflect", "stop"]);
+    expect(deskOf(task({ executor: "opencode", alive: false, can_stop: true })).stop).toBe(true);
     expect(groups(deskOf(task({ alive: false, column: "attention", result_status: "needs_decision" })))).toEqual([
       "reply", "send", "accept", "refit", "review", "reflect", "clean",
     ]);

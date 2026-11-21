@@ -179,6 +179,11 @@ def limits(state):
     }
 
 
+def opencode_stop_candidate(state):
+    # The CLI verifies process ownership under the task lock before sending a signal.
+    return state.get("executor") == "opencode" and alive(state.get("opencode_pid"))
+
+
 def phase(state, is_alive):
     """Derive the phase from the cursors the plugin persists, in priority order.
 
@@ -325,6 +330,7 @@ class Store:
             "phase": current_phase,
             "phase_started_at": started_at,
             "alive": is_alive,
+            **({"can_stop": True} if not is_alive and not record.archived and opencode_stop_candidate(state) else {}),
             "turn": state.get("turns", 0),
             "fix_round": (len(state["rounds"]) if isinstance(state.get("rounds"), list) else 0)
                          + (integer(ci.get("rounds")) or 0),

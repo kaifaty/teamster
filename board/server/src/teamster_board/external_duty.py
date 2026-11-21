@@ -222,7 +222,8 @@ class ExternalDuty:
                 return failure(404, "task_not_found")
             if current["version"] != data["version"]:
                 return failure(409, "version_conflict", task=current)
-            if current["archived"] or current["stop_requested"] or (route == "stop" and not current["alive"]):
+            if current["archived"] or current["stop_requested"] or (
+                    route == "stop" and not (current["alive"] or current.get("can_stop"))):
                 return failure(409, "task_not_actionable", task=current)
             if route == "say":
                 # Only resume tasks launched through this interface, under its
@@ -278,6 +279,8 @@ class ExternalDuty:
             if confirmed is not None or process.returncode <= 0:
                 return confirmed
         elif process.returncode == 0:
+            if route == "stop" and process.stdout.strip() == b"not running":
+                return failure(409, "task_not_actionable", task=self.task(current["id"]) or current)
             # The action was accepted. Keep the previous card if it vanished
             # during the CLI call; it still identifies the affected task.
             return success(200, self.task(current["id"]) or current)

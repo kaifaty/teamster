@@ -146,6 +146,7 @@ interface TaskSummary {
   phase: Phase;
   phase_started_at: number | null;
   alive: boolean;             // task supervisor running, or session PID running with status busy
+  can_stop?: true;            // the CLI can check a surviving OpenCode worker after its supervisor exits
   turn: number;               // turns so far
   fix_round: number;          // automatic fix rounds in the current cycle
   outcome: string | null;     // state.json "outcome" as written by the plugin
@@ -1052,7 +1053,7 @@ Task and science station POST endpoints execute these commands:
   archived studies and implementations also return 409. Trimmed text must contain 1–8000 characters
   and is written to the temporary file, never passed as an argv word. Every option is optional;
   an unknown option key or invalid value gets 400. Flags appear in this order, before `--file`:
-  - `model`: OpenCode takes a qualified `provider/model` ID, optionally with `#variant`. A Codex or Claude model matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` → `--model=<value>`.
+  - `model`: OpenCode takes a qualified `provider/model` ID. A Codex or Claude model matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` → `--model=<value>`.
   - `effort` (Codex or Claude): `low`, `medium`, `high`, `xhigh`, `max` or `ultra` → `--effort=<value>`.
   - `max_minutes`: integer 5–600 → `--max-minutes=<value>`.
   - `max_weekly`: finite JSON number 0.5–100, excluding booleans → `--max-weekly=<value>`;
@@ -1071,8 +1072,9 @@ Task and science station POST endpoints execute these commands:
   runs `teamster review <slug>`, followed by `--effort`, `--reviewer`, `--review-angles` when present,
   each as one `--option=value` word. Values have the same rules as say options. Only non-archived,
   idle `work` and `review` tasks are allowed; other kinds, alive or archived tasks and sessions get 409.
-- `/api/actions/stop`: `{slug: string}` runs `teamster stop <slug>`. Only a non-archived, alive task
-  is allowed; idle or archived tasks and sessions get 409 with `error: "not running"`.
+- `/api/actions/stop`: `{slug: string}` runs `teamster stop <slug>` for a non-archived task when
+  `alive` or `can_stop` is true. The CLI checks ownership before terminating an orphaned OpenCode
+  worker. A missing worker, an archived task or a desktop session returns 409 with `error: "not running"`.
 - `/api/actions/clean`: `{slug: string, keep_branch?: boolean}` runs `teamster clean <slug>`, adding
   `--keep-branch` unless `keep_branch` is `false`. Only a non-archived, idle task is allowed; alive or
   archived tasks and sessions get 409. The branch is kept by default.

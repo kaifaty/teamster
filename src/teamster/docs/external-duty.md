@@ -82,6 +82,7 @@ The card has these fields:
 | `blocker`, `question`, `summary`, `pr` | Text or null. `question` comes from an explicit request for a decision. `pr` is a URL when available. |
 | `checks` | `saved` is a recorded check (`command`, `outcome`, `exit`, `seconds`, `at`) or null. `reported` contains worker-reported `{command,outcome,details}` rows. `ci` is a summary (`outcome`, `passed`, `failed`, `total`, `failing`, `seconds`, `rounds`, `reason`) or null. |
 | `alive`, `stop_requested`, `archived`, `no_push` | Booleans about the supervisor and task record. |
+| `can_stop` | Present and true when the supervisor has exited and its recorded OpenCode worker PID is still live. The CLI verifies ownership before stopping it. |
 | `host_status`, `version` | `online` on a successful read and the current version for writes. |
 
 Statuses are `running` (including phase `sleeping`), `stopping`, `needs_decision`, `blocked`,

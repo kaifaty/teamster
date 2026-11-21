@@ -2048,8 +2048,15 @@ def ships(station):
     ("clean", {"keep_branch": False}, []),
 ])
 def test_ship_action_argv(ships, caplog, route, body, expected):
-    client, _, _, _, calls, _ = ships
-    slug = "work-alive" if route == "stop" else "work-idle"
+    client, application, settings, _, calls, _ = ships
+    slug = "work-idle"
+    if route == "stop":
+        # Only the fake CLI handles the stop request for this PID.
+        path = settings.path("tasks") / slug / "state.json"
+        path.write_text(json.dumps({"executor": "opencode", "pid": None, "opencode_pid": os.getpid()}))
+        application.state.board.store.poll()
+        task = client.get(f"/api/tasks/{slug}").json()
+        assert task["alive"] is False and task["can_stop"] is True
     caplog.set_level("INFO", logger="uvicorn.error")
     response = client.post(f"/api/actions/{route}", json={"slug": slug, **body})
     assert response.status_code == 200
@@ -4367,8 +4374,9 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         assert forbidden.status_code == 403, forbidden.text
         assert forbidden.json()["error"]["code"] == "repository_not_allowed"
         opencode_start = dict(start, request_id="opencode-001", executor="opencode", model="offline/model")
-        invalid = client.post(f"{base}/tasks", json=dict(opencode_start, model="default"))
-        assert invalid.status_code == 400 and invalid.json()["error"]["code"] == "invalid_request"
+        for model in ("default", "offline/model#high"):
+            invalid = client.post(f"{base}/tasks", json=dict(opencode_start, model=model))
+            assert invalid.status_code == 400 and invalid.json()["error"]["code"] == "invalid_request"
         created = client.post(f"{base}/tasks", json=start)
         assert created.status_code == 201, created.text
         initial = created.json()["task"]
@@ -4468,12 +4476,15 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         )
 
         fake = worker.root / "opencode"
-        fake.write_text("""#!/bin/sh
-case "$1" in
-    api) echo '{"data":{"id":"ses_board"}}' ;;
-    acp) touch acp-started; exec sleep 60 ;;
-    *) exit 1 ;;
-esac
+        fake.write_text("#!" + sys.executable + """
+import os, sys, time
+from pathlib import Path
+if sys.argv[1] == "api":
+    print('{"data":{"id":"ses_board"}}')
+else:
+    assert sys.argv[1] == "acp"
+    Path("acp-started").write_text(str(os.getpid()))
+    time.sleep(60)
 """)
         fake.chmod(0o700)
         last = client.post(f"{base}/tasks", json=opencode_start)
@@ -4481,13 +4492,20 @@ esac
         assert last.json()["task"]["executor"] == "opencode"
         slug = last.json()["task"]["slug"]
         assert worker.state(slug)["task_model"] == opencode_start["model"]
-        worker.until((Path(worker.state(slug)["worktree"]) / "acp-started").exists)
+        marker = Path(worker.state(slug)["worktree"]) / "acp-started"
+        worker.until(lambda: marker.is_file() and marker.read_text() == str(worker.state(slug).get("opencode_pid")))
+        state = worker.state(slug)
+        worker.extra_pids.update((state["pid"], state["opencode_pid"]))
+        os.kill(state["pid"], signal.SIGKILL)
+        worker.until(lambda: not worker.process_is_live(state["pid"]))
         last_id = last.json()["task"]["id"]
         for attempt in range(5):
             current = card(client, last_id)
+            assert current["alive"] is False and current["can_stop"] is True
             accepted = client.post(f"{base}/tasks/{last_id}/stop",
                                    json={"request_id": f"stop-{attempt}", "version": current["version"]})
             if accepted.status_code != 409 or accepted.json()["error"]["code"] != "version_conflict":
                 break
         assert accepted.status_code == 200, accepted.text
-        assert wait_for(client, last_id, "stopped")["id"] == last_id
+        assert not worker.process_is_live(state["opencode_pid"])
+        assert "can_stop" not in card(client, last_id)

@@ -141,7 +141,7 @@ export interface DeskView {
  * Which groups the bridge shows: only those whose order the server accepts (the 409 conditions of the contract).
  * `queue`: the board's teamster queues a say to a busy ship (`actions.queue`).
  */
-export function deskOf(task: Pick<TaskSummary, "slug" | "kind" | "alive" | "column">, queue = false): DeskView {
+export function deskOf(task: Pick<TaskSummary, "slug" | "kind" | "alive" | "column" | "can_stop">, queue = false): DeskView {
   const session = task.kind === "session";
   const old = archived(task.slug);
   const idle = !task.alive;
@@ -158,7 +158,7 @@ export function deskOf(task: Pick<TaskSummary, "slug" | "kind" | "alive" | "colu
     refit: send,
     review: judged && !old && idle,
     reflect: !session,
-    stop: !session && !old && task.alive,
+    stop: !session && !old && (task.alive || task.can_stop === true),
     clean: !session && !old && idle,
   };
 }

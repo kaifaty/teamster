@@ -66,6 +66,7 @@ export interface TaskSummary {
   phase: Phase;
   phase_started_at: number | null;
   alive: boolean; // task supervisor running, or session PID running with status busy
+  can_stop?: boolean; // a surviving OpenCode worker can be checked and stopped by the CLI
   turn: number; // turns so far
   fix_round: number; // automatic fix rounds in the current cycle
   outcome: string | null; // state.json "outcome" as written by the plugin

@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from . import access, opencode
 from .landing import Landing
 from .research import RECORD, STATUSES
-from .store import Store, alive, number
+from .store import Store, alive, number, opencode_stop_candidate
 
 
 BODY_LIMIT = 64 * 1024
@@ -40,7 +40,7 @@ VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")
 SAY_KINDS = ("work", "review", "reflect")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-OPENCODE_MODEL = re.compile(rf"{opencode.PROVIDER.pattern}/{opencode.MODEL.pattern}(?:#{opencode.PROVIDER.pattern})?")
+OPENCODE_MODEL = re.compile(rf"{opencode.PROVIDER.pattern}/{opencode.MODEL.pattern}")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 ANGLES = ("correctness", "concurrency", "security", "tests", "design")
 OPTION_NAMES = ("model", "effort", "max_minutes", "max_weekly", "fix_rounds", "ci_rounds",
@@ -398,7 +398,7 @@ class Actions:
             if record is not None:
                 self.store._read_state(record)
                 archived = record.archived
-                running = alive(record.state.get("pid"))
+                running = alive(record.state.get("pid")) or (route == "stop" and opencode_stop_candidate(record.state))
                 kind = record.state.get("kind", "work")
                 if route == "say":
                     flags = option_flags(data.get("options", {}), record.state.get("executor", "codex"))
@@ -592,5 +592,7 @@ class Actions:
             return error(504, "timeout")
         if process.returncode:
             return error(422, (stderr.strip() or stdout.strip())[-2000:])
+        if route == "stop" and stdout.strip() == "not running":
+            return error(409, "not running")
         self.research.invalidate()
         return {"ok": True, "output": stdout.strip()[-2000:]}
