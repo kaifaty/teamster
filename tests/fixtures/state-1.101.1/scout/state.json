@@ -1,0 +1,76 @@
+{
+  "slug": "scout",
+  "kind": "scout",
+  "repo": "/teamster-fixture/repo",
+  "worktree": "/teamster-fixture/repo",
+  "branch": "",
+  "executor": "codex",
+  "effort": null,
+  "account": "main",
+  "thread": "ad3fd03f-17d1-4121-b465-92425de0d1eb",
+  "threads": [
+    {
+      "account": "main",
+      "thread": "ad3fd03f-17d1-4121-b465-92425de0d1eb",
+      "started": 1795256997.332043
+    }
+  ],
+  "rotations": [],
+  "reviews": [],
+  "checks": [],
+  "created": 1795256996.9721642,
+  "turns": 1,
+  "work_completed": false,
+  "review_start": 0,
+  "turn_started": 1795256996.9727879,
+  "check_start": 0,
+  "rotation_start": 0,
+  "event_start": 0,
+  "exhausted": null,
+  "outcome": "completed",
+  "reset_wait_seconds": 0,
+  "capacity_start": 0,
+  "fix_rounds": 0,
+  "rounds": [],
+  "model": "fake-model",
+  "reasoning_effort": null,
+  "runtime": {
+    "version": "1.101.1",
+    "script": "/private/var/folders/mv/rdldtylj03vgz7zv6rvkygsr0000gn/T/teamster-release-8w76aq9v/1.101.1/src/teamster/__main__.py"
+  },
+  "review_after": false,
+  "cycle": {
+    "kind": "scout",
+    "effort": null,
+    "step": "work",
+    "ci": false,
+    "pr": ""
+  },
+  "result": null,
+  "pid": null,
+  "turn_stops": [],
+  "guards": [],
+  "base_check": false,
+  "sandbox": "off",
+  "writable_dirs": [],
+  "reviewer": "codex",
+  "auth_excluded": [],
+  "auth_excluded_ids": [],
+  "auth_transitions": 0,
+  "auth_failures": {
+    "main": 0
+  },
+  "account_ids": {
+    "main": "A",
+    "second": "B"
+  },
+  "weekly_marks": {
+    "main": {
+      "reset": 1795264193,
+      "used": 10
+    }
+  },
+  "exec_event_start": 0,
+  "weekly_used_percent": 0,
+  "turn_finished": 1795256997.3891351
+}
