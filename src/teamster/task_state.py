@@ -169,6 +169,7 @@ STATE_FIELDS = {
     "pid": StateField("runtime"),
     "codex_pid": StateField("runtime"),
     "claude_pid": StateField("runtime"),
+    "opencode_pid": StateField("runtime"),
     "check_pid": StateField("runtime"),
     "account_ids": StateField("task"),  # Task-wide identity cache, refreshed by probes.
     # Auth retry bookkeeping is reset by _run_turn(new_turn=True), not spawn.

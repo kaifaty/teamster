@@ -124,7 +124,7 @@ def start_process(st):
 RESUME_STEPS = ("work", "fix", "check", "review", "after_review", "ci")
 # Fields of the interrupted run that the resumed one must not inherit; the rest of the cycle is kept.
 RESUME_CLEARED = ("sleeping", "turn_finished", "error", "turn_stop", "wrapup", "refusal", "review_angle",
-                  "stop_request", "signal", "exec_event_start", "auto_fix_stop", "codex_pid", "claude_pid", "check_pid")
+                  "stop_request", "signal", "exec_event_start", "auto_fix_stop", "codex_pid", "claude_pid", "opencode_pid", "check_pid")
 
 
 def legacy_cycle(st):
@@ -190,7 +190,7 @@ def resume_refusal(st):
         if st.get("outcome") == "stopped":
             return f"{slug} was stopped with stop, not cut short by a signal; continue it with say"
         return f"{slug}: its last cycle ended {st.get('outcome')}, not cut short by a signal; continue it with say"
-    for key in ("codex_pid", "claude_pid", "check_pid"):
+    for key in ("codex_pid", "claude_pid", "opencode_pid", "check_pid"):
         if procs.alive(st.get(key)):
             return (f"{slug}: process {st[key]} of the interrupted cycle is still alive; "
                     "end it, then run resume again")
@@ -232,7 +232,7 @@ def resume(slug, loaded):
             drop_dead_queue(slug)
             cut = task_state.interruption(st)
             cycle, step = resume_step(st)
-            cfg = config.accounts_config()
+            cfg = config.task_config(st)
             prompt = None
             if step in ("work", "fix"):
                 prompt = threads.followup_prompt(st, prompts.interrupted_prompt(cut, worktree_state(st), cfg),
@@ -270,6 +270,8 @@ def apply_say(st, options, cfg):
             if st.get("task_model_family", executor.name) != account["family"]:
                 st.pop("task_model", None)
             executor = executors.get(account["family"])
+        if "model" in options:
+            config.validate_work_model(executor.name, options["model"])
         if scouting:
             executor.prepare_scout(options.get("effort") or st.get("effort"), cfg, st["worktree"])
         else:
@@ -345,7 +347,7 @@ def send_queue(st, orders):
     Returns the new turn's state, or raises SystemExit or another exception with nothing started.
     """
     require_startable()
-    cfg = config.accounts_config()
+    cfg = config.task_config(st)
     options = merge_say_options(orders)
     following = copy.deepcopy(st)
     following["pid"] = None
@@ -502,7 +504,8 @@ def finalize_cycle(st, cfg, check, stopped):
     telemetry_log.record_external_event(st)
     if cfg is not None:
         account = notifications.current_turn_account(st)
-        message = f"turn {st['outcome']} on {account}"
+        worker = executors.for_turn(st)
+        message = f"turn {st['outcome']} on {worker.name if worker.account_field is None else account}"
         result = st.get("result")
         message += ", result " + (result["status"] if result is not None else "unknown")
         if check is not None:
@@ -679,7 +682,7 @@ def cmd__run(a):
         check = checks[-1] if checks else None
 
     try:
-        cfg = config.accounts_config()
+        cfg = config.task_config(st)
         if task_state.deadline_reached(st):
             return
         run_cycle(cfg)

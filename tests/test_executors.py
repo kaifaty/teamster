@@ -4,10 +4,12 @@ import contextlib
 import io
 import json
 import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import subprocess
 import sys
 import textwrap
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -16,6 +18,74 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rotation_support import RotationTestCase, SCRIPT
+
+
+@contextlib.contextmanager
+def local_opencode_provider(env, binary):
+    """Run the installed CLI against a scripted loopback Chat Completions endpoint."""
+    home = Path(env["HOME"])
+    (home / "opencode").symlink_to(Path(binary).resolve(strict=True))
+    requests = []
+
+    class Provider(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            messages = request["messages"]
+            requests.append((self.path, request["model"]))
+            # The second edit is possible only if OpenCode restored the first answer.
+            resumed = any(m["role"] == "assistant" and "Initial edit" in (m.get("content") or "")
+                          for m in messages)
+            summary = "Follow-up edit" if resumed else "Initial edit"
+            if messages[-1]["role"] == "user":
+                args = {"command": "echo '" + summary + "' >> tracked.txt"}
+                delta = {"tool_calls": [{"index": 0, "id": "edit-" + str(len(requests)), "type": "function",
+                                         "function": {"name": "shell", "arguments": json.dumps(args)}}]}
+                finish = "tool_calls"
+            else:
+                result = json.loads((home / "response.json").read_text())
+                result["summary"] = summary
+                delta, finish = {"content": json.dumps(result)}, "stop"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for part, reason in [({"role": "assistant"}, None), (delta, None), ({}, finish)]:
+                event = {"id": "chatcmpl-local", "object": "chat.completion.chunk", "created": 1, "model": "model",
+                         "choices": [{"index": 0, "delta": part, "finish_reason": reason}]}
+                self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+    # Build the CLI's environment only from this test's fixture paths and Git identity.
+    keep = {"HOME", "PATH", "TEAMSTER_CLAUDE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}
+    for key in list(env):
+        if key not in keep and not key.startswith(("CODEX_TASK_", "CODEX_FAKE_")):
+            del env[key]
+    env.update(XDG_CONFIG_HOME=str(home / ".config"), XDG_CACHE_HOME=str(home / "cache"),
+               XDG_STATE_HOME=str(home / "state"), XDG_DATA_HOME=str(home / "data"),
+               SHELL="/bin/sh", OFFLINE_KEY="fixture", HTTP_PROXY="http://127.0.0.1:9",
+               HTTPS_PROXY="http://127.0.0.1:9", NO_PROXY="127.0.0.1,localhost")
+    with HTTPServer(("127.0.0.1", 0), Provider) as server:
+        root = home / ".config" / "opencode"
+        root.mkdir(parents=True)
+        (root / "opencode.json").write_text(json.dumps({
+            "update": "disable", "model": "offline/model",
+            "policies": [{"action": "provider.use", "resource": "*", "effect": "deny"},
+                         {"action": "provider.use", "resource": "offline", "effect": "allow"}],
+            "providers": {"offline": {"package": "@opencode/ai/providers/openai-compatible", "env": ["OFFLINE_KEY"],
+                                      "settings": {"baseURL": f"http://127.0.0.1:{server.server_port}/v1"},
+                                      "models": {"model": {"name": "Test model"}}}},
+        }))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            server.shutdown()
+            thread.join()
+    assert requests == [("/v1/chat/completions", "model")] * 4, requests
 
 
 def fixture_work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
@@ -34,7 +104,84 @@ def fixture_messages(st):
     return [fixture_last_message(st)]
 
 
+def install_fake_opencode(root):
+    fake = root / "opencode"
+    fake.write_text("#!" + sys.executable + "\n" + textwrap.dedent('''\
+        import argparse
+        import json
+        from pathlib import Path
+        import sys
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("command", choices=["run"])
+        parser.add_argument("--standalone", action="store_true", required=True)
+        parser.add_argument("--auto", action="store_true", required=True)
+        parser.add_argument("--model", choices=["offline/model"], required=True)
+        parser.add_argument("--format", choices=["json"], required=True)
+        parser.add_argument("--title", required=True)
+        parser.add_argument("--session", required=True)
+        args = parser.parse_args()
+        prompt = sys.stdin.read()
+        session = Path.home() / args.session
+        if session.exists():
+            assert session.read_text() == str(Path.cwd())
+            assert "Make the second change" in prompt
+            summary = "Follow-up edit"
+        else:
+            assert "Make the first change" in prompt
+            session.write_text(str(Path.cwd()))
+            summary = "Initial edit"
+        with Path("tracked.txt").open("a") as out:
+            print(summary, file=out)
+        result = json.loads((Path.home() / "response.json").read_text())
+        result["summary"] = summary
+        for kind, fields in [("step_start", {}), ("text", {"text": json.dumps(result)}),
+                             ("step_finish", {"reason": "stop"})]:
+            part = {"type": kind.replace("_", "-"), "sessionID": args.session,
+                    "messageID": "msg_fixture", **fields}
+            print(json.dumps({"type": kind, "sessionID": args.session, "part": part}))
+        '''))
+    fake.chmod(0o700)
+
+
 class ExecutorTests(RotationTestCase):
+    def test_opencode_start_and_say_resume_the_worker_session(self):
+        self.env.update(HOME=str(self.root), TEAMSTER_CLAUDE=str(self.root / "missing-claude"))
+        self.configure(accounts=[], claude={"accounts": []}, task_profiles={
+            "feature": {"executor": "codex", "model": "codex-only", "effort": "high"}})
+        self.brief.write_text("Make the first change to tracked.txt.\n")
+        real_binary = os.environ.get("TEAMSTER_TEST_OPENCODE")
+        if real_binary:
+            provider = local_opencode_provider(self.env, real_binary)
+        else:
+            install_fake_opencode(self.root)
+            provider = contextlib.nullcontext()
+        (self.root / "response.json").write_text(json.dumps(self.work_result(checks=[])))
+        slug = "opencode-work"
+        with provider:
+            self.start(slug, "--executor", "opencode", "--model", "offline/model", "--task-type", "feature",
+                       "--no-push", "--check", "grep -q 'Initial edit' tracked.txt")
+            self.assertIn("Initial edit", self.wait(slug))
+            first = self.state(slug)
+            self.assertEqual((first["executor"], first["task_model"], first["effort"], first["account"]),
+                             ("opencode", "offline/model", None, None))
+            session = first["session_id"]
+            self.assertTrue(session)
+            file = Path(first["worktree"]) / "tracked.txt"
+            self.assertEqual(file.read_text(), "initial\nInitial edit\n")
+
+            self.cli("say", slug, "Make the second change to tracked.txt.")
+            self.assertIn("Follow-up edit", self.wait(slug))
+            second = self.state(slug)
+            self.assertEqual((second["session_id"], second["turns"]), (session, 2))
+            self.assertEqual(second["result"], self.work_result(summary="Follow-up edit", checks=[]))
+            self.assertEqual([check["outcome"] for check in second["checks"]], ["passed", "passed"])
+            self.assertEqual(file.read_text(), "initial\nInitial edit\nFollow-up edit\n")
+            self.assertEqual((self.repo / file.name).read_text(), "initial\n")
+            self.assertEqual(self.trace(), [])
+            report = json.loads(self.cli("report", "--json", "--by", "executor"))
+            self.assertEqual([group["executor"] for group in report["groups"]], ["opencode"])
+
     def test_acp_stdio_conversation(self):
         self.env["HOME"] = str(self.root)
         repo = self.root / "work tree"
@@ -137,6 +284,19 @@ class ExecutorTests(RotationTestCase):
                 contextlib.redirect_stdout(output):
             worker.commands.cmd_status(SimpleNamespace(slug=state["slug"]))
         self.assertIn(marker, output.getvalue())
+
+    def test_opencode_requires_a_successful_finish_in_the_requested_session(self):
+        runner = self.worker().turns.opencode_runner
+        session = "ses_fixture"
+        answer = {"type": "text", "sessionID": session, "part": {"text": json.dumps(self.work_result())}}
+        finish = {"type": "step_finish", "sessionID": session, "part": {"reason": "stop"}}
+        error = {"type": "error", "sessionID": session, "error": {"message": "Unauthorized"}}
+        for tail in ([], [error, finish], [dict(finish, sessionID="ses_other")],
+                     [dict(finish, part={"reason": "length"})]):
+            with self.subTest(tail=tail):
+                events = [json.dumps(row).encode() for row in [answer, *tail]]
+                outcome, _ = runner._response(events, session, 0, io.BytesIO())
+                self.assertEqual(outcome, "failed")
 
     def test_registered_executor_lifecycle(self):
         self.env.update(HOME=str(self.root), USER="fixture-user")

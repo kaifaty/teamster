@@ -32,7 +32,7 @@ def unblock_notification_signals():
 
 def notify(st, cfg, event, message, **fields):
     reap_notifications()
-    cfg = config.accounts_config() if cfg is None else cfg
+    cfg = config.task_config(st) if cfg is None else cfg
     setting = cfg.get("notify")
     if setting is None or ("notify_events" in cfg and event not in cfg["notify_events"]):
         return
