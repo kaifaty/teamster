@@ -41,6 +41,9 @@ connection and `Authorization: Bearer TOKEN`. Omit the configuration to leave th
 | `POST /tasks/{id}/stop` | `{"request_id":"…","version":"…"}` | `200 {"ok":true,"task":card}` |
 | `GET /events` | `after` (default `0`), `limit` (default `100`, 1–100) | `200 {"events":[event, ...],"next_cursor":0}` |
 
+To select OpenCode for a task, include `"executor":"opencode"` and `"model":"provider/model"`
+in the start request. The configured sandbox mode applies. OpenCode requires `off`.
+
 Send `Content-Type: application/json` with POST requests. Start always uses `--no-push` and takes
 a goal of up to 12,000 characters and 1–20 criteria of up to 1,000 characters each. The server
 fixes the arguments to Teamster. `say` takes a message of up to 4,000 characters, continues the

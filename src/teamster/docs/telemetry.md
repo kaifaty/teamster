@@ -51,8 +51,9 @@ teamster report --by executor --since 30d
 teamster report --by executor,reviewer,task-type
 ```
 
-`executor` is the `provider` of the task's work phases: `claude` for the Claude account pool
-(`start --executor claude`), otherwise `codex`, including older rows without `provider`. `reviewer` is the
+`executor` is the `provider` of the task's work phases (`codex`, `claude` or `opencode`).
+Older rows without `provider` count as `codex`. OpenCode rows record the selected model, session ID
+and active time. Teamster does not measure the OpenCode provider's quota or token usage. `reviewer` is the
 provider of its review phases (`codex` or `claude`), or `none` when the task had no review.
 
 The `--since` window decides which tasks a report includes and limits their costs, tokens, minutes and

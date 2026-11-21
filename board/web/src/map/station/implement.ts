@@ -129,7 +129,9 @@ export function createImplementation(context: ImplementContext) {
     Object.assign(state, { form: null, note: "", error: "", copied: null });
     // A proposed lesson moves to «к внедрению»: it stays on its tab a moment, like an accepted one.
     if (stage === "proposed") hold(lesson, stage, index);
-    const result = await act("implement", implementBody(entry, path, note));
+    const body = implementBody(entry, path, note);
+    if (state.executor === "opencode") Object.assign(body, { executor: state.executor, model: state.model.trim() });
+    const result = await act("implement", body);
     const request = requests[entry]!;
     if (!result.ok) {
       delete requests[entry];
@@ -155,7 +157,7 @@ export function createImplementation(context: ImplementContext) {
     if (!place.clear) return context.openForm(lesson, "implement");
     const state = edit(lesson);
     if (state.busy || !live.value) return;
-    Object.assign(state, { repo: place.repo, note: "" });
+    Object.assign(state, { repo: place.repo, note: "", executor: "claude", model: "" });
     await implement(lesson, stage);
   }
 

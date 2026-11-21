@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from fastapi.responses import JSONResponse
 
-from . import access
+from . import access, opencode
 from .landing import Landing
 from .research import RECORD, STATUSES
 from .store import Store, alive, number
@@ -40,6 +40,7 @@ VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.([0-9]+)")
 SAY_KINDS = ("work", "review", "reflect")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
 MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+OPENCODE_MODEL = re.compile(rf"{opencode.PROVIDER.pattern}/{opencode.MODEL.pattern}(?:#{opencode.PROVIDER.pattern})?")
 EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 ANGLES = ("correctness", "concurrency", "security", "tests", "design")
 OPTION_NAMES = ("model", "effort", "max_minutes", "max_weekly", "fix_rounds", "ci_rounds",
@@ -104,7 +105,7 @@ def names(data, name):
     return values
 
 
-def option_flags(options):
+def option_flags(options, executor="codex"):
     if not isinstance(options, dict) or any(key not in OPTION_NAMES for key in options):
         raise ValueError("Invalid options")
     flags = []
@@ -113,9 +114,10 @@ def option_flags(options):
             continue
         value = options[name]
         if name == "model":
-            valid = isinstance(value, str) and MODEL.fullmatch(value) is not None
+            pattern = OPENCODE_MODEL if executor == "opencode" else MODEL
+            valid = isinstance(value, str) and pattern.fullmatch(value) is not None
         elif name == "effort":
-            valid = value in EFFORTS
+            valid = executor != "opencode" and value in EFFORTS
         elif name in ("max_minutes", "fix_rounds", "ci_rounds"):
             low, high = (5, 600) if name == "max_minutes" else (0, 5)
             valid = type(value) is int and low <= value <= high
@@ -375,7 +377,6 @@ class Actions:
         queued = False
         if route == "say":
             file_text = string(data, "text", 8000, required=True)
-            flags = option_flags(data.get("options", {}))
         elif route == "verdict":
             verdict = data.get("verdict")
             if verdict not in ("accepted", "revised", "redone", "dropped"):
@@ -399,6 +400,8 @@ class Actions:
                 archived = record.archived
                 running = alive(record.state.get("pid"))
                 kind = record.state.get("kind", "work")
+                if route == "say":
+                    flags = option_flags(data.get("options", {}), record.state.get("executor", "codex"))
         if record is None:
             # The station also addresses archived studies and implementations by their base slug.
             if route == "say":
@@ -442,6 +445,18 @@ class Actions:
     def _implement(self, data):
         entry = string(data, "entry", 200, required=True)
         note = string(data, "note", 4000)
+        executor = data.get("executor", "claude")
+        if executor not in ("claude", "opencode"):
+            raise ValueError("Invalid executor")
+        if executor == "opencode":
+            model = data.get("model")
+            if not isinstance(model, str) or not OPENCODE_MODEL.fullmatch(model):
+                raise ValueError("OpenCode requires a provider/model")
+            worker_options = ["--model", model]
+        else:
+            if "model" in data:
+                raise ValueError("Unexpected model")
+            worker_options = ["--sandbox", "off", "--effort", "high"]
         view = self.research.view()
         lesson = next((row for row in view["lessons"] if row["entry"] == entry), None)
         if lesson is None:
@@ -472,9 +487,9 @@ class Actions:
             raise ValueError("Invalid slug")
         stage = "accepting" if lesson["status"] == "proposed" else "fetching"
         return self._launch(slug, "implement", entry, Path(repo).name, stage, self._implement_worker,
-                            lesson, note, started, lesson_id, repo)
+                            lesson, note, started, lesson_id, repo, executor, worker_options)
 
-    def _implement_worker(self, launch, lesson, note, started, lesson_id, repo):
+    def _implement_worker(self, launch, lesson, note, started, lesson_id, repo, executor, worker_options):
         path = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as stream:
@@ -496,7 +511,7 @@ class Actions:
             if lesson["status"] == "proposed":
                 self._stage(launch, "fetching")
             argv = [self.command, "start", launch["slug"], "--brief", str(path), "--repo", repo,
-                    "--executor", "claude", "--sandbox", "off", "--effort", "high", "--task-type", "feature",
+                    "--executor", executor, *worker_options, "--task-type", "feature",
                     "--max-minutes", "60", "--review", "--fix-rounds", "2", "--parallel"]
             try:
                 origin = subprocess.run(["git", "-C", repo, "remote", "get-url", "origin"],

@@ -588,6 +588,21 @@ Passing test names keeps the usual unittest behavior, for example:
 python3 -I tests/test_rotation.py RotationTests.test_mid_turn_rotation_preserves_work_and_followups
 ```
 
+To exercise OpenCode's `start → wait → say → wait` lifecycle with the offline CLI fixture:
+
+```sh
+python3 -I tests/test_executors.py ExecutorTests.test_opencode_start_and_say_resume_the_worker_session
+```
+
+To run that same check with an installed OpenCode 2.3.2 binary and a localhost model server:
+
+```sh
+opencode_path=$(command -v opencode) && TEAMSTER_TEST_OPENCODE="$opencode_path" python3 -I tests/test_executors.py ExecutorTests.test_opencode_start_and_say_resume_the_worker_session
+```
+
+The real-CLI check uses a temporary repository, home, provider configuration and session store. It
+expects two edits to `tracked.txt`, two saved checks and one session across both worker processes.
+
 `python3 -I tests/package_smoke.py` installs the package into a temporary virtual environment and runs
 a task through the installed `teamster` command with a fake Codex. It needs network access to fetch
 the build backend, so it is not part of `test_rotation.py`.

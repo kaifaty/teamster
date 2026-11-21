@@ -6,7 +6,8 @@ description: Use teamster to delegate implementation work to Codex (OpenAI's cod
 # Teamster
 
 The lead plans, writes the brief, reviews the result and merges. The worker implements
-in its own git worktree; Codex and Claude are available as workers and reviewers.
+in its own git worktree. Codex and Claude can work or review. To delegate work to OpenCode, pass
+`start --executor opencode --model provider/model --sandbox off`.
 Claude Code is a supported lead.
 
 First run `teamster --version`; version 1.51.0 or newer is required.

@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import type { Column, TaskSummary } from "./types";
 import type { Board } from "./store/board";
 import { useNow } from "./store/board";
-import { COLUMNS, KIND_FILTERS, isKindFilter, matchesKind, type KindFilter } from "./lib/labels";
+import { COLUMNS, EXECUTOR_OPTIONS, KIND_FILTERS, isKindFilter, matchesKind, type KindFilter } from "./lib/labels";
 import { loadJson, saveJson } from "./lib/storage";
 import { tabAlarm } from "./lib/tab";
 import AccountsPanel from "./components/AccountsPanel.vue";
@@ -16,13 +16,14 @@ const props = defineProps<{ board: Board }>();
 const board = props.board;
 const now = useNow();
 
-type ExecutorFilter = "all" | "codex" | "claude";
+type ExecutorFilter = "all" | TaskSummary["executor"];
 interface Prefs {
   repo: string; // "" = all
   executor: ExecutorFilter;
   closedCollapsed: boolean;
   accountsCollapsed: boolean;
 }
+const executorFilters = [{ id: "all" as const, label: "Все" }, ...EXECUTOR_OPTIONS];
 const PREFS_KEY = "codex-board.prefs.v1";
 const defaults: Prefs = { repo: "", executor: "all", closedCollapsed: true, accountsCollapsed: false };
 const isPrefs = (value: unknown): value is Prefs => {
@@ -30,7 +31,7 @@ const isPrefs = (value: unknown): value is Prefs => {
   return (
     !!v &&
     typeof v.repo === "string" &&
-    (v.executor === "all" || v.executor === "codex" || v.executor === "claude") &&
+    executorFilters.some((option) => option.id === v.executor) &&
     typeof v.closedCollapsed === "boolean" &&
     typeof v.accountsCollapsed === "boolean"
   );
@@ -213,11 +214,7 @@ onBeforeUnmount(() => {
         </label>
         <div class="seg" role="group" aria-label="Исполнитель">
           <button
-            v-for="option in [
-              { id: 'all', label: 'Все' },
-              { id: 'codex', label: '◆ Codex' },
-              { id: 'claude', label: '✳ Claude' },
-            ] as const"
+            v-for="option in executorFilters"
             :key="option.id"
             type="button"
             class="btn"

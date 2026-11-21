@@ -27,6 +27,7 @@ export type ActionRoute =
   | "duty-chat"
   | "duty";
 
+export const OPENCODE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._:/@+-]*(?:#[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type Effort = (typeof EFFORTS)[number];
 export const REVIEWERS = ["codex", "claude"] as const;
@@ -44,6 +45,8 @@ export interface LessonBody {
 
 /** Starts a task that makes the lesson's change: `repo` is a path from the research's `repos`. */
 export interface ImplementBody {
+  executor?: "claude" | "opencode";
+  model?: string;
   entry: string;
   repo: string;
   note?: string;
@@ -51,7 +54,7 @@ export interface ImplementBody {
 
 /** A ship's refit with the next order; each option replaces the saved one, in the contract's bounds. */
 export interface SayOptions {
-  /** `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` */
+  /** A provider/model for OpenCode, or an unqualified Codex or Claude model. */
   model?: string;
   effort?: Effort;
   /** An integer, 5–600. */

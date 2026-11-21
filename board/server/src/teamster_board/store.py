@@ -316,7 +316,8 @@ class Store:
             "branch": text(state.get("branch")),
             "task_type": text(state.get("task_type")),
             "executor": executor,
-            "account": text(state.get("claude_account") if executor == "claude" else state.get("account")),
+            "account": None if executor == "opencode" else text(
+                state.get("claude_account") if executor == "claude" else state.get("account")),
             "reviewer": text(state.get("reviewer")),
             "model": text(state.get("task_model") or (state.get("model") if executor == "claude" else None)),
             "effort": text(state.get("reasoning_effort") or state.get("effort")),

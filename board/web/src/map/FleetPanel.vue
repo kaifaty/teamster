@@ -1,11 +1,13 @@
 <script setup lang="ts">
 // The open system's ships at the side of the map, by station: the map shows where they are, this list names them.
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { EXECUTOR_GLYPHS } from "../lib/labels";
+import type { TaskSummary } from "../types";
 import type { Place } from "./placement";
 
 export interface FleetRow {
   slug: string;
-  executor: "codex" | "claude";
+  executor: TaskSummary["executor"];
   name: string;
   phase: string;
   /** The ship needs attention. */
@@ -61,7 +63,6 @@ watch(
 
 onBeforeUnmount(() => clearTimeout(litTimer));
 
-const glyph = (row: FleetRow) => (row.executor === "codex" ? "◆" : "✳");
 </script>
 
 <template>
@@ -92,7 +93,7 @@ const glyph = (row: FleetRow) => (row.executor === "codex" ? "◆" : "✳");
           @pointerenter="emit('hover', ship.slug)"
           @pointerleave="emit('hover', null)"
         >
-          <span class="r-name"><span class="glyph" aria-hidden="true">{{ glyph(ship) }}</span>{{ ship.name }}</span>
+          <span class="r-name"><span class="glyph" aria-hidden="true">{{ EXECUTOR_GLYPHS[ship.executor] }}</span>{{ ship.name }}</span>
           <span class="r-phase num">{{ ship.phase }}</span>
         </button>
       </section>

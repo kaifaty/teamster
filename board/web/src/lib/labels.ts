@@ -21,7 +21,11 @@ export const PHASES: Record<Phase, string> = {
   idle: "простой",
 };
 
-export const EXECUTORS: Record<TaskSummary["executor"], string> = { codex: "Codex", claude: "Claude" };
+export const EXECUTORS: Record<TaskSummary["executor"], string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" };
+export const EXECUTOR_GLYPHS: Record<TaskSummary["executor"], string> = { codex: "◆", claude: "✳", opencode: "■" };
+export const EXECUTOR_OPTIONS = (Object.keys(EXECUTORS) as TaskSummary["executor"][]).map((id) => ({
+  id, label: `${EXECUTOR_GLYPHS[id]} ${EXECUTORS[id]}`,
+}));
 
 export const KINDS: Record<TaskSummary["kind"], string> = {
   work: "работа",

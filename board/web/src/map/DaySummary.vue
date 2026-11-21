@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // The day's summary: `teamster report` since the local midnight, and the lead's verdicts from the ship's log.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { EXECUTOR_OPTIONS } from "../lib/labels";
 import type { BoardSource } from "../lib/source";
 import type { LogEvent } from "../types";
 import { daySummary, dayStart, localDate } from "../lib/report";
@@ -122,7 +123,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey, true));
             </thead>
             <tbody>
               <tr v-for="row in summary.executors" :key="row.name">
-                <td :class="row.name">{{ row.name === "codex" ? "◆ Codex" : row.name === "claude" ? "✳ Claude" : row.name }}</td>
+                <td :class="row.name">{{ EXECUTOR_OPTIONS.find((option) => option.id === row.name)?.label ?? row.name }}</td>
                 <td>{{ row.tasks }}</td>
                 <td>{{ share(row.donePercent) }}</td>
                 <td>{{ row.medianMinutes === null ? "—" : minutes(row.medianMinutes) }}</td>

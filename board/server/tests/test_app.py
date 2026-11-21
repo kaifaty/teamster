@@ -1319,12 +1319,13 @@ def lesson_repo(station):
     return repo
 
 
-@pytest.mark.parametrize("status,origin,full", [
-    ("proposed", "git@github.com:owner/project.git", True),
-    ("accepted", "https://forge.example/owner/project.git", False),
+@pytest.mark.parametrize("status,origin,full,worker", [
+    ("proposed", "git@github.com:owner/project.git", True, {}),
+    ("accepted", "https://forge.example/owner/project.git", False, {}),
+    ("accepted", "https://forge.example/owner/project.git", False, {"executor": "opencode", "model": "local/test"}),
 ])
 def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, monkeypatch, caplog,
-                                                      status, origin, full):
+                                                      status, origin, full, worker):
     client, application, settings, entry, calls, control = station
     caplog.set_level("INFO", logger="uvicorn.error")
 
@@ -1349,7 +1350,7 @@ def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, mo
     assert before["repos"] == [{"name": lesson_repo.name, "path": str(lesson_repo)}]
     assert before["lessons"][0]["implementation"] is None
     response = client.post("/api/actions/implement", json={
-        "entry": f" {entry} ", "repo": str(lesson_repo), "note": "  Keep it focused.  " if full else "  ",
+        "entry": f" {entry} ", "repo": str(lesson_repo), "note": "  Keep it focused.  " if full else "  ", **worker,
     })
     slug = "lesson-w2-1109"
     assert response.status_code == 200
@@ -1364,8 +1365,9 @@ def test_station_implement_argv_exact_brief_and_refresh(station, lesson_repo, mo
     start = records[-1]
     brief_path = start["argv"][3]
     assert start["argv"] == [
-        "start", slug, "--brief", brief_path, "--repo", str(lesson_repo), "--executor", "claude",
-        "--sandbox", "off", "--effort", "high", "--task-type", "feature", "--max-minutes", "60",
+        "start", slug, "--brief", brief_path, "--repo", str(lesson_repo), "--executor", worker.get("executor", "claude"),
+        *(["--model", worker["model"]] if worker else ["--sandbox", "off", "--effort", "high"]),
+        "--task-type", "feature", "--max-minutes", "60",
         "--review", "--fix-rounds", "2", "--parallel", *(["--ci"] if origin and "github.com" in origin else []),
     ]
     expected = ("""Внедрить урок «batch-2026-11-09.md W2»: Keep the latest check.
@@ -4364,6 +4366,9 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
                                 json=dict(start, request_id="foreign-001", repository=str(worker.root)))
         assert forbidden.status_code == 403, forbidden.text
         assert forbidden.json()["error"]["code"] == "repository_not_allowed"
+        opencode_start = dict(start, request_id="opencode-001", executor="opencode", model="offline/model")
+        invalid = client.post(f"{base}/tasks", json=dict(opencode_start, model="default"))
+        assert invalid.status_code == 400 and invalid.json()["error"]["code"] == "invalid_request"
         created = client.post(f"{base}/tasks", json=start)
         assert created.status_code == 201, created.text
         initial = created.json()["task"]
@@ -4375,7 +4380,7 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         assert active["no_push"] is True and active["pr"] is None
         assert worker.state(active["slug"])["no_push"] is True
         assert client.get(f"{base}/tasks").json()["tasks"][0]["id"] == task_id
-        at_capacity = client.post(f"{base}/tasks", json=dict(start, request_id="capacity-001"))
+        at_capacity = client.post(f"{base}/tasks", json=opencode_start)
         assert at_capacity.status_code == 409, at_capacity.text
         assert at_capacity.json()["error"]["code"] == "parallel_limit"
         assert client.get(f"{base}/events").json()["events"] == []

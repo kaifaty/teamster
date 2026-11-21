@@ -20,7 +20,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from . import duty_events, duty_tasks
-from .actions import COMMAND_TIMEOUT, json_body
+from .actions import COMMAND_TIMEOUT, OPENCODE_MODEL, json_body
 
 LOGGER = logging.getLogger("uvicorn.error")
 REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,100}")
@@ -63,7 +63,13 @@ def valid_text(value, limit):
 
 
 def validate(route, data):
-    if data.keys() != FIELDS[route]:
+    fields = FIELDS[route]
+    if route == "start" and "executor" in data:
+        model = data.get("model")
+        if data["executor"] != "opencode" or not isinstance(model, str) or not OPENCODE_MODEL.fullmatch(model):
+            return False
+        fields = fields | {"executor", "model"}
+    if data.keys() != fields:
         return False
     key = data["request_id"]
     if not isinstance(key, str) or not REQUEST_ID.fullmatch(key):
@@ -246,6 +252,8 @@ class ExternalDuty:
         if route == "start":
             args = ["start", slug, "--brief", "-", "--repo", repo, "--parallel", "--no-push",
                     "--task-timeout", str(self.config.task_timeout_seconds)]
+            if "executor" in data:
+                args.extend(["--executor", data["executor"], "--model", data["model"]])
             stdin = data["goal"].rstrip() + "\n\n## Done when\n\n" + "\n".join(
                 "- " + item.strip().replace("\n", "\n  ") for item in data["done_when"]) + "\n"
         elif route == "say":

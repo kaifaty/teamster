@@ -1,7 +1,7 @@
 // The ship's comms and orders: the feed of the comms room, which order groups the board server accepts for the ship
 // in its state, the refit's options, and the command each order copies when the board only reads. The decks draw it.
 
-import { ANGLES, EFFORTS, REVIEWERS, type ActionBodies, type Angle, type Effort, type SayOptions } from "../../lib/actions";
+import { ANGLES, EFFORTS, OPENCODE_MODEL, REVIEWERS, type ActionBodies, type Angle, type Effort, type SayOptions } from "../../lib/actions";
 import { cleanCommand, commandSlug, optionFlags, reflectCommand, reflectSlug, reviewCommand, sayCommand, stopCommand, verdictCommand, type Verdict } from "../../lib/commands";
 import { formatClock } from "../../lib/format";
 import { recommendedOrder, type OrderTone } from "../../lib/orders";
@@ -189,7 +189,10 @@ export interface RefitDraft {
 export const blankRefit = (): RefitDraft => ({ model: "", effort: "", max_minutes: "", max_weekly: "", fix_rounds: "", ci_rounds: "", reviewer: "", angles: [] });
 
 /** `ultra` only drives a Codex ship. */
-export const effortsFor = (executor: TaskSummary["executor"]): readonly Effort[] => (executor === "codex" ? EFFORTS : EFFORTS.filter((item) => item !== "ultra"));
+export const effortsFor = (executor: TaskSummary["executor"]): readonly Effort[] => {
+  if (executor === "opencode") return [];
+  return executor === "codex" ? EFFORTS : EFFORTS.filter((item) => item !== "ultra");
+};
 
 export const ANGLE_CHIPS: readonly (Angle | "auto")[] = [...ANGLES, "auto"];
 
@@ -228,7 +231,8 @@ export function refitOf(draft: RefitDraft, task: Pick<TaskSummary, "executor" | 
   const errors: string[] = [];
   const model = draft.model.trim();
   if (model) {
-    if (!MODEL.test(model)) errors.push("Модель: латиница, цифры, «.», «_» и «-», до 64 знаков");
+    if (task.executor === "opencode" && !OPENCODE_MODEL.test(model)) errors.push("Укажите модель OpenCode в формате provider/model");
+    else if (task.executor !== "opencode" && !MODEL.test(model)) errors.push("Модель: латиница, цифры, «.», «_» и «-», до 64 знаков");
     else if (model !== task.model) options.model = model;
   }
   const effort = draft.effort.trim();

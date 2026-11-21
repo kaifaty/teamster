@@ -132,8 +132,16 @@ It is saved separately from the work model; follow-ups and later reviews inherit
 [role profile](#role-profiles) when configured. Otherwise Codex uses its configured review defaults
 and Claude uses `claude.model`.
 
-Model names must match `[A-Za-z0-9._-]{1,64}`. The worker checks the name's format, not whether the
+Codex and Claude model names must match `[A-Za-z0-9._-]{1,64}`. The worker checks the name's format, not whether the
 model exists or is available to an account. `default` is reserved for clearing an override.
+
+OpenCode work requires both `start --executor opencode` and an explicit `--model provider/model`.
+`say` retains the selection, or accepts a replacement provider/model for the same session. The work
+executor has no Teamster reasoning-effort setting, account pool, weekly quota collection or rotation.
+A weekly budget can still count usage from a separate Codex or Claude review. Use `--max-minutes`
+to bound the OpenCode work turn. Keep the same OpenCode data home across turns so the session
+can restore its transcript. OpenCode's own agent configuration applies, including any model
+explicitly configured for a subagent or compaction.
 
 ## Account JSON
 
