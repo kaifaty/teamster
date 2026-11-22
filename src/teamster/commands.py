@@ -202,7 +202,7 @@ def work_route(a, cfg, role, profile=None, *, sandbox="off", directory=None):
                 claude_runner.validate_work_effort(a.effort)
             except ValueError:
                 return False
-        return ((candidate.name not in ("codex", "claude") or config.provider_installed(candidate.name))
+        return ((candidate.name not in ("codex", "claude") or config.provider_installed(candidate.name, for_task=True))
                 and (candidate.supports_sandbox or sandbox == "off")
                 and (role != "scout" or candidate.name != "claude" or git_worktree(directory)))
 
@@ -225,7 +225,7 @@ def work_route(a, cfg, role, profile=None, *, sandbox="off", directory=None):
                         break
             if target is not candidates[0][0]:
                 source = "fallback"
-        elif len(candidates) > 1 and not config.provider_installed(target.name) and compatible(candidates[1][0]):
+        elif len(candidates) > 1 and not config.provider_installed(target.name, for_task=True) and compatible(candidates[1][0]):
             target, source = candidates[1]
     _, _, defaults = executors.for_start(target.name, profile, cfg)
     role_defaults = config.role_route(cfg, role, target.name)
@@ -659,11 +659,12 @@ def print_codex_review_stats(entry, cfg):
 
 def prepare_claude_review(cfg):
     config.require_claude()
+    config.task_adapter("claude")
 
 
 def prepare_claude_work(effort, cfg):
     claude_runner.validate_work_effort(effort or cfg["claude"].get("effort"))
-    config.require_claude()
+    prepare_claude_review(cfg)
 
 
 def prepare_claude_scout(effort, cfg, directory):
@@ -724,7 +725,7 @@ executors.get("opencode").bind(sys.modules[__name__], prepare="prepare_opencode_
 
 def prepare_codex(effort, cfg, directory=None):
     config.codex_binary()
-    config.codex_adapter()
+    config.task_adapter("codex")
 
 
 def prepare_codex_review(cfg):

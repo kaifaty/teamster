@@ -432,7 +432,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     telemetry = response["telemetry"]
     mode = "default" if read_only else "bypassPermissions"
     try:
-        with acp.AcpClient(["claude-agent-acp"], worktree, lambda update: None, lambda params: None,
+        with acp.AcpClient([config.TASK_ADAPTERS["claude"]], worktree, lambda update: None, lambda params: None,
                            check_active=check_active, on_notification=notification, env=environment,
                            stderr=subprocess.DEVNULL) as client:
             if started:

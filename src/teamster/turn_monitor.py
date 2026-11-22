@@ -197,7 +197,7 @@ def monitor_process(st, account, options, prompt):
         (path / "options").write_text(json.dumps(options), encoding="utf-8")
         (path / "prompt").write_text(prompt, encoding="utf-8")
         with (directory / "stderr.log").open("ab") as errors:
-            proc = subprocess.Popen(codex_acp.command("run", scratch), cwd=st["worktree"],
+            proc = subprocess.Popen(codex_acp.command("run_codex_turn", scratch), cwd=st["worktree"],
                                     env=accounts.account_env(account), stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=errors, start_new_session=True)
         try:
@@ -488,7 +488,7 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
     model = review_model if reviewing else st.get("task_model")
     schema = (None if kind == "scout" else result_schema.REFLECT_SCHEMA if kind == "reflect" else
               result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA)
-    options = {"binary": config.codex_binary(), "adapter": config.codex_adapter(), "thread": thread,
+    options = {"binary": config.codex_binary(), "adapter": config.task_adapter("codex"), "thread": thread,
                "slug": st["slug"], "model": model, "effort": effort, "sandbox": sandbox,
                "roots": st.get("writable_dirs", []), "schema": schema}
     stream.model = model or defaults["model"]

@@ -3001,6 +3001,17 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertNotIn("Traceback", result.stderr)
         self.assertFalse((self.home / "claude-tasks" / "claude-missing-start").exists())
 
+        # The native login remains available when its task adapter is missing.
+        self.env.update(CODEX_TASK_CLAUDE=str(self.claude),
+                        PATH=os.pathsep.join((str(self.root), str(self.root / "fixture-bin"), os.defpath)))
+        (self.root / "claude-agent-acp").unlink()
+        for args in commands:
+            result = subprocess.run([PYTHON, "-I", str(SCRIPT), *args], cwd=self.repo,
+                                    env=self.env, text=True, capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("claude-agent-acp was not found", result.stderr)
+        self.assertFalse((self.home / "claude-tasks" / "claude-missing-start").exists())
+
     def test_claude_modifying_worktree_or_head_fails_without_codex_fallback(self):
         for mode in ("modify", "move_head"):
             with self.subTest(mode=mode):

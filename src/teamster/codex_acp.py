@@ -114,7 +114,7 @@ class Updates:
                       "command": command, "exit_code": exit_info["exit_code"], "aggregated_output": output}})
 
 
-def run():
+def run_codex_turn():
     """The supervisor owns this process group and admits the prompt after saving the session ID."""
     directory = Path(sys.argv[1])
     options = json.loads((directory / "options").read_text())

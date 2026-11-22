@@ -11,7 +11,7 @@ from . import budgets, checking, claude_accounts, claude_review, clock, config, 
 
 def reviewer_available(name):
     # Extension reviewers supply their own preparation and transport.
-    return name not in ("codex", "claude") or config.provider_installed(name)
+    return name not in ("codex", "claude") or config.provider_installed(name, for_task=True)
 
 
 def configure_reviewer(st, cfg, explicit=None, *, required=False):
