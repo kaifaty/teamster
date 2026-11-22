@@ -38,7 +38,9 @@ const renderView = computed<typeof bounds.value & { zoom: number; compact: boole
   const box = bounds.value;
   const zoom = camera.value.zoom;
   if (previous && previous.compact === compact.value) {
-    const closeScale = zoom === previous.zoom || (zoom !== settledZoom.value && Math.abs(zoom / previous.zoom - 1) < 0.1);
+    // Keep a tighter raster scale for the detailed view, where every building has a label.
+    const tolerance = compact.value ? 0.25 : 0.1;
+    const closeScale = zoom === previous.zoom || (zoom !== settledZoom.value && Math.abs(zoom / previous.zoom - 1) < tolerance);
     const coversView = box.x >= previous.x && box.y >= previous.y &&
       box.x + box.width <= previous.x + previous.width && box.y + box.height <= previous.y + previous.height;
     if (closeScale && coversView && previous.width <= 2 * box.width && previous.height <= 2 * box.height) return previous;
@@ -57,28 +59,31 @@ const cameraStyle = computed(() => {
   return {
     transform: `translate(${tx + view.x * zoom}px, ${ty + view.y * zoom}px) scale(${zoom / view.zoom})`,
     width: view.width * view.zoom + "px", height: view.height * view.zoom + "px",
-    "--zoom": view.zoom, "--tx": -view.x * view.zoom + "px", "--ty": -view.y * view.zoom + "px",
   };
 });
-const visibleSites = computed(() => {
-  const box = bounds.value;
-  const pad = 125 / camera.value.zoom;
-  const drawnZoom = renderView.value.zoom;
-  const inset = 3 * drawnZoom / camera.value.zoom;
+const SITE_PADDING = 125;
+const renderedSites = computed(() => {
+  const view = renderView.value;
+  const pad = SITE_PADDING / view.zoom;
   return regions.value.flatMap(region => region.sites.filter(site =>
-    site.x >= box.x - pad && site.x <= box.x + box.width + pad &&
-    site.y >= box.y - pad && site.y <= box.y + box.height + pad).map(site => {
-      const outside = site.x < box.x || site.x > box.x + box.width || site.y < box.y || site.y > box.y + box.height;
-      const nearSide = site.x < box.x + pad || site.x > box.x + box.width - pad;
-      return {
-        site, biome: region.biome, outside, above: site.y + pad > box.y + box.height,
-        edges: !outside && nearSide ? {
-          "--left-room": (site.x - box.x) * drawnZoom - inset + "px",
-          "--right-room": (box.x + box.width - site.x) * drawnZoom - inset + "px",
-        } : undefined,
-      };
-    }));
+    site.x >= view.x - pad && site.x <= view.x + view.width + pad &&
+    site.y >= view.y - pad && site.y <= view.y + view.height + pad).map(site => ({ site, biome: region.biome })));
 });
+function inView(site: Site) {
+  const box = bounds.value;
+  return site.x >= box.x && site.x <= box.x + box.width && site.y >= box.y && site.y <= box.y + box.height;
+}
+function placePlate(site: Site) {
+  const box = bounds.value;
+  const pad = SITE_PADDING / camera.value.zoom;
+  const above = site.y + pad > box.y + box.height;
+  if (site.x >= box.x + pad && site.x <= box.x + box.width - pad) return { above };
+  const drawnZoom = renderView.value.zoom;
+  const inset = 3 / camera.value.zoom;
+  const left = (site.x - box.x - inset) * drawnZoom;
+  const right = (box.x + box.width - site.x - inset) * drawnZoom;
+  return { above, shift: `translateX(clamp(calc(50% - ${left}px), 0px, calc(${right}px - 50%)))` };
+}
 function parentOf(site: Site) {
   return site.task.parent_id === null ? undefined : layout.value.sites.get(site.task.parent_id);
 }
@@ -163,7 +168,8 @@ function chooseProject(event: Event) {
             <path :d="path" stroke="#ffdf89" stroke-width="2.8" :marker-end="`url(#${id}-arrow)`" />
           </g>
         </svg>
-        <div class="sites">
+        <div v-memo="[renderView, layout, selected]" class="sites"
+          :style="{ '--zoom': renderView.zoom, '--tx': -renderView.x * renderView.zoom + 'px', '--ty': -renderView.y * renderView.zoom + 'px' }">
           <div
             v-for="region in regions" :key="region.project" class="region" :class="{ compact }"
             :style="{ ...at(region.label.x, region.label.y), '--label-width': region.labelWidth + 'px' }" :title="region.project"
@@ -172,9 +178,9 @@ function chooseProject(event: Event) {
             <small v-if="!compact">{{ region.biome === "forest" ? "Хвойное пограничье" : "Вулканическое плато" }}</small>
           </div>
           <SurfaceSite
-            v-for="{ site, biome, outside, above, edges } in visibleSites" :key="site.task.id" :site="site" :biome="biome"
-            :style="edges" :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
-            :class="{ outside, above, relative: isDirectRelative(site) }" :tabindex="outside ? -1 : 0" @select="select"
+            v-for="{ site, biome } in renderedSites" :key="site.task.id" :site="site" :biome="biome"
+            :in-view="inView" :place-plate="placePlate" :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
+            :class="{ relative: isDirectRelative(site) }" @select="select"
           />
         </div>
       </div>

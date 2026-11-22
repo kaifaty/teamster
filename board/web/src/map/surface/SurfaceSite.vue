@@ -1,12 +1,23 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { at } from "../overlay/style";
 import cabin from "./art/cabin.svg";
 import foundry from "./art/foundry.svg";
 import type { Biome, Site } from "./layout";
 
-const props = defineProps<{ site: Site; biome: Biome; selected: boolean; compact: boolean; parentTitle?: string }>();
+const props = defineProps<{
+  site: Site; biome: Biome; selected: boolean; compact: boolean; parentTitle?: string;
+  inView: (site: Site) => boolean;
+  placePlate: (site: Site) => { above: boolean; shift?: string };
+}>();
 const emit = defineEmits<{ select: [id: string] }>();
+const hovered = ref(false);
+const focused = ref(false);
+const onScreen = computed(() => props.inView(props.site));
+const showPlate = computed(() => onScreen.value && (!props.compact || props.selected || hovered.value || focused.value));
+const placement = computed(() => props.placePlate(props.site));
+const above = computed(() => showPlate.value && (props.selected || focused.value) && placement.value.above);
+const plateShift = computed(() => placement.value.shift);
 const phases = {
   active: { name: "В работе", mark: "•" },
   needs_input: { name: "Нужен ответ", mark: "?" },
@@ -33,16 +44,18 @@ const description = computed(() => [
 
 <template>
   <button
-    type="button" class="site" :class="{ compact }" :style="at(site.x, site.y)"
+    type="button" class="site" :class="{ compact, above }" :style="at(site.x, site.y)" :tabindex="onScreen ? 0 : -1"
     :data-status="site.task.status" :data-task-id="site.task.id" :aria-pressed="selected"
     :aria-label="description" :title="description"
+    @pointerenter="hovered = $event.pointerType !== 'touch'" @pointerleave="hovered = false"
+    @focus="focused = true" @blur="focused = false"
     @click="event => { if (event.detail === 0) emit('select', site.task.id); }"
   >
     <span class="building">
       <img :src="biome === 'forest' ? cabin : foundry" alt="" draggable="false">
       <span class="marker" aria-hidden="true"><b>{{ phase.mark }}</b></span>
     </span>
-    <span class="plate">
+    <span v-if="showPlate" class="plate" :style="{ transform: plateShift }">
       <strong>{{ site.task.title }}</strong>
       <span class="phase">{{ phase.name }}</span>
       <span v-if="parentLabel" class="parent">{{ parentLabel }}</span>
@@ -94,7 +107,6 @@ const description = computed(() => [
 [data-status="ready"] .marker { border-radius: 3px; }
 .plate {
   display: grid; justify-items: center; gap: 1px; max-width: 100%; padding: 4px 8px;
-  transform: translateX(clamp(calc(50% - var(--left-room)), 0px, calc(var(--right-room) - 50%)));
   border: 1px solid #f7e9ba9c; border-radius: 4px;
   background: #27382ff5; box-shadow: 0 1px 3px #30291d54;
 }
@@ -110,7 +122,6 @@ const description = computed(() => [
 .counts { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 6px; color: #efe9cf; font-size: 10.5px; }
 .counts > span { white-space: nowrap; }
 .site.above:is(:focus-visible, [aria-pressed="true"]) { flex-direction: column-reverse; transform: translate(-50%, -100%); }
-.outside .plate, .compact:not([aria-pressed="true"], :hover, :focus-visible) .plate { display: none; }
 .site:hover, .site:focus-visible { z-index: 2; }
 .site[aria-pressed="true"] { z-index: 3; }
 .site[aria-pressed="true"] .plate, .site:focus-visible .plate { outline: 2px solid #fffae0; outline-offset: 1px; }

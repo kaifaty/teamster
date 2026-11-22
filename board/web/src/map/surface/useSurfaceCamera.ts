@@ -31,6 +31,8 @@ export function useSurfaceCamera(
   selectedId: Readonly<Ref<string | null>>, select: (id: string) => void,
 ) {
   const camera = shallowRef<Camera>({ zoom: 1, tx: 0, ty: 0 });
+  let current = camera.value;
+  let frame = 0;
   const size = shallowRef<Size>({ width: 0, height: 0 });
   const compact = computed(() => camera.value.zoom < NAMEPLATE_ZOOM);
   let atHome = true;
@@ -46,7 +48,12 @@ export function useSurfaceCamera(
   });
   function move(next: Camera, factor = 1, at = { x: size.value.width / 2, y: size.value.height / 2 }) {
     const zoomed = zoomCamera(next, factor, at, fit.value, CLOSE_ZOOM);
-    camera.value = containSurfaceCamera(zoomed, layout.value, size.value);
+    // Apply every delta and pinch anchor in order, then present one camera per frame.
+    current = containSurfaceCamera(zoomed, layout.value, size.value);
+    if (!frame) frame = requestAnimationFrame(() => {
+      frame = 0;
+      camera.value = current;
+    });
   }
   function centre(at: Point, zoom: number) {
     atHome = false;
@@ -71,7 +78,8 @@ export function useSurfaceCamera(
   }
   function home() {
     atHome = true;
-    camera.value = fit.value;
+    current = fit.value;
+    camera.value = current;
   }
   function initialView() {
     if (selectedId.value !== null && layout.value.sites.has(selectedId.value)) focusTask(selectedId.value);
@@ -83,12 +91,12 @@ export function useSurfaceCamera(
   }
   function zoomBy(factor: number, at?: Point) {
     atHome = false;
-    move(camera.value, factor, at);
+    move(current, factor, at);
   }
   watch(layout, (next, old) => {
     if (!old.sites.size || !next.sites.size) initialView();
     else if (atHome) home();
-    else move(camera.value);
+    else move(current);
   });
 
   let observer: ResizeObserver;
@@ -103,18 +111,18 @@ export function useSurfaceCamera(
       size.value = { width, height };
       if (!before.width && atHome) initialView();
       else if (atHome) home();
-      else pan(camera.value, (width - before.width) / 2, (height - before.height) / 2);
+      else pan(current, (width - before.width) / 2, (height - before.height) / 2);
     }
     resize();
     observer = new ResizeObserver(resize);
     observer.observe(el);
     const input = createInput({
       now: () => performance.now(), origin: () => el.getBoundingClientRect(),
-      viewport: () => size.value, camera: () => camera.value,
+      viewport: () => size.value, camera: () => current,
       onMap: () => true, paused: () => false, stopGlide() {}, hover() {}, leave() {},
       capture: id => el.setPointerCapture(id),
       cursor: style => { el.style.cursor = style; },
-      pan: (dx, dy) => pan(camera.value, dx, dy), drag: pan, zoom: zoomBy, fit: home,
+      pan: (dx, dy) => pan(current, dx, dy), drag: pan, zoom: zoomBy, fit: home,
       click(at) {
         // Pointer capture delivers the release to the field, even for a tap on a building.
         const box = el.getBoundingClientRect();
@@ -124,6 +132,6 @@ export function useSurfaceCamera(
     });
     unlisten = listen(el, el, input);
   });
-  onBeforeUnmount(() => { observer?.disconnect(); unlisten?.(); });
+  onBeforeUnmount(() => { observer?.disconnect(); unlisten?.(); cancelAnimationFrame(frame); });
   return { camera, bounds, compact, focusTask, focusProject, home, zoomBy };
 }
