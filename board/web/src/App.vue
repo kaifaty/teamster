@@ -53,8 +53,7 @@ type View = "board" | "map";
 const VIEW_KEY = "codex-board.view.v1";
 const view = ref<View>(loadJson(VIEW_KEY, "board", (v): v is View => v === "board" || v === "map"));
 watch(view, (value) => saveJson(VIEW_KEY, value));
-// The map and PixiJS load on first use, in their own chunk, and then stay mounted; the map stops
-// drawing while the board is shown.
+// Load the map on first use and retain its camera when changing tabs.
 const MapView = shallowRef<(typeof import("./map/MapView.vue"))["default"] | null>(null);
 const mapError = ref(false);
 async function loadMap() {
@@ -180,7 +179,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="app" :class="{ 'closed-open': !prefs.closedCollapsed, 'map-view': view === 'map' }">
     <header class="topbar">
-      <h1 class="title">Доска задач <span class="muted">teamster</span></h1>
+      <h1 class="title">{{ view === "map" ? "Карта заданий" : "Доска задач" }} <span class="muted">teamster</span></h1>
       <div class="seg views" role="group" aria-label="Вид">
         <button type="button" class="btn" :aria-pressed="view === 'board'" @click="view = 'board'">Доска</button>
         <button type="button" class="btn" :aria-pressed="view === 'map'" @click="view = 'map'">Карта</button>
@@ -190,7 +189,7 @@ onBeforeUnmount(() => {
         <span v-if="retryText" class="faint">{{ retryText }}</span>
       </span>
       <span v-if="board.source.label" class="chip warn">{{ board.source.label }}</span>
-      <span v-if="board.state.value.loaded" class="faint num">{{ live }} в работе и ожидании</span>
+      <span v-if="view === 'board' && board.state.value.loaded" class="faint num">{{ live }} в работе и ожидании</span>
 
       <div v-show="view === 'board'" class="filters" role="group" aria-label="Фильтры">
         <div class="seg kinds" role="group" aria-label="Задачи и сессии">
@@ -285,7 +284,6 @@ onBeforeUnmount(() => {
         :board="board"
         :active="view === 'map'"
         :machine="machineId"
-        @board="view = 'board'"
         @machine="openMachine"
         @panel="machineId = null"
       />

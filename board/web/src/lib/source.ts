@@ -1,5 +1,6 @@
-import type { ActionSender } from "./actions";
-import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
+import { sendBoardAction, type ActionSender } from "./actions";
+import { projectTaskErrors, type ProjectTask, type ProjectTaskChange, type ProjectTasks } from "./projectTasks";
+import type { ArtIndex, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import type { DutyChatView } from "../dutyChatTypes";
 import { connectSocket, type ConnectionState } from "./socket";
 
@@ -13,6 +14,8 @@ export interface BoardSource {
   /** Shown in the header next to the connection state, e.g. "фикстуры". */
   label: string | null;
   connect(onMessage: (message: ServerMessage) => void, onState: (state: ConnectionState, retryInMs: number | null) => void): () => void;
+  fetchProjectTasks(): Promise<ProjectTasks>;
+  saveProjectTask(change: ProjectTaskChange): Promise<ProjectTask>;
   /** null for an unknown task (404). */
   fetchDetail(slug: string): Promise<TaskDetail | null>;
   /** A new ACP conversation for this task. Fixture sources have no local agent. */
@@ -26,8 +29,6 @@ export interface BoardSource {
   fetchFeed(slug: string, after: string | null): Promise<TaskFeed | null>;
   /** Which repositories have their own map art. */
   fetchArt(): Promise<ArtIndex>;
-  /** Which repositories the galaxy draws together; none when the server has no such route yet (404). */
-  fetchConstellations(): Promise<Constellations>;
   /** What the reflection learned; null when the server has no such route yet (404). */
   fetchResearch(): Promise<ResearchView | null>;
   /** The conversation with the duty; null when the server has no such route yet (404). Absent from sources without it. */
@@ -53,6 +54,20 @@ export function serverSource(): BoardSource {
   return {
     label: null,
     connect: (onMessage, onState) => connectSocket({ url: `${scheme}://${location.host}/ws`, onMessage, onState }),
+    async fetchProjectTasks() {
+      const response = await get("/api/project-tasks");
+      if (!response) throw new Error("404");
+      return response.json();
+    },
+    async saveProjectTask(change) {
+      const response = await sendBoardAction("project-task", change);
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.task?.id) {
+        const reason = data?.error ?? data?.detail ?? `HTTP ${response.status}`;
+        throw new Error(projectTaskErrors[reason] ?? reason);
+      }
+      return data.task;
+    },
     openTaskChat(slug, binding) {
       const url = new URL(`${scheme}://${location.host}/ws/tasks/${encodeURIComponent(slug)}/chat`);
       if (binding) {
@@ -77,10 +92,6 @@ export function serverSource(): BoardSource {
     async fetchArt() {
       const response = await get("/api/art");
       return response ? ((await response.json()) as ArtIndex) : {};
-    },
-    async fetchConstellations() {
-      const response = await get("/api/constellations");
-      return response ? ((await response.json()) as Constellations) : { constellations: [], error: null };
     },
     async fetchResearch() {
       const response = await get("/api/research");

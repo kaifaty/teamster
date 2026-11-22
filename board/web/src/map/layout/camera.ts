@@ -18,33 +18,11 @@ export function fitCamera(world: Size, view: View): Camera {
 /** How far the camera may zoom in, as a multiple of the fitted zoom. */
 export const MAX_ZOOM = 3;
 
-/** `camera` zoomed by `factor` around the screen point `at`, within the fitted zoom and MAX_ZOOM. */
-export function zoomCamera(camera: Camera, factor: number, at: Point, fit: Camera): Camera {
-  const zoom = Math.min(fit.zoom * MAX_ZOOM, Math.max(fit.zoom, camera.zoom * factor));
+/** Zoom around a screen point, from the fitted view up to the closest view. */
+export function zoomCamera(camera: Camera, factor: number, at: Point, fit: Camera, closest = fit.zoom * MAX_ZOOM): Camera {
+  const zoom = Math.min(closest, Math.max(fit.zoom, camera.zoom * factor));
   const scale = zoom / camera.zoom;
   return { zoom, tx: at.x - (at.x - camera.tx) * scale, ty: at.y - (at.y - camera.ty) * scale };
-}
-
-/**
- * A zoom from `zoom` by `factor`, kept within the fitted zoom and MAX_ZOOM; `past` is how far it asked beyond them,
- * as a natural logarithm: below zero past the fitted view, above zero past the closest one.
- */
-export function limitZoom(zoom: number, factor: number, fit: Camera): { zoom: number; past: number } {
-  const wanted = zoom * factor;
-  const kept = Math.min(fit.zoom * MAX_ZOOM, Math.max(fit.zoom, wanted));
-  return { zoom: kept, past: Math.log(wanted / kept) };
-}
-
-/**
- * `camera` carried over to a view of another size: the same share of the fitted zoom, around the same world point
- * in the middle of the view.
- */
-export function refitCamera(camera: Camera, before: { fit: Camera; viewport: View }, fit: Camera, viewport: View, world: Size): Camera {
-  const zoom = fit.zoom * (camera.zoom / before.fit.zoom);
-  const x = ((before.viewport.x ?? 0) + before.viewport.width / 2 - camera.tx) / camera.zoom;
-  const y = ((before.viewport.y ?? 0) + before.viewport.height / 2 - camera.ty) / camera.zoom;
-  const middle = { x: (viewport.x ?? 0) + viewport.width / 2, y: (viewport.y ?? 0) + viewport.height / 2 };
-  return clampCamera({ zoom, tx: middle.x - x * zoom, ty: middle.y - y * zoom }, world, viewport);
 }
 
 /**

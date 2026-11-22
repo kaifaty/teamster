@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The control panel at the map's bottom, across its whole width, in a cast frame: on the left wing the duty and the
 // subscriptions, in the lower centre the events over the command row, on the right wing the machines and the reflection.
-// The command row starts with the duty chat's field, and the conversation opens over the events. The galaxy and a system are laid out above it. On a narrow window it folds to a strip, the duty, the counters and the
+// The command row starts with the duty chat's field, and the conversation opens over the events. On a narrow window it folds to a strip, the duty, the counters and the
 // newest event, and the wings open over the map on demand; on a wide one the viewer may fold it to the same strip.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { loadJson, saveJson } from "../../lib/storage";
@@ -43,25 +43,22 @@ const props = defineProps<{
   account: string | null;
   station: Research | null;
   researchOpen: boolean;
+  readOnly: boolean;
   logEvents: readonly LogEvent[];
   eventsError: string | null;
-  /** The open system; null means the whole galaxy is shown. */
-  repo: string | null;
-  systemNames: ReadonlySet<string>;
   emblemOf: (repo: string | null) => string | null;
   /** A phone-sized window: the panel folds to a strip. */
   narrow: boolean;
-  /** The tasks the systems' badges count, for the command row's counters. */
+  /** Managed runs and sessions counted in the operational queues. */
   tasks: readonly TaskSummary[];
-  /** `dev:fixture`: the map's source can be switched from the menu. */
-  demo: boolean;
+  projects: ReadonlySet<string>;
   /** The map's source: its duty chat, which the command row's field writes to, and its duty's choice. */
   host: DutyChatHost & DutyHost;
 }>();
 const emit = defineEmits<{
-  go: [event: LogEvent];
+  project: [name: string];
   /** A counter was pressed: the next task of its queue. */
-  task: [repo: string, slug: string];
+  task: [slug: string];
   openAccount: [key: string, opener: HTMLElement];
   addSubscription: [opener: HTMLElement];
   machine: [id: string, opener: HTMLElement];
@@ -71,7 +68,6 @@ const emit = defineEmits<{
 const logOpen = defineModel<boolean>("logOpen", { required: true });
 const summaryOpen = defineModel<boolean>("summaryOpen", { required: true });
 const sound = defineModel<boolean>("sound", { required: true });
-const sourceKind = defineModel<"board" | "scenario">("sourceKind", { required: true });
 
 // The duty's choice shows in the wing at once, before the accounts confirm it.
 const pick = useDutyPick(() => props.host);
@@ -90,7 +86,7 @@ function next(column: QueueColumn) {
   const task = nextInQueue(queues.value[column], opened[column]);
   if (!task) return;
   opened[column] = task.slug;
-  emit("task", task.repo, task.slug);
+  emit("task", task.slug);
 }
 
 /** A wide window's panel folded by the viewer to the narrow window's strip; the choice outlives the page. */
@@ -121,7 +117,7 @@ const summaryButton = computed(() => (props.narrow ? sheetCommands.value?.summar
 defineExpose({ summaryButton });
 /**
  * The centre's height while the narrow window's whole log stands open over the map: the open log leaves the flow, and the
- * panel's box keeps its size, so that the galaxy is not fitted anew. Read before the log opens.
+ * panel's box keeps its size, so that the map keeps its height. Read before the log opens.
  */
 const centre = ref<HTMLElement | null>(null);
 const keptHeight = ref<number | null>(null);
@@ -241,7 +237,7 @@ function onKey(event: KeyboardEvent) {
     <div v-show="!strip || sheetOpen" id="console-sheet" class="console-sheet">
       <ConsoleDutyPick v-if="narrow" ref="sheetPick" v-bind="pickPanel" inline class="console-pick" @pick="pick.pick" @auto="pick.setAuto" />
       <div v-if="narrow" class="console-chat">
-        <ConsoleChat v-if="!chatOff" v-bind="chatPanel" sheet @choose="chat.send" @task="(repo, slug) => emit('task', repo, slug)" @retry="chat.retry" @dismiss="chat.dismiss" />
+        <ConsoleChat v-if="!chatOff" v-bind="chatPanel" sheet @choose="chat.send" @task="emit('task', $event)" @retry="chat.retry" @dismiss="chat.dismiss" />
         <ConsoleChatField v-model="draft" sheet open :unavailable="chatOff" :pick-duty="chatNeedsDuty" :busy="chat.busy.value" @send="chat.sendDraft" @pick-duty="openPick" />
       </div>
       <div class="console-wing console-left">
@@ -260,13 +256,12 @@ function onKey(event: KeyboardEvent) {
         ref="sheetCommands"
         v-model:summary-open="summaryOpen"
         v-model:sound="sound"
-        v-model:source-kind="sourceKind"
         class="console-settings"
         mode="sheet"
+        :read-only="readOnly"
         @add-subscription="emit('addSubscription', $event)"
         :ready="queues.review_me.length"
         :alarms="queues.attention.length"
-        :demo="demo"
       />
     </div>
     <div ref="centre" class="console-centre" :style="{ minHeight: keptHeight ? `${keptHeight}px` : undefined, '--chat-grow': `${fieldGrow}px` }">
@@ -275,7 +270,7 @@ function onKey(event: KeyboardEvent) {
         v-bind="chatPanel"
         @close="closeChat"
         @choose="chat.send"
-        @task="(repo, slug) => emit('task', repo, slug)"
+        @task="emit('task', $event)"
         @retry="chat.retry"
         @dismiss="chat.dismiss"
       />
@@ -283,13 +278,13 @@ function onKey(event: KeyboardEvent) {
         <ShipLog
           v-model:open="logOpen"
           :events="logEvents"
+          :tasks="tasks"
+          :projects="projects"
           :error="eventsError"
-          :repo="repo"
           :frame="frame"
-          :systems="systemNames"
           :emblem-of="emblemOf"
           :compact="strip"
-          @go="emit('go', $event)"
+          @record="emit('task', $event)" @project="emit('project', $event)"
         />
       </div>
       <ConsoleCommands
@@ -297,13 +292,12 @@ function onKey(event: KeyboardEvent) {
         ref="rowCommands"
         v-model:summary-open="summaryOpen"
         v-model:sound="sound"
-        v-model:source-kind="sourceKind"
         class="console-row"
         mode="row"
+        :read-only="readOnly"
         @add-subscription="emit('addSubscription', $event)"
         :ready="queues.review_me.length"
         :alarms="queues.attention.length"
-        :demo="demo"
         foldable
         @next="next"
         @fold="fold(true)"
@@ -329,7 +323,7 @@ function onKey(event: KeyboardEvent) {
 
 <style scoped>
 /*
- * The panel's box is as tall as the wings, and the galaxy is fitted above it. The box takes no pointer itself, so the sky
+ * The panel's box is as tall as its wings. The box takes no pointer itself, so the sky
  * above the low centre still moves the map.
  *
  * The wings are about 26.5 % of the window's height, and at least 250 px while that stays within about 34 % of it (a

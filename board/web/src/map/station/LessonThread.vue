@@ -82,7 +82,7 @@ const follow = useFollow(scroller, () => news.value, feedCount, () => asked.valu
         <button v-if="filed" type="button" class="link" :title="`Открыть разбор, в котором появился урок ${lessonId(lesson.entry)}`" @click="desk.select(filed.study)">
           Разбор: {{ studyTitle(filed.study) }}
         </button>
-        <button v-if="ship" type="button" class="chip small" :title="`Открыть репозиторий ${ship.repo} на карте с задачей агента`" @click="desk.watchAgent(lesson)">
+        <button v-if="ship" type="button" class="chip small" :title="`Открыть запуск ${ship.slug} в проекте ${ship.repo}`" @click="desk.watchAgent(lesson)">
           Посмотреть
         </button>
       </span>

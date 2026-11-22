@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
+import { fixtureProjectTasks } from "../../fixtures/projectTasks";
 import type { ActionResult } from "../../lib/actions";
 import type { BoardSource } from "../../lib/source";
 import { useTaskDetail } from "../../lib/taskDetail";
@@ -45,8 +46,9 @@ describe("the ship's screen after «Принять»", () => {
   it("shows «Принято» with «Убрать задачу» at once, from the answer, and no «Принять»", async () => {
     const act = vi.fn(async (): Promise<ActionResult> => ({ ok: true, output: "verdict accepted recorded for t (repo)", task: { ...ship, lead_verdict: "accepted", lead_verdict_at: NOW } }));
     const source = {
+      ...fixtureProjectTasks(),
       label: null, act, connect: () => () => {}, fetchDetail: async () => shipDetail, fetchFile: async () => null, fetchFeed: async () => null,
-      fetchArt: async () => ({}), fetchConstellations: async () => ({ constellations: [], error: null }), fetchResearch: async () => null,
+      fetchArt: async () => ({}), fetchResearch: async () => null,
       fetchEvents: async () => ({ since: 0, until: 0, events: [] }), fetchReport: async () => ({}) as never,
     } as BoardSource;
     // The map puts the task the answer carries on the board, and the screen shows the board's task.

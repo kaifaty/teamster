@@ -105,13 +105,6 @@ export interface RepoArt {
 /** By repository; repositories without art are absent. */
 export type ArtIndex = Record<string, RepoArt>;
 
-/** GET /api/constellations: groups of repositories the galaxy draws together; `*` in a pattern stands for any run. */
-export interface Constellations {
-  constellations: { name: string; repos: string[] }[];
-  /** Why the file could not be read; null when it was, or when there is none. */
-  error: string | null;
-}
-
 // Research: what the reflection learned from finished tasks (GET /api/research).
 
 export type LessonStatus = "proposed" | "accepted" | "applied" | "declined" | "other";
@@ -490,4 +483,5 @@ export type ServerMessage =
   | { type: "launch"; launch: Launch }
   | { type: "login"; login: Login }
   | { type: "duty_chat"; at: number } // the duty chat changed: GET /api/duty-chat again
+  | { type: "project_tasks_changed" }
   | { type: "ping"; at: number };

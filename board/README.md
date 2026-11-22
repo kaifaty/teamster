@@ -56,7 +56,7 @@ Progress and errors appear in `lesson.implementation.landing` and resume after a
 `--no-land` disables this automatic completion while leaving the other actions enabled; `--read-only`
 also disables it.
 
-On the map, choose **≡ → Добавить подписку** (**Ещё** on a phone) to add a native account or bind a
+On the map, open **Инструменты** and choose **≡ → Добавить подписку** (**Ещё** on a phone) to add a native account or bind a
 connected OpenCode provider to a model. For a new OpenCode connection, run `opencode auth login`
 on the Board machine and refresh the list in the form. The Board reads `opencode auth list --format json`
 and `opencode models`, and saves one model per provider in `board-opencode.json` in its data home.
@@ -126,15 +126,24 @@ npm --prefix board/web ci && npm --prefix board/web run build
 
 Until that directory exists, `/` returns a short build instruction. The API is available independently.
 
-The header switches between two views of the same data: «Доска», the columns, and «Карта», a space fleet
-in painted art, drawn with PixiJS (loaded only when the tab opens). The space theme lives in the art only: every text on
-the map names the real thing in plain words — a repository, a task, its stage, an account, a machine. The galaxy shows every repository as a star, and nothing joins them: no supply lines and no
-tankers. The galaxy shows only the systems: it is fitted into the part of the window above the control panel, and its
-stars stand on a hexagonal lattice whose step follows their count, so a few stand wide apart and many fill the galaxy
-evenly, clear of the toolbar; a star keeps its place while it fits there (`galaxyLayout` in
-`board/web/src/map/layout/stars.ts`).
-The control panel runs along the bottom of the map across its whole width, the same over the galaxy and over a system
-(`board/web/src/map/console/`, its texts in `texts.ts`). It stands in a cast bronze frame: two wings drawn by
+**Доска** shows managed runs and desktop sessions in columns. **Карта** opens an atlas of adjoining
+project territories. A territory grows or shrinks with its current tasks and disappears when the last one closes.
+Each building represents one **Задание** in its project. Drag to pan and use the
+wheel or pinch to zoom. Select a building to see its title, status, parent, prerequisites,
+linked runs and sessions, and PRs in a small card. Closing the card keeps the camera in place.
+
+Choose **Новое задание**, enter a title, then choose a project or type a new project name.
+You can start on an empty map and add sessions later. Open **Изменить** to update the status,
+choose a parent and blocking tasks by title, add or remove runs and sessions by name, and
+attach GitHub or Forgejo PR links. **На приёмке** keeps the building on the surface.
+**Принято** and **Отменено** remove it from the surface and the **Выбрать задание** menu.
+In read-only mode you can browse the map and follow its links. Open maps refresh after a
+save, and an edit in progress keeps its draft.
+
+Choose a linked run or session on a card to open its existing details and actions.
+**Инструменты** opens the control panel below the map. Its **Запуски и сессии** menu also
+opens records without a project assignment. The control panel (`board/web/src/map/console/`,
+its texts in `texts.ts`) stands in a cast bronze frame: two wings drawn by
 `art/console-wing.png` (the right one is the same picture mirrored) and a lower centre between them at 86% of their
 height: the events in `art/console-strip.png`, and under them the command row in a second, lower copy of the same strip. The wings stand about 26.5% of the window's height, and at least 250 px while that stays
 within about 34% of it; each is about 31% of the window's width, no wider than 620 px. A wider wing stretches only the
@@ -145,15 +154,13 @@ frame's dark compartments, placed in the picture's pixels from the wing's edges,
 The events' list in the centre is a whole number of rows; «развернуть» opens it over the map clear of the wings. The left
 wing holds «Дежурный» and «Подписки», the centre «События» and the command row, the right wing «Машины» and «Рефлексия».
 The command row has cast bronze buttons: «Ждут тебя · N» and «Тревоги · N» count the tasks in `review_me` and in
-`attention` over every repository, the same tasks the systems' badges count, and each press opens the next of them as a
-log line does (its system, and its ship's bridge while the ship is on the map), the one that has waited longest first
+`attention` over every repository. Each press opens the next run's details, the one that has waited longest first
 (`phase_started_at`, else `updated_at`) and round again (`queueOf`, `nextInQueue` in `console/queue.ts`); at zero the
 button stays, switched off. «Сводка дня» shows today's `teamster report --by executor` and the day's verdicts. The menu
 «≡» drops up with «Свернуть панель», which folds a wide window's panel to the phone's strip with both counters and
-«Развернуть панель» (kept in `localStorage` as `codex-board.console-folded.v1`; the galaxy is fitted anew above the
-strip), «Звук уведомлений», off by default (`codex-board.console-sound.v1`): a short quiet chime made by Web Audio,
+«Развернуть панель» (kept in `localStorage` as `codex-board.console-folded.v1`), «Звук уведомлений», off by default (`codex-board.console-sound.v1`): a short quiet chime made by Web Audio,
 lower for an alarm, when a task comes into `review_me` or `attention` (not at the page's first snapshot; the browser lets
-it sound after your first press or key), and in `dev:fixture` the map's source, «доска» or «сценарий».
+it sound after your first press or key).
 The command row starts with the duty chat (`GET /api/duty-chat`, `POST /api/actions/duty-chat`; `store/dutyChat.ts`):
 a microphone and the field «Задача дежурному…», which grows to five lines; Enter sends, Shift+Enter breaks the line, and
 a short row hides the other buttons' words first so that the field keeps its width. Focusing the field, or its
@@ -175,8 +182,7 @@ the conversation and the field open in the sheet under «Ещё». In `dev:fixtu
 order (`duty-claude-1…3.jpg`, `duty-codex-1…2.jpg`, round again past the last; `portraitNames`); an exhausted, limited or
 logged-out subscription's portrait is greyed out. «Дежурный» is the duty account, the one teamster keeps for the
 orchestrator and new tasks skip: its portrait large in an amber-edged window, and over its foot «Дежурный · <name>», its family, the week left and the time to the refill
-(«83% · ↻ 5 д»), since when it is on duty, the reason in its title, and «в работе N · ждут тебя M» over the live tasks,
-counted as the systems' labels count them; without one it says «Дежурный не назначен». Under the name a quiet line says
+(«83% · ↻ 5 д»), since when it is on duty, the reason in its title, and «в работе N · ждут тебя M» over the live tasks. Without a duty it says «Дежурный не назначен». Under the name a quiet line says
 how the duty was chosen (`accounts.data.duty.mode`): «выбран автоматически», «закреплён вручную», or «дежурный не
 выбран»; a pin that cannot work now (`pinned_unavailable`) gives its reason there in the alarm colour. A click on the
 duty opens its choice (`ConsoleDutyPick.vue`, `console/dutyPick.ts`, `console/useDutyPick.ts` over `store/duty.ts`), a
@@ -216,45 +222,12 @@ token never reaches the page. The logic lives in `account.ts`; `dev:fixture` pla
 its memory free («CPU 52 % · RAM 2,6 ГБ»), or the strip's words «нет связи» and «нет данных» while nothing live is known; the
 title has the rest. A click on a machine opens the same machine card as on «Доска». The map tab has no machines strip:
 there the machines live in the control panel, as the accounts do.
-A busy star's label is one line: its name, its tasks and badges for alarms, tasks waiting for you and sleeping ones.
-Labels stand around their stars without overlapping, alarms first (`board/web/src/map/declutter.ts`); one with no room,
-and a quiet star's name, shows on zooming in or under the pointer. A click on a star flies into its system: the
-sun is the main branch, and each task is a ship that moves towards it, from the yard («Работа») through the range («Проверка»), the
-inspection («Ревью») and the hypergate («CI») to the roadstead («Приёмка»), where it waits for you; the plates name
-the stages, never the places. The yard is an orbital dock over the limb of
-the system's home world, a large planet at its left edge from which new ships fly in. The inspection is a checkpoint, an
-open frame with its name over it like a sign: the ships under review stand in its lanes, each under a scanner beam of its
-reviewer's colour, and the rest queue before its entrance (`lanesOf` in `board/web/src/map/layout/parking.ts`). A ship leaves it
-with a green tick over a clean review, or with a red ring back to the yard, where it carries a red mark per finding while
-it fixes them, and «Задачи репозитория» tells their count. Sleeping ships drift in the
-cryofield («Сон»), the lead's sessions stay at the command station («Твои сессии»). A system is laid out in the part of the window the toolbar, the list of
-its ships and the control panel leave free, and its world takes that part's shape. Each station parks its ships on one
-arc on its own side, away from its name, the ships in trouble first; a station shows a few ships, and a count «+N»
-stands for the rest and opens the list at that station (`parkingOf` in `board/web/src/map/layout/parking.ts`). The list
-«Задачи репозитория» names every task by stage at the right of the map, and «Задачи» in the toolbar hides it; on a
-phone it opens over the map. The galaxy and a system move alike: a mouse wheel zooms around the
-pointer, two fingers on a trackpad move the camera in any direction and a pinch zooms, dragging moves the camera, and
-`+`, `-`, the arrows and `0` (the whole view) work on the focused map; zoomed in, every edge of a system can be brought
-out from under the panels. Zooming on past the closest galaxy over a star enters
-its system; past the full view of a system, or Esc, goes back. `board/web/src/map/navigation.ts` tells a mouse wheel
-from a trackpad. `board/web/src/map/placement.ts` decides the station and the action.
-`board/web/art/` holds the prompts of the art and the script that prepares it.
-A repository may look like itself: `<data home>/board-art/<repo>/` can hold its own `sky.jpg`, `planet.png` and `emblem.png`, outside
-this public repository. The sky replaces the system's shared sky, the planet its home world, and the emblem stands next to the star's
-label and in the system's toolbar; whatever is missing stays shared art. The server serves these files read-only through `GET /api/art`.
-Generation is manual: see "The art of one project" in [PROMPTS.md](web/art/PROMPTS.md).
-Related projects can stand together as a constellation: `<data home>/board-constellations.json` lists each
-constellation's name and its repositories, where `*` stands for any run of characters, for example
-`{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse", "my-support"]}]}`. The galaxy
-gathers their stars in one place under a faint cloud with the constellation's name, and the system picker groups them.
-The server reads the file on each request through `GET /api/constellations`; it stays outside this public repository.
 At the right end of the control panel, the block «Рефлексия» shows the science station's picture in an amber-edged window, fed by
 `GET /api/research`, with the reflection's most pressing note ([reflection.md](../src/teamster/docs/reflection.md)):
 «ждёт ответа N» while the analyst waits for your answer, «идёт разбор» while a run is going, «ждут решения N» while
 lessons wait for your decision, else the date of the last run. A run is a `teamster reflect` task (or, before it, a
-desktop session of the reflection's scheduled task); it is not counted in any system.
-A click on the block opens the station's own screen over the map (`board/web/src/map/station/`, titled «Рефлексия»; «← Карта» or Esc goes back,
-and the galaxy stops drawing meanwhile). Under its title one line says what to do next, with at most one button, in this
+desktop session of the reflection's scheduled task).
+A click on the block opens the station's own screen over the map (`board/web/src/map/station/`, titled «Рефлексия»; «← Карта» or Esc goes back). Under its title one line says what to do next, with at most one button, in this
 order: answer the analyst who waits («Ответить» opens the channel), answer an implementing agent that needs a decision
 («Ответить» opens the lesson in «Переписка» with the focus in the reply to the agent), decide the proposed lessons
 («Разобрать» opens the first one), wait while the analyst works, wait while agents implement lessons or the board lands
@@ -286,7 +259,7 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
     docket in a report keeps its short text and state, «Принять» and «Отклонить» at once, «Внедрить», which opens the
     lesson with the start's form, and «Открыть урок».
   - A lesson shows its head (title, entry, date, scope, state, the study it came from, and «Посмотреть» while its task
-    is open: the map flies to the task's system and opens its card), its whole text — «Когда», «Что делать»,
+    is open, to open its details), its whole text — «Когда», «Что делать»,
     «Предложение» with «Где менять: …» under it once the place is known (the lesson's `target`, or the repositories the
     board knows that the proposal names), «Доказательства», «Оговорки», with their line breaks — the files outside
     every git repository that its proposal names (`outside`, such as `~/.codex/checks/<repo>/ci_wait.py`) and the note
@@ -301,7 +274,7 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
     `implementation.landing` of `GET /api/research` (`{stage, text, pr, version}`) says where
     it stands, and the lesson shows its `text` in place of the task's state, with «PR #N» in it linking to the PR:
     `waiting`, `merging`, `releasing` and `upgrading` show it at work, as an agent at work, with «Посмотреть» while the
-    ship is on the map and without «Внедрено»; `landed` shows only the text, with no buttons; `manual` — a PR the human
+    run is on the Board and without «Внедрено»; `landed` shows only the text, with no buttons; `manual` — a PR the human
     merges — keeps «Посмотреть» and «Внедрено»; `failed` shows the reason as a problem, with «Посмотреть» and
     «Внедрено». Only without `landing` (`null`, or an older server that sends none) does a done task's PR ask to check,
     merge and mark «Внедрено» by hand. `dev:fixture` has a lesson at each stage.
@@ -361,11 +334,10 @@ how many carry a signal, and the time to the planned reflection; each gauge brin
   project and per signal, and the signalled records, each of which can be ordered into a study.
 
 The station's buttons act at once: the board server runs `teamster lesson`, `say` or `reflect` (`POST /api/actions/*`)
-and the screen shows the result. These, a ship's orders below and the account actions above are the actions the board runs; every other
-screen only reads. When the server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
+and the screen shows the result. When the server runs no actions (`actions.enabled` is false in `GET /api/research`, or an older server has no `actions`), each
 button copies the equivalent command for the terminal instead and says why; «Внедрить» has no such command and stays
 off. In `npm run dev:fixture` the actions play on the fixtures, so the whole station can be clicked through without a
-server: a start answers at once and goes through its steps in a few seconds, then its agent shows up on the map with a
+server: a start answers at once and goes through its steps in a few seconds, then its agent shows up on the Board with a
 changing last action, asks a question, and after the answer opens a PR; the first start of «Keep the training smoke out
 of the turn» fails, to show that path. The lessons of `batch-2026-11-08.md` show each place: W1's proposal names
 `teamster`, W2's `target` has two repositories and a skill, W3's only a skill, W4's a repository the board does not
@@ -400,21 +372,24 @@ line goes once the ship's column or phase changes later than the order's own eff
 plays the orders on its own tasks.
 
 The log «События» in the control panel's centre tells the last day's completed phases and lead verdicts (`GET /api/events`
-and live `event` messages) in plain words, newest first; in a system it shows only that system. «развернуть» opens the
-long list over the map; on a phone the log folds to its newest line and opens over the map on demand. A line leads to its
-system and selects the ship while it is still there. «Сводка дня» opens from the control panel's command row. The map always shows the current fleet. A task card, on both views, has a «Команды» block that copies ready `teamster` commands
+and live `event` messages) in plain words, newest first. «развернуть» opens the long list over the map.
+On a phone the log folds to its newest line. Choose an event to open its run, or its project
+on the map when the run has left the Board.
+«Сводка дня» opens from the control panel's command row. On «Доска» the task card has a «Команды» block that copies ready `teamster` commands
 (`status`, `wait`, `stop`, `review`, `clean`, `verdict`, `say`) to the clipboard; the board never runs them. Above the commands
 stands the order the task's state calls for, one reason and one command, and the other commands fold under «Все команды».
 A finished task shows its «Груз» above the commands (the saved check, the review and its findings, why the fix loop stopped, CI, the base merge, what is left and the questions), and on the roadstead «вернуть на доработку» puts all of it into one `say` text, while «принять» goes back to the verdict.
-`npm --prefix board/web run dev:fixture` adds a «Сценарий» source to the map (in the command row's menu) that takes three demo ships through
-every station; both fixture sources include a day of log events, with a ship that reaches the sun, one turned back at the gate and one in trouble, and a day's report.
+
+Run `npm --prefix board/web run dev:fixture` and open **Карта** to try the same workflow with
+fictitious projects, two biomes, linked tasks, sessions and PRs. Changes apply to the fixture
+for the current page. The panel also includes a day of log events and a daily report.
 
 The map's code in `board/web/src/map/`:
-- `layout/` — the geometry, one module per subject: the stars, the systems' stations and parking, the camera.
-- `scene/` — the Pixi scene: its camera, its input and its layers, `galaxy/` and `system/`; to add an object to the map,
-  see the comment at the top of `scene/layer.ts`.
-- `use/` — the composables `MapView.vue` is made of: the sources, the model, the panels, the labels, the scene and the
-  notification sound (`useArrivalChime.ts`).
+
+- `surface/` draws the terrain, buildings, and labels on one PixiJS canvas and handles camera input.
+  It tries WebGPU first, retries the same scene with WebGL if the first frame fails, and draws on demand.
+  The task picker still opens cards when graphics are unavailable.
+- `ProjectTaskMap.vue` and `ProjectTaskForm.vue` provide task selection, details and editing.
 - `console/` — the control panel under the map: `MapConsole.vue` with its left wing (`.console-left`: `ConsoleDuty.vue`,
   `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue` and the command row, `ConsoleCommands.vue`,
   with the duty chat's field `ConsoleChatField.vue` and its conversation `ConsoleChat.vue`) and right wing
@@ -422,9 +397,6 @@ The map's code in `board/web/src/map/`:
   command row's queues, `chat.ts` the conversation's rows and sentences, `useConsoleChat.ts` holds its state,
   `voice.ts` wraps the speech recognition, `portraits.ts` finds the subscriptions' pictures, `console.css` holds what
   the blocks share and `strip.css` the narrow window's strip.
-- `overlay/` — the labels over the canvas: the `.ts` builders make their texts and places, and a component for each
-  kind draws one (`StarLabel.vue`, `StationPlate.vue`…), with its own styles; `overlay.css` holds what they share. A new
-  object's label is a new component there, listed in `GalaxyLabels.vue` or `SystemLabels.vue`.
 - `src/size-budget.test.ts` fails when a `.ts` file under `board/web/src/` grows past 500 lines or a `.vue` file past 650.
 
 | Environment variable | Default | Purpose |

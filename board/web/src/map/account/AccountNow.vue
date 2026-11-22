@@ -19,6 +19,7 @@ const props = defineProps<{
   loginError: string | null;
   /** Why sending the code or cancelling did not work. */
   actionError: string | null;
+  readOnly?: boolean;
   /** Sends the code a Claude page shows to the sign-in tool; false when the server refused it. */
   send: (text: string) => Promise<boolean>;
   /** Another screen stands over this one: it keeps the focus. */
@@ -100,7 +101,7 @@ watch(
       <template v-if="!live">
         <p v-for="detail in nowView.details" :key="detail" class="detail">{{ detail }}</p>
       </template>
-      <div v-if="nowView.relogin && !live" class="act">
+      <div v-if="!readOnly && nowView.relogin && !live" class="act">
         <button type="button" class="key main big" :disabled="starting" @click="emit('signIn')">
           {{ starting ? "Запускаю вход…" : "Войти заново" }}
         </button>
@@ -122,7 +123,7 @@ watch(
       <p v-if="line" class="line" :class="`tone-${line.tone}`">{{ line.text }}</p>
 
       <!-- Codex: the page and the one-time code. -->
-      <ol v-if="family === 'codex' && live && (login.url || login.code)" class="todo">
+      <ol v-if="!readOnly && family === 'codex' && live && (login.url || login.code)" class="todo">
         <li>
           <span class="n" aria-hidden="true">1</span>
           <span>Открой страницу входа и войди в аккаунт ChatGPT этой подписки<template v-if="row?.email"> ({{ row.email }})</template>.</span>
@@ -138,7 +139,7 @@ watch(
       </ol>
 
       <!-- Claude: the page opens by itself; its code, if it shows one, comes back here. -->
-      <div v-if="family === 'claude' && live && waiting" class="todo claude">
+      <div v-if="!readOnly && family === 'claude' && live && waiting" class="todo claude">
         <p>
           Браузер открывает страницу входа Claude. Войди в аккаунт этой подписки и разреши доступ.
           <a v-if="login.url" class="key" :href="login.url" target="_blank" rel="noopener noreferrer">Открыть страницу входа ↗</a>
@@ -163,8 +164,8 @@ watch(
       <p v-if="failed && login.error && login.error !== login.message" class="error">{{ login.error }}</p>
 
       <div class="act">
-        <button v-if="live" type="button" class="key danger" @click="emit('cancel')">Отменить вход</button>
-        <button v-if="failed" type="button" class="key main" :disabled="starting" @click="emit('signIn')">Попробовать снова</button>
+        <button v-if="!readOnly && live" type="button" class="key danger" @click="emit('cancel')">Отменить вход</button>
+        <button v-if="!readOnly && failed" type="button" class="key main" :disabled="starting" @click="emit('signIn')">Попробовать снова</button>
         <button v-if="finished" type="button" class="key" @click="emit('dismiss')">Скрыть</button>
         <span v-if="failed && row" class="dim">или в терминале: <code class="mono">{{ command }}</code></span>
       </div>

@@ -21,6 +21,10 @@ FAILURES = {"failed", "stopped", "interrupted", "budget_exhausted", "conflict", 
             "refused", "unavailable", "exhausted", "running", "sleeping", "timeout"}
 
 
+def ready_for_review(result_status, outcome):
+    return result_status == "done" and outcome not in FAILURES
+
+
 def branch_changes(worktree, base):
     """Read branch statistics only for a worktree and ref supplied by task state."""
     if (not text(worktree) or not text(base) or base.startswith("-") or base == "@"
@@ -267,6 +271,7 @@ class Store:
         self._desktop_sessions = DesktopSessions()
         self.session_records = self._desktop_sessions.records
         self.records = {}
+        self.older_archives = {}
         self.telemetry_path = Path(telemetry_path) if telemetry_path is not None else None
         self._journal = Journal()
         self.lock = threading.RLock()
@@ -278,7 +283,7 @@ class Store:
     _safe_slug = staticmethod(safe_slug)
 
     def _paths(self, *, strict=False):
-        return task_paths(self.tasks_path, strict=strict)
+        return task_paths(self.tasks_path, strict=strict, older_archives=self.older_archives)
 
     def lead_verdict(self, slug, record, repo):
         """Read the current verdict without consuming this store's pending journal events."""
@@ -300,7 +305,7 @@ class Store:
         elif is_alive:
             column = "sleeping" if outcome == "sleeping" else "running"
         else:
-            column = "review_me" if status == "done" and outcome not in FAILURES else "attention"
+            column = "review_me" if ready_for_review(status, outcome) else "attention"
         current_phase, started_at = phase(state, is_alive)
         if record.observed_phase != current_phase:
             record.observed_phase = current_phase

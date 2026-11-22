@@ -201,6 +201,16 @@ export const isLogin = (value: unknown): value is Login =>
   typeof value.stage === "string" &&
   Array.isArray(value.output);
 
+/** All Board actions use same-origin JSON and the Board request header. */
+export function sendBoardAction(route: ActionRoute | "project-task", body: unknown, fetcher: typeof fetch = fetch): Promise<Response> {
+  return fetcher(`/api/actions/${route}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Teamster-Board": "1" },
+    body: JSON.stringify(body),
+    credentials: "same-origin",
+  });
+}
+
 /** One request to the board server; a refusal, a bad answer or a lost connection all come back as `ok: false`. */
 export async function requestAction<R extends ActionRoute>(
   route: R,
@@ -209,12 +219,7 @@ export async function requestAction<R extends ActionRoute>(
 ): Promise<ActionResult> {
   let response: Response;
   try {
-    response = await fetcher(`/api/actions/${route}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Teamster-Board": "1" },
-      body: JSON.stringify(body),
-      credentials: "same-origin",
-    });
+    response = await sendBoardAction(route, body, fetcher);
   } catch (error) {
     return { ok: false, error: `Сервер доски недоступен${error instanceof Error && error.message ? `: ${error.message}` : ""}` };
   }

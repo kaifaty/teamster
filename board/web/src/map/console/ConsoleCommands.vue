@@ -15,13 +15,11 @@ const props = defineProps<{
   compact?: boolean;
   /** The menu offers «Свернуть панель»: a wide window. */
   foldable?: boolean;
-  /** `dev:fixture`: the map's source can be switched. */
-  demo?: boolean;
+  readOnly?: boolean;
 }>();
 const emit = defineEmits<{ next: [column: QueueColumn]; fold: []; addSubscription: [opener: HTMLElement] }>();
 const summaryOpen = defineModel<boolean>("summaryOpen", { default: false });
 const sound = defineModel<boolean>("sound", { default: false });
-const sourceKind = defineModel<"board" | "scenario">("sourceKind", { default: "board" });
 
 const counters = computed(() => [
   { column: "review_me" as const, word: "Ждут тебя", count: props.ready, badge: "b-ready", title: "Открыть следующую задачу, которая ждёт твоего решения" },
@@ -99,11 +97,6 @@ function addSubscription(event: MouseEvent) {
   menuOpen.value = false;
   emit("addSubscription", opener);
 }
-
-function pickSource(kind: "board" | "scenario") {
-  sourceKind.value = kind;
-  closeMenu();
-}
 </script>
 
 <template>
@@ -153,28 +146,18 @@ function pickSource(kind: "board" | "scenario") {
         </svg>
       </button>
       <div v-if="menuOpen" id="console-menu" ref="menu" class="menu" role="menu" aria-label="Настройки панели" @keydown="onMenuKey">
-        <button type="button" role="menuitem" class="item" tabindex="-1" @click="addSubscription">Добавить подписку</button>
+        <button v-if="!readOnly" type="button" role="menuitem" class="item" tabindex="-1" @click="addSubscription">Добавить подписку</button>
         <button v-if="foldable" type="button" role="menuitem" class="item" tabindex="-1" @click="fold">Свернуть панель</button>
         <button type="button" role="menuitemcheckbox" class="item" :aria-checked="sound" tabindex="-1" @click="sound = !sound">
           <span class="mark" aria-hidden="true">{{ sound ? "✓" : "" }}</span>Звук уведомлений
         </button>
-        <div v-if="demo" role="group" aria-label="Источник карты">
-          <button v-for="kind in (['board', 'scenario'] as const)" :key="kind" type="button" role="menuitemradio" class="item" :aria-checked="sourceKind === kind" tabindex="-1" @click="pickSource(kind)">
-            <span class="mark" aria-hidden="true">{{ sourceKind === kind ? "●" : "" }}</span>Источник: {{ kind === "board" ? "доска" : "сценарий" }}
-          </button>
-        </div>
       </div>
     </div>
     <template v-if="mode === 'sheet'">
-      <button type="button" class="cast" @click="addSubscription">Добавить подписку</button>
+      <button v-if="!readOnly" type="button" class="cast" @click="addSubscription">Добавить подписку</button>
       <button type="button" class="cast" :aria-pressed="sound" @click="sound = !sound">
         <span class="mark" aria-hidden="true">{{ sound ? "✓" : "" }}</span>Звук уведомлений
       </button>
-      <div v-if="demo" class="sources" role="group" aria-label="Источник карты">
-        <button v-for="kind in (['board', 'scenario'] as const)" :key="kind" type="button" class="cast" :aria-pressed="sourceKind === kind" @click="sourceKind = kind">
-          {{ kind === "board" ? "Доска" : "Сценарий" }}
-        </button>
-      </div>
     </template>
   </div>
 </template>
@@ -410,11 +393,6 @@ function pickSource(kind: "board" | "scenario") {
 
 .commands.sheet {
   flex-wrap: wrap;
-}
-
-.sources {
-  display: flex;
-  gap: 4px;
 }
 
 /* A finger needs taller items: on a narrow window and on a touch screen; the panel sets the buttons' --cast-height. */

@@ -73,7 +73,7 @@ export function stateOf(task: TaskSummary): { text: string; tone: StateTone } {
 
 const HULL_NAMES: Record<Hull, string> = { light: "Задача", frigate: "Задача", cruiser: "Задача", scout: "Разведка", flagship: "Сессия" };
 
-/** The hull's picture: the same as the scene's, by the task's effort and its executor's colour. */
+/** The hull's picture, by the task's effort and its executor's colour. */
 export function hullArt(task: Pick<TaskSummary, "kind" | "effort" | "executor">): ArtName {
   const copper = task.executor === "claude";
   switch (hullOf(task)) {
