@@ -154,6 +154,9 @@ class AcpClient:
                     if not isinstance(error, dict):
                         raise ValueError(f"Invalid ACP {method} error")
                     detail = f"ACP {method} failed ({error.get('code')}): {error.get('message')}"
+                    data = error.get("data")
+                    if isinstance(data, dict) and isinstance(data.get("message"), str):
+                        detail += f": {data['message']}"
                     if error.get("code") == -32000:
                         detail += ". Sign in using the agent CLI"
                         if self.auth_methods:

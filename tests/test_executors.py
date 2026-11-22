@@ -434,6 +434,9 @@ class ExecutorTests(RotationTestCase):
                 assert selected["params"] == {"sessionId": "session-1",
                     "configId": "reasoning_effort", "value": "high"}
                 reply(selected, configOptions=[dict(option, currentValue="high")])
+                prompt = receive("session/prompt")
+                send(id=prompt["id"], error={"code": -32603, "message": "Internal error",
+                                            "data": {"message": "Usage limit reached"}})
                 sys.exit(0)
             elif mode == "new":
                 reply(session, sessionId="session-1")
@@ -474,6 +477,8 @@ class ExecutorTests(RotationTestCase):
         with acp.AcpClient([sys.executable, "-I", str(agent), "configured", "--literal=two words; *"],
                            repo, lambda update: None, lambda params: None, env=self.env) as client:
             self.assertEqual(client.open_session(config_options={"reasoning_effort": "high"}), "session-1")
+            with self.assertRaisesRegex(ValueError, "Usage limit reached"):
+                client.prompt("Work")
 
     def test_executor_selection_stays_in_contract(self):
         violations = []
