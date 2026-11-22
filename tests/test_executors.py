@@ -22,12 +22,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rotation_support import RotationTestCase, SCRIPT
 
 
+PROJECT_REVIEW = "Run teamster scout progress-review before acceptance."
+
+
 @contextlib.contextmanager
 def local_opencode_provider(env, binary):
     """Run the installed CLI against a scripted loopback Chat Completions endpoint."""
     home = Path(env["HOME"])
     (home / "opencode").symlink_to(Path(binary).resolve(strict=True))
     requests = []
+    work_prompts = []
     stop_requested = threading.Event()
     release = threading.Event()
 
@@ -59,6 +63,7 @@ def local_opencode_provider(env, binary):
             assert len(markers) == 1, "expected only this task's brief in its history"
             summary = ("Follow-up edit " if resumed else "Initial edit ") + markers[0]
             if messages[-1]["role"] == "user":
+                work_prompts.append((resumed, messages))
                 args = {"command": "echo '" + summary + "' >> tracked.txt"}
                 delta = {"tool_calls": [{"index": 0, "id": "edit-" + str(len(requests)), "type": "function",
                                          "function": {"name": "shell", "arguments": json.dumps(args)}}]}
@@ -108,6 +113,16 @@ def local_opencode_provider(env, binary):
             server.shutdown()
             thread.join()
     assert requests == [("/v1/chat/completions", "model")] * 10, requests
+    assert [resumed for resumed, _ in work_prompts] == [False, False, True, True]
+    for resumed, messages in work_prompts:
+        instructions = "\n".join(m["content"] for m in messages if m["role"] == "system")
+        project = instructions.find(PROJECT_REVIEW)
+        role = instructions.find("You are a managed Teamster executor.")
+        assert 0 <= project < role, (resumed, [m["role"] for m in messages], instructions)
+        assert "Inline OpenCode guidance." in instructions[:role]
+        assert "status needs_decision" in instructions[role:]
+        assert "Do not echo the schema" in instructions[role:]
+        assert "You are a managed Teamster executor." not in messages[-1]["content"]
 
 
 def fixture_work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
@@ -192,6 +207,8 @@ def install_fake_opencode(root):
         assert sys.argv[1:] == ["acp"]
         assert os.environ.get("COPYFILE_DISABLE") == "1"
         overlay = json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
+        role_file = Path(overlay["instructions"][-1])
+        assert role_file.is_absolute()
         assert {"action": "tool.use", "resource": "subagent:*", "effect": "deny"} not in overlay["policies"]
         assert {"action": "skill.use", "resource": "teamster", "effect": "deny"} in overlay["policies"]
         if not (home / "unbound-direct-call").exists():
@@ -236,7 +253,10 @@ def install_fake_opencode(root):
                         send(id=request["id"], error={"code": -32603, "message": "You exceeded your current quota"})
                         continue
                     prompt = params["prompt"][0]["text"]
-                    assert "managed Teamster executor" in prompt
+                    instructions = role_file.read_text()
+                    assert "managed Teamster executor" in instructions
+                    assert "status needs_decision" in instructions and "Do not echo the schema" in instructions
+                    assert "managed Teamster executor" not in prompt
                     answer = json.loads((home / "response.json").read_text())
                     wrapup = "The turn's time budget has expired." in prompt
                     if wrapup:
@@ -404,7 +424,15 @@ class ExecutorTests(RotationTestCase):
         else:
             install_fake_opencode(self.root)
             provider = contextlib.nullcontext()
-        (self.root / "response.json").write_text(json.dumps(self.work_result(checks=[])))
+        guidance = self.root / "opencode-guidance.md"
+        guidance.write_text("Inline OpenCode guidance.\n")
+        self.env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"instructions": [str(guidance)]})
+        (self.repo / "AGENTS.md").write_text(PROJECT_REVIEW + "\n")
+        self.git("add", "AGENTS.md")
+        self.git("commit", "-m", "Require independent review")
+        handoff = self.work_result("needs_decision", checks=[],
+                                   questions=["Can you arrange the required progress-review scout?"])
+        (self.root / "response.json").write_text(json.dumps(handoff))
         flags = ["--executor", "opencode", "--model", "offline/model", "--task-type", "feature", "--no-push"]
         labels = {"opencode-work": "alpha", "opencode-parallel": "beta"}
         with provider as stop_requested:
@@ -443,7 +471,7 @@ class ExecutorTests(RotationTestCase):
                 self.assertIn(summary, self.wait(slug))
                 second = self.state(slug)
                 self.assertEqual((second["session_id"], second["turns"]), (sessions[slug], 2))
-                self.assertEqual(second["result"], self.work_result(summary=summary, checks=[]))
+                self.assertEqual(second["result"], dict(handoff, summary=summary))
                 self.assertEqual([check["outcome"] for check in second["checks"]], ["passed", "passed"])
                 self.assertEqual((Path(second["worktree"]) / "tracked.txt").read_text(),
                                  f"initial\nInitial edit {label}\nFollow-up edit {label}\n")

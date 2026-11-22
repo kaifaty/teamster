@@ -405,7 +405,6 @@ def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
     if "work_binding" in st:
         connection, env = opencode_runner.provider_connection(st["worktree"], st["task_model"])
         task_state.bind_work(st, st["task_model"], **connection)
-    prompt += "\n\nReturn only a JSON object matching this schema:\n" + json.dumps(result_schema.RESULT_SCHEMA)
     try:
         outcome, message = opencode_runner.run_opencode(
             st["worktree"], prompt, st["model"], st.get("session_id"), stopped, deadline,

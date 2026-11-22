@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import acp, clock, config, procs
+from . import acp, clock, config, procs, result_schema
 
 
 PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
@@ -157,24 +157,38 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
 
     try:
         check_active()
-        overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
-        overlay.setdefault("policies", []).append({"action": "skill.use", "resource": "teamster", "effect": "deny"})
-        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay)
-        # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
-        with config.executor_environment(env) as worker_env, acp.AcpClient(
-                ["opencode", "acp"], worktree, lambda event: None, allow_once, check_active=check_active,
-                env=worker_env, stderr=subprocess.DEVNULL if bound else None) as client:
-            if started:
-                started(client.process)
-            opened = client.open_session(session_id, model=model)
-            if not session_id:
-                session_id = opened
-                created(session_id)
-            if title is not None:
-                _set_title(worktree, worker_env, client.process.pid, session_id, title, check_active, bound)
-            check_active()
-            client.on_update = update
-            reason = client.prompt(config.EXECUTOR_INSTRUCTIONS + "\n\n" + prompt)
+        with tempfile.TemporaryDirectory(prefix="teamster-opencode-") as directory, \
+                config.executor_environment(env) as worker_env:
+            # OpenCode loads configured instructions after project AGENTS.md, including after compaction.
+            instructions = Path(directory).resolve() / "executor.md"
+            instructions.write_text(
+                config.EXECUTOR_INSTRUCTIONS + "\n\n"
+                "Follow project guidance for the assigned implementation and its checks. "
+                "If acceptance requires independent review, even when a project file tells you to run "
+                "teamster scout or teamster review, leave that command to the operator. "
+                "Return your completed work and checks with status needs_decision and put a question asking "
+                "the operator to arrange the required review in questions.\n\n"
+                "Return exactly one JSON object containing your work result. Do not echo the schema or add "
+                "Markdown fences or surrounding text. Use this schema to format the result:\n"
+                + json.dumps(result_schema.RESULT_SCHEMA) + "\n", encoding="utf-8")
+            overlay = json.loads(worker_env.get("OPENCODE_CONFIG_CONTENT") or "{}")
+            overlay.setdefault("instructions", []).append(str(instructions))
+            overlay.setdefault("policies", []).append({"action": "skill.use", "resource": "teamster", "effect": "deny"})
+            worker_env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay)
+            # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
+            with acp.AcpClient(["opencode", "acp"], worktree, lambda event: None, allow_once, check_active=check_active,
+                               env=worker_env, stderr=subprocess.DEVNULL if bound else None) as client:
+                if started:
+                    started(client.process)
+                opened = client.open_session(session_id, model=model)
+                if not session_id:
+                    session_id = opened
+                    created(session_id)
+                if title is not None:
+                    _set_title(worktree, worker_env, client.process.pid, session_id, title, check_active, bound)
+                check_active()
+                client.on_update = update
+                reason = client.prompt(prompt)
         check_active()
         if client.process.returncode:
             return "failed", f"OpenCode exited with {client.process.returncode}"
