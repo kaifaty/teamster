@@ -1039,6 +1039,7 @@ def work_server():
 
 def acp_agent():
     # Script the adapter half of the boundary; the real CODEX_PATH shim still admits the native turn.
+    trace({"command": "codex-acp", "prompt_suggestions": os.environ.get("CODEX_ACP_PROMPT_SUGGESTIONS")})
     backend = subprocess.Popen([os.environ["CODEX_PATH"], "app-server"], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, text=True, env=dict(os.environ, CODEX_FAKE_WORK_SERVER="1"))
     def rpc(method, **params):
