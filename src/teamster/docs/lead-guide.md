@@ -88,18 +88,18 @@ Before `start`, check that every "Done when" item can be reached within "Do not 
 
 Run every command below as `teamster …`. Teamster finds Codex through `TEAMSTER_CODEX`, then the
 ChatGPT.app bundle if present, then `codex` on `PATH`. Codex supplies its configured model and effort
-when Teamster has no work overrides. Codex work, scout, reflect, review, fix, and wrap-up require
-`codex-acp` on `PATH` (`npm install -g @agentclientprotocol/codex-acp`). They use ACP v1 over stdio
-with the selected account's `CODEX_HOME`. Existing tasks resume their saved native Codex thread.
-If that thread is unavailable, Teamster reports the resume error before sending the order.
+when Teamster has no work overrides. The adapter uses the selected account's `CODEX_HOME`.
+Existing tasks resume their saved native Codex thread. If that thread is unavailable, Teamster
+reports the resume error before sending the order.
 Use `start --model M` for work and `--review-model M` on `start`, `say`, or `review` for Codex reviews; `say` inherits or replaces them, and `default` clears an override. Read `accounts --json` before choosing ([models and JSON fields](settings.md#task-models)).
 A task keeps the teamster version it started on after an upgrade: `say` and `review` re-run in it while it is installed; `say --upgrade` moves the task to the current version ([versioned installs](settings.md#versioned-installs)).
 Use `start --task-type LABEL` to select a configured [task profile](settings.md#task-profiles) and label telemetry. `say` and `review` inherit the label, and `say --task-type LABEL` replaces it ([labels and grouped reports](telemetry.md)).
 Use `start --executor codex|claude|opencode` to pin the task worker. Automatic selection starts with a task profile's executor when present, then follows the [work role profile](settings.md#role-profiles) or the configured executor default. The saved executor handles `say`, review fixes, CI repairs and wrap-up. Claude and OpenCode work require `--sandbox off`.
 The [review role profile](settings.md#role-profiles) chooses the reviewer order. Without it, Claude tasks prefer Codex reviews and other workers use the configured reviewer. Use `--reviewer claude` on `start`, `say`, or `review` to select the isolated Claude pool. It prefers another account when Claude also implements. See [account setup](accounts.md#claude-account-pool).
 
-Ordinary Codex and Claude tasks, reviews, scouts and reflections require the stock `codex-acp`
-or `claude-agent-acp` executable on the supervisor's `PATH`, alongside the selected native CLI.
+Ordinary Codex and Claude tasks, reviews, scouts and reflections use ACP v1 over stdio. Install
+`@agentclientprotocol/codex-acp` or `@agentclientprotocol/claude-agent-acp` for the corresponding
+provider. The supervisor needs its `codex-acp` or `claude-agent-acp` executable on `PATH` alongside the native CLI.
 Teamster opens an ACP session for a new task and saves its native cursor before the prompt.
 `say`, review fixes and CI repairs continue the worker's session. A review starts its own session.
 The Board's task actions use the same supervisor, saved checks, budgets and publication cycle.

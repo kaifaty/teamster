@@ -8,7 +8,7 @@ The lead writes a bounded brief, starts the worker, and waits in the background.
 opens and updates the PR using the worker's result title and description.
 Optional Codex or Claude reviews run in fresh sessions, and the supervisor can send findings back for bounded
 fix rounds. The lead checks the final diff and review and handles merging. Optional account monitoring
-can pause a task until a usage window resets. On GitHub, `--ci` waits for PR checks and gives Codex
+can pause a task until a usage window resets. On GitHub, `--ci` waits for PR checks and gives the worker
 one bounded repair turn with failed-check logs before the lead reviews the final result.
 
 This repository contains the `teamster` command and its thin Claude Code plugin, distributed
@@ -148,7 +148,7 @@ Bash command.
 For GitHub repositories, `start --ci` or `"ci": true` enables CI for the task. Follow-ups inherit
 the setting and repair-round limit (initially 1); `say --ci` enables it, `say --no-ci` disables it,
 and `say --ci-rounds N` changes the limit. The supervisor waits for the published PR's exact HEAD
-and sends failures to Codex for bounded repairs. See
+and sends failures to the task's worker for bounded repairs. See
 [CI details](src/teamster/docs/ci.md).
 The lead merges only after `CI … passed` and rechecks `gh pr checks <url>` immediately before merging.
 

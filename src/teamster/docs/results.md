@@ -91,8 +91,8 @@ separately from the implementation `result.status`, saved checks, CI and reset-c
 |---|---|---|
 | `running` | A work, scout or review phase is active. | Let the active phase finish. |
 | `sleeping` | No account is currently usable; the supervisor is waiting to retry or for a reset. | Follow [accounts.md](accounts.md#waiting-for-a-reset) for `auto-continue at` and `wait --through-sleep`. |
-| `completed` | Exec completed successfully; an implementation result or review may still be incomplete or unknown. | Read `result` or the review and continue the [default loop](lead-guide.md#the-loop). |
-| `failed` | Exec or the supervisor failed, or no usable authenticated account remains. | Read the error and logs; resolve the cause, including any requested login, before a follow-up. |
+| `completed` | The agent finished its turn successfully. Its implementation result or review may still be incomplete or unknown. | Read `result` or the review and continue the [default loop](lead-guide.md#the-loop). |
+| `failed` | The agent or supervisor failed, or no usable authenticated account remains. | Read the error and logs and resolve the cause before a follow-up. |
 | `refused` | The model refused for possible cybersecurity risk; no retry or account rotation follows. `wait` shows the first 200 characters of the refusal. | Read the refusal and reassess the task rather than starting another automatic fix cycle. |
 | `stopped` | A durable `stop` request addressed this supervisor. | Inspect the preserved work and decide whether to continue with `say`. |
 | `timeout` | The task reached its wall-clock deadline set by `start --task-timeout`. | Inspect the preserved work. |
@@ -101,7 +101,7 @@ separately from the implementation `result.status`, saved checks, CI and reset-c
 | `budget_exhausted` | The turn reached its time cap, or the task reached its weekly budget. | Use the check, wrap-up and remaining work to decide whether to split the task. For a time stop, split or send a budgeted `say`; for a weekly stop, raise the saved budget with `say --max-weekly P` only after that decision. |
 | `stuck` | The same command failed with the same nonzero exit code and last 2 KB of output `repeat_limit` times. Other commands do not reset the count; a successful run of that command does. | Investigate the failure yourself or take it to the user; do not start another automatic fix cycle. |
 
-After `budget_exhausted` or `stuck` the supervisor stops the exec process group and asks for a wrap-up
+After `budget_exhausted` or `stuck` the supervisor stops the agent's process group and asks for a wrap-up
 in the same thread, in the configured language. Time or weekly exhaustion asks for working changes to be
 committed and pushed, a `partial` result and the remaining work; repeated failure asks for a `blocked`
 result with numbers and attempts. The wrap-up has a 10-minute cap and is stopped when it reaches it.
