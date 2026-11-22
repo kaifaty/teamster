@@ -20,6 +20,18 @@ def _select_config(result, config_id):
     return {}
 
 
+def _offers_value(option, value):
+    for choice in option.get("options") or []:
+        if not isinstance(choice, dict):
+            continue
+        if "group" in choice:
+            if _offers_value(choice, value):
+                return True
+        elif choice.get("value") == value:
+            return True
+    return False
+
+
 class AcpClient:
     """Run one agent, delivering session updates and permission requests to the caller.
 
@@ -173,7 +185,7 @@ class AcpClient:
                 deadline = time.monotonic() + 3
 
     def open_session(self, session_id=None, auth_method=None, model=None, *, config_options=None):
-        """Negotiate v1 and open a new session or load an existing session."""
+        """Open a v1 session and confirm requested select options, model first."""
         self.session_id = None
         info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": {},
                                          "clientInfo": {"name": "teamster", "version": teamster.__version__}})
@@ -205,13 +217,12 @@ class AcpClient:
         selections = {"model": model} if model is not None else {}
         selections.update(config_options or {})
         for key, value in selections.items():
-            choices = _select_config(result, key).get("options") or []
-            offered = [option.get("value") for group in choices if isinstance(group, dict)
-                       for option in group.get("options", [group]) if isinstance(option, dict)]
-            if value not in offered:
+            if not _offers_value(_select_config(result, key), value):
                 raise ValueError(f"ACP agent does not offer {key} {value!r} in this session")
             selection = {"sessionId": session_id, "configId": key, "value": value}
             result = self._call("session/set_config_option", selection, pending)
+        # Selecting one option can change another, for example a model's default effort.
+        for key, value in selections.items():
             if _select_config(result, key).get("currentValue") != value:
                 raise ValueError(f"ACP agent did not confirm {key} {value!r}")
         self.session_id = session_id
