@@ -20,6 +20,13 @@ def _model_config(result):
     return {}
 
 
+class AcpRequestError(ValueError):
+    def __init__(self, detail, error):
+        super().__init__(detail)
+        self.code = error.get("code")
+        self.data = error.get("data")
+
+
 class AcpClient:
     """Run one agent, delivering session updates and permission requests to the caller.
 
@@ -27,10 +34,13 @@ class AcpClient:
     The harness owns model selection, credentials, tools and session storage.
     """
 
-    def __init__(self, argv, cwd, on_update, on_permission, *, check_active=None, env=None):
+    def __init__(self, argv, cwd, on_update, on_permission, *, check_active=None, env=None,
+                 on_notification=None, stderr=None):
         self.argv = argv
         self.cwd = str(Path(cwd).resolve())
         self.env = env
+        self.stderr = stderr
+        self.on_notification = on_notification
         self.on_update = on_update
         self.on_permission = on_permission
         self.check_active = check_active
@@ -43,7 +53,8 @@ class AcpClient:
     def __enter__(self):
         env = self.env if self.env is not None else {**os.environ, "PWD": self.cwd}
         self.process = subprocess.Popen(self.argv, cwd=self.cwd, env=env,
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=self.stderr, start_new_session=True)
         if self.check_active:
             os.set_blocking(self.process.stdin.fileno(), False)
         return self
@@ -135,6 +146,10 @@ class AcpClient:
                 pending_updates.append(params)
             elif session_id is not None and params.get("sessionId") == session_id:
                 self.on_update(params["update"])
+        elif self.on_notification and session_id is not None and session_id == self.session_id:
+            params = message.get("params")
+            if isinstance(params, dict) and params.get("sessionId") == session_id:
+                self.on_notification(method, params)
 
     def _call(self, method, params, pending_updates=None):
         self.request_id += 1
@@ -158,7 +173,7 @@ class AcpClient:
                         detail += ". Sign in using the agent CLI"
                         if self.auth_methods:
                             detail += " or choose --auth-method from: " + ", ".join(self.auth_methods)
-                    raise ValueError(detail)
+                    raise AcpRequestError(detail, error)
                 result = message.get("result")
                 if not isinstance(result, dict):
                     raise ValueError(f"Invalid ACP {method} result")
@@ -166,10 +181,10 @@ class AcpClient:
             except KeyboardInterrupt:
                 if method != "session/prompt" or deadline is not None:
                     raise
-                self._send(method="session/cancel", params={"sessionId": self.session_id})
+                self.cancel()
                 deadline = time.monotonic() + 3
 
-    def open_session(self, session_id=None, auth_method=None, model=None):
+    def open_session(self, session_id=None, auth_method=None, model=None, *, meta=None, config_options=None):
         """Negotiate v1 and open a new session or load an existing session."""
         self.session_id = None
         info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": {},
@@ -184,6 +199,10 @@ class AcpClient:
                 raise ValueError(f"Unsupported ACP auth method {auth_method!r}. Available: {available}")
             self._call("authenticate", {"methodId": auth_method})
         params = {"cwd": self.cwd, "mcpServers": []}
+        if meta is not None:
+            params["_meta"] = meta
+        if config_options:
+            params["configOptions"] = [{"configId": key, "value": value} for key, value in config_options.items()]
         pending = []
         if session_id is not None:
             capabilities = info.get("agentCapabilities", {})
@@ -194,11 +213,22 @@ class AcpClient:
             else:
                 raise ValueError("ACP agent does not support loading or resuming sessions")
             result = self._call(method, {**params, "sessionId": session_id})
+            if result.get("sessionId", session_id) != session_id:
+                raise ValueError("ACP agent returned a different session ID on resume")
         else:
             result = self._call("session/new", params, pending)
             session_id = result.get("sessionId")
             if not isinstance(session_id, str) or not session_id:
                 raise ValueError("ACP agent returned no session ID")
+        if config_options:
+            options = result.get("configOptions")
+            if not isinstance(options, list):
+                raise ValueError("ACP agent returned no session configuration")
+            for key, value in config_options.items():
+                selected = [item.get("currentValue") for item in options
+                            if isinstance(item, dict) and item.get("id") == key]
+                if selected != [value]:
+                    raise ValueError(f"ACP agent did not confirm {key} {value!r}")
         if model is not None:
             choices = _model_config(result).get("options")
             if not isinstance(choices, list) or not any(
@@ -217,6 +247,10 @@ class AcpClient:
             if update.get("sessionId") == session_id:
                 self.on_update(update["update"])
         return self.session_id
+
+    def cancel(self):
+        """Ask the agent to interrupt its prompt while continuing to receive final usage."""
+        self._send(method="session/cancel", params={"sessionId": self.session_id})
 
     def prompt(self, text):
         """Run one text turn and return its stop reason, including cancellation."""

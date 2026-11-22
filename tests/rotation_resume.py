@@ -422,11 +422,11 @@ else:
         self.assertEqual(state["resumed"], [{"at": cut_at + 600, "signal": "SIGINT", "signal_at": cut_at,
                                              "step": "work", "turn": 1}])
         first, resumed = self.claude_invocations()
-        self.assertEqual(resumed["argv"][resumed["argv"].index("--resume") + 1], first["session_id"])
+        self.assertEqual(resumed["resume"], first["session_id"])
         self.assertEqual((state["session_id"], resumed["session_id"]), (session, session))
         at = self.worker().config.local_time(cut_at)
         self.assertIn(f"Your turn was cut short by the external signal SIGINT at {at}, through no fault of yours.",
-                      resumed["argv"][1])
+                      resumed["prompt"])
 
     def test_resume_prompt_names_unpushed_commits_and_the_saved_pr(self):
         self.configure(language="ru")
