@@ -1754,6 +1754,7 @@ class ReviewFixTests(RotationTestCase):
 
     def test_start_review_runs_in_same_supervisor_and_say_resumes_working_thread(self):
         self.configure()
+        self.env["CODEX_ACP_PROMPT_SUGGESTIONS"] = "true"
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": "Рабочий ход завершён"},
             {"mode": "complete", "reply": "Ревью завершено: дефектов нет"},
@@ -1778,6 +1779,8 @@ class ReviewFixTests(RotationTestCase):
         self.assertTrue(execution["resume"])
         self.assertEqual(execution["thread"], executions[0]["thread"])
         self.assertEqual(execution["prompt"], "Проверь ещё один случай")
+        self.assertEqual([event["prompt_suggestions"] for event in self.trace() if event["command"] == "codex-acp"],
+                         ["false", "false", "false"])
         self.assertEqual(len(self.state("review-start")["reviews"]), 1)
         self.assertIn("Исправление завершено", followup)
         self.assertNotIn("== review by", followup)

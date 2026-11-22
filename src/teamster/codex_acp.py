@@ -150,7 +150,8 @@ def codex_acp_turn():
     launcher.write_text("#!/bin/sh\nexec " + shlex.join(command("backend")) + ' "$@"\n')
     launcher.chmod(0o700)
     mode = "workspace-write" if options["sandbox"] == "workspace-write" else "read-only"
-    env = dict(os.environ, CODEX_PATH=str(launcher), CODEX_ACP_PROTOCOL="v1", TEAMSTER_ACP_TURN_DIR=str(directory),
+    env = dict(os.environ, CODEX_PATH=str(launcher), CODEX_ACP_PROTOCOL="v1",
+               CODEX_ACP_PROMPT_SUGGESTIONS="false", TEAMSTER_ACP_TURN_DIR=str(directory),
                TEAMSTER_ACP_BACKEND=options["binary"], INITIAL_AGENT_MODE=mode, PWD=os.getcwd())
     # An inherited adapter-specific login or gateway would select a different account.
     for key in ("DEFAULT_AUTH_REQUEST", "CODEX_CONFIG", "MODEL_PROVIDER"):
