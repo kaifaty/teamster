@@ -1,5 +1,4 @@
 """Turn control, event streams and rollout monitoring."""
-import fcntl
 import hashlib
 import json
 import os
@@ -7,9 +6,7 @@ import re
 import selectors
 import shlex
 import subprocess
-import sys
 import tempfile
-import termios
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -177,7 +174,7 @@ class MonitorEvents:
 
 @dataclass
 class MonitorRollout:
-    """Rollout polling cursor and the stdout prefix queued at a weekly stop."""
+    """Rollout polling cursor and the time a live turn crossed its weekly budget."""
     path: Optional[Path]
     previous_stat: Optional[os.stat_result]
     usage_offset: int
@@ -186,7 +183,7 @@ class MonitorRollout:
     latest_limits: Optional[dict] = None
     next_poll: float = 0.0
     pending_weekly_spent: Optional[float] = None
-    pending_weekly_bytes: int = 0
+    weekly_observed_at: float = 0.0
     current_info: Optional[dict] = None
 
 
@@ -203,7 +200,7 @@ def monitor_process(st, account, options, prompt):
                                     env=accounts.account_env(account), stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=errors, start_new_session=True)
         try:
-            yield proc
+            yield proc, path / "completed"
         finally:
             procs.terminate(proc)
             proc.stdin.close()
@@ -273,14 +270,11 @@ def flush_message(stream, log):
     stream.text_chunks.clear()
 
 
-def read_monitor_events(st, account, proc, ready, sel, log, stream, usage, control,
+def read_monitor_events(st, account, proc, ready, sel, log, stream, control,
                         reviewing, wrapup, attempt_started):
     """Journal complete events in order, joining ACP text chunks by message ID."""
     for key, _ in ready:
-        size = min(65536, usage.pending_weekly_bytes) if usage.pending_weekly_spent is not None else 65536
-        chunk = os.read(key.fileobj.fileno(), size)
-        if usage.pending_weekly_spent is not None:
-            usage.pending_weekly_bytes -= len(chunk)
+        chunk = os.read(key.fileobj.fileno(), 65536)
         if not chunk:
             sel.unregister(key.fileobj)
             stream.eof = True
@@ -364,7 +358,7 @@ def read_monitor_rollout(usage, record_limits):
     return usage.latest_limits
 
 
-def poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_limits):
+def poll_monitor_rollout(st, cfg, account, stream, usage, control, record_limits):
     """Read a changed rollout sample; return its quota action or queue a weekly stop."""
     now = time.monotonic()
     if usage.path is None and now >= usage.next_search:
@@ -382,14 +376,13 @@ def poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_
         spent = st.get("weekly_used_percent", 0)
         if spent >= control.weekly:
             usage.pending_weekly_spent = spent
-            queued = fcntl.ioctl(proc.stdout.fileno(), termios.FIONREAD, bytes(4))
-            usage.pending_weekly_bytes = int.from_bytes(queued, sys.byteorder)
+            usage.weekly_observed_at = time.monotonic()
             return MonitorQuotaDecision("continue")
     usage.current_info = dict(account, logged_in=True, limits=limits)
     return monitor_quota_decision(usage.current_info, cfg)
 
 
-def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, stopped,
+def monitor_event_stream(st, cfg, account, proc, receipt, log, stream, usage, control, stopped,
                          on_limit, record_limits, reviewing, wrapup, attempt_started, active_started):
     """Supervise exec/stdout and return the original (outcome, quota payload) pair."""
     with selectors.DefaultSelector() as sel:
@@ -400,9 +393,8 @@ def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, st
                 return task_state.stop_outcome(st, stopped), None
             if control.expired(active_started):
                 return "budget_exhausted", None
-            ready = ([] if usage.pending_weekly_spent is not None and usage.pending_weekly_bytes == 0
-                     else sel.select(0 if usage.pending_weekly_spent is not None else 0.2))
-            result = read_monitor_events(st, account, proc, ready, sel, log, stream, usage, control,
+            ready = sel.select(0.2)
+            result = read_monitor_events(st, account, proc, ready, sel, log, stream, control,
                                          reviewing, wrapup, attempt_started)
             if result is not None:
                 return result
@@ -412,12 +404,12 @@ def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, st
                     return "failed", None
                 continue
             if usage.pending_weekly_spent is not None:
-                # Rollout and stdout are separate streams. A completion
-                # sent before the quota sample can still be queued here.
-                # Drain that queued prefix (including partial JSON),
-                # without waiting for or following subsequent output.
+                # The final rollout can overtake both the shim's receipt and the ACP reply.
+                # Give the shim one short scheduling window, then allow a bounded ACP flush
+                # only for the admitted native completion. Neither wait renews on activity.
                 if not stream.completed:
-                    if ready and usage.pending_weekly_bytes > 0 and not stream.eof:
+                    allowance = 2.0 if receipt.is_file() else 0.25
+                    if not (stream.failed or stream.eof) and time.monotonic() < usage.weekly_observed_at + allowance:
                         continue
                     if control.weekly_exhausted(usage.pending_weekly_spent):
                         return "budget_exhausted", None
@@ -430,7 +422,7 @@ def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, st
             if stream.capacity_failed:
                 return "capacity", None
             if (cfg["enabled"] or control.weekly is not None) and stream.thread and proc.poll() is None:
-                request = poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_limits)
+                request = poll_monitor_rollout(st, cfg, account, stream, usage, control, record_limits)
                 if request.action != "continue":
                     result = resolve_monitor_quota(st, request, stopped, control, active_started, on_limit)
                     if result is not None:
@@ -447,18 +439,20 @@ def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
     message = stream.final_message
     if message:
         last.write_text(message + "\n", encoding="utf-8")
+    result = None
+    if stream.completed and stream.exit_code == 0 and not stream.failed and not stream.refusal:
+        result = result_schema.parse_result(message, reviewing=reviewing, reflecting=st.get("kind") == "reflect")
     if wrapup:
-        st["wrapup"]["result"] = None if stream.refusal else result_schema.parse_result(message, reviewing=reviewing)
+        st["wrapup"]["result"] = result
         if stream.refusal:
             st["wrapup"]["refusal"] = stream.refusal
     elif stream.review_entry is not None:
         stream.review_entry["finished"] = clock.CLOCK.time()
-        stream.review_entry["result"] = None if stream.refusal else result_schema.parse_result(message, reviewing=True)
+        stream.review_entry["result"] = result
         if stream.refusal:
             stream.review_entry.update(outcome="refused", refusal=stream.refusal)
     elif not reviewing and st.get("kind") != "scout":
-        st["result"] = None if stream.refusal else result_schema.parse_result(
-            message, reflecting=st.get("kind") == "reflect")
+        st["result"] = result
     settings = {"model": stream.model, "reasoning_effort": stream.reasoning_effort}
     final_path = usage.path
     try:
@@ -555,10 +549,10 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
         active_started = clock.CLOCK.monotonic()
         proc = None
         try:
-            with monitor_process(st, account, options, prompt) as proc:
+            with monitor_process(st, account, options, prompt) as (proc, receipt):
                 st["codex_pid"] = proc.pid
                 task_state.save(st)
-                result = monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, stopped,
+                result = monitor_event_stream(st, cfg, account, proc, receipt, log, stream, usage, control, stopped,
                                               on_limit, record_limits, reviewing, wrapup, attempt_started, active_started)
         finally:
             if proc is not None:
@@ -567,7 +561,13 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
                 flush_message(stream, log)
                 finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
                                record_limits, telemetry, usage_before, weekly_started)
-    if result[0] == "failed" and stream.error:
-        st["error"] = stream.error
-        task_state.save(st)
+    if result[0] == "failed":
+        # A rejected prompt and its final quota can arrive in either order.
+        # Once final accounting calls for a wrap-up, the rejection is already
+        # in the event journal and is not a supervisor error.
+        if control.weekly_exhausted(st.get("weekly_used_percent", 0)):
+            return "budget_exhausted", None
+        if stream.error:
+            st["error"] = stream.error
+            task_state.save(st)
     return result
