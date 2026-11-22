@@ -54,7 +54,7 @@ npm --prefix operator test
 ```
 
 The test runs the CLI with a temporary SQLite file, an HTTP Board fixture and a scripted
-chat-completions server. It prints the three recommendations and checks the actual HTTP
+chat-completions server. It checks the exact recommendation for each card, the actual HTTP
 calls, replay, empty-page cursor advancement and both budgets. To read the same training
 cards with the real Mini through the same CLI, run the following from the checkout.
 
@@ -62,3 +62,8 @@ cards with the real Mini through the same CLI, run the following from the checko
 TRIAL_MINI_URL=http://127.0.0.1:18779/v1 \
   node --test --test-name-pattern='three work outcomes' operator/test/observe.test.ts
 ```
+
+The live smoke test verifies a Board read for each task ID and a recommendation with
+`source=mini`. It checks the saved command and its outcome, the assigned executor's name
+or a reference to the same worker on failure, and the verbatim question for the human
+decision. Read the three printed recommendations to judge the next actions in Mini's own words.

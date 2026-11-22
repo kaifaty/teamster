@@ -135,13 +135,30 @@ test("three work outcomes, empty page, restart and cursor recovery", async t => 
     assert.ok(row.model_calls >= 2 && row.model_calls <= 3);
     assert.ok(boardRequests.includes("GET tasks/" + encodeURIComponent(cards[i].id)));
   }
-  assert.match(rows[0].recommendation, /verify-labels/);
-  assert.match(rows[0].recommendation, /accept/i);
-  assert.match(rows[1].recommendation, /mobile-layout/);
-  assert.match(rows[1].recommendation, /same executor|original (executor|worker)|back to (the )?(executor|codex)/i);
-  assert.ok(rows[2].recommendation.includes(question));
-  assert.match(rows[2].recommendation, /human/i);
-  assert.match(rows[2].recommendation, /wait|pause|on hold/i);
+  const recommendations = rows.map((row): string => row.recommendation);
+  if (live) {
+    for (const [i, card] of cards.slice(0, 2).entries()) {
+      const saved = card.checks.saved!;
+      const outcome = saved.outcome === "passed" ? /\b(pass\w*|succeed\w*|success\w*)\b/i : /\bfail\w*\b/i;
+      const exitCode = new RegExp(String.raw`\bexit(?:\s+(?:code|status))?(?:\s+of)?\W*${saved.exit}\b`, "i");
+      assert.ok(recommendations[i].includes(saved.command), `Missing saved check ${saved.command}`);
+      assert.ok(outcome.test(recommendations[i]) || exitCode.test(recommendations[i]),
+        `Missing saved outcome for ${saved.command}: ${saved.outcome} (exit ${saved.exit})`);
+    }
+    const failure = recommendations[1].toLowerCase().replace(/[`*_]/g, "");
+    const namedExecutor = failure.split(/[^a-z0-9-]+/).includes(cards[1].executor.toLowerCase());
+    const sameExecutor = failure.split(/[.!?;\n]/).some(clause =>
+      /\b(same|original)\b/.test(clause) && /\b(executor|worker|assignee|agent)\b/.test(clause));
+    assert.ok(namedExecutor || sameExecutor, `Missing reference to the assigned executor (${cards[1].executor})`);
+    assert.ok(recommendations[2].includes(question), "Missing the verbatim decision question");
+    assert.match(recommendations[2], /\b(human|person|user|reviewer)\b/i);
+  } else {
+    assert.deepEqual(recommendations, [
+      `${cards[0].id}: verify-labels passed. Hand the task to the human for acceptance.`,
+      `${cards[1].id}: mobile-layout failed. Return the task to the same executor.`,
+      `${cards[2].id}: Ask the human "${question}" and wait for their answer.`,
+    ]);
+  }
   const calls = output.filter(row => row.type === "model_call").length;
   assert.equal(rows.reduce((total, row) => total + row.model_calls, 0), calls);
   if (!live) assert.equal(mock.calls, calls);
