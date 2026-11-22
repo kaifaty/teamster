@@ -16,10 +16,14 @@ checks and held notes, but returns as soon as the turn starts; its `--effort` an
 the current family's chat settings, and `--max-minutes` replaces `duty.chat_max_minutes`, for the
 conversation, as `say` does for a task. `duty chat` returns when its turn's supervisor exits, also when
 that supervisor is killed. A creation that an interruption cut short (a room without `state.json`) is
-removed and made again by the next message. When a duty turn's supervisor dies before its Claude or
-Codex process, that process still holds the conversation: the next message and `clean duty` refuse until
-`teamster stop duty` ends it. `status duty` shows the room and the number of answers; `clean duty`
-removes the room and archives the record, and the next message starts a new conversation.
+removed and made again by the next message.
+
+The supervisor talks ACP v1 over stdio to a private adapter for each turn. It resumes the saved
+native session ID on the selected account. When the supervisor dies, closing the pipe
+cancels the turn and the adapter ends its children. While an orphan still holds the conversation,
+the next message and `clean duty` refuse until it exits or `teamster stop duty` ends it.
+`status duty` shows the room and the number of answers. `clean duty` removes the room and archives
+the record, and the next message starts a new conversation.
 
 Without a duty account (`duty.json` absent or its `account` null) the command fails with
 `no duty account` and starts nothing. Both Claude and Codex duties run the chat. The turn always runs

@@ -433,6 +433,13 @@ def duty_turn(request, thread, model, models):
     if run.get("reply_from_command_output"):
         answer["reply"] = "".join(command_outputs).strip()
     message = {"id": "duty-answer", "type": "agentMessage", "text": json.dumps(answer), "phase": "final_answer"}
+    if run.get("stream_answer"):
+        emit({"method": "item/started", "params": {"threadId": thread["id"], "turnId": turn,
+              "item": dict(message, text="")}})
+        text = message["text"]
+        for chunk in (text[:len(text) // 2], text[len(text) // 2:]):
+            emit({"method": "item/agentMessage/delta", "params": {"threadId": thread["id"], "turnId": turn,
+                  "itemId": message["id"], "delta": chunk}})
     emit({"method": "item/completed", "params": {"threadId": thread["id"], "turnId": turn, "item": message}})
     emit({"method": "thread/tokenUsage/updated", "params": {"threadId": thread["id"], "turnId": turn,
           "tokenUsage": {"total": {"inputTokens": 10, "cachedInputTokens": 2, "outputTokens": 3,

@@ -193,11 +193,47 @@ def run_work_turn(account, worktree, task_dir, prompt, stopped, session_id=None,
 def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, effort=None,
                max_turns=None, *, session_id=None, system_prompt=None, reviewing=False, started=None, progress=None,
                task_dir=None, role="work", max_minutes=None):
-    """Execute and drain one stream; callers own role-specific lifecycle state."""
+    """Build an ordinary role invocation for the native stream runner."""
+    if role not in ("work", "scout", "reflect"):
+        raise ValueError("Unsupported ordinary Claude role")
     scouting = role == "scout"
     reflecting = role == "reflect"
-    # A duty chat turn writes only in its room and runs only allowed commands (bash_guard.py --duty-room).
-    chatting = role == "duty"
+    read_only = reviewing or scouting or reflecting
+    schema = (result_schema.REVIEW_SCHEMA if reviewing else result_schema.REFLECT_SCHEMA if reflecting
+              else result_schema.RESULT_SCHEMA)
+    args = ["--output-format", "stream-json", "--verbose"]
+    if not scouting:
+        args += ["--json-schema", json.dumps(schema)]
+    if read_only:
+        args += ["--permission-mode", "dontAsk", "--allowedTools", "Read,Grep,Glob,Bash",
+                 "--disallowedTools", "Edit,Write,NotebookEdit"]
+    else:
+        # The hook rejects background launches and pattern kills, which end the turn early.
+        args += ["--permission-mode", "bypassPermissions", "--strict-mcp-config",
+                 "--append-system-prompt-file", str(system_prompt), "--settings", bash_hook_settings()]
+    if max_turns is not None:
+        args += ["--max-turns", str(max_turns)]
+    if session_id is not None:
+        args += ["--resume", session_id]
+    return _native_claude_stream(account, worktree, prompt, args, stopped, deadline, model, effort, system_prompt,
+                                started, progress, task_dir, max_minutes, reviewing, scouting, reflecting)
+
+
+def run_guarded_claude(account, room, prompt, stopped, deadline, model, effort, *, session_id, resume,
+                       system_prompt, progress, task_dir, max_minutes, on_text):
+    """Native duty handler behind ACP. Only the existing guard can authorize tools."""
+    args = ["--output-format", "stream-json", "--verbose",
+            "--json-schema", json.dumps(result_schema.DUTY_SCHEMA),
+            "--permission-mode", "dontAsk", "--allowedTools", DUTY_TOOLS, "--disallowedTools", "NotebookEdit",
+            "--strict-mcp-config", "--append-system-prompt-file", str(system_prompt),
+            "--settings", duty_hook_settings(room), "--resume" if resume else "--session-id", session_id]
+    return _native_claude_stream(account, room, prompt, args, stopped, deadline, model, effort, system_prompt,
+                                None, progress, task_dir, max_minutes, chatting=True, on_text=on_text)
+
+
+def _native_claude_stream(account, worktree, prompt, args, stopped, deadline, model, effort, system_prompt,
+                         started, progress, task_dir, max_minutes, reviewing=False, scouting=False,
+                         reflecting=False, chatting=False, on_text=None):
     read_only = reviewing or scouting or reflecting
     response = {"outcome": "unavailable", "result": None, "reason": None, "deadline": deadline,
                 "telemetry": {"usage": {}, "cost_usd": None, "session_id": None,
@@ -214,30 +250,14 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     if executable is None:
         response["reason"] = "Claude CLI was not found"
         return response
-    schema = (result_schema.REVIEW_SCHEMA if reviewing else result_schema.REFLECT_SCHEMA if reflecting
-              else result_schema.DUTY_SCHEMA if chatting else result_schema.RESULT_SCHEMA)
-    args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose"]
-    if not scouting:
-        args += ["--json-schema", json.dumps(schema)]
-    if read_only:
-        args += ["--permission-mode", "dontAsk", "--allowedTools", "Read,Grep,Glob,Bash",
-                 "--disallowedTools", "Edit,Write,NotebookEdit"]
-    elif chatting:
-        # Never bypassPermissions: only these tools run, and the hook judges every command and write.
-        args += ["--permission-mode", "dontAsk", "--allowedTools", DUTY_TOOLS, "--disallowedTools", "NotebookEdit",
-                 "--strict-mcp-config", "--append-system-prompt-file", str(system_prompt),
-                 "--settings", duty_hook_settings(worktree)]
-    else:
-        # The hook rejects background launches and pattern kills, which end the turn early.
-        args += ["--permission-mode", "bypassPermissions", "--strict-mcp-config",
-                 "--append-system-prompt-file", str(system_prompt), "--settings", bash_hook_settings()]
-    if max_turns is not None:
-        args += ["--max-turns", str(max_turns)]
     for key, value in (("model", model), ("effort", effort)):
         if value:
             args += ["--" + key, value]
-    if session_id is not None:
-        args += ["--resume", session_id]
+    # A duty message that looks like an option is still a literal prompt.
+    if chatting and prompt.startswith("-"):
+        args = [executable, "-p", *args, "--", prompt]
+    else:
+        args = [executable, "-p", prompt, *args]
     # Read immediately before launch. Credential output never reaches artifacts.
     remaining = config.ACCOUNT_TIMEOUT if deadline is None else deadline - clock.CLOCK.monotonic()
     if remaining <= 0:
@@ -350,6 +370,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                                              and isinstance(item.get("text"), str)]
                                     if texts:
                                         response["raw_message"] = "\n".join(texts).replace(token, "[REDACTED]")
+                                        if on_text:
+                                            on_text(response["raw_message"])
                             elif event.get("type") == "result" and isinstance(event.get("result"), str):
                                 if event["result"]:
                                     response["raw_message"] = event["result"].replace(token, "[REDACTED]")
