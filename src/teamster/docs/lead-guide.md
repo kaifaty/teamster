@@ -104,7 +104,7 @@ teamster say update-parser "Handle the empty input case."
 teamster wait update-parser
 ```
 
-Teamster starts a separate `opencode acp` process in the task worktree for each turn using OpenCode 2.3.2 on `PATH`. It saves the session ID returned by OpenCode and resumes that exact session on follow-ups. In sandbox-off mode the worker grants one-time tool permissions offered by OpenCode. Separate reviews use the selected Teamster reviewer and its account. [OpenCode CLI commands](https://opencode.ai/docs/cli/commands/)
+Teamster starts a separate `opencode acp` process in the task worktree for each turn using OpenCode 2.3.2 on `PATH`. It creates the session with ACP `session/new`, saves its native ID and resumes that ID on follow-ups. Before the first prompt, Teamster sets the task slug as the session title using the standalone `session.update` metadata operation. OpenCode 2.3.2 has no ACP rename command. Setting the title avoids a model request for automatic naming. In sandbox-off mode the worker grants one-time tool permissions offered by OpenCode. Separate reviews use the selected Teamster reviewer and its account. [OpenCode CLI commands](https://opencode.ai/docs/cli/commands/)
 
 | Step | Command |
 |---|---|
