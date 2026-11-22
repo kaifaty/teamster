@@ -1,18 +1,21 @@
 """Project-owned outcomes and their links to the Board's cached work records."""
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import subprocess
+import time
 from contextlib import closing
+from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .actions import string
-from .duty_tasks import task_id
+from .duty_tasks import _goal, task_id
 from .store import ready_for_review
-from .task_files import ARCHIVED, safe_slug
+from .task_files import ARCHIVED, Record, number, read_state, safe_slug
 
 
 TERMINAL = ("done", "cancelled")
@@ -178,7 +181,8 @@ def _cards(saved, sources):
         elif ref not in attached:
             status = _managed_status(source)
             if status not in TERMINAL:
-                cards[ref] = dict(_fields(source["repo"], source["slug"], status, [ref]), follow_source=True)
+                cards[ref] = dict(_fields(source["repo"], source["slug"], status, [ref]),
+                                  follow_source=True, title_source="generated")
     return cards
 
 
@@ -200,6 +204,10 @@ def _managed_links(refs, sources):
 def _public(identity, card, sources):
     fields = dict(card)
     fields.pop("follow_source", None)
+    fields.pop("title_source", None)
+    fields.pop("title_revision", None)
+    fields.pop("title_frozen", None)
+    fields.pop("title_since", None)
     hidden = set(fields.pop("hidden_prs", ()))
     slug, managed = _managed_links(card["sessions"], sources)
     session_slugs = {ref: sources[ref]["slug"] for ref in card["sessions"] if ref in sources}
@@ -240,6 +248,14 @@ def _edit(data, current, sources):
     card["title"] = string(card, "title", 200, required=True)
     if card["status"] not in STATUSES:
         raise ValueError("Invalid project task status")
+    if "title" in data:
+        card["title_source"] = "manual"
+        card.pop("title_revision", None)
+        card.pop("title_since", None)
+    elif card.get("title_source") in ("generated", "operator"):
+        card.setdefault("title_since", time.time())
+    if current["status"] in TERMINAL or card["status"] in TERMINAL:
+        card["title_frozen"] = True
     if card["parent_id"] is not None and not safe_slug(card["parent_id"]):
         raise ValueError("Invalid parent_id")
     card["depends_on"] = _refs(card["depends_on"], "depends_on")
@@ -346,6 +362,63 @@ class ProjectTasks:
         for summary in sessions.values():
             summary.pop("archived", None)
         return sessions, task["pull_requests"]
+
+    def _title_candidate(self, identity, card, source, repositories, *, fresh=False):
+        if (card is None or card.get("title_source") not in ("generated", "operator")
+                or card.get("title_frozen") or card["status"] in TERMINAL or identity not in card["sessions"]
+                or source is None or source["archived"] or source["repo"] != card["project"]):
+            return None
+        slug = source["slug"]
+        record = Record(self.store.tasks_path / slug, False)
+        read_state(record)
+        state = record.state
+        repo = state.get("repo")
+        if (not isinstance(repo, str) or not Path(repo).is_absolute() or state.get("slug") != slug
+                or task_id(slug, state.get("created")) != identity):
+            return None
+        checkout = Path(repo).resolve()
+        if not any(checkout.is_relative_to(root) and checkout.name == root.name for root in repositories):
+            return None
+        verdict_from = self.store.lead_verdict if fresh else self.store._journal.lead_verdict
+        _, verdict_at = verdict_from(slug, record, source["repo"], current=False)
+        turn_at = max(number(state.get(key)) or 0 for key in ("turn_started", "turn_finished"))
+        if verdict_at is not None and (verdict_at > turn_at or verdict_at >= card.get("title_since", float("inf"))):
+            return None
+        goal = (_goal(self.store._file(record.path, "brief.md")) or "")[:1800]
+        report = state.get("result")
+        summary = report.get("summary") if isinstance(report, dict) else None
+        summary = summary.strip()[:600] if isinstance(summary, str) else ""
+        if not (goal or summary):
+            return None
+        revision = hashlib.sha256(json.dumps([goal, summary]).encode("utf-8")).hexdigest()
+        if revision == card.get("title_revision"):
+            return None
+        return dict(id=identity, revision=revision, title=card["title"], goal=goal, summary=summary)
+
+    def title_candidates(self, repositories):
+        cards, sources = self._view()
+        repositories = {Path(repo) for repo in repositories}
+        with self.store.lock:
+            return [candidate for identity, card in sorted(cards.items())
+                    if (candidate := self._title_candidate(identity, card, sources.get(identity), repositories))]
+
+    def update_title(self, identity, revision, title, repositories):
+        with self._connect("rwc") as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            saved = self._load(db)
+            sources = self._sources(saved)
+            card = _cards(saved, sources).get(identity)
+            candidate = self._title_candidate(identity, card, sources.get(identity),
+                                              {Path(repo) for repo in repositories}, fresh=True)
+            if candidate is None or candidate["revision"] != revision:
+                return False
+            card = dict(card, title_revision=revision)
+            card.setdefault("title_since", time.time())
+            if title is not None:
+                card.update(title=title, title_source="operator")
+            self._load(db, create=True)
+            db.execute("INSERT OR REPLACE INTO tasks VALUES (?, ?)", (identity, json.dumps(card, ensure_ascii=False)))
+            return True
 
     def save(self, data):
         if "sessions" in data:

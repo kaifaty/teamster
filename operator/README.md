@@ -1,8 +1,9 @@
-# Read-only Teamster operator
+# Teamster operator
 
-This process observes finished work turns on a training Board. Inkling 2 Mini reads the task
-through Pi and recommends a next step. A person decides what to do. The Board client uses the
-three GET routes in the [external duty API](../src/teamster/docs/external-duty.md).
+Inkling 2 Mini reads finished work turns through Pi and recommends the next step. On a writable
+Board it also maintains generated titles for current project tasks. The
+[external duty API](../src/teamster/docs/external-duty.md) limits title changes to the
+configured repositories.
 
 ## Run one page
 
@@ -28,6 +29,10 @@ On a Board with actions enabled, give the operator the separate `observer_token`
 
 Omit `-- --once` for continuous polling. Empty pages are polled every five seconds. Stop with
 Ctrl-C or SIGTERM. Reuse the same state file to resume.
+
+The operator checks for one title to assess per poll. The Board supplies the linked brief
+and latest report, then checks the context fingerprint, status and title ownership at save time.
+Each context is recorded once. A user title takes precedence, including on reopened tasks.
 
 ## Inspect a run
 

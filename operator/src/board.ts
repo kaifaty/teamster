@@ -24,6 +24,14 @@ export interface Card extends Turn {
   blocker: string | null;
 }
 
+export interface TitleCandidate {
+  id: string;
+  revision: string;
+  title: string;
+  goal: string;
+  summary: string;
+}
+
 export class InvalidCursor extends Error {}
 
 export function localUrl(value: string, path: "/" | "/v1"): string {
@@ -37,41 +45,61 @@ export function localUrl(value: string, path: "/" | "/v1"): string {
 }
 
 export function connectBoard(origin: string, token: string) {
-  async function get(path: string, signal = AbortSignal.timeout(60_000)) {
+  async function request(path: string, signal = AbortSignal.timeout(60_000), change?: {
+    revision: string; title: string | null;
+  }) {
     const route = "/api/external-duty/v1/" + path;
-    console.log(JSON.stringify({ type: "board_request", method: "GET", route }));
+    const method = change ? "POST" : "GET";
+    console.log(JSON.stringify({ type: "board_request", method, route }));
     const response = await fetch(origin + route, {
-      method: "GET", headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal,
+      method, headers: { Authorization: `Bearer ${token}`, ...(change ? { "Content-Type": "application/json" } : {}) },
+      body: change ? JSON.stringify(change) : undefined, redirect: "error", signal,
     });
     const body = await response.text();
     if (body.includes(token)) throw new Error("Board returned its credential in response data");
+    if (response.status === 404 && path === "project-titles") return { tasks: [] };
+    if (response.status === 409 && change) return { ok: false };
     if (!response.ok) {
       if (response.status === 400 && JSON.parse(body).error?.code === "invalid_cursor") {
         throw new InvalidCursor("Board no longer has the saved cursor");
       }
-      throw new Error(`Board GET returned HTTP ${response.status}`);
+      throw new Error(`Board ${method} returned HTTP ${response.status}`);
     }
     return JSON.parse(body);
   }
 
   return {
     async events(after: number): Promise<{ events: WorkEvent[]; next_cursor: number }> {
-      const page = await get(`events?after=${after}`);
+      const page = await request(`events?after=${after}`);
       if (!Array.isArray(page.events) || !Number.isSafeInteger(page.next_cursor) || page.next_cursor < after) {
         throw new Error("Invalid Board event page");
       }
       return page;
     },
     async list(signal?: AbortSignal): Promise<Card[]> {
-      const { tasks } = await get("tasks", signal);
+      const { tasks } = await request("tasks", signal);
       if (!Array.isArray(tasks)) throw new Error("Invalid Board task list");
       return tasks;
     },
     async task(id: string, signal: AbortSignal): Promise<Card> {
       if (!id || id === "." || id === "..") throw new Error("Expected a task ID");
-      const { task } = await get("tasks/" + encodeURIComponent(id), signal);
+      const { task } = await request("tasks/" + encodeURIComponent(id), signal);
       if (task?.id !== id) throw new Error("Board returned a different task ID");
       return task;
+    },
+    async titleCandidates(signal: AbortSignal): Promise<TitleCandidate[]> {
+      const { tasks } = await request("project-titles", signal);
+      if (!Array.isArray(tasks) || tasks.some(task => !task ||
+          !["id", "revision", "title", "goal", "summary"].every(key => typeof task[key] === "string"))) {
+        throw new Error("Invalid Board title candidates");
+      }
+      return tasks;
+    },
+    async updateTitle(task: TitleCandidate, title: string | null, signal: AbortSignal): Promise<boolean> {
+      const result = await request("project-titles/" + encodeURIComponent(task.id), signal, {
+        revision: task.revision, title,
+      });
+      return result.ok === true;
     },
   };
 }

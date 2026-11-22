@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { connectBoard, InvalidCursor, localUrl } from "./board.ts";
-import { MAX_CALLS, recommend } from "./mini.ts";
+import { MAX_CALLS, recommend, titleFor } from "./mini.ts";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -94,9 +94,37 @@ async function main() {
     return page.events.length;
   }
 
+  let retryTitlesAt = 0;
+  const titleRetries = new Map<string, number>();
+  async function refreshTitle() {
+    const now = Date.now();
+    if (now < retryTitlesAt) return;
+    for (const [id, retryAt] of titleRetries) {
+      if (retryAt <= now) titleRetries.delete(id);
+    }
+    let taskId: string | undefined;
+    try {
+      const signal = AbortSignal.timeout(60_000);
+      const candidates = await board.titleCandidates(signal);
+      const candidate = candidates.find(task => !titleRetries.has(task.id));
+      if (!candidate) return;
+      taskId = candidate.id;
+      const title = await titleFor(mini, candidate, signal);
+      if (await board.updateTitle(candidate, title, signal)) {
+        console.log(JSON.stringify({ type: "project_title", task_id: candidate.id, title }));
+      }
+    } catch (error) {
+      const retryAt = Date.now() + 60_000;
+      if (taskId) titleRetries.set(taskId, retryAt);
+      else retryTitlesAt = retryAt;
+      console.warn("Project title update delayed:", error instanceof Error ? error.message : String(error));
+    }
+  }
+
   try {
     do {
       const count = await poll();
+      await refreshTitle();
       if (!once && count === 0) await sleep(5000);
     } while (!once);
   } finally {

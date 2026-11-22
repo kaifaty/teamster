@@ -79,7 +79,7 @@ class Journal:
     def last_logins(self):
         return [dict(row) for _, row in sorted(self._last_logins.items())]
 
-    def lead_verdict(self, slug, record, repo):
+    def lead_verdict(self, slug, record, repo, *, current=True):
         """The task's latest lead verdict and its time, or (None, None).
 
         A verdict belongs to the task with the same repository, slug and birth (`created`); a legacy verdict without
@@ -96,7 +96,7 @@ class Journal:
             found.append(legacy)
         found = max((item for item in found if item is not None), default=None)
         turn = [at for at in (number(state.get("turn_started")), number(state.get("turn_finished"))) if at is not None]
-        if found is None or (turn and found[0] <= max(turn)):
+        if found is None or (current and turn and found[0] <= max(turn)):
             return None, None
         return found[1], found[0]
 

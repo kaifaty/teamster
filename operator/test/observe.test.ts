@@ -59,7 +59,7 @@ async function trial(t: TestContext, realMini?: string) {
   const cloudKey = randomBytes(32).toString("hex");
   const feed = { events, next_cursor: 1200 };
   const boardRequests: string[] = [];
-  t.after(() => assert.ok(boardRequests.every(request => /^GET (events\?after=\d+|tasks(\/[^/?]+)?)$/.test(request))));
+  t.after(() => assert.ok(boardRequests.every(request => /^GET (events\?after=\d+|tasks(\/[^/?]+)?|project-titles)$/.test(request))));
   const mock: { calls: number; mode: string; onCall?: () => void } = { calls: 0, mode: "recommend" };
   const board = await listen(t, (req, res) => {
     const url = new URL(req.url!, "http://localhost");
@@ -173,20 +173,22 @@ test("three work outcomes, empty page, restart and cursor recovery", async t => 
   const calls = output.filter(row => row.type === "model_call").length;
   assert.equal(rows.reduce((total, row) => total + row.model_calls, 0), calls);
   if (!live) assert.equal(mock.calls, calls);
-  assert.equal(output.at(-1).model_calls, calls);
+  assert.equal(output.find(row => row.type === "page").model_calls, calls);
 
   feed.events = [];
   feed.next_cursor = 1600;
-  assert.deepEqual((await run()).at(-1), { type: "page", after: 1200, next_cursor: 1600, events: 0,
+  assert.deepEqual((await run()).find(row => row.type === "page"), { type: "page", after: 1200, next_cursor: 1600, events: 0,
     recommendations: 0, model_calls: 0 });
 
   feed.events = events;
   feed.next_cursor = 1150;
   const beforeReplay = boardRequests.length;
   const replay = await run();
-  assert.deepEqual(boardRequests.slice(beforeReplay), ["GET events?after=1600", "GET tasks", "GET events?after=0"]);
+  assert.deepEqual(boardRequests.slice(beforeReplay),
+    ["GET events?after=1600", "GET tasks", "GET events?after=0", "GET project-titles"]);
   assert.ok(replay.some(row => row.type === "reconcile" && row.cards === 3 && row.unrecorded.length === 0));
-  assert.deepEqual(replay.at(-1), { type: "page", after: 0, next_cursor: 1150, events: 3, recommendations: 0, model_calls: 0 });
+  assert.deepEqual(replay.find(row => row.type === "page"),
+    { type: "page", after: 0, next_cursor: 1150, events: 3, recommendations: 0, model_calls: 0 });
   const db = new DatabaseSync(state, { readOnly: true });
   t.after(() => db.close());
   assert.deepEqual(db.prepare("SELECT * FROM reviewing").all(), []);
@@ -219,7 +221,7 @@ test("the call limit and the original event deadline hand off to a human", async
   db.prepare("UPDATE recommendations SET started_at = ? WHERE event_id = ?").run(Date.now() - 55_000, events[1].id);
   const resumed = await run(AbortSignal.timeout(15_000));
   const [expired] = resumed.filter(row => row.type === "recommendation");
-  assert.equal(resumed.at(-1).recommendations, 1);
+  assert.equal(resumed.find(row => row.type === "page").recommendations, 1);
   assert.equal(expired.event_id, events[1].id);
   assert.equal(expired.source, "handoff");
   assert.match(expired.recommendation, /60-second event budget/);

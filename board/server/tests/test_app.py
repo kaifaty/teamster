@@ -4623,6 +4623,21 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
             denied = client.post(base + route, headers=read_headers, json=start)
             assert denied.status_code == 403 and denied.json()["error"]["code"] == "forbidden"
 
+        titles_url = f"{base}/project-titles"
+        candidate, = client.get(titles_url, headers=read_headers).json()["tasks"]
+        assert candidate["id"] == task_id and candidate["goal"] == start["goal"]
+        change = {"revision": candidate["revision"], "title": "Add the label file"}
+        saved_title = client.post(f"{titles_url}/{task_id}", headers=read_headers, json=change)
+        assert saved_title.status_code == 200, saved_title.text
+        project_task, = client.get("/api/project-tasks").json()["tasks"]
+        assert project_task["title"] == change["title"] and project_task["sessions"] == [task_id]
+        manual = client.post("/api/actions/project-task", json={"id": task_id, "title": "Product label"},
+                             headers={"Origin": "http://127.0.0.1:8787", "X-Teamster-Board": "1"})
+        assert manual.status_code == 200, manual.text
+        assert client.post(f"{titles_url}/{task_id}", headers=read_headers, json=change).status_code == 409
+        project_task, = client.get("/api/project-tasks").json()["tasks"]
+        assert project_task["title"] == "Product label"
+
     with server() as client:
         replay = client.post(f"{base}/tasks", json=start)
         assert replay.status_code == 201, replay.text
