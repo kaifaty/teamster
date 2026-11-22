@@ -9,6 +9,7 @@ defineProps<{
   now: number;
   changedAt: Readonly<Record<string, number>>;
   selected: string | null;
+  operatorSlug?: string;
   collapsible?: boolean;
   collapsed?: boolean;
 }>();
@@ -46,6 +47,7 @@ const emit = defineEmits<{ open: [slug: string]; toggle: [] }>();
         :now="now"
         :changed-at="changedAt[task.slug]"
         :selected="selected === task.slug"
+        :operator="operatorSlug === task.slug"
         @open="emit('open', $event)"
       />
       <p v-if="tasks.length === 0" class="empty">пусто</p>

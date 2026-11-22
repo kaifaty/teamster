@@ -125,6 +125,17 @@ async function trial(t: TestContext, realMini?: string) {
 test("three work outcomes, empty page, restart and cursor recovery", async t => {
   const live = process.env.TRIAL_MINI_URL;
   const { feed, state, boardRequests, mock, run } = await trial(t, live);
+  if (!live) mock.onCall = () => {
+    const db = new DatabaseSync(state, { readOnly: true });
+    try {
+      const active = db.prepare("SELECT * FROM reviewing").all();
+      assert.equal(active.length, 1);
+      assert.ok(events.some(event => event.id === active[0].event_id));
+      assert.ok(Number(active[0].expires_at) > Date.now());
+    } finally {
+      db.close();
+    }
+  };
   const output = await run();
   const rows = output.filter(row => row.type === "recommendation");
   for (const row of rows) t.diagnostic(JSON.stringify(row));
@@ -178,6 +189,7 @@ test("three work outcomes, empty page, restart and cursor recovery", async t => 
   assert.deepEqual(replay.at(-1), { type: "page", after: 0, next_cursor: 1150, events: 3, recommendations: 0, model_calls: 0 });
   const db = new DatabaseSync(state, { readOnly: true });
   t.after(() => db.close());
+  assert.deepEqual(db.prepare("SELECT * FROM reviewing").all(), []);
   assert.deepEqual(db.prepare("SELECT event_id, recommendation FROM recommendations ORDER BY rowid").all()
     .map(row => [row.event_id, row.recommendation]), rows.map(row => [row.event_id, row.recommendation]));
   assert.equal(db.prepare("SELECT cursor FROM feed").get()!.cursor, 1150);

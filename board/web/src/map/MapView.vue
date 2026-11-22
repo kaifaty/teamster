@@ -18,7 +18,7 @@ import { useArrivalChime } from "./use/useArrivalChime";
 import { useMapSources } from "./use/useMapSources";
 import { useProjectTasks } from "./use/useProjectTasks";
 
-const props = defineProps<{ board: Board; active: boolean; machine?: string | null }>();
+const props = defineProps<{ board: Board; active: boolean; machine?: string | null; operatorTaskId?: string }>();
 const emit = defineEmits<{ machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
 const board = props.board;
 const { data, error, refresh, save } = useProjectTasks(board, () => props.active);
@@ -45,6 +45,10 @@ onMounted(() => query.addEventListener("change", resize));
 onBeforeUnmount(() => query.removeEventListener("change", resize));
 
 const map = ref<InstanceType<typeof ProjectTaskMap> | null>(null);
+function taskForRun(id?: string) {
+  return id ? data.value?.tasks.find((task) => task.sessions.includes(id)) : undefined;
+}
+const operatorSite = computed(() => taskForRun(props.operatorTaskId)?.id);
 const consolePanel = ref<InstanceType<typeof MapConsole> | null>(null);
 const toolsOpen = ref(false);
 const projects = computed(() => new Set(data.value?.tasks.filter(isCurrent).map((task) => task.project)));
@@ -70,6 +74,16 @@ const addOpener = ref<HTMLElement | null>(null);
 let recordOpener: HTMLElement | null = null;
 let accountOpener: HTMLElement | null = null;
 let researchOpener: HTMLElement | null = null;
+
+function openOperatorTask(id: string) {
+  const task = taskForRun(id);
+  if (!task || !map.value) return false;
+  recordTarget.value = account.value = null;
+  researchOpen.value = false;
+  map.value.select(task.id, true);
+  return true;
+}
+defineExpose({ openOperatorTask });
 
 function openRecord(target: RecordTarget) {
   recordOpener = document.activeElement as HTMLElement | null;
@@ -141,7 +155,7 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
 
 <template>
   <section class="map" aria-label="Карта заданий">
-    <ProjectTaskMap ref="map" :data="data" :error="error" :sessions="sessions" :save="save"
+    <ProjectTaskMap ref="map" :data="data" :error="error" :sessions="sessions" :save="save" :operator-site="operatorSite"
       @record="(taskId, sessionId) => openRecord({ taskId, sessionId })" @retry="refresh" @panel="emit('panel')">
       <button type="button" class="btn tools-toggle" :aria-expanded="toolsOpen" aria-controls="map-tools"
         title="Запуски и сессии, дежурный, подписки, машины и рефлексия" @click="toolsOpen = !toolsOpen">Инструменты</button>

@@ -5,12 +5,14 @@ import json
 import os
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +27,8 @@ from teamster_board import app as board_app
 from teamster_board import store as store_module
 from teamster_board import accounts as accounts_module, logins as logins_module
 from teamster_board.app import Settings, create_app
+from teamster_board.duty_tasks import task_id
+from teamster_board.external_duty import ExternalDutyConfig
 from teamster_board.research import Research
 
 
@@ -81,6 +85,52 @@ def receive_until(socket, wanted):
         if message["type"] == wanted:
             return message
     pytest.fail(f"No {wanted} message received")
+
+
+def test_operator_history_and_live_focus_on_read_only_board(board):
+    client, _, directory, state, settings = board
+    assert "operator" not in client.get("/api/snapshot").json()
+    archive_name = "demo-20261121T120000Z"
+    archive = directory.parent / ".archive" / archive_name
+    archive.mkdir(parents=True)
+    archived = {**state, "created": 0.5, "pid": None, "outcome": "completed"}
+    (archive / "state.json").write_text(json.dumps(archived))
+    old_id = task_id("demo", archived["created"])
+    current_id = task_id("demo", state["created"])
+    outside = directory.parent / "other"
+    outside.mkdir()
+    (outside / "state.json").write_text(json.dumps({
+        **state, "slug": "other", "repo": str(settings.task_home / "outside"),
+    }))
+    path = settings.task_home / "operator.sqlite"
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("""CREATE TABLE recommendations (
+            event_id TEXT, task_id TEXT, turn INTEGER, started_at INTEGER, source TEXT, recommendation TEXT)""")
+        db.executemany("INSERT INTO recommendations VALUES (?, ?, ?, ?, ?, ?)", [
+            ("old", old_id, 1, 1_000, "mini", f"{old_id}: Review the saved result."),
+            ("current", current_id, 2, 2_000, None, None),
+            ("outside", task_id("other", state["created"]), 1, 3_000, "mini", "Outside the configured cards."),
+        ])
+        db.commit()
+        read_only = create_app(replace(settings, read_only=True, operator_state=path,
+                                       external_duty=ExternalDutyConfig("mini", "test", (state["repo"],), 1, 60)))
+        with (TestClient(read_only, base_url="http://localhost", headers={"Host": "localhost"}) as client,
+              client.websocket_connect("/ws") as ws):
+            activity = ws.receive_json()["snapshot"]["operator"]
+            assert activity == {"available": True, "current": None, "history": [
+                {"event_id": "old", "task_id": old_id, "slug": archive_name, "title": "demo",
+                 "turn": 1, "started_at": 1.0, "source": "mini", "recommendation": "Review the saved result."},
+            ]}
+            assert client.get(f"/api/tasks/{archive_name}").status_code == 200
+            assert client.get("/api/snapshot").json()["operator"] == activity
+            with db:
+                db.execute("CREATE TABLE reviewing (event_id TEXT, expires_at INTEGER)")
+                db.execute("INSERT INTO reviewing VALUES ('current', ?)", (int(time.time() * 1000) + 6_000,))
+            active = receive_until(ws, "operator")["operator"]
+            assert active["current"] == {"task_id": current_id, "slug": "demo", "title": "demo"}
+            with db:
+                db.execute("UPDATE reviewing SET expires_at = 0")
+            assert receive_until(ws, "operator")["operator"] == activity
 
 
 def test_stale_days_environment_reaches_store(tmp_path, monkeypatch):

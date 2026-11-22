@@ -28,6 +28,13 @@ Ctrl-C or SIGTERM. Reuse the same state file to resume.
 
 ## Inspect a run
 
+To open the Operator panel on the Map or Board, set `BOARD_OPERATOR_STATE` in the training
+Board's environment to the absolute path of the same `OPERATOR_STATE` file and start the Board
+with `BOARD_EXTERNAL_DUTY_CONFIG` and `--read-only`. The panel shows a live review marker and the
+latest 50 recommendations linked to retained cards in the configured repositories.
+The Board opens the state file read-only. Earlier state files show their saved history
+before the updated observer starts reporting active reviews.
+
 Stdout contains JSON lines. Each `board_request` identifies the method and route. Each
 `model_call` identifies the event and outbound attempt. A `recommendation` includes the opaque
 task ID, event ID, model call count and text. Its `source` is `mini` for a model answer after a

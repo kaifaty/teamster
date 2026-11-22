@@ -1,6 +1,8 @@
 // Board data contract v1 (board/CONTRACT.md). Keep this file in step with the contract.
 // All times are Unix seconds (float) or null.
 
+import type { OperatorActivity } from "./operatorActivity";
+
 export type Column = "running" | "sleeping" | "review_me" | "attention" | "closed";
 export type Phase = "turn" | "check" | "review" | "fix" | "ci" | "sleeping" | "idle";
 
@@ -469,6 +471,7 @@ export interface Snapshot {
   accounts: Accounts;
   machines?: Machines; // missing from an older server
   logins?: Login[]; // sign-ins going and finished in the last 10 minutes; missing from an older server
+  operator?: OperatorActivity;
 }
 
 // WebSocket /ws, server → client only.
@@ -480,6 +483,7 @@ export type ServerMessage =
   | { type: "event"; event: LogEvent }
   | { type: "accounts"; accounts: Accounts }
   | { type: "machines"; machines: Machines }
+  | { type: "operator"; operator: OperatorActivity }
   | { type: "launch"; launch: Launch }
   | { type: "login"; login: Login }
   | { type: "duty_chat"; at: number } // the duty chat changed: GET /api/duty-chat again
