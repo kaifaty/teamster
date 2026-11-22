@@ -530,8 +530,9 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(wrapup["resume"], work["session_id"])
         self.assertEqual(wrapup["config_dir"], work["config_dir"])
         self.assertNotIn("maxTurns", wrapup["options"])
-        self.assertEqual(wrapup["prompt"],
-                         self.worker().prompts.wrapup_prompt(state, state["turn_stop"], {"language": "en"}))
+        worker = self.worker()
+        self.assertEqual(wrapup["prompt"], worker.config.EXECUTOR_INSTRUCTIONS + "\n\n"
+                         + worker.prompts.wrapup_prompt(state, state["turn_stop"], {"language": "en"}))
         self.assertEqual(self.invocations(), [])
 
     def test_claude_executor_weekly_budget_counts_seven_day_growth_across_work_turns(self):
@@ -860,8 +861,11 @@ class ReviewFixTests(RotationTestCase):
         rejected, retried = self.claude_invocations()[3:]
         self.assertEqual([item["resume"] for item in (rejected, retried)], [state["session_id"]] * 2)
         self.assertIn(order, rejected["prompt"])
-        self.assertEqual(retried["prompt"], self.worker().prompts.reset_resume_prompt({"language": "en"})
-                         + "\n\n" + rejected["prompt"])
+        worker = self.worker()
+        prefix = worker.config.EXECUTOR_INSTRUCTIONS + "\n\n"
+        self.assertTrue(rejected["prompt"].startswith(prefix))
+        self.assertEqual(retried["prompt"], prefix + worker.prompts.reset_resume_prompt({"language": "en"})
+                         + "\n\n" + rejected["prompt"][len(prefix):])
 
     def test_claude_executor_rotation_probe_time_is_outside_the_time_budget(self):
         self.fixture_timeout = 90

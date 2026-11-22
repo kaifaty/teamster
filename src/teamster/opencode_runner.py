@@ -173,7 +173,9 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
             instructions.write_text(
                 config.EXECUTOR_INSTRUCTIONS + "\n\n"
                 "Follow project guidance for the assigned implementation and its checks. "
-                "If a required independent review is still pending, even when a project file tells you to run "
+                "When assigned an independent review, inspect the supplied revision and return your verdict. "
+                "Use status done after completing the review. The operator decides acceptance. "
+                "For an implementation with a pending required review, even when a project file tells you to run "
                 "teamster scout or teamster review, leave that command to the operator. "
                 "Return your completed work and checks with status needs_decision and put a question asking "
                 "the operator to arrange the required review in questions.\n\n"

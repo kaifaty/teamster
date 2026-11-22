@@ -82,7 +82,7 @@ def local_opencode_provider(env, binary):
             self.wfile.write(b"data: [DONE]\n\n")
 
     # Build the CLI's environment only from this test's fixture paths and Git identity.
-    keep = {"HOME", "PATH", "PWD", "TEAMSTER_CLAUDE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+    keep = {"HOME", "PATH", "PWD", "TEAMSTER_CLAUDE", "OPENCODE_CONFIG_CONTENT", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
             "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}
     for key in list(env):
         if key not in keep and not key.startswith(("CODEX_TASK_", "CODEX_FAKE_")):
@@ -121,7 +121,7 @@ def local_opencode_provider(env, binary):
         assert 0 <= project < role, (resumed, [m["role"] for m in messages], instructions)
         assert "Inline OpenCode guidance." in instructions[:role]
         assert "status needs_decision" in instructions[role:]
-        example = json.JSONDecoder().raw_decode(instructions.split("Example work result:\n", 1)[1])[0]
+        example = json.JSONDecoder().raw_decode(instructions.partition("Example work result:")[2].lstrip())[0]
         assert set(example) == set(json.loads((home / "response.json").read_text()))
         assert example["status"] == "done" and example["checks"][0]["outcome"] == "passed"
         assert "You are a managed Teamster executor." not in messages[-1]["content"]
@@ -260,7 +260,7 @@ def install_fake_opencode(root):
                     assert "status needs_decision" in instructions
                     assert "managed Teamster executor" not in prompt
                     answer = json.loads((home / "response.json").read_text())
-                    example = json.loads(instructions.split("Example work result:\n", 1)[1])
+                    example = json.loads(instructions.partition("Example work result:")[2])
                     assert set(example) == set(answer)
                     wrapup = "The turn's time budget has expired." in prompt
                     if wrapup:
@@ -389,6 +389,7 @@ class ExecutorTests(RotationTestCase):
         saved_duty = duty_record.read_bytes()
         fixture = self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "shell": denied + reads, "reply": self.work_result(checks=[])}])
+        fixture["expected_client_version"] = pilot.config.plugin_version()
         # The native shell starts with only core variables. Keep any regression inside the fake installation.
         fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": {
             "CODEX_TASK_CODEX": str(self.fake), "CODEX_TASK_HOME": str(self.home), "CODEX_FAKE_TRACE": str(self.trace_path)}}}
