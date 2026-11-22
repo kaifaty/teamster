@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, watch } from "vue";
 import { prLabel } from "../lib/labels";
-import { detachedName, isCurrent, recordLabel, statusLabels, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "../lib/projectTasks";
+import { detachedName, isCurrent, recordLabel, statusLabels, type ProjectScout, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "../lib/projectTasks";
 import ProjectTaskForm from "./ProjectTaskForm.vue";
 import ProjectTaskSurface from "./surface/ProjectTaskSurface.vue";
 import { stateOf } from "./ship/bridge";
@@ -15,13 +15,16 @@ const props = defineProps<{
   fetchDetails?: (id: string) => Promise<ProjectTaskDetails | null>;
   operatorSite?: string;
   save: (change: ProjectTaskChange) => Promise<ProjectTask>;
+  fetchScoutHistory?: (project: string) => Promise<ProjectScout[]>;
 }>();
-const emit = defineEmits<{ record: [taskId: string, sessionId: string]; panel: []; retry: [] }>();
+const emit = defineEmits<{ record: [taskId: string, sessionId: string]; scout: [slug: string]; panel: []; retry: [] }>();
 const surface = ref<InstanceType<typeof ProjectTaskSurface> | null>(null);
 const closeButton = ref<HTMLButtonElement | null>(null);
 const picker = ref<HTMLSelectElement | null>(null);
 const createButton = ref<HTMLButtonElement | null>(null);
 const editButton = ref<HTMLButtonElement | null>(null);
+const historyButton = ref<HTMLButtonElement | null>(null);
+const historyPicker = ref<HTMLSelectElement | null>(null);
 const project = ref("");
 const selectedId = ref<string | null>(null);
 const editor = shallowRef<{ task: ProjectTask | null; project: string } | null>(null);
@@ -94,9 +97,51 @@ const pulls = computed(() => selected.value?.pull_requests.map((pr) => {
   return { ...pr, badge: state ? prLabels[state] : null };
 }) ?? []);
 
+const historyOpen = ref(false);
+const historyProject = ref("");
+const historyQuery = ref("");
+const scouts = ref<ProjectScout[]>([]);
+const scoutHistoryState = ref<"loading" | "ready" | "error">("ready");
+const historyFilter = computed(() => historyQuery.value.trim().toLowerCase());
+const closedTasks = computed(() => tasks.value.filter((task) => !isCurrent(task) &&
+  task.project === historyProject.value && task.title.toLowerCase().includes(historyFilter.value))
+  .sort((a, b) => a.title.localeCompare(b.title)));
+const historyScouts = computed(() => scouts.value.filter((scout) =>
+  scout.title.toLowerCase().includes(historyFilter.value)));
+
+watch([historyOpen, historyProject], ([open, name], _, onCleanup) => {
+  scouts.value = [];
+  scoutHistoryState.value = "ready";
+  if (!open || !name || !props.fetchScoutHistory) return;
+  let active = true;
+  onCleanup(() => { active = false; });
+  scoutHistoryState.value = "loading";
+  void props.fetchScoutHistory(name).then((entries) => {
+    if (!active) return;
+    scouts.value = entries;
+    scoutHistoryState.value = "ready";
+  }).catch(() => {
+    if (active) scoutHistoryState.value = "error";
+  });
+});
+
+function openHistory() {
+  historyProject.value = project.value || historyProject.value || projects.value[0] || "";
+  historyOpen.value = true;
+  editor.value = null;
+  selectedId.value = null;
+  emit("panel");
+  void nextTick(() => historyPicker.value?.focus());
+}
+function closeHistory() {
+  historyOpen.value = false;
+  void nextTick(() => historyButton.value?.focus());
+}
+
 function select(id: string, focus = false) {
   const task = byId.value.get(id);
   if (!task) return;
+  historyOpen.value = false;
   editor.value = null;
   selectedId.value = task.id;
   project.value = task.project;
@@ -108,6 +153,7 @@ function select(id: string, focus = false) {
 }
 function edit(task: ProjectTask | null) {
   if (!props.data?.writable) return;
+  historyOpen.value = false;
   editor.value = { task, project: task?.project ?? project.value };
   emit("panel");
 }
@@ -122,6 +168,7 @@ function closeCard() {
 }
 function focusProject(name: string) {
   project.value = name;
+  historyOpen.value = false;
   editor.value = null;
   selectedId.value = null;
   void nextTick(() => surface.value?.focusProject(name));
@@ -147,6 +194,8 @@ defineExpose({ select, focusProject });
       </label>
       <button v-if="data?.writable" ref="createButton" type="button" class="btn primary" @click="edit(null)">Новое задание</button>
       <span v-else-if="data" class="muted">Только чтение</span>
+      <button v-if="data && projects.length" ref="historyButton" type="button" class="btn"
+        :aria-expanded="historyOpen" @click="historyOpen ? closeHistory() : openHistory()">История</button>
       <slot />
     </div>
 
@@ -161,6 +210,39 @@ defineExpose({ select, focusProject });
       <aside v-if="editor && data" class="task-panel">
         <ProjectTaskForm :key="editor.task?.id ?? 'new'" :task="editor.task" :project="editor.project" :projects="projects"
           :tasks="tasks" :sessions="sessions" :writable="data.writable" :save="save" @saved="saved" @close="closeEditor" />
+      </aside>
+      <aside v-else-if="historyOpen" class="task-panel" aria-labelledby="history-title" @keydown.esc.stop="closeHistory">
+        <header>
+          <h2 id="history-title">История проекта</h2>
+          <button type="button" class="btn" aria-label="Закрыть историю" @click="closeHistory">×</button>
+        </header>
+        <div class="history-filters">
+          <label>Проект
+            <select ref="historyPicker" v-model="historyProject">
+              <option v-for="name in projects" :key="name" :value="name">{{ name }}</option>
+            </select>
+          </label>
+          <label>Поиск по названию<input v-model="historyQuery" type="search" /></label>
+        </div>
+        <h3>Завершённые и отменённые задания ({{ closedTasks.length }})</h3>
+        <ul v-if="closedTasks.length" class="history-list">
+          <li v-for="task in closedTasks" :key="task.id">
+            <button class="link" type="button" @click="select(task.id)">{{ task.title }}</button>
+            <span class="muted">{{ statusLabels[task.status] }}</span>
+          </li>
+        </ul>
+        <p v-else class="muted">Нет подходящих заданий.</p>
+        <template v-if="fetchScoutHistory">
+          <h3>Самостоятельные разведки<span v-if="scoutHistoryState === 'ready'"> ({{ historyScouts.length }})</span></h3>
+          <p v-if="scoutHistoryState === 'loading'" role="status" class="muted">Загрузка разведок…</p>
+          <p v-else-if="scoutHistoryState === 'error'" role="alert">Не удалось загрузить разведки.</p>
+          <ul v-else-if="historyScouts.length" class="history-list">
+            <li v-for="scout in historyScouts" :key="scout.id">
+              <button class="link" type="button" @click="emit('scout', scout.slug)">{{ scout.title }}</button>
+            </li>
+          </ul>
+          <p v-else class="muted">Нет подходящих разведок.</p>
+        </template>
       </aside>
       <aside v-else-if="selected" class="task-panel" aria-labelledby="selected-title" @keydown.esc.stop="closeCard">
         <header>
@@ -230,6 +312,13 @@ defineExpose({ select, focusProject });
 .map-note { top: 8px; left: 10px; max-width: calc(100% - 20px); margin: 0; padding: 6px 10px; }
 header, .status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 h2 { margin: 4px 0 8px; font-size: 18px; }
+h3 { font-size: 14px; margin: 12px 0 5px; }
+.history-filters { display: grid; gap: 6px; }
+.history-filters label { display: grid; gap: 3px; font-size: 12px; }
+.history-filters input, .history-filters select { width: 100%; box-sizing: border-box; }
+.history-list { list-style: none; display: grid; gap: 6px; margin: 0; padding: 0; }
+.history-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.history-list li span { flex-shrink: 0; font-size: 12px; }
 dl { margin: 0; }
 dt { margin-top: 10px; color: var(--muted); font-size: 12px; }
 dd { margin: 3px 0 0; }

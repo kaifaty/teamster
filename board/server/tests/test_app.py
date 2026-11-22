@@ -1157,6 +1157,7 @@ def test_constellations_come_from_the_data_home(board):
 def test_project_tasks_follow_managed_work_and_survive_restart(board):
     client, app, directory, state, settings = board
     read, write = "/api/project-tasks", "/api/actions/project-task"
+    history = read + "/scout-history?project=repository"
     client.headers.update({"Origin": "http://localhost", "X-Teamster-Board": "1"})
     github = {"provider": "github", "url": "https://github.com/team/repo/pull/7"}
     forgejo = {"provider": "forgejo", "url": "http://forge.internal:3000/team/repo/pulls/19"}
@@ -1177,6 +1178,9 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
     assert view["writable"] and view["biomes"] == {"repository": "tundra"}
     sources = {row["source_slug"]: row for row in view["tasks"]}
     assert {slug: row["status"] for slug, row in sources.items()} == {"demo": "ready", "survey": "active"}
+    scout, = client.get(history).json()["scouts"]
+    assert scout["slug"] == "finished-survey"
+    assert client.get(read + "/scout-history?project=other").json() == {"scouts": []}
     demo = sources["demo"]
     assert demo["pull_requests"] == [github]
     assert not (settings.task_home / "board-project-tasks.sqlite3").exists()
@@ -1197,9 +1201,9 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
     (directory / "state.json").write_text(json.dumps(state))
     archive = directory.parent / ".archive"
     archive.mkdir(exist_ok=True)
-    for slug in ("demo", "survey"):
+    for slug in ("demo", "survey", "finished-survey"):
         (directory.parent / slug).rename(archive / (slug + "-20261120T000000Z"))
-    # Push both linked records beyond the ordinary Board's 50-record archive window.
+    # Push the records beyond the ordinary Board's 50-record archive window.
     for index in range(50):
         newer = archive / f"recent-{index}-20261121T000000Z"
         newer.mkdir()
@@ -1209,6 +1213,9 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
         archives = {ref: slug + "-20261120T000000Z" for ref, slug in card["session_slugs"].items()}
         saved = dict(card, source_slug=None, session_slugs=archives, pull_requests=[github, forgejo, later])
         assert restarted.get(read).json() == {"tasks": [saved], "writable": True, "biomes": view["biomes"]}
+        assert restarted.get(history).json() == {
+            "scouts": [dict(scout, slug="finished-survey-20261120T000000Z")],
+        }
         directory.mkdir()
         (directory / "state.json").write_text(json.dumps(dict(state, created=100)))
         restarted.portal.call(restarted.app.state.board.poll)

@@ -741,6 +741,10 @@ The map uses `GET /api/project-tasks`. Each saved task tracks one outcome throug
 cancellation. The response includes every saved direct child, including `done` and `cancelled`
 children, for progress counts. Draw tasks in the four current states even if they have no live session.
 
+The project history opens saved `done` and `cancelled` cards. It fetches finished, unlinked scouts
+on demand for the selected project. Each scout has a stable run ID, its Board detail slug, title
+and creation time. Archive lookups include runs outside the recent Board snapshot.
+
 The same response includes unclaimed work from the Board's task cache. A managed work, review or
 scout record needs its own slug matching the folder, an explicit repository and a creation time.
 Its projected card uses the repository basename, the slug as its title and the existing managed ID
@@ -1399,6 +1403,7 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   `ProjectPullState` is `draft`, `open`, `merged` or `closed`. An unavailable PR has a null status.
   The Board reads GitHub through `gh` and Forgejo through a `tea` login for the link's configured URL.
   Only opening a card asks the forge for its PR states.
+- `GET /api/project-tasks/scout-history?project=<name>` → `{scouts: {id, slug, title, created}[]}`.
 - `POST /api/actions/project-task` → `{task: ProjectTask}`. See “Project tasks” for creation and partial updates.
 - `POST /api/actions/login`, `/api/actions/login/input`, `/api/actions/login/cancel`,
   `/api/actions/account-refresh` and `/api/actions/account-remove` → the responses described

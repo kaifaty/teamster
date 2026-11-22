@@ -1,5 +1,5 @@
 import { sendBoardAction, type ActionSender } from "./actions";
-import { projectTaskErrors, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "./projectTasks";
+import { projectTaskErrors, type ProjectScout, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "./projectTasks";
 import type { ArtIndex, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import type { DutyChatView } from "../dutyChatTypes";
 import { connectSocket, type ConnectionState } from "./socket";
@@ -16,6 +16,7 @@ export interface BoardSource {
   connect(onMessage: (message: ServerMessage) => void, onState: (state: ConnectionState, retryInMs: number | null) => void): () => void;
   fetchProjectTasks(): Promise<ProjectTasks>;
   fetchProjectTaskDetails?(id: string): Promise<ProjectTaskDetails | null>;
+  fetchScoutHistory?(project: string): Promise<ProjectScout[]>;
   saveProjectTask(change: ProjectTaskChange): Promise<ProjectTask>;
   /** null for an unknown task (404). */
   fetchDetail(slug: string): Promise<TaskDetail | null>;
@@ -63,6 +64,11 @@ export function serverSource(): BoardSource {
     async fetchProjectTaskDetails(id) {
       const response = await get(`/api/project-tasks/${encodeURIComponent(id)}/details`);
       return response ? response.json() : null;
+    },
+    async fetchScoutHistory(project) {
+      const response = await get(`/api/project-tasks/scout-history?project=${encodeURIComponent(project)}`);
+      if (!response) throw new Error("404");
+      return (await response.json()).scouts;
     },
     async saveProjectTask(change) {
       const response = await sendBoardAction("project-task", change);

@@ -15,7 +15,7 @@ from uuid import uuid4
 from .actions import string
 from .duty_tasks import _goal, task_id
 from .store import ready_for_review
-from .task_files import ARCHIVED, Record, number, read_state, safe_slug
+from .task_files import ARCHIVED, Record, alive, directories, number, read_state, safe_slug
 
 
 TERMINAL = ("done", "cancelled")
@@ -342,12 +342,15 @@ class ProjectTasks:
             db.execute("PRAGMA user_version = 2")
         return saved
 
+    def _saved(self):
+        if not self.path.exists():
+            return {}
+        with self._connect("ro") as db:
+            db.execute("BEGIN")
+            return self._load(db)
+
     def _view(self):
-        saved = {}
-        if self.path.exists():
-            with self._connect("ro") as db:
-                db.execute("BEGIN")
-                saved = self._load(db)
+        saved = self._saved()
         sources = self._sources(saved)
         return _cards(saved, sources), sources
 
@@ -419,6 +422,30 @@ class ProjectTasks:
             self._load(db, create=True)
             db.execute("INSERT OR REPLACE INTO tasks VALUES (?, ?)", (identity, json.dumps(card, ensure_ascii=False)))
             return True
+
+    def scout_history(self, project):
+        """Read unlinked finished scouts, including archives outside the Board's polling window."""
+        linked = {ref for card in self._saved().values() for ref in card["sessions"]}
+        history = []
+        for folder, archived in ((self.store.tasks_path, False), (self.store.tasks_path / ".archive", True)):
+            for path in directories(folder):
+                record = Record(path, archived)
+                read_state(record)
+                state = record.state
+                repo = state.get("repo")
+                if state.get("kind") != "scout" or not isinstance(repo, str) or Path(repo).name != project:
+                    continue
+                if not archived and alive(state.get("pid")):
+                    continue
+                match = ARCHIVED.fullmatch(path.name) if archived else None
+                slug = match[1] if match else path.name
+                if slug != state.get("slug") or archived and not match:
+                    continue
+                created = number(state.get("created"))
+                identity = task_id(slug, created)
+                if identity is not None and identity not in linked:
+                    history.append({"id": identity, "slug": path.name, "title": slug, "created": created})
+        return sorted(history, key=lambda row: (row["created"], row["slug"]), reverse=True)
 
     def save(self, data):
         if "sessions" in data:

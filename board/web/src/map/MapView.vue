@@ -157,7 +157,9 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
   <section class="map" aria-label="Карта заданий">
     <ProjectTaskMap ref="map" :data="data" :error="error" :sessions="sessions" :save="save" :operator-site="operatorSite"
       :records="board.state.value.tasks" :fetch-details="board.source.fetchProjectTaskDetails"
-      @record="(taskId, sessionId) => openRecord({ taskId, sessionId })" @retry="refresh" @panel="emit('panel')">
+      :fetch-scout-history="board.source.fetchScoutHistory"
+      @record="(taskId, sessionId) => openRecord({ taskId, sessionId })" @scout="openRecord"
+      @retry="refresh" @panel="emit('panel')">
       <button type="button" class="btn tools-toggle" :aria-expanded="toolsOpen" aria-controls="map-tools"
         title="Запуски и сессии, дежурный, подписки, машины и рефлексия" @click="toolsOpen = !toolsOpen">Инструменты</button>
     </ProjectTaskMap>

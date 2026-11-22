@@ -33,6 +33,7 @@ from .project_tasks import ProjectTasks
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
 from .task_chat import task_chat
+from .task_files import safe_slug
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 PING_SECONDS = 20
@@ -541,6 +542,15 @@ def create_app(settings=None):
         logins = await lookup(project_task_module.forgejo_logins) if any(pr["provider"] == "forgejo" for pr in prs) else {}
         statuses = await asyncio.gather(*(lookup(project_task_module.pull_request_status, pr, logins) for pr in prs))
         return {"sessions": sessions, "pull_requests": {pr["url"]: status for pr, status in zip(prs, statuses)}}
+
+    @app.get("/api/project-tasks/scout-history")
+    def project_scout_history(project: str):
+        if not safe_slug(project):
+            return error(400, "Invalid project name")
+        try:
+            return {"scouts": board.project_tasks.scout_history(project)}
+        except (OSError, sqlite3.Error):
+            return error(503, "project_tasks_unavailable")
 
     @app.post("/api/actions/project-task")
     async def project_task_action(request: Request):

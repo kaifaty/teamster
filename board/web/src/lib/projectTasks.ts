@@ -19,6 +19,12 @@ export interface ProjectTasks {
   writable: boolean;
 }
 
+export interface ProjectScout {
+  id: string;
+  slug: string;
+  title: string;
+}
+
 type Fields = Omit<ProjectTask, "id" | "source_slug" | "session_slugs">;
 export type ProjectTaskChange = Partial<Fields> & ({ id: string } | { project: string; title: string });
 
