@@ -18,7 +18,7 @@ import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from . import opencode
+from . import opencode, project_tasks as project_task_module
 from .accounts import Accounts, Reports, probe
 from .actions import Actions, action_body, error
 from .art import MEDIA_TYPES, art_file, art_index, project_biomes
@@ -175,6 +175,7 @@ class Board:
         )
         self.operator = None
         self.project_tasks = ProjectTasks(settings.task_home / "board-project-tasks.sqlite3", self.store)
+        self.pr_lookups = asyncio.Semaphore(4)
         self.research = Research(settings.path("tasks"), settings.reflection_task,
                                  settings.research_seconds, claude_desktop_dir=settings.claude_desktop_dir)
         self.loop = None
@@ -523,6 +524,23 @@ def create_app(settings=None):
             return error(503, "project_tasks_unavailable")
         return {"tasks": tasks, "biomes": project_biomes(board.settings.path("board_art")),
                 "writable": not board.settings.read_only}
+
+    @app.get("/api/project-tasks/{identity}/details")
+    async def project_task_details(identity: str):
+        try:
+            sessions, prs = await asyncio.to_thread(board.project_tasks.details, identity)
+        except KeyError:
+            return error(404, "Unknown project task")
+        except (OSError, sqlite3.Error):
+            return error(503, "project_tasks_unavailable")
+
+        async def lookup(run, *args):
+            async with board.pr_lookups:
+                return await asyncio.to_thread(run, *args)
+
+        logins = await lookup(project_task_module.forgejo_logins) if any(pr["provider"] == "forgejo" for pr in prs) else {}
+        statuses = await asyncio.gather(*(lookup(project_task_module.pull_request_status, pr, logins) for pr in prs))
+        return {"sessions": sessions, "pull_requests": {pr["url"]: status for pr, status in zip(prs, statuses)}}
 
     @app.post("/api/actions/project-task")
     async def project_task_action(request: Request):

@@ -1,8 +1,10 @@
 """Project-owned outcomes and their links to the Board's cached work records."""
 
 import json
+import os
 import re
 import sqlite3
+import subprocess
 from contextlib import closing
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -15,7 +17,8 @@ from .task_files import ARCHIVED, safe_slug
 
 TERMINAL = ("done", "cancelled")
 STATUSES = ("active", "needs_input", "blocked", "ready", *TERMINAL)
-PR_PATH = re.compile(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(pulls?)/([1-9][0-9]*)/?")
+PR_PATH = re.compile(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(pulls?)/([1-9][0-9]*)")
+PR_PREFIX = re.compile(r"(?:/[A-Za-z0-9_.-]+)*")
 HOST_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
 PR_HOST = re.compile(rf"(?:{HOST_LABEL}(?:\.{HOST_LABEL})*|\[[0-9a-fA-F:.]+\])(?::[0-9]+)?")
 
@@ -30,17 +33,80 @@ def _pull_request(url):
         return None
     if parts.scheme not in ("http", "https") or not PR_HOST.fullmatch(parts.netloc) or port == 0:
         return None
-    match = PR_PATH.fullmatch(parts.path)
-    if not match or any(segment in (".", "..") for segment in match.groups()[:2]):
+    segments = parts.path.removesuffix("/").rsplit("/", 4)
+    if len(segments) != 5:
         return None
+    prefix, owner, repo, route, index = segments
     github = parts.hostname == "github.com"
-    if match[3] != ("pull" if github else "pulls"):
+    if (not PR_PATH.fullmatch(f"/{owner}/{repo}/{route}/{index}") or not PR_PREFIX.fullmatch(prefix)
+            or any(segment in (".", "..") for segment in (prefix + f"/{owner}/{repo}").split("/"))
+            or (github and prefix) or route != ("pull" if github else "pulls")):
         return None
     host = parts.netloc.lower()
     if port == (443 if parts.scheme == "https" else 80):
         host = host.rsplit(":", 1)[0]
     return {"provider": "github" if github else "forgejo",
             "url": f"{parts.scheme}://{host}{parts.path.rstrip('/')}"}
+
+
+def _forge_json(*args):
+    try:
+        command = subprocess.run(args, check=True, capture_output=True, encoding="utf-8",
+                                 stdin=subprocess.DEVNULL, timeout=8, env={**os.environ, "GH_PROMPT_DISABLED": "1"})
+        return json.loads(command.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def forgejo_logins():
+    logins = _forge_json("tea", "login", "list", "--output", "json")
+    if not isinstance(logins, list):
+        return {}
+    trusted = {}
+    for login in logins:
+        if not isinstance(login, dict):
+            continue
+        url, name = login.get("url"), login.get("name")
+        if not isinstance(url, str) or not isinstance(name, str) or not name:
+            continue
+        try:
+            parsed = urlsplit(url)
+            port = parsed.port
+        except ValueError:
+            continue
+        if (parsed.scheme in ("https", "http") and PR_HOST.fullmatch(parsed.netloc)
+                and not parsed.query and not parsed.fragment):
+            origin = (parsed.scheme, parsed.hostname, port or (443 if parsed.scheme == "https" else 80))
+            trusted.setdefault((*origin, parsed.path.rstrip("/")), name)
+    return trusted
+
+
+def pull_request_status(pr, logins):
+    parts = urlsplit(pr["url"])
+    prefix, owner, repo, _, index = parts.path.rsplit("/", 4)
+    if pr["provider"] == "github":
+        data = _forge_json("gh", "pr", "view", f"https://github.com/{owner}/{repo}/pull/{index}",
+                           "--json", "state,isDraft")
+    else:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        origin = (parts.scheme, parts.hostname, port)
+        login = logins.get((*origin, prefix))
+        if login is None and not prefix:
+            # Older cards could only save root-relative Forgejo links.
+            matches = [name for key, name in logins.items() if key[:3] == origin]
+            if len(matches) == 1:
+                login = matches[0]
+        if login is None:
+            return None
+        data = _forge_json("tea", "api", f"--login={login}", f"/repos/{owner}/{repo}/pulls/{index}")
+    if not isinstance(data, dict) or not isinstance(data.get("state"), str):
+        return None
+    state = data["state"].lower()
+    if data.get("merged") is True or state == "merged":
+        return "merged"
+    if state == "open" and (data.get("isDraft") is True or data.get("draft") is True):
+        return "draft"
+    return state if state in ("open", "closed") else None
 
 
 def _pull_requests(rows):
@@ -260,14 +326,26 @@ class ProjectTasks:
             db.execute("PRAGMA user_version = 2")
         return saved
 
-    def tasks(self):
+    def _view(self):
         saved = {}
         if self.path.exists():
             with self._connect("ro") as db:
                 db.execute("BEGIN")
                 saved = self._load(db)
         sources = self._sources(saved)
-        return [_public(identity, card, sources) for identity, card in _cards(saved, sources).items()]
+        return _cards(saved, sources), sources
+
+    def tasks(self):
+        cards, sources = self._view()
+        return [_public(identity, card, sources) for identity, card in cards.items()]
+
+    def details(self, identity):
+        cards, sources = self._view()
+        task = _public(identity, cards[identity], sources)
+        sessions = {ref: sources[ref].copy() for ref in task["session_slugs"]}
+        for summary in sessions.values():
+            summary.pop("archived", None)
+        return sessions, task["pull_requests"]
 
     def save(self, data):
         if "sessions" in data:

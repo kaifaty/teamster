@@ -25,6 +25,7 @@ from teamster_board import access, actions as actions_module
 from teamster_board import landing as landing_module
 from teamster_board import app as board_app
 from teamster_board import store as store_module
+from teamster_board import project_tasks as project_tasks_module
 from teamster_board import accounts as accounts_module, logins as logins_module
 from teamster_board.app import Settings, create_app
 from teamster_board.duty_tasks import task_id
@@ -1230,7 +1231,7 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
                 for ref in linked["sessions"]] == [state["created"], 100]
 
 
-def test_project_task_links_and_write_protection(board):
+def test_project_task_links_and_write_protection(board, monkeypatch):
     client, app, directory, state, settings = board
     read, write = "/api/project-tasks", "/api/actions/project-task"
     client.headers.update({"Origin": "http://localhost", "X-Teamster-Board": "1"})
@@ -1273,8 +1274,33 @@ def test_project_task_links_and_write_protection(board):
     assert client.post(write, json={"id": "missing", "title": "Update"}).status_code == 404
     for headers in ({"Origin": "http://foreign.test"}, {"Content-Type": "text/plain"}, {"X-Teamster-Board": "0"}):
         assert client.post(write, json={"id": child, "status": "active"}, headers=headers).status_code == 403
-    rows[child] = client.post(write, json={"id": child, "status": "blocked"}).json()["task"]
+    github = "https://github.com/team/repo/pull/7"
+    forgejo = "https://forge.internal/git/team/repo/pulls/19"
+    unknown = "https://unknown.internal/team/repo/pulls/20"
+    calls = []
+
+    def forge_json(*args):
+        calls.append(args)
+        if args[:3] == ("tea", "login", "list"):
+            return [{"name": "local", "url": "https://forge.internal/git"}]
+        if args[0] == "gh":
+            assert github in args
+            return {"state": "OPEN", "isDraft": True}
+        assert args == ("tea", "api", "--login=local", "/repos/team/repo/pulls/19")
+        return {"state": "closed", "merged": True}
+
+    monkeypatch.setattr(project_tasks_module, "_forge_json", forge_json)
+    rows[child] = client.post(write, json={"id": child, "status": "blocked", "pull_requests": [
+        {"provider": "github", "url": github}, {"provider": "forgejo", "url": forgejo},
+        {"provider": "forgejo", "url": unknown},
+    ]}).json()["task"]
     assert rows[child]["status"] == "blocked"
+    assert client.get(read).status_code == 200 and not calls
+    details = client.get(f"{read}/{child}/details").json()
+    assert details["sessions"][child]["slug"] == "demo"
+    assert details["pull_requests"] == {github: "draft", forgejo: "merged", unknown: None}
+    assert len(calls) == 3
+    assert client.get(f"{read}/missing/details").status_code == 404
     settings.read_only = True
     with TestClient(create_app(settings), base_url="http://localhost", headers=dict(client.headers)) as locked:
         denied = locked.post(write, json={"id": child, "status": "active"})

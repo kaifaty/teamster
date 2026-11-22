@@ -1,4 +1,4 @@
-import { projectTaskErrors, type ProjectTask, type ProjectTaskChange, type ProjectTasks } from "../lib/projectTasks";
+import { projectTaskErrors, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "../lib/projectTasks";
 
 function sessionFields(slugs: string[]) {
   const session_slugs = Object.fromEntries(slugs.map((slug) =>
@@ -31,6 +31,17 @@ export function fixtureProjectTasks(changed?: () => void) {
   let next = 1;
   return {
     fetchProjectTasks: async () => structuredClone(projects),
+    async fetchProjectTaskDetails(id: string): Promise<ProjectTaskDetails | null> {
+      const task = projects.tasks.find((entry) => entry.id === id);
+      if (!task) return null;
+      return {
+        sessions: {},
+        pull_requests: Object.fromEntries(task.pull_requests.map((pr) => [
+          pr.url, pr.url === "https://github.com/example/demo-shop/pull/12" ? "open"
+            : pr.url === "https://forgejo.example/demo/vault/pulls/7" ? "merged" : null,
+        ])),
+      };
+    },
     async saveProjectTask(change: ProjectTaskChange) {
       const id = "id" in change ? change.id : null;
       const refs = new Map(projects.tasks.flatMap((task) => Object.entries(task.session_slugs)));

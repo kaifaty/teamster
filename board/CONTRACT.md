@@ -773,7 +773,7 @@ Desktop sessions, duty, reflection, queues and CI events create no project tasks
   entry in `sessions` and has no key in `session_slugs`. The `source_slug` shortcut holds the first
   attached managed slug still in the live directory, or `null` if none is available.
 - In `pull_requests`, send provider/URL pairs. GitHub uses `github.com/<owner>/<repo>/pull/<number>`
-  and self-hosted Forgejo uses `<host>[:port]/<owner>/<repo>/pulls/<number>`. Both take HTTP(S)
+  and self-hosted Forgejo uses `<host>[:port]/<owner>/<repo>/pulls/<number>` with its configured path prefix, if any. Both take HTTP(S)
   with a positive PR number. Credentials are rejected. The server strips the query, fragment,
   trailing slash and default port and compares normalized URLs locally.
   Published PRs on linked managed records appear automatically. Explicitly listed PRs persist
@@ -1394,6 +1394,11 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
 
 - `GET /api/snapshot` → `Snapshot`, including `logins` and `accounts.last_logins`.
 - `GET /api/project-tasks` → `{tasks: ProjectTask[], biomes: Record<string, string>, writable: boolean}`.
+- `GET /api/project-tasks/{id}/details` → `{sessions: Record<string, TaskSummary>, pull_requests: Record<string, ProjectPullState | null>}`.
+  The keys are the card's saved session IDs and normalized PR URLs. Unavailable sessions are omitted.
+  `ProjectPullState` is `draft`, `open`, `merged` or `closed`. An unavailable PR has a null status.
+  The Board reads GitHub through `gh` and Forgejo through a `tea` login for the link's configured URL.
+  Only opening a card asks the forge for its PR states.
 - `POST /api/actions/project-task` → `{task: ProjectTask}`. See “Project tasks” for creation and partial updates.
 - `POST /api/actions/login`, `/api/actions/login/input`, `/api/actions/login/cancel`,
   `/api/actions/account-refresh` and `/api/actions/account-remove` → the responses described
