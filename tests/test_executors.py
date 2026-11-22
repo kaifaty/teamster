@@ -452,7 +452,7 @@ class ExecutorTests(RotationTestCase):
     def test_codex_close_distinguishes_legacy_missing_method_from_cleanup_failure(self):
         self.configure(language="en")
         result = self.work_result()
-        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": result}])
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": result, "spawn_child": "detached"}])
         fixture = self.home / "fixture.json"
         account = json.loads(fixture.read_text())
         for slug, reply, error in (
@@ -463,6 +463,9 @@ class ExecutorTests(RotationTestCase):
                 fixture.write_text(json.dumps(dict(account, terminal_list_reply=reply)))
                 self.start(slug, "--executor", "codex")
                 output = self.cli("wait", slug, "--timeout", "30")
+                child = [row["child_pid"] for row in self.trace() if row.get("command") == "exec-child"][-1]
+                self.extra_pids.add(child)
+                self.assertFalse(self.process_is_live(child))
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "failed" if error else "completed")
                 self.assertEqual(state["result"], None if error else result)

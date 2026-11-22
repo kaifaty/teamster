@@ -208,7 +208,9 @@ def monitor_process(st, account, options, prompt, processes):
                 yield proc
             finally:
                 try:
-                    if proc.poll() is None:
+                    # Older backends cannot list and close detached terminals themselves.
+                    close_error = path / "close-error"
+                    if proc.poll() is None or (close_error.is_file() and close_error.stat().st_size):
                         processes.interrupt()
                     with suppress(BrokenPipeError):
                         proc.stdin.close()

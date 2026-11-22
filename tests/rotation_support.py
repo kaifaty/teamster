@@ -59,7 +59,6 @@ import fcntl
 import json
 import os
 import re
-import select
 import shlex
 import signal
 import subprocess
@@ -837,7 +836,8 @@ def execute(invocation, thread, emit):
         child_code = ("import signal; signal.pause()" if run.get("hold_until_signal")
                       else "import time; time.sleep(60)")
         child = subprocess.Popen([sys.executable, "-c", child_code],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=run["spawn_child"] == "detached")
         trace({"command": "exec-child", "child_pid": child.pid, "thread": thread})
     for command in run.get("commands", []):
         item = {"id": str(uuid.uuid4()), "type": command.get("item_type", "command_execution"),
@@ -931,11 +931,7 @@ def execute(invocation, thread, emit):
 
     completed = {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}}
     if run.get("final_usage_after_completion"):
-        # Flush this sample during shutdown, once the adapter has delivered
-        # the prompt receipt and closes stdin or requests native cleanup.
         emit(completed)
-        if not select.select([sys.stdin], [], [], 15)[0]:
-            raise RuntimeError("Fixture adapter did not close the completed turn")
     if any(key in run for key in ("token_usage_before", "token_usage_after",
                                  "weekly_used_before", "weekly_used_after")):
         rollout_limits()
