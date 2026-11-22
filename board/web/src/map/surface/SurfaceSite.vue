@@ -58,11 +58,10 @@ const description = computed(() => [
 <style scoped>
 .site {
   --art-height: calc(52px * var(--zoom));
-  --screen-x: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
   --tint: #d1e9ca;
   --sign: #245646;
   position: absolute;
-  left: var(--screen-x);
+  left: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
   top: calc(var(--ty) + var(--y) * var(--zoom) * 1px);
   transform: translate(-50%, calc(0px - var(--art-height)));
   display: flex; flex-direction: column; align-items: center;
@@ -95,7 +94,7 @@ const description = computed(() => [
 [data-status="ready"] .marker { border-radius: 3px; }
 .plate {
   display: grid; justify-items: center; gap: 1px; max-width: 100%; padding: 4px 8px;
-  transform: translateX(clamp(calc(50% - var(--screen-x) + 3px), 0px, calc(100cqw - var(--screen-x) - 50% - 3px)));
+  transform: translateX(clamp(calc(50% - var(--left-room)), 0px, calc(var(--right-room) - 50%)));
   border: 1px solid #f7e9ba9c; border-radius: 4px;
   background: #27382ff5; box-shadow: 0 1px 3px #30291d54;
 }

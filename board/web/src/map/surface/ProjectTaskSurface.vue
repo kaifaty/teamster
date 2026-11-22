@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useId } from "vue";
+import { computed, ref, useId, watch } from "vue";
 import { ZOOM_NOTCH } from "../navigation";
 import { at } from "../overlay/style";
 import forest from "./art/forest.webp";
@@ -27,16 +27,57 @@ defineExpose({ focusTask, focusProject });
 
 const id = useId();
 const regions = computed(() => [...layout.value.regions.values()].sort((a, b) => a.project.localeCompare(b.project, "ru")));
+// During a gesture the compositor can move the same terrain, buildings and labels.
+// Once zoom stops, draw them at exactly the requested scale for sharp text and strokes.
+const settledZoom = ref(camera.value.zoom);
+watch(() => camera.value.zoom, (zoom, _, onCleanup) => {
+  const timer = window.setTimeout(() => { settledZoom.value = zoom; }, 100);
+  onCleanup(() => window.clearTimeout(timer));
+});
+const renderView = computed<typeof bounds.value & { zoom: number; compact: boolean }>((previous) => {
+  const box = bounds.value;
+  const zoom = camera.value.zoom;
+  if (previous && previous.compact === compact.value) {
+    const closeScale = zoom === previous.zoom || (zoom !== settledZoom.value && Math.abs(zoom / previous.zoom - 1) < 0.1);
+    const coversView = box.x >= previous.x && box.y >= previous.y &&
+      box.x + box.width <= previous.x + previous.width && box.y + box.height <= previous.y + previous.height;
+    if (closeScale && coversView && previous.width <= 2 * box.width && previous.height <= 2 * box.height) return previous;
+  }
+  // The raster covers the viewport plus a margin, even on large maps. Start it on a whole pixel.
+  const padX = Math.ceil(box.width * zoom / 4) / zoom;
+  const padY = Math.ceil(box.height * zoom / 4) / zoom;
+  return {
+    x: box.x - padX, y: box.y - padY, width: box.width + 2 * padX, height: box.height + 2 * padY,
+    zoom, compact: compact.value,
+  };
+});
+const cameraStyle = computed(() => {
+  const { tx, ty, zoom } = camera.value;
+  const view = renderView.value;
+  return {
+    transform: `translate(${tx + view.x * zoom}px, ${ty + view.y * zoom}px) scale(${zoom / view.zoom})`,
+    width: view.width * view.zoom + "px", height: view.height * view.zoom + "px",
+    "--zoom": view.zoom, "--tx": -view.x * view.zoom + "px", "--ty": -view.y * view.zoom + "px",
+  };
+});
 const visibleSites = computed(() => {
   const box = bounds.value;
   const pad = 125 / camera.value.zoom;
+  const drawnZoom = renderView.value.zoom;
+  const inset = 3 * drawnZoom / camera.value.zoom;
   return regions.value.flatMap(region => region.sites.filter(site =>
     site.x >= box.x - pad && site.x <= box.x + box.width + pad &&
-    site.y >= box.y - pad && site.y <= box.y + box.height + pad).map(site => ({
-      site, biome: region.biome,
-      outside: site.x < box.x || site.x > box.x + box.width || site.y < box.y || site.y > box.y + box.height,
-      above: site.y + pad > box.y + box.height,
-    })));
+    site.y >= box.y - pad && site.y <= box.y + box.height + pad).map(site => {
+      const outside = site.x < box.x || site.x > box.x + box.width || site.y < box.y || site.y > box.y + box.height;
+      const nearSide = site.x < box.x + pad || site.x > box.x + box.width - pad;
+      return {
+        site, biome: region.biome, outside, above: site.y + pad > box.y + box.height,
+        edges: !outside && nearSide ? {
+          "--left-room": (site.x - box.x) * drawnZoom - inset + "px",
+          "--right-room": (box.x + box.width - site.x) * drawnZoom - inset + "px",
+        } : undefined,
+      };
+    }));
 });
 function parentOf(site: Site) {
   return site.task.parent_id === null ? undefined : layout.value.sites.get(site.task.parent_id);
@@ -88,52 +129,55 @@ function chooseProject(event: Event) {
     <div
       ref="field" class="field" role="group" tabindex="0"
       aria-label="Карта местности. Стрелки перемещают карту, плюс и минус меняют масштаб."
-      :style="{ '--tx': camera.tx + 'px', '--ty': camera.ty + 'px', '--zoom': camera.zoom }"
     >
-      <svg
-        v-if="bounds.width && bounds.height" class="terrain" aria-hidden="true"
-        :viewBox="`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`"
-      >
-        <defs>
-          <pattern v-for="(region, i) in regions" :id="id + '-land-' + i" :key="region.project"
-            patternUnits="userSpaceOnUse" :x="region.bounds.x0" :y="region.bounds.y0"
-            :width="Math.min(1344, region.bounds.x1 - region.bounds.x0)" :height="Math.min(960, region.bounds.y1 - region.bounds.y0)"
-            viewBox="0 0 1344 960" preserveAspectRatio="xMidYMid slice">
-            <image :href="region.biome === 'forest' ? forest : volcanic" width="1344" height="960" />
-          </pattern>
-          <marker :id="id + '-arrow'" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="15" markerHeight="15" orient="auto">
-            <path d="m1 1 10 5-10 5 2-5Z" fill="#ffdf89" stroke="#433b34" stroke-linejoin="round" />
-          </marker>
-        </defs>
-        <g v-if="layout.coastline" stroke-linejoin="round">
-          <path :d="layout.coastline" fill="#e8dfb4" stroke="#a7c9b9" stroke-width="10" vector-effect="non-scaling-stroke" />
-          <path :d="layout.coastline" fill="none" stroke="#e2dfb7" stroke-width="5" vector-effect="non-scaling-stroke" />
-          <path v-for="(region, i) in regions" :key="region.project" :d="region.outline" :fill="`url(#${id}-land-${i})`"
-            stroke="#454b3e" stroke-width="2.8" vector-effect="non-scaling-stroke" />
-          <path v-for="region in regions" :key="'border-' + region.project" :d="region.outline" fill="none"
-            stroke="#ece0ae" stroke-width="0.9" vector-effect="non-scaling-stroke" />
-        </g>
-        <g v-if="families" fill="none" stroke-linecap="round">
-          <path :d="families" stroke="#665742" stroke-width="5" />
-          <path :d="families" stroke="#eeddb6" stroke-width="2.7" stroke-dasharray="4 5" />
-        </g>
-        <g v-for="path in arrows" :key="path" fill="none">
-          <path :d="path" stroke="#423a33" stroke-width="5.5" />
-          <path :d="path" stroke="#ffdf89" stroke-width="2.8" :marker-end="`url(#${id}-arrow)`" />
-        </g>
-      </svg>
-      <div
-        v-for="region in regions" :key="region.project" class="region" :class="{ compact }"
-        :style="{ ...at(region.label.x, region.label.y), '--label-width': region.labelWidth + 'px' }" :title="region.project"
-      >
-        <b>{{ region.project }}</b>
-        <small v-if="!compact">{{ region.biome === "forest" ? "Хвойное пограничье" : "Вулканическое плато" }}</small>
+      <div v-if="bounds.width && bounds.height" class="camera" :style="cameraStyle">
+        <svg
+          v-memo="[renderView, layout, arrows]" class="terrain" aria-hidden="true"
+          :viewBox="`${renderView.x} ${renderView.y} ${renderView.width} ${renderView.height}`"
+        >
+          <defs>
+            <pattern v-for="(region, i) in regions" :id="id + '-land-' + i" :key="region.project"
+              patternUnits="userSpaceOnUse" :x="region.bounds.x0" :y="region.bounds.y0"
+              :width="Math.min(1344, region.bounds.x1 - region.bounds.x0)" :height="Math.min(960, region.bounds.y1 - region.bounds.y0)"
+              viewBox="0 0 1344 960" preserveAspectRatio="xMidYMid slice">
+              <image :href="region.biome === 'forest' ? forest : volcanic" width="1344" height="960" />
+            </pattern>
+            <marker :id="id + '-arrow'" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="15" markerHeight="15" orient="auto">
+              <path d="m1 1 10 5-10 5 2-5Z" fill="#ffdf89" stroke="#433b34" stroke-linejoin="round" />
+            </marker>
+          </defs>
+          <g v-if="layout.coastline" stroke-linejoin="round">
+            <path :d="layout.coastline" fill="#e8dfb4" stroke="#a7c9b9" stroke-width="10" vector-effect="non-scaling-stroke" />
+            <path :d="layout.coastline" fill="none" stroke="#e2dfb7" stroke-width="5" vector-effect="non-scaling-stroke" />
+            <path v-for="(region, i) in regions" :key="region.project" :d="region.outline" :fill="`url(#${id}-land-${i})`"
+              stroke="#454b3e" stroke-width="2.8" vector-effect="non-scaling-stroke" />
+            <path v-for="region in regions" :key="'border-' + region.project" :d="region.outline" fill="none"
+              stroke="#ece0ae" stroke-width="0.9" vector-effect="non-scaling-stroke" />
+          </g>
+          <g v-if="families" fill="none" stroke-linecap="round">
+            <path :d="families" stroke="#665742" stroke-width="5" />
+            <path :d="families" stroke="#eeddb6" stroke-width="2.7" stroke-dasharray="4 5" />
+          </g>
+          <g v-for="path in arrows" :key="path" fill="none">
+            <path :d="path" stroke="#423a33" stroke-width="5.5" />
+            <path :d="path" stroke="#ffdf89" stroke-width="2.8" :marker-end="`url(#${id}-arrow)`" />
+          </g>
+        </svg>
+        <div class="sites">
+          <div
+            v-for="region in regions" :key="region.project" class="region" :class="{ compact }"
+            :style="{ ...at(region.label.x, region.label.y), '--label-width': region.labelWidth + 'px' }" :title="region.project"
+          >
+            <b>{{ region.project }}</b>
+            <small v-if="!compact">{{ region.biome === "forest" ? "Хвойное пограничье" : "Вулканическое плато" }}</small>
+          </div>
+          <SurfaceSite
+            v-for="{ site, biome, outside, above, edges } in visibleSites" :key="site.task.id" :site="site" :biome="biome"
+            :style="edges" :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
+            :class="{ outside, above, relative: isDirectRelative(site) }" :tabindex="outside ? -1 : 0" @select="select"
+          />
+        </div>
       </div>
-      <SurfaceSite
-        v-for="{ site, biome, outside, above } in visibleSites" :key="site.task.id" :site="site" :biome="biome"
-        :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
-        :class="{ outside, above, relative: isDirectRelative(site) }" :tabindex="outside ? -1 : 0" @select="select"
-      />
       <p v-if="!layout.sites.size" class="empty" role="status">Нет текущих заданий</p>
     </div>
     <nav v-if="regions.length" class="controls" aria-label="Навигация по карте">
@@ -166,6 +210,8 @@ function chooseProject(event: Event) {
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .field:focus-visible { outline: 2px solid #283d33; outline-offset: -2px; }
+.camera { position: absolute; top: 0; left: 0; contain: strict; transform-origin: 0 0; will-change: transform; }
+.sites { position: absolute; inset: 0; contain: strict; transform: translateZ(0); }
 .terrain { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .region {
   position: absolute; left: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
