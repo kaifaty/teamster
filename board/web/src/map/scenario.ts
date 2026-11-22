@@ -369,7 +369,7 @@ const LIVE: readonly Omit<DemoEvent, "ago">[] = [
 ];
 
 /** A source that plays the scenario, for the map's demo mode. */
-export function scenarioSource(): BoardSource {
+export function scenarioSource(): Omit<BoardSource, "fetchProjectTasks" | "saveProjectTask"> {
   let start = Date.now() / 1000;
   let step = 0;
   let tasks: TaskSummary[] = [];

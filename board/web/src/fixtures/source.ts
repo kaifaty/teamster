@@ -13,6 +13,7 @@ import type { ActionResult, ActionSender } from "../lib/actions";
 import { fixtureActions, fixtureResearch, type StationRoute } from "./research";
 import { fixtureShips, type ShipRoute } from "./ships";
 import { fixtureLogins, type LoginRoute } from "./logins";
+import { fixtureProjectTasks } from "./projectTasks";
 import { fixtureDutyChat } from "./dutyChat";
 import { parseAccounts, parseDuty } from "../lib/accounts";
 
@@ -170,6 +171,7 @@ export function fixtureSource(): BoardSource {
   };
   return {
     label: "фикстуры",
+    ...fixtureProjectTasks(),
     act,
     connect(onMessage, onState) {
       let index = -1; // -1 = the snapshot, then the stream; the cycle repeats like a reconnect.

@@ -1,4 +1,5 @@
-import type { ActionSender } from "./actions";
+import { sendBoardAction, type ActionSender } from "./actions";
+import type { ProjectTask, ProjectTaskChange, ProjectTasks } from "./projectTasks";
 import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import type { DutyChatView } from "../dutyChatTypes";
 import { connectSocket, type ConnectionState } from "./socket";
@@ -13,6 +14,8 @@ export interface BoardSource {
   /** Shown in the header next to the connection state, e.g. "фикстуры". */
   label: string | null;
   connect(onMessage: (message: ServerMessage) => void, onState: (state: ConnectionState, retryInMs: number | null) => void): () => void;
+  fetchProjectTasks(): Promise<ProjectTasks>;
+  saveProjectTask(change: ProjectTaskChange): Promise<ProjectTask>;
   /** null for an unknown task (404). */
   fetchDetail(slug: string): Promise<TaskDetail | null>;
   /** A new ACP conversation for this task. Fixture sources have no local agent. */
@@ -53,6 +56,19 @@ export function serverSource(): BoardSource {
   return {
     label: null,
     connect: (onMessage, onState) => connectSocket({ url: `${scheme}://${location.host}/ws`, onMessage, onState }),
+    async fetchProjectTasks() {
+      const response = await get("/api/project-tasks");
+      if (!response) throw new Error("404");
+      return response.json();
+    },
+    async saveProjectTask(change) {
+      const response = await sendBoardAction("project-task", change);
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.task?.id) {
+        throw new Error(data?.error ?? data?.detail ?? `HTTP ${response.status}`);
+      }
+      return data.task;
+    },
     openTaskChat(slug, binding) {
       const url = new URL(`${scheme}://${location.host}/ws/tasks/${encodeURIComponent(slug)}/chat`);
       if (binding) {
