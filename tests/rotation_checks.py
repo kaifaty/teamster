@@ -1,5 +1,6 @@
 """Local checks and guarded file tests."""
 import json
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -940,7 +941,8 @@ class CheckGuardTests(RotationTestCase):
                 check=None, check_timeout=None, review=False, fix_rounds=None, no_base_check=False))
             return original_guarded_changes(old_state)
 
-        with mock.patch.object(worker.config, "accounts_config", return_value={"language": "en"}), \
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.config, "accounts_config", return_value={"language": "en"}), \
                 mock.patch.object(worker.procs, "alive", side_effect=lambda pid: pid == new_pid), \
                 mock.patch.object(worker.supervisor.subprocess, "Popen", side_effect=popen), \
                 mock.patch.object(worker.checking, "guarded_changes", side_effect=describe_old_state), \

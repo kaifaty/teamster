@@ -59,6 +59,7 @@ import fcntl
 import json
 import os
 import re
+import select
 import shlex
 import signal
 import subprocess
@@ -854,7 +855,7 @@ def execute(invocation, thread, emit):
     for name in run.get("create_files", []):
         Path(name).write_text("created by fake Codex\n")
     if run.get("merge_base"):
-        merged = subprocess.run(["git", "merge", "--no-commit", "--no-ff", run["merge_base"]])
+        merged = subprocess.run(["git", "merge", "--no-commit", "--no-ff", run["merge_base"]], stdout=sys.stderr)
         if merged.returncode not in (0, 1):
             merged.check_returncode()
     for name, contents in run.get("write_files", {}).items():
@@ -930,9 +931,11 @@ def execute(invocation, thread, emit):
 
     completed = {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}}
     if run.get("final_usage_after_completion"):
-        # The model turn can finish before the CLI flushes its last quota
-        # sample and exits. Keep that shutdown window visible to the monitor.
+        # Flush this sample during shutdown, once the adapter has delivered
+        # the prompt receipt and closes stdin or requests native cleanup.
         emit(completed)
+        if not select.select([sys.stdin], [], [], 15)[0]:
+            raise RuntimeError("Fixture adapter did not close the completed turn")
     if any(key in run for key in ("token_usage_before", "token_usage_after",
                                  "weekly_used_before", "weekly_used_after")):
         rollout_limits()
@@ -1032,6 +1035,10 @@ def work_server():
                 sys.exit("wrong native thread")
             native_turn(request, thread, resumed, thread_params)
             continue
+        elif method == "thread/backgroundTerminals/list":
+            reply = fixture().get("terminal_list_reply", {"result": {"data": [], "nextCursor": None}})
+            emit({"id": request["id"], **reply})
+            continue
         else:
             result = {}
         emit({"id": request["id"], "result": result})
@@ -1070,7 +1077,7 @@ def acp_agent():
             if method == "initialize":
                 assert params["protocolVersion"] == 1
                 rpc("initialize")
-                result = {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}}}}
+                result = {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}, "close": {}}}}
             elif method in ("session/new", "session/resume"):
                 fields = {"threadId": params["sessionId"]} if method == "session/resume" else {}
                 try:
@@ -1088,6 +1095,15 @@ def acp_agent():
                 result = {"configOptions": options()}
             elif method == "session/set_title":
                 rpc("thread/name/set", threadId=thread, name=params["title"])
+            elif method == "session/close":
+                try:
+                    page = rpc("thread/backgroundTerminals/list", threadId=thread)
+                    if not isinstance(page.get("data"), list):
+                        raise ValueError("Invalid background terminal list")
+                except ValueError as exc:
+                    send(id=request["id"], error={"code": -32603, "message": "Internal error",
+                                                  "data": {"details": str(exc)}})
+                    continue
             elif method == "session/prompt":
                 assert params["sessionId"] == thread
                 rpc("turn/start", threadId=thread, model=selected["model"], effort=selected["reasoning_effort"],

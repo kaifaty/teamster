@@ -28,14 +28,19 @@ def backend():
     env.pop("CODEX_PATH", None)
     contract = json.loads((directory / "options").read_text())
     target = directory / "target"
+    close_error = directory / "close-error"
     proc = subprocess.Popen([binary, *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+    terminal_list_requests = set()
+    incoming = os.fdopen(os.dup(sys.stdin.fileno()), "rb")
 
     def forward():
         try:
-            for line in sys.stdin.buffer:
+            for line in incoming:
                 request = json.loads(line)
                 method = request.get("method")
                 params = request.get("params") or {}
+                if method == "thread/backgroundTerminals/list" and close_error.exists():
+                    terminal_list_requests.add(request["id"])
                 if method in ("thread/start", "thread/resume") and not params.get("ephemeral"):
                     # exec honors the account's trusted projects and configured tool restrictions.
                     settings = params.setdefault("config", {})
@@ -76,6 +81,7 @@ def backend():
             print(f"Codex ACP backend: {exc}", file=sys.stderr, flush=True)
             proc.terminate()
         finally:
+            incoming.close()
             proc.stdin.close()
 
     threading.Thread(target=forward, daemon=True).start()
@@ -84,6 +90,12 @@ def backend():
     # Teamster can apply its existing repeated-failure guard to the actual exit status.
     for line in proc.stdout:
         message = json.loads(line)
+        if message.get("id") in terminal_list_requests and "method" not in message:
+            terminal_list_requests.remove(message["id"])
+            error = message.get("error") or {}
+            if error.get("code") == -32601 and isinstance(error.get("message"), str):
+                # Correlate the stock adapter's wrapped close error with this native request.
+                close_error.write_text(error["message"], encoding="utf-8")
         if message.get("method") in ("item/started", "item/completed"):
             item = message["params"]["item"]
             if item["type"] == "commandExecution" and item.get("commandActions"):
@@ -202,6 +214,17 @@ def codex_acp_turn():
             if not (directory / "sent").exists():
                 raise ValueError("Codex ACP did not start the admitted native turn")
             emit({"type": "turn.completed"})
+            close_error = directory / "close-error"
+            close_error.touch()
+            try:
+                client.close_session()
+            except acp.AcpRequestError as exc:
+                # Older app-servers lack the adapter's optional background-terminal API.
+                # Finish their confirmed turn through EOF and supervisor-owned process cleanup.
+                missing = close_error.read_text(encoding="utf-8")
+                if (not missing or exc.code != -32603 or not isinstance(exc.data, dict)
+                        or exc.data.get("details") != missing):
+                    raise
         if client.process.returncode:
             raise ValueError(f"Codex ACP exited with status {client.process.returncode}")
         return 0

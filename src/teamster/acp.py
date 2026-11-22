@@ -40,9 +40,11 @@ class AcpRequestError(ValueError):
         self.data = error.get("data")
         self.provider_message = error.get("message")
         detail = f"ACP {method} failed ({self.code}): {self.provider_message}"
-        if isinstance(self.data, dict) and isinstance(self.data.get("message"), str):
-            self.provider_message = self.data["message"]
-            detail += f": {self.provider_message}"
+        if isinstance(self.data, dict):
+            nested = self.data.get("message") or self.data.get("details")
+            if isinstance(nested, str):
+                self.provider_message = nested
+                detail += f": {nested}"
         if self.code == -32000:
             detail += ". Sign in using the agent CLI"
             if auth_methods:
@@ -88,10 +90,8 @@ class AcpClient:
     def __exit__(self, exc_type, exc_value, traceback):
         try:
             try:
-                if (exc_type is None and self.session_id is not None and self.process.poll() is None
-                        and self.session_capabilities.get("close") is not None):
-                    self._call("session/close", {"sessionId": self.session_id},
-                               deadline=time.monotonic() + procs.GROUP_STEPS[0][1])
+                if exc_type is None:
+                    self.close_session()
             finally:
                 try:
                     self.process.stdin.close()
@@ -132,12 +132,12 @@ class AcpClient:
             self.process.stdin.write(line)
             self.process.stdin.flush()
 
-    def _read(self, deadline, method):
+    def _read(self, deadline):
         while True:
             if self.check_active:
                 self.check_active()
             if deadline is not None and time.monotonic() >= deadline:
-                raise ValueError(f"ACP agent did not finish {method} before the deadline")
+                raise ValueError("ACP agent did not respond before the deadline")
             newline = self.buffer.find(b"\n")
             if newline >= 0:
                 line = self.buffer[:newline]
@@ -192,7 +192,7 @@ class AcpClient:
         self._send(id=self.request_id, method=method, params=params)
         while True:
             try:
-                message = self._read(deadline, method)
+                message = self._read(deadline)
                 if "method" in message:
                     active_turn = method == "session/prompt" and deadline is None
                     self._dispatch(message, params.get("sessionId"), active_turn, pending_updates)
@@ -286,6 +286,13 @@ class AcpClient:
 
     def set_title(self, title):
         self._call("session/set_title", {"sessionId": self.session_id, "title": title})
+
+    def close_session(self):
+        """Request a graceful close once when the agent supports it. Stdio closes on context exit."""
+        if (self.session_id is not None and self.process.poll() is None
+                and self.session_capabilities.pop("close", None) is not None):
+            self._call("session/close", {"sessionId": self.session_id},
+                       deadline=time.monotonic() + procs.GROUP_STEPS[0][1])
 
     def cancel(self):
         """Ask the agent to interrupt its prompt while continuing to receive final usage."""

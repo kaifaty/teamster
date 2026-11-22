@@ -293,6 +293,7 @@ class CapacityRetryTests(RotationTestCase):
         self.assertEqual(turn["capacity_retries"], 1)
 
     def test_active_time_budget_accumulates_across_capacity_retry(self):
+        self.enable_fake_clock()
         self.env["CODEX_TASK_CAPACITY_RETRY_SECONDS"] = "0.05"
         self.env["CODEX_TASK_MINUTE_SECONDS"] = "2"
         self.configure(language="en")

@@ -126,7 +126,8 @@ class ReviewFixTests(RotationTestCase):
                     self.assertIsNone(st["review_account"])
                     st.update(outcome="completed")
 
-                with mock.patch.object(owner, "fixture_review_turn", side_effect=unavailable) as run, \
+                with mock.patch.dict(os.environ, self.env, clear=True), \
+                        mock.patch.object(owner, "fixture_review_turn", side_effect=unavailable) as run, \
                         mock.patch.object(worker.turns, "run_turn", side_effect=complete) as fallback, \
                         mock.patch.object(worker.task_state, "save"), \
                         mock.patch.object(worker.budgets, "stop_at_weekly_budget", return_value=False), \

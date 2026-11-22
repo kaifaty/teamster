@@ -448,6 +448,27 @@ class ExecutorTests(RotationTestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertFalse((self.root / "sent").exists())
 
+    def test_codex_close_distinguishes_legacy_missing_method_from_cleanup_failure(self):
+        self.configure(language="en")
+        result = self.work_result()
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": result}])
+        fixture = self.home / "fixture.json"
+        account = json.loads(fixture.read_text())
+        for slug, reply, error in (
+                ("legacy-close", {"error": {"code": -32601, "message": "Method not found"}}, None),
+                ("invalid-close", {"result": {}}, "Invalid background terminal list"),
+                ("internal-close", {"error": {"code": -32603, "message": "Method not found"}}, "Method not found")):
+            with self.subTest(slug=slug):
+                fixture.write_text(json.dumps(dict(account, terminal_list_reply=reply)))
+                self.start(slug, "--executor", "codex")
+                output = self.cli("wait", slug, "--timeout", "30")
+                state = self.state(slug)
+                self.assertEqual(state["outcome"], "failed" if error else "completed")
+                self.assertEqual(state["result"], None if error else result)
+                if error:
+                    self.assertIn(error, state["error"])
+                    self.assertNotIn("== result: done", output)
+
     def test_acp_stdio_conversation(self):
         self.env["HOME"] = str(self.root)
         repo = self.root / "work tree"

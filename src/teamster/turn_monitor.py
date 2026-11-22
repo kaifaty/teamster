@@ -433,7 +433,7 @@ def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, st
                     result = resolve_monitor_quota(st, request, stopped, control, active_started, on_limit)
                     if result is not None:
                         return result
-        completed = proc.wait() == 0 and stream.completed and not stream.failed
+        completed = proc.wait() == 0 and not stream.failed
     return ("completed" if completed else "failed"), None
 
 
@@ -445,6 +445,8 @@ def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
     message = stream.final_message
     if message:
         last.write_text(message + "\n", encoding="utf-8")
+    if not stream.completed or stream.failed:
+        message = ""
     if wrapup:
         st["wrapup"]["result"] = None if stream.refusal else result_schema.parse_result(message, reviewing=reviewing)
         if stream.refusal:
