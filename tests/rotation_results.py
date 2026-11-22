@@ -279,6 +279,13 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertIn(second["remaining"][0], rotated["prompt"])
         self.assertNotIn(json.dumps(second, ensure_ascii=False), rotated["prompt"])
         self.assertNotIn('"checks":', rotated["prompt"])
+        # An old native thread may no longer be available. A failed resume must not replay work.
+        (self.other / ("fixture-thread-" + rotated["thread"])).unlink()
+        self.cli("say", "typed-handoff", "Continue the same thread.")
+        output = self.cli("wait", "typed-handoff", "--timeout", "10")
+        self.assertIn("Missing thread " + rotated["thread"], output)
+        self.assertEqual(self.state("typed-handoff")["outcome"], "failed")
+        self.assertEqual(len(self.invocations()), 3)
 
     def assert_scout_output(self, output):
         for section in ("commits on", "== uncommitted", "== check `", "== review"):
@@ -903,6 +910,16 @@ class ResultScoutConfigTests(RotationTestCase):
                 worker.config.resolve_codex()
             self.assertIn("Codex CLI", str(error.exception))
             self.assertIn("TEAMSTER_CODEX", str(error.exception))
+
+        (self.root / "codex-acp").unlink()
+        env = dict(self.env, PATH=os.pathsep.join([str(self.root), "/usr/bin", "/bin"]))
+        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "start", "no-adapter", "--brief", str(self.brief),
+                                 "--repo", str(self.repo), "--executor", "codex"],
+                                cwd=self.repo, env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("codex-acp was not found", result.stderr)
+        self.assertFalse(self.invocations())
+        self.assertFalse((self.home / "claude-tasks" / "no-adapter").exists())
 
     def test_new_settings_override_legacy_and_legacy_remains_readable(self):
         self.configure()

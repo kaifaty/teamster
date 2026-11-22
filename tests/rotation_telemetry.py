@@ -66,7 +66,7 @@ class TelemetryReportTests(RotationTestCase):
         self.until(lambda: any(row["slug"] == "metadata-unknown" and row["phase"] == "turn"
                                for row in self.telemetry_journal()))
         rows = [row for row in self.telemetry_journal() if row["slug"] == "metadata-unknown"]
-        self.assertEqual([(row["model"], row["reasoning_effort"]) for row in rows], [(None, None)] * 2)
+        self.assertEqual([(row["model"], row["reasoning_effort"]) for row in rows], [("fake-model", None)] * 2)
         # Python 3.9 must not parse prompt contents as configuration settings.
         settings.write_text('model = "configured-model"\ndeveloper_instructions = \'\'\'\n'
                             'model = "embedded-prompt-text"\nmodel_reasoning_effort = "secret"\n\'\'\'\n')

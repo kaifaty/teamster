@@ -611,7 +611,8 @@ class WeeklyBudgetTests(RotationTestCase):
             targets.append(json.loads((Path(argv[-1]) / "options").read_text())["thread"])
             return (proc, wrap)[len(targets) - 1]
 
-        with mock.patch.object(worker.accounts, "prepare_home"), \
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(worker.accounts, "prepare_home"), \
                 mock.patch.object(worker.procs, "terminate", side_effect=terminate), \
                 mock.patch.object(worker.turn_monitor.subprocess, "Popen", side_effect=start) as popen, \
                 mock.patch.object(worker.turn_monitor.selectors, "DefaultSelector", side_effect=[selector, wrap_selector]), \
@@ -706,7 +707,8 @@ class WeeklyBudgetTests(RotationTestCase):
                 observed.append("final quota")
             return read_rollout_limits(usage, record_limits)
 
-        with mock.patch.object(worker.accounts, "prepare_home"), \
+        with mock.patch.dict(os.environ, self.env), \
+                mock.patch.object(worker.accounts, "prepare_home"), \
                 mock.patch.object(worker.procs, "terminate"), \
                 mock.patch.object(worker.turn_monitor.subprocess, "Popen", return_value=proc) as popen, \
                 mock.patch.object(worker.turn_monitor.selectors, "DefaultSelector", return_value=selector), \

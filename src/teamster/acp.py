@@ -65,6 +65,7 @@ class AcpClient:
         self.stderr = stderr
         self.on_notification = on_notification
         self.own_group = own_group
+        self.config_values = {}
         self.on_update = on_update
         self.on_permission = on_permission
         self.check_active = check_active
@@ -268,6 +269,8 @@ class AcpClient:
                         if isinstance(option, dict) and option.get("id") == key]
             if selected != [value]:
                 raise ValueError(f"ACP agent did not confirm {key} {value!r}")
+        self.config_values = {key: _select_config(result, key).get("currentValue")
+                              for key in ("model", "reasoning_effort")}
         self.session_id = session_id
         for update in pending:
             if update.get("sessionId") == session_id:

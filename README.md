@@ -39,7 +39,7 @@ turns now use Agent Client Protocol (ACP) v1 over stdio.
 
 | Provider | Required for ordinary turns | Supported roles |
 |---|---|---|
-| Codex | The selected Codex CLI, signed in with `codex login`, and `codex-acp` on `PATH` (`npm install -g @agentclientprotocol/codex-acp`). [Codex adapter](https://github.com/agentclientprotocol/codex-acp) | Work, review, scout, reflect |
+| Codex | The selected Codex CLI, signed in with `codex login`, and `codex-acp` on `PATH` (`npm install -g @openai/codex @agentclientprotocol/codex-acp`). [Codex adapter](https://github.com/agentclientprotocol/codex-acp) | Work, review, scout, reflect |
 | Claude | Claude Code, a Teamster account configured with `teamster claude-login`, and `claude-agent-acp` on `PATH` (`npm install -g @agentclientprotocol/claude-agent-acp`). [Claude adapter](https://github.com/agentclientprotocol/claude-agent-acp) | Work, review, scout, reflect |
 | OpenCode | `opencode` on `PATH` with the `acp` and standalone `session.update` commands, and a configured provider/model. | Work |
 
