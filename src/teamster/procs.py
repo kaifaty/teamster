@@ -175,11 +175,21 @@ def backend_ids(pid, marker):
 
 
 def _user_pids():
+    uid = os.getuid()
     if sys.platform == "darwin":
-        return _darwin_pids(4, os.getuid())  # PROC_UID_ONLY
-    snapshot = subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid="],
-                              capture_output=True, text=True, check=True)
-    return map(int, snapshot.stdout.split())
+        yield from _darwin_pids(4, uid)  # PROC_UID_ONLY
+        return
+    # The first Uid field in Linux procfs is the real UID (the selector used by ps -U).
+    real_uid = f"\nUid:\t{uid}\t".encode("ascii")
+    for process in Path("/proc").iterdir():
+        if not process.name.isdecimal():
+            continue
+        try:
+            status = (process / "status").read_bytes()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if real_uid in status:
+            yield int(process.name)
 
 
 def marked_processes(marker, parents=None):

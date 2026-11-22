@@ -524,9 +524,17 @@ def codex_duty_session(account, room, stopped, deadline, model, effort, thread_i
         environment[procs.TURN_PROCESS_MARKER] = marker
         process = subprocess.Popen(args, cwd=room, env=environment, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
-        if procs.process_marker(process.pid) != marker:
-            raise ValueError("Codex duty cannot identify its command processes on this platform")
         rpc = DutyRPC(process, room, stopped, deadline, directory, account)
+        # Linux may briefly expose an empty environ while the child execs its interpreter.
+        marker_deadline = time.monotonic() + 1
+        while True:
+            rpc.check()
+            observed = procs.process_marker(process.pid)
+            if observed == marker:
+                break
+            if observed is not None or process.poll() is not None or time.monotonic() >= marker_deadline:
+                raise ValueError("Codex duty cannot identify its command processes on this platform")
+            time.sleep(0.01)
         initialized = rpc.call("initialize", {"clientInfo": {"name": "teamster-duty", "version": "1"},
                                               "capabilities": {"experimentalApi": True}})
         if not isinstance(initialized, dict) or not re.search(r"\b0\.169\.0\b", initialized.get("userAgent", "")):
