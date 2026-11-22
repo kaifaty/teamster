@@ -118,7 +118,7 @@ def local_opencode_provider(env, binary):
         instructions = "\n".join(m["content"] for m in messages if m["role"] == "system")
         project = instructions.find(PROJECT_REVIEW)
         role = instructions.find("You are a managed Teamster executor.")
-        assert 0 <= project < role, (resumed, [m["role"] for m in messages], instructions)
+        assert 0 <= project < role, (resumed, project, role)
         assert "Inline OpenCode guidance." in instructions[:role]
         assert "status needs_decision" in instructions[role:]
         example = json.JSONDecoder().raw_decode(instructions.partition("Example work result:")[2].lstrip())[0]
@@ -432,9 +432,7 @@ class ExecutorTests(RotationTestCase):
         guidance = self.root / "opencode-guidance.md"
         guidance.write_text("Inline OpenCode guidance.\n")
         self.env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"instructions": [str(guidance)]})
-        (self.repo / "AGENTS.md").write_text(PROJECT_REVIEW + "\n")
-        self.git("add", "AGENTS.md")
-        self.git("commit", "-m", "Require independent review")
+        self.commit_fixture({"AGENTS.md": PROJECT_REVIEW + "\n"})
         handoff = self.work_result("needs_decision", checks=[],
                                    questions=["Can you arrange the required progress-review scout?"])
         (self.root / "response.json").write_text(json.dumps(handoff))
