@@ -38,6 +38,15 @@ def local_opencode_provider(env, binary):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             messages = request["messages"]
             requests.append((self.path, request["model"]))
+            if (home / "quota-exhausted").exists():
+                payload = json.dumps({"error": {"message": "You exceeded your current quota.",
+                                                "type": "insufficient_quota", "code": "insufficient_quota"}}).encode()
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             if "Wait here for stop" in json.dumps(messages):
                 stop_requested.set()
                 release.wait(30)
@@ -97,7 +106,7 @@ def local_opencode_provider(env, binary):
             release.set()
             server.shutdown()
             thread.join()
-    assert requests == [("/v1/chat/completions", "model")] * 9, requests
+    assert requests == [("/v1/chat/completions", "model")] * 10, requests
 
 
 def fixture_work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
@@ -338,6 +347,14 @@ class ExecutorTests(RotationTestCase):
             slug = "opencode-work"
             session = sessions[slug]
             worktree = Path(self.state(slug)["worktree"])
+            binding = self.state(slug)["work_binding"]
+            (self.root / "quota-exhausted").touch()
+            self.cli("say", slug, "Continue on the original connection.")
+            self.assertIn("reset time", self.cli("wait", slug))
+            limited = self.state(slug)
+            self.assertEqual((limited["outcome"], limited["work_binding"], limited["session_id"]),
+                             ("exhausted", binding, session))
+            (self.root / "quota-exhausted").unlink()
             if real_binary:
                 info = subprocess.check_output(
                     ["opencode", "api", "--standalone", "session.get", "--param", f"sessionID={session}"],
@@ -355,7 +372,6 @@ class ExecutorTests(RotationTestCase):
                                env=dict(self.env, PWD=str(worktree)), stdin=subprocess.DEVNULL,
                                capture_output=True, check=True, timeout=30)
             else:
-                binding = self.state(slug)["work_binding"]
                 self.assertEqual((binding["provider"], binding["model"], binding["credential_id"]),
                                  ("offline", "offline/model", "cred_fixture"))
                 self.assertEqual(self.state("opencode-parallel")["work_binding"]["source"], "local")
@@ -370,13 +386,6 @@ class ExecutorTests(RotationTestCase):
                 self.assertIn("assigned work connection", self.cli("wait", slug))
                 self.assertEqual(self.state(slug)["work_binding"], binding)
                 (self.root / "connection-id").unlink()
-                (self.root / "quota-exhausted").touch()
-                self.cli("say", slug, "Continue on the original connection.")
-                self.assertIn("reset time", self.cli("wait", slug))
-                limited = self.state(slug)
-                self.assertEqual((limited["outcome"], limited["work_binding"], limited["session_id"]),
-                                 ("exhausted", binding, session))
-                (self.root / "quota-exhausted").unlink()
                 (self.root / session).unlink()
             self.cli("say", slug, "Make a third change to tracked.txt.")
             output = self.cli("wait", slug, "--timeout", "30", timeout=45)
