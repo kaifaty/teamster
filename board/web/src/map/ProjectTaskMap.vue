@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, shallowRef } from "vue";
+import { computed, nextTick, ref, shallowRef, watch } from "vue";
 import { prLabel } from "../lib/labels";
-import { detachedName, isCurrent, statusLabels, type ProjectTask, type ProjectTaskChange, type ProjectTasks } from "../lib/projectTasks";
+import { detachedName, isCurrent, recordLabel, statusLabels, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "../lib/projectTasks";
 import ProjectTaskForm from "./ProjectTaskForm.vue";
 import ProjectTaskSurface from "./surface/ProjectTaskSurface.vue";
+import { stateOf } from "./ship/bridge";
+import type { TaskSummary } from "../types";
 
 const props = defineProps<{
   data: ProjectTasks | null;
   error: string;
   sessions: ReadonlyMap<string, string>;
+  records: Readonly<Record<string, TaskSummary>>;
+  fetchDetails?: (id: string) => Promise<ProjectTaskDetails | null>;
   save: (change: ProjectTaskChange) => Promise<ProjectTask>;
 }>();
 const emit = defineEmits<{ record: [taskId: string, sessionId: string]; panel: []; retry: [] }>();
@@ -34,12 +38,60 @@ const choices = computed(() => {
   }
   return groups;
 });
+const dependencies = computed(() => {
+  const task = selected.value;
+  if (!task) return [];
+  return [
+    { heading: "Зависит от", rows: task.depends_on.map((id) => ({ id, task: byId.value.get(id) })) },
+    { heading: "Зависят от этого задания", rows: tasks.value.filter((other) => other.depends_on.includes(task.id))
+      .map((other) => ({ id: other.id, task: other })) },
+  ];
+});
+const details = shallowRef<ProjectTaskDetails | null>(null);
+const loadingDetails = ref(false);
+watch(() => {
+  const task = selected.value;
+  return task && !editor.value && (task.sessions.length || task.pull_requests.length)
+    ? JSON.stringify([task.id, task.sessions, task.session_slugs, task.pull_requests]) : "";
+}, (key, _, onCleanup) => {
+  details.value = null;
+  loadingDetails.value = false;
+  if (!key || !selected.value || !props.fetchDetails) return;
+  let current = true;
+  onCleanup(() => { current = false; });
+  loadingDetails.value = true;
+  void props.fetchDetails(selected.value.id).then((result) => {
+    if (current) details.value = result;
+  }, () => {
+    if (current) details.value = null;
+  }).finally(() => {
+    if (current) loadingDetails.value = false;
+  });
+});
+const sessionBadgeTone = { work: "", ready: "ok", bad: "bad", wait: "warn", sleep: "warn", dim: "muted" };
 const linked = computed(() => {
   const task = selected.value;
-  return task?.sessions.map((id) => ({
-    id, slug: task.session_slugs[id], name: props.sessions.get(id) ?? detachedName(id),
-  })) ?? [];
+  return task?.sessions.map((id) => {
+    const slug = task.session_slugs[id];
+    const live = slug ? props.records[slug] : undefined;
+    const fetched = details.value?.sessions[id];
+    const record = live && (!fetched || live.created === fetched.created) ? live : fetched;
+    return {
+      id, slug, name: record ? recordLabel(record) : props.sessions.get(id) ?? detachedName(id),
+      state: record ? stateOf(record) : null,
+    };
+  }) ?? [];
 });
+const prLabels = {
+  draft: { text: "Черновик", tone: "warn" },
+  open: { text: "Открыт", tone: "muted" },
+  merged: { text: "Влит", tone: "ok" },
+  closed: { text: "Закрыт", tone: "muted" },
+};
+const pulls = computed(() => selected.value?.pull_requests.map((pr) => {
+  const state = details.value?.pull_requests[pr.url];
+  return { ...pr, badge: state ? prLabels[state] : null };
+}) ?? []);
 
 function select(id: string, focus = false) {
   const task = byId.value.get(id);
@@ -125,20 +177,34 @@ defineExpose({ select, focusProject });
             <dt>Родительское задание</dt>
             <dd><button class="link" type="button" @click="select(selected.parent_id, true)">{{ byId.get(selected.parent_id)?.title ?? selected.parent_id }}</button></dd>
           </template>
-          <template v-if="selected.depends_on.length">
-            <dt>Блокирующие задания</dt>
-            <dd v-for="id in selected.depends_on" :key="id"><button class="link" type="button" @click="select(id, true)">{{ byId.get(id)?.title ?? id }}</button></dd>
+          <template v-for="group in dependencies" :key="group.heading">
+            <dt>{{ group.heading }}</dt>
+            <dd v-if="!group.rows.length" class="muted">Нет</dd>
+            <dd v-for="row in group.rows" :key="row.id" class="link-row">
+              <div v-if="row.task">
+                <button class="link" type="button" @click="select(row.id, true)">{{ row.task.title }}</button>
+                <small v-if="row.task.project !== selected.project" class="muted linked-project">{{ row.task.project }}</small>
+              </div>
+              <span v-else class="muted">{{ row.id }}</span>
+              <span class="chip muted">{{ row.task ? statusLabels[row.task.status] : "Недоступно" }}</span>
+            </dd>
           </template>
           <dt>Запуски и сессии</dt>
-          <dd v-if="!selected.sessions.length" class="muted">Нет связанных записей</dd>
-          <dd v-for="item in linked" :key="item.id">
+          <dd v-if="!linked.length" class="muted">Нет связанных записей</dd>
+          <dd v-for="item in linked" :key="item.id" class="link-row">
             <button v-if="item.slug" class="link" type="button" @click="emit('record', selected.id, item.id)">{{ item.name }}</button>
             <span v-else class="muted">{{ item.name }}</span>
+            <span class="chip" :class="item.state ? sessionBadgeTone[item.state.tone] : 'muted'">
+              {{ item.state?.text ?? (loadingDetails ? "Загрузка…" : "Статус недоступен") }}
+            </span>
           </dd>
-          <template v-if="selected.pull_requests.length">
+          <template v-if="pulls.length">
             <dt>Пул-реквесты</dt>
-            <dd v-for="pr in selected.pull_requests" :key="pr.url">
+            <dd v-for="pr in pulls" :key="pr.url" class="link-row">
               <a :href="pr.url" :title="pr.url" target="_blank" rel="noopener">{{ pr.provider === "github" ? "GitHub" : "Forgejo" }} · {{ prLabel(pr.url) }} ↗</a>
+              <span class="chip" :class="pr.badge?.tone ?? 'muted'">
+                {{ pr.badge?.text ?? (loadingDetails ? "Загрузка…" : "Статус недоступен") }}
+              </span>
             </dd>
           </template>
         </dl>
@@ -165,6 +231,9 @@ h2 { margin: 4px 0 8px; font-size: 18px; }
 dl { margin: 0; }
 dt { margin-top: 10px; color: var(--muted); font-size: 12px; }
 dd { margin: 3px 0 0; }
+.link-row { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 3px 8px; }
+.link-row .chip { flex-shrink: 0; }
+.linked-project { display: block; }
 .link { border: 0; padding: 0; background: none; color: var(--link); cursor: pointer; text-align: start; overflow-wrap: anywhere; }
 .link:hover { text-decoration: underline; }
 @media (max-width: 760px) {

@@ -8,6 +8,11 @@ export interface ProjectTask extends SurfaceTask {
   source_slug: string | null;
 }
 
+export interface ProjectTaskDetails {
+  sessions: Record<string, TaskSummary>;
+  pull_requests: Record<string, "draft" | "open" | "merged" | "closed" | null>;
+}
+
 export interface ProjectTasks {
   tasks: ProjectTask[];
   biomes: Record<string, string>;
