@@ -38,22 +38,14 @@ export function useSurfaceCamera(
   let current = camera.value;
   let frame = 0;
   const size = shallowRef<Size>({ width: 0, height: 0 });
+  let view = size.value;
+  let panel: HTMLElement | null = null;
   const compact = computed(() => camera.value.zoom < NAMEPLATE_ZOOM);
   let atHome = true;
   const bounds = computed(() => {
     const { tx, ty, zoom } = camera.value;
     return { x: -tx / zoom, y: -ty / zoom, width: size.value.width / zoom, height: size.value.height / zoom };
   });
-  function available(): Size {
-    const view = size.value;
-    const el = field.value;
-    const card = selectedId.value && el?.closest(".project-map")?.querySelector(".task-panel")?.getBoundingClientRect();
-    if (!el || !card) return view;
-    const stage = el.getBoundingClientRect();
-    const right = Math.max(0, stage.right - card.left), bottom = Math.max(0, stage.bottom - card.top);
-    // The card floats at the right or bottom. Use the larger uncovered rectangle.
-    return freeView(view, right * view.height < bottom * view.width ? { ...NO_INSETS, right } : { ...NO_INSETS, bottom });
-  }
   function fit(view: Size) {
     const world = layout.value.world;
     const inset = { width: Math.max(1, view.width - 24), height: Math.max(1, view.height - 24) };
@@ -66,7 +58,6 @@ export function useSurfaceCamera(
     camera.value = current;
   }
   function move(next: Camera, factor = 1, at?: Point, immediate = false) {
-    const view = available();
     const fitted = fit(view);
     const zoomed = zoomCamera(next, factor, at ?? { x: view.width / 2, y: view.height / 2 }, fitted, CLOSE_ZOOM);
     // At the fitted scale both axes are centred, even after a pan or a round trip through the zoom controls.
@@ -76,7 +67,7 @@ export function useSurfaceCamera(
     if (immediate) present();
     else if (!frame) frame = requestAnimationFrame(present);
   }
-  function centre(at: Point, zoom: number, view = available()) {
+  function centre(at: Point, zoom: number) {
     atHome = false;
     current = containSurfaceCamera({ zoom, tx: view.width / 2 - at.x * zoom, ty: view.height / 2 - at.y * zoom }, layout.value, view);
     present();
@@ -89,19 +80,18 @@ export function useSurfaceCamera(
     const region = layout.value.regions.get(project);
     if (!region) return;
     const { x0, x1, y0, y1 } = region.bounds;
-    const view = available();
     const zoom = Math.min(1, fitCamera({ width: x1 - x0, height: y1 - y0 }, view).zoom);
     if (zoom >= NAMEPLATE_ZOOM) {
-      centre({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 }, zoom, view);
+      centre({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 }, zoom);
     } else {
       const distance = (p: Point) => Math.hypot(p.x - region.label.x, p.y - region.label.y);
       const site = region.sites.reduce((a, b) => distance(a) < distance(b) ? a : b);
-      centre({ x: (site.x + region.label.x) / 2, y: (site.y + region.label.y) / 2 }, 1, view);
+      centre({ x: (site.x + region.label.x) / 2, y: (site.y + region.label.y) / 2 }, 1);
     }
   }
   function home() {
     atHome = true;
-    current = fit(available());
+    current = fit(view);
     present();
   }
   function initialView() {
@@ -123,7 +113,7 @@ export function useSurfaceCamera(
       return;
     }
 
-    const cam = current, view = available(), fallback = { ...cam };
+    const cam = current, fallback = { ...cam };
     let nearest = Infinity, removed = Infinity, tx = cam.tx, ty = cam.ty;
     // The selected building takes priority while visible. Otherwise follow the nearest surviving landmark.
     function anchor(from: Point, to: Point | undefined, selected = false) {
@@ -156,26 +146,57 @@ export function useSurfaceCamera(
   }, { flush: "post" });
 
   let observer: ResizeObserver;
+  function measure() {
+    const el = field.value!;
+    const stage = el.getBoundingClientRect(), { width, height } = stage;
+    if (!width || !height) return false;
+    const before = size.value, previousView = view;
+    if (width !== before.width || height !== before.height) size.value = { width, height };
+    const nextPanel = selectedId.value ? el.closest(".project-map")?.querySelector<HTMLElement>(".task-panel") ?? null : null;
+    if (nextPanel !== panel) {
+      if (panel) observer.unobserve(panel);
+      if (nextPanel) observer.observe(nextPanel);
+      panel = nextPanel;
+    }
+    const card = panel?.getBoundingClientRect();
+    view = size.value;
+    if (card) {
+      const right = Math.max(0, stage.right - card.left), bottom = Math.max(0, stage.bottom - card.top);
+      // The card floats at the right or bottom. Use the larger uncovered rectangle.
+      view = freeView(view, right * height < bottom * width ? { ...NO_INSETS, right } : { ...NO_INSETS, bottom });
+    }
+    return before !== size.value || previousView.width !== view.width || previousView.height !== view.height;
+  }
+  watch(selectedId, id => {
+    if (!field.value || !observer || !measure() || id !== null) return;
+    if (atHome) home();
+    else {
+      current = clampCamera(current, layout.value.world, view);
+      present();
+    }
+  }, { flush: "post" });
+
   let unlisten: () => void;
   onMounted(() => {
     const el = field.value!;
     function resize() {
-      const { width, height } = el.getBoundingClientRect();
-      if (!width || !height) return;
       const before = size.value;
-      if (width === before.width && height === before.height) return;
-      size.value = { width, height };
-      if (!before.width && atHome) initialView();
+      if (!measure()) return;
+      const site = panel && selectedId.value !== null && layout.value.sites.get(selectedId.value);
+      if (!before.width) initialView();
       else if (atHome) home();
-      else pan((width - before.width) / 2, (height - before.height) / 2);
+      else if (site) centre(site, Math.max(current.zoom, fit(view).zoom));
+      else move({
+        ...current, tx: current.tx + (size.value.width - before.width) / 2, ty: current.ty + (size.value.height - before.height) / 2,
+      }, 1, undefined, true);
     }
-    resize();
     observer = new ResizeObserver(resize);
     observer.observe(el);
+    resize();
     let dragged = { x: 0, y: 0 };
     const input = createInput({
       now: () => performance.now(), origin: () => el.getBoundingClientRect(),
-      viewport: available, camera: () => { dragged = { x: 0, y: 0 }; return current; },
+      viewport: () => view, camera: () => { dragged = { x: 0, y: 0 }; return current; },
       onMap: () => true, paused: () => false, stopGlide() {}, hover() {}, leave() {},
       capture: id => el.setPointerCapture(id),
       cursor: style => { el.style.cursor = style; },
@@ -188,12 +209,26 @@ export function useSurfaceCamera(
       click(at) {
         // Pointer capture delivers the release to the field, even for a tap on a building.
         const box = el.getBoundingClientRect();
-        const hits = el.ownerDocument.elementsFromPoint(box.left + at.x, box.top + at.y);
+        const x = box.left + at.x, y = box.top + at.y;
+        const hits = el.ownerDocument.elementsFromPoint(x, y);
         if (!el.contains(hits[0] ?? null)) return;
-        // A neighbouring touch target can extend over the visible building.
-        const hit = hits.find(node => node.matches(".building, .plate")) ?? hits[0];
-        const button = hit?.closest<HTMLElement>("[data-task-id]");
-        if (button) select(button.dataset.taskId!);
+        const art = hits.find(node => node.matches(".building, .plate"))?.closest<HTMLElement>("[data-task-id]");
+        if (art) return select(art.dataset.taskId!);
+
+        // Expanded touch targets overlap. In the space between drawings, prefer the nearest visible building.
+        const card = panel?.getBoundingClientRect();
+        let distance = Infinity, nearest: string | undefined;
+        for (const target of hits) {
+          if (!(target instanceof HTMLElement) || !target.dataset.taskId) continue;
+          const building = target.querySelector(".building")!.getBoundingClientRect();
+          const left = Math.max(box.left, building.left), right = Math.min(box.right, building.right);
+          const top = Math.max(box.top, building.top), bottom = Math.min(box.bottom, building.bottom);
+          if (left >= right || top >= bottom) continue;
+          if (card && card.left <= left && card.right >= right && card.top <= top && card.bottom >= bottom) continue;
+          const d = Math.hypot(x - building.left - building.width / 2, y - building.top - building.height / 2);
+          if (d < distance) { distance = d; nearest = target.dataset.taskId; }
+        }
+        if (nearest !== undefined) select(nearest);
       },
     });
     unlisten = listen(el, el, input);
