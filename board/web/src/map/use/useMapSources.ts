@@ -31,7 +31,7 @@ export function useMapSources(props: Readonly<{ board: Board; active: boolean }>
   }, { immediate: true });
 
   return {
-    now, source, allTasks, researchView, loadResearch, tasks, repoArt,
+    now, source, researchView, loadResearch, tasks,
     loaded: computed(() => props.board.state.value.loaded),
     emblemOf: (name: string | null) => name ? repoArt.value[name]?.emblem ?? null : null,
   };

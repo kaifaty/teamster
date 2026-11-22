@@ -386,7 +386,9 @@ for the current page. The panel also includes a day of log events and a daily re
 
 The map's code in `board/web/src/map/`:
 
-- `surface/` draws the terrain and task buildings and handles camera input.
+- `surface/` draws the terrain, buildings, and labels on one PixiJS canvas and handles camera input.
+  It tries WebGPU first, retries the same scene with WebGL if the first frame fails, and draws on demand.
+  The task picker still opens cards when graphics are unavailable.
 - `ProjectTaskMap.vue` and `ProjectTaskForm.vue` provide task selection, details and editing.
 - `console/` — the control panel under the map: `MapConsole.vue` with its left wing (`.console-left`: `ConsoleDuty.vue`,
   `ConsoleSubscriptions.vue`), centre (`.console-centre`: `ShipLog.vue` and the command row, `ConsoleCommands.vue`,

@@ -2,8 +2,9 @@
 // in the control panel under the map, not in the galaxy.
 
 import { starSize, type Point } from "../layout";
-import type { Hit } from "./layer";
 import type { GalaxyModel } from "./types";
+
+type Hit = { kind: "star"; repo: string };
 
 /** The star whose ring of ship dots `point` is in, or null. */
 export function starAt(model: GalaxyModel, point: Point): string | null {
@@ -24,5 +25,5 @@ export function galaxyAt(model: GalaxyModel, point: Point): Hit | null {
 
 /** The star a hover tells MapView about: only a star, whatever its repository is called. */
 export function hoveredStar(hit: Hit | null): string | null {
-  return hit?.kind === "star" ? hit.repo : null;
+  return hit?.repo ?? null;
 }

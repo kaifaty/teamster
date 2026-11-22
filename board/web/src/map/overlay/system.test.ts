@@ -3,7 +3,7 @@ import { PHASES } from "../../lib/labels";
 import type { TaskSummary } from "../../types";
 import { STATIONS, systemWorldSize } from "../layout";
 import type { Place, Placement } from "../placement";
-import type { ShipEntry } from "../scene";
+import type { ShipEntry } from "../scene/types";
 import { STATION_TEXT, fleetGroups, hiddenShips, phaseText, stationPlates } from "./system";
 
 const NOW = 1_800_000_000;

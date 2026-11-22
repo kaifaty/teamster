@@ -1,7 +1,8 @@
 // `npm run dev:fixture`: plays the fixtures instead of talking to the server. The fixture times are
 // shifted so that the snapshot looks fresh and stream message i happens i seconds after it.
 import type { BoardSource } from "../lib/source";
-import { ART, BACKDROPS } from "../map/art";
+import { ART } from "../map/art";
+import demoSky from "../map/art/backdrops/backdrop-aurora.jpg";
 import { emptyState, reduce, type BoardState } from "../store/reduce";
 import type { Accounts, Activity, Cargo, ServerMessage, Snapshot, TaskChanges, TaskDetail, TaskFile, TaskLimits, TaskMessage, TaskQueue } from "../types";
 import type { DutyBody, DutyData } from "../dutyTypes";
@@ -264,7 +265,7 @@ export function fixtureSource(): BoardSource {
     },
     // Shared pictures in other roles, so that one repository looks like itself and the others stay as they are.
     async fetchArt() {
-      return { "demo-game": { sky: BACKDROPS[0], planet: ART.planetRoadstead, emblem: ART.gate } };
+      return { "demo-game": { sky: demoSky, planet: ART.planetRoadstead, emblem: ART.gate } };
     },
     async fetchConstellations() {
       return { constellations: [{ name: "Demo Wallet", repos: ["demo-wallet*", "demo-vault", "demo-shop"] }], error: null };

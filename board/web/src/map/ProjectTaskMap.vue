@@ -49,12 +49,7 @@ function select(id: string, focus = false) {
   project.value = task.project;
   emit("panel");
   void nextTick(() => {
-    const panel = closeButton.value?.closest(".task-panel");
-    const card = panel?.getBoundingClientRect();
-    const art = panel?.parentElement?.querySelector('.site[aria-pressed="true"] .building')?.getBoundingClientRect();
-    if (focus || (art && card && art.right > card.left && art.left < card.right && art.bottom > card.top && art.top < card.bottom)) {
-      surface.value?.focusTask(id);
-    }
+    surface.value?.focusTask(id, !focus);
     closeButton.value?.focus({ preventScroll: true });
   });
 }

@@ -5,7 +5,7 @@ import { nextTick, shallowRef } from "vue";
 import { clampCamera, type Camera } from "./layout/camera";
 import type { Point, Size } from "./layout/geometry";
 import { ZOOM_NOTCH, wheelAction, wheelDevice, type WheelInput } from "./navigation";
-import { layoutSurface } from "./surface/layout";
+import { layoutSurface, pickSurfaceSite } from "./surface/layout";
 import type { SurfaceTask } from "./surface/types";
 import { containSurfaceCamera, useSurfaceCamera } from "./surface/useSurfaceCamera";
 
@@ -122,7 +122,7 @@ function observeSurface(tasks: SurfaceTask[]) {
   let surface!: ReturnType<typeof useSurfaceCamera>;
   const wrapper = mount({
     setup() {
-      surface = useSurfaceCamera(shallowRef(field), live, selected, () => {});
+      surface = useSurfaceCamera(shallowRef(field), live, selected, () => {}, () => {});
       return () => null;
     },
   });
@@ -191,4 +191,15 @@ it("refits a centred overview and keeps a visible selection in place during live
   await nextTick();
   expect(position()).toEqual(beforeGrowth);
   wrapper.unmount();
+});
+
+it("picks visible art before overlapping touch padding, then the nearest building", () => {
+  const size = { width: 100, height: 100 };
+  const left = { id: "left", building: { x0: 32, x1: 42, y0: 48, y1: 56 }, priority: 0 };
+  const right = { id: "right", building: { x0: 50, x1: 60, y0: 48, y1: 56 }, priority: 1 };
+  const targets = [left, right];
+  expect(pickSurfaceSite({ x: 41, y: 52 }, size, targets, true)).toBe("left");
+  expect(pickSurfaceSite({ x: 45, y: 52 }, size, targets, true)).toBe("left");
+  expect(pickSurfaceSite({ x: 48, y: 52 }, size, targets, true)).toBe("right");
+  expect(pickSurfaceSite({ x: 45, y: 52 }, size, targets, true, left.building)).toBe("right");
 });

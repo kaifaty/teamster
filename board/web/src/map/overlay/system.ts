@@ -8,7 +8,7 @@ import type { FleetGroup } from "../FleetPanel.vue";
 import { HULL_SIZE, hullOf } from "../fleet";
 import { parkingOf, parkingOrder, plateAt, stationAt, systemFrame, type Size } from "../layout";
 import { PLACES, type Place } from "../placement";
-import type { ShipEntry } from "../scene";
+import type { ShipEntry } from "../scene/types";
 import { at } from "./style";
 
 export const STATION_TEXT: Record<Place, { name: string; note: string }> = {

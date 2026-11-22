@@ -1,8 +1,8 @@
 import { computed, onBeforeUnmount, onMounted, shallowRef, watch, type Ref } from "vue";
 import { clampCamera, fitCamera, zoomCamera, type Camera } from "../layout/camera";
-import { freeView, NO_INSETS, type Point, type Size } from "../layout/geometry";
+import { freeView, NO_INSETS, type Point, type Rect, type Size } from "../layout/geometry";
 import { createInput, listen } from "../scene/input";
-import type { SurfaceLayout } from "./layout";
+import { buildingRect, overlaps, type SurfaceLayout } from "./layout";
 
 const NAMEPLATE_ZOOM = 0.78;
 const CLOSE_ZOOM = 1.5;
@@ -32,7 +32,8 @@ export function containSurfaceCamera(next: Camera, layout: SurfaceLayout, view: 
 
 export function useSurfaceCamera(
   field: Ref<HTMLElement | null>, layout: Readonly<Ref<SurfaceLayout>>,
-  selectedId: Readonly<Ref<string | null>>, select: (id: string) => void,
+  selectedId: Readonly<Ref<string | null>>, click: (at: Point, covered?: Rect) => void,
+  hover: (at: Point | null, covered?: Rect) => void,
 ) {
   const camera = shallowRef<Camera>({ zoom: 1, tx: 0, ty: 0 });
   let current = camera.value;
@@ -42,10 +43,6 @@ export function useSurfaceCamera(
   let panel: HTMLElement | null = null;
   const compact = computed(() => camera.value.zoom < NAMEPLATE_ZOOM);
   let atHome = true;
-  const bounds = computed(() => {
-    const { tx, ty, zoom } = camera.value;
-    return { x: -tx / zoom, y: -ty / zoom, width: size.value.width / zoom, height: size.value.height / zoom };
-  });
   function fit(view: Size) {
     const world = layout.value.world;
     const inset = { width: Math.max(1, view.width - 24), height: Math.max(1, view.height - 24) };
@@ -72,9 +69,12 @@ export function useSurfaceCamera(
     current = containSurfaceCamera({ zoom, tx: view.width / 2 - at.x * zoom, ty: view.height / 2 - at.y * zoom }, layout.value, view);
     present();
   }
-  function focusTask(id: string) {
+  function focusTask(id: string, onlyIfCovered = false) {
     const site = layout.value.sites.get(id);
-    if (site) centre(site, 1);
+    if (!site) return;
+    if (observer) measure();
+    const covered = cardBounds();
+    if (!onlyIfCovered || (covered && overlaps(covered, buildingRect(site, current)))) centre(site, 1);
   }
   function focusProject(project: string) {
     const region = layout.value.regions.get(project);
@@ -167,6 +167,11 @@ export function useSurfaceCamera(
     }
     return before !== size.value || previousView.width !== view.width || previousView.height !== view.height;
   }
+  function cardBounds(): Rect | undefined {
+    if (!panel || !field.value) return;
+    const card = panel.getBoundingClientRect(), stage = field.value.getBoundingClientRect();
+    return { x0: card.left - stage.left, y0: card.top - stage.top, x1: card.right - stage.left, y1: card.bottom - stage.top };
+  }
   watch(selectedId, id => {
     if (!field.value || !observer || !measure() || id !== null) return;
     if (atHome) home();
@@ -197,7 +202,8 @@ export function useSurfaceCamera(
     const input = createInput({
       now: () => performance.now(), origin: () => el.getBoundingClientRect(),
       viewport: () => view, camera: () => { dragged = { x: 0, y: 0 }; return current; },
-      onMap: () => true, paused: () => false, stopGlide() {}, hover() {}, leave() {},
+      onMap: () => true, paused: () => false, stopGlide() {},
+      hover: at => hover(at, cardBounds()), leave: () => hover(null),
       capture: id => el.setPointerCapture(id),
       cursor: style => { el.style.cursor = style; },
       pan, drag(_, x, y) {
@@ -207,32 +213,13 @@ export function useSurfaceCamera(
       },
       zoom: zoomBy, fit: home,
       click(at) {
-        // Pointer capture delivers the release to the field, even for a tap on a building.
+        // Pointer capture also delivers releases over the card. Only the visible field accepts a click.
         const box = el.getBoundingClientRect();
-        const x = box.left + at.x, y = box.top + at.y;
-        const hits = el.ownerDocument.elementsFromPoint(x, y);
-        if (!el.contains(hits[0] ?? null)) return;
-        const art = hits.find(node => node.matches(".building, .plate"))?.closest<HTMLElement>("[data-task-id]");
-        if (art) return select(art.dataset.taskId!);
-
-        // Expanded touch targets overlap. In the space between drawings, prefer the nearest visible building.
-        const card = panel?.getBoundingClientRect();
-        let distance = Infinity, nearest: string | undefined;
-        for (const target of hits) {
-          if (!(target instanceof HTMLElement) || !target.dataset.taskId) continue;
-          const building = target.querySelector(".building")!.getBoundingClientRect();
-          const left = Math.max(box.left, building.left), right = Math.min(box.right, building.right);
-          const top = Math.max(box.top, building.top), bottom = Math.min(box.bottom, building.bottom);
-          if (left >= right || top >= bottom) continue;
-          if (card && card.left <= left && card.right >= right && card.top <= top && card.bottom >= bottom) continue;
-          const d = Math.hypot(x - building.left - building.width / 2, y - building.top - building.height / 2);
-          if (d < distance) { distance = d; nearest = target.dataset.taskId; }
-        }
-        if (nearest !== undefined) select(nearest);
+        if (el.contains(el.ownerDocument.elementFromPoint(box.left + at.x, box.top + at.y))) click(at, cardBounds());
       },
     });
     unlisten = listen(el, el, input);
   });
   onBeforeUnmount(() => { observer?.disconnect(); unlisten?.(); cancelAnimationFrame(frame); });
-  return { camera, bounds, compact, focusTask, focusProject, home, zoomBy };
+  return { camera, size, compact, focusTask, focusProject, home, zoomBy };
 }

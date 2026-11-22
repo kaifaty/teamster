@@ -1,3 +1,5 @@
+import type { Camera } from "../layout/camera";
+
 import { hashName, type Point, type Rect, type Size } from "../layout/geometry";
 import { placeTerritories } from "./placement";
 import { isCurrent, type CurrentTask, type SurfaceTask } from "./types";
@@ -105,4 +107,48 @@ export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<stri
     }
   }
   return { regions, sites, world, landRows, coastline };
+}
+
+export const BUILDING_WIDTH = 76;
+export const BUILDING_HEIGHT = 52;
+
+export function buildingRect(site: Point, { tx, ty, zoom }: Camera): Rect {
+  const x = tx + site.x * zoom, y = ty + site.y * zoom;
+  const halfWidth = BUILDING_WIDTH * zoom / 2;
+  return { x0: x - halfWidth, x1: x + halfWidth, y0: y - BUILDING_HEIGHT * zoom, y1: y };
+}
+
+export function overlaps(a: Rect, b: Rect) {
+  return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+}
+
+export function pickSurfaceSite(at: Point, size: Size, targets: readonly {
+  id: string; building: Rect; plate?: Rect; priority: number;
+}[], coarse: boolean, covered?: Rect) {
+  const contains = (rect: Rect) => at.x >= rect.x0 && at.x <= rect.x1 && at.y >= rect.y0 && at.y <= rect.y1;
+  if (!contains({ x0: 0, y0: 0, x1: size.width, y1: size.height }) || (covered && contains(covered))) return null;
+  let front: string | null = null, frontPriority = -1;
+  let nearest: string | null = null, distance = Infinity;
+  for (const { id, building, plate, priority } of targets) {
+    if (contains(building) || (plate && contains(plate))) {
+      if (priority >= frontPriority) {
+        front = id;
+        frontPriority = priority;
+      }
+    } else if (coarse && front === null) {
+      const { x0, y0, x1, y1 } = building;
+      const left = Math.max(0, x0), right = Math.min(size.width, x1);
+      const top = Math.max(0, y0), bottom = Math.min(size.height, y1);
+      if (left >= right || top >= bottom) continue;
+      if (covered && covered.x0 <= left && covered.x1 >= right && covered.y0 <= top && covered.y1 >= bottom) continue;
+      const dx = at.x - (x0 + x1) / 2, dy = at.y - (y0 + y1) / 2;
+      if (Math.abs(dx) > Math.max(22, (x1 - x0) / 2) || Math.abs(dy) > Math.max(22, (y1 - y0) / 2)) continue;
+      const squared = dx * dx + dy * dy;
+      if (squared < distance) {
+        distance = squared;
+        nearest = id;
+      }
+    }
+  }
+  return front ?? nearest;
 }
