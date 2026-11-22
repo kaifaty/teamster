@@ -234,6 +234,9 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(len(self.invocations()), 1)
 
     def test_workspace_rules_are_localized_and_off_has_no_sandbox_flags_or_section(self):
+        settings = self.home / "config.toml"
+        config = 'sandbox_mode = "danger-full-access"\n'
+        settings.write_text(config)
         for language, heading in (("en", "## Workspace sandbox"), ("ru", "## Песочница worktree")):
             with self.subTest(language=language):
                 self.configure(language=language, sandbox="workspace")
@@ -255,6 +258,7 @@ class WorkspaceTests(RotationTestCase):
         self.wait("sandbox-default-off")
         self.assert_no_workspace_sandbox(self.invocations()[-1])
         self.assertIn("sandbox off", self.cli("status", "sandbox-default-off"))
+        self.assertEqual(settings.read_text(), config)
 
     def test_pr_supervisor_creates_from_result_and_wait_uses_receipt_url(self):
         self.configure(language="en")
@@ -680,6 +684,8 @@ class WorkspaceTests(RotationTestCase):
         real_git = shutil.which("git", path=self.env["PATH"])
         self.assertIsNotNone(real_git)
         (bin_dir / "git").symlink_to(real_git)
+        (bin_dir / "codex-acp").symlink_to(self.fake)
+        (bin_dir / "ps").symlink_to(shutil.which("ps"))
         self.env["PATH"] = str(bin_dir)
         self.account(self.home, "A", self.reset, runs=[{
             "mode": "complete", "write_files": {"tracked.txt": "pushed without gh\n"},

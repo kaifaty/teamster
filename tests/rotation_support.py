@@ -951,7 +951,7 @@ def native_turn(request, thread, resumed, thread_params):
                   "sqlite_home": os.environ.get("CODEX_SQLITE_HOME"), "cwd": os.getcwd(),
                   "sandboxPolicy": params.get("sandboxPolicy"), "approvalPolicy": params["approvalPolicy"],
                   "output_schema": schema, "model": params["model"], "effort": params["effort"],
-                  "thread_config": thread_params.get("config", {}),
+                  "thread_config": thread_params.get("config", {}), "thread_sandbox": thread_params.get("sandbox"),
                   "supervisor": int(subprocess.check_output(["ps", "-o", "ppid=", "-p", str(os.getpgrp())]))}
     if os.environ.get("CODEX_FAKE_STATE"):
         state = json.loads(Path(os.environ["CODEX_FAKE_STATE"]).read_text())
@@ -1730,6 +1730,7 @@ class RotationTestCase(unittest.TestCase):
         return state
 
     def assert_scout_read_only(self, invocation):
+        self.assertEqual(invocation["thread_sandbox"], "read-only")
         self.assertEqual(invocation["sandboxPolicy"], {"type": "readOnly", "networkAccess": False})
         self.assertEqual(invocation["approvalPolicy"], "never")
         self.assertIsNone(invocation["output_schema"])
@@ -1824,6 +1825,9 @@ class RotationTestCase(unittest.TestCase):
 
     def assert_workspace_sandbox(self, invocation, writable_dirs=()):
         if invocation["command"] == "turn/start":
+            self.assertEqual(invocation["thread_sandbox"], "workspace-write")
+            self.assertEqual(invocation["thread_config"]["sandbox_workspace_write"],
+                             {"network_access": True, "writable_roots": list(writable_dirs)})
             self.assertEqual(invocation["sandboxPolicy"], {
                 "type": "workspaceWrite", "writableRoots": list(writable_dirs), "networkAccess": True,
                 "excludeTmpdirEnvVar": False, "excludeSlashTmp": False})
@@ -1844,6 +1848,9 @@ class RotationTestCase(unittest.TestCase):
 
     def assert_no_workspace_sandbox(self, invocation):
         if invocation["command"] == "turn/start":
+            self.assertIsNone(invocation["thread_sandbox"])
+            self.assertNotIn("sandbox_mode", invocation["thread_config"])
+            self.assertNotIn("sandbox_workspace_write", invocation["thread_config"])
             self.assertIsNone(invocation["sandboxPolicy"])
             return
         self.assertFalse(any(value.startswith("sandbox_") for value in invocation["argv"]),
