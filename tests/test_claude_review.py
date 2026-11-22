@@ -106,7 +106,8 @@ if acp:
     options = meta["claudeCode"]["options"]
     assert os.environ.get("ANTHROPIC_MODEL") == options.get("model")
     mode, = params["configOptions"]
-    reply(setup, {"sessionId": session_id, "configOptions": [{"id": "mode", "currentValue": mode["value"]}]})
+    reply(setup, {"sessionId": session_id,
+                  "configOptions": [{"id": "mode", "currentValue": run.get("offered_mode", mode["value"])}]})
     turn = read_request(["session/prompt"])
     assert turn["params"]["sessionId"] == session_id
     if run.get("ask_write"):
@@ -134,8 +135,8 @@ trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(), **transpor
        "started_by": os.environ.get("TEAMSTER_STARTED_BY"),
        "inherited_provider_keys": sorted(key for key in os.environ
            if (key.startswith("CLAUDE") or key.startswith("ANTHROPIC"))
-           and key not in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
-                          "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "CLAUDE_CODE_EXECUTABLE", "ANTHROPIC_MODEL"))})
+           and key not in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
+           and not (acp and key in ("CLAUDE_CODE_EXECUTABLE", "ANTHROPIC_MODEL")))})
 stopped = [False]
 
 def interrupted(signum, frame):
@@ -239,7 +240,8 @@ class ClaudeReviewTests(RotationTestCase):
         result = self.work_result()
         cursor = self.root / "saved-cursor"
         self.claude_fixture(runs=[{"mode": "modify", "reply": result, "saved_cursor": str(cursor)},
-                                  {"reply": result, "saved_cursor": str(cursor)}])
+                                  {"reply": result, "saved_cursor": str(cursor)},
+                                  {"reply": result, "offered_mode": "auto"}])
         worker = self.worker()
         account = worker.claude_accounts.accounts(worker.config.accounts_config())[0]
         task_dir = self.root / "work-turn-task"
@@ -310,9 +312,14 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertIn("Root task instructions.\n", text)
                 self.assertIn("nested AGENTS.md", text)
                 self.assertFalse(list(task_dir.glob("claude-system-*.md")))
+            refused = worker.claude_review.claude_runner.run_work_turn(
+                account, self.repo, task_dir, "Work.", lambda: False)
+            self.assertIsNone(refused["result"])
+            self.assertNotEqual(refused["outcome"], "completed")
+            self.assertEqual(len(self.claude_invocations()), 2, "Only confirmed sessions may receive a prompt")
         self.assertEqual((self.repo / "reviewer-change.txt").read_text(),
                          "Reviewer must leave this visible.\n")
-        self.assertEqual(len(self.security_trace_path.read_text().splitlines()), 2)
+        self.assertEqual(len(self.security_trace_path.read_text().splitlines()), 3)
 
     def test_claude_work_turn_system_prompt_bounds_root_instructions(self):
         self.claude_fixture(runs=[{"reply": self.work_result()}])
@@ -859,7 +866,8 @@ class ClaudeReviewTests(RotationTestCase):
                         CODEX_FAKE_CLAUDE_FIXTURE=str(self.claude_fixture_path),
                         CODEX_FAKE_SECURITY_TRACE=str(self.security_trace_path),
                         ANTHROPIC_BASE_URL="https://host-account.example.test",
-                        ANTHROPIC_API_KEY="host-account-secret", CLAUDECODE="1",
+                        ANTHROPIC_API_KEY="host-account-secret", ANTHROPIC_MODEL="host-model", CLAUDECODE="1",
+                        CLAUDE_CODE_EXECUTABLE=str(self.root / "wrong-claude"),
                         CLAUDE_CODE_DISABLE_BACKGROUND_TASKS="0",
                         CLAUDE_CODE_ENTRYPOINT="desktop", CLAUDE_OTHER="host-setting")
         # A run inside a Claude work turn inherits that turn's Bash timeouts.
