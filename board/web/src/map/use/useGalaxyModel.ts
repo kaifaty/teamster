@@ -2,7 +2,8 @@
 // and the toolbar over it; and what the control panel under the map shows: the subscriptions, the machines and the
 // reflection.
 
-import { computed, ref, shallowRef, watch } from "vue";
+import { computed, ref, shallowRef, watch, type Ref } from "vue";
+import type { Constellations } from "../../types";
 import type { Board } from "../../store/board";
 import { constellationsOf } from "../constellations";
 import { stars, tanks } from "../fleet";
@@ -24,7 +25,7 @@ export function steady<T>(read: () => T): () => T {
   };
 }
 
-export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSources) {
+export function useGalaxyModel(props: Readonly<{ board: Board }>, sources: MapSources & { constellationData: Ref<Constellations | null> }) {
   const { now, tasks } = sources;
 
   // Galaxy: one star per repository.

@@ -490,4 +490,5 @@ export type ServerMessage =
   | { type: "launch"; launch: Launch }
   | { type: "login"; login: Login }
   | { type: "duty_chat"; at: number } // the duty chat changed: GET /api/duty-chat again
+  | { type: "project_tasks_changed" }
   | { type: "ping"; at: number };

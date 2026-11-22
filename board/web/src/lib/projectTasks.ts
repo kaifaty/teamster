@@ -2,7 +2,11 @@ import type { SurfaceTask } from "../map/surface/types";
 import { taskTitle } from "./labels";
 import type { TaskSummary } from "../types";
 
-export type ProjectTask = SurfaceTask & { sessions: string[]; source_slug: string | null };
+export interface ProjectTask extends SurfaceTask {
+  sessions: string[];
+  session_slugs: Record<string, string>;
+  source_slug: string | null;
+}
 
 export interface ProjectTasks {
   tasks: ProjectTask[];
@@ -10,7 +14,7 @@ export interface ProjectTasks {
   writable: boolean;
 }
 
-type Fields = Omit<ProjectTask, "id" | "source_slug">;
+type Fields = Omit<ProjectTask, "id" | "source_slug" | "session_slugs">;
 export type ProjectTaskChange = Partial<Fields> & ({ id: string } | { project: string; title: string });
 
 export const statusLabels: Record<ProjectTask["status"], string> = {
@@ -22,42 +26,45 @@ export const statusLabels: Record<ProjectTask["status"], string> = {
   cancelled: "Отменено",
 };
 
+export const isCurrent = (task: ProjectTask) => task.status !== "done" && task.status !== "cancelled";
+
 export function recordLabel(record: TaskSummary) {
   return `${record.kind === "session" ? "Сессия" : "Запуск"} · ${taskTitle(record)} · ${record.repo}`;
 }
 
-/** The server accepts a Board slug on input and returns a birth-specific ID for managed work. */
-export function sessionDirectory(tasks: ProjectTask[], records: TaskSummary[]) {
-  const bySlug = new Map(records.map((record) => [record.slug, record]));
+/** Use the Board's current address for each saved reference, including an archived run with a reused name. */
+export function sessionNames(tasks: ProjectTask[], records: TaskSummary[]) {
+  const references = new Map<string, string>();
   const names = new Map<string, string>();
-  const slugs = new Map<string, string>();
-  for (const record of records) {
-    if (record.kind === "reflect" || record.kind === "duty") continue;
-    names.set(record.slug, recordLabel(record));
-    slugs.set(record.slug, record.slug);
-  }
   for (const task of tasks) {
-    for (const ref of task.sessions) {
-      if (names.has(ref) || slugs.has(ref)) continue;
-      const [name, stamp] = ref.split(":");
-      if (!name || !stamp) continue;
-      // Match the creation time even when an archived run and a new run share a name.
-      // The timestamp in the managed ID is a Python float.hex() Unix time.
-      const match = /^0x([01])\.([0-9a-f]+)p([+-]\d+)$/.exec(stamp);
-      if (!match) continue;
-      const fraction = match[2]!;
-      const created = parseInt(match[1] + fraction, 16) * 2 ** (Number(match[3]) - 4 * fraction.length);
-      const current = bySlug.get(name);
-      const record = current?.created === created ? current : records.find((item) =>
-        item.created === created && item.slug.replace(/-\d{8}T\d{6}Z$/, "") === name);
-      if (record) {
-        names.delete(record.slug);
-        names.set(ref, recordLabel(record));
-        slugs.set(ref, record.slug);
-      }
+    for (const [id, slug] of Object.entries(task.session_slugs)) {
+      references.set(slug, id);
+      // An accessible archive can be outside the Board's recent snapshot.
+      names.set(id, slug);
     }
   }
-  return { names, slugs };
+  for (const record of records) {
+    if (record.kind === "reflect" || record.kind === "duty") continue;
+    const id = references.get(record.slug) ?? record.slug;
+    names.set(id, recordLabel(record));
+  }
+  return names;
 }
 
 export const detachedName = (ref: string) => `${ref.split(":")[0]} · нет на доске`;
+
+export const projectTaskErrors: Record<string, string> = {
+  read_only: "Доска открыта только для чтения.",
+  project_tasks_unavailable: "Хранилище заданий недоступно.",
+  "Invalid project name": "Введите название проекта без пути.",
+  "Invalid project": "Введите название проекта длиной до 255 символов.",
+  "Invalid title": "Введите название задания длиной до 200 символов.",
+  "Invalid pull request URL or provider": "Проверьте адрес PR и выбранный сервис.",
+  "Cycle in parent_id": "Задание не может быть своим предком.",
+  "Cycle in depends_on": "Эта связь образует цикл блокирующих заданий.",
+  "Unknown task ID in parent_id": "Родительское задание больше недоступно.",
+  "Unknown task ID in depends_on": "Одно из блокирующих заданий больше недоступно.",
+  "Unknown project task": "Задание больше недоступно.",
+  "Unknown session": "Выбранный запуск или сессия больше недоступны.",
+  "Session already attached to another project task": "Запуск или сессия уже связаны с другим заданием.",
+};

@@ -40,7 +40,7 @@ const props = defineProps<{
   source: BoardSource;
   now: number;
   frame: string;
-  scenario?: boolean;
+  readOnly?: boolean;
   /** A task's bridge or a machine's card stands over this screen: its keys and focus are theirs. */
   covered?: boolean;
 }>();
@@ -107,7 +107,7 @@ async function confirmRemoval(open: boolean) {
 }
 
 async function removeAccount() {
-  if (!confirmingRemoval.value || removing.value || props.scenario || !row.value) return;
+  if (!confirmingRemoval.value || removing.value || props.readOnly || !row.value) return;
   removing.value = true;
   removeError.value = null;
   const result = await act("account-remove", body.value);
@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
         </div>
         <span v-if="state" class="pill" :class="state.tone">{{ state.text }}</span>
         <span v-if="row?.duty" class="pill wait" title="Новые задачи эту подписку не берут: она в резерве оркестратора">резерв</span>
-        <nav class="links" aria-label="Действия">
+        <nav v-if="!readOnly" class="links" aria-label="Действия">
           <button
             type="button"
             class="key"
@@ -255,7 +255,7 @@ onBeforeUnmount(() => {
             Войти заново
           </button>
           <button
-            v-if="row && !scenario"
+            v-if="row"
             ref="removeButton"
             type="button"
             class="key danger"
@@ -267,7 +267,7 @@ onBeforeUnmount(() => {
         </nav>
       </header>
 
-      <div v-if="confirmingRemoval && row" class="links note" role="alertdialog" aria-labelledby="remove-question">
+      <div v-if="!readOnly && confirmingRemoval && row" class="links note" role="alertdialog" aria-labelledby="remove-question">
         <span id="remove-question">Удалить подписку {{ FAMILY_NAMES[family] }} «{{ name }}» из Teamster? Новые задачи перестанут её использовать.</span>
         <button ref="cancelButton" type="button" class="key" :disabled="removing" @click="confirmRemoval(false)">Отмена</button>
         <button type="button" class="key danger" :disabled="removing" @click="removeAccount">{{ removing ? "Удаляю…" : "Удалить" }}</button>
@@ -284,6 +284,7 @@ onBeforeUnmount(() => {
           :name="name"
           :row="row"
           :now-view="nowView"
+          :read-only="readOnly"
           :login="shownLogin"
           :starting="starting"
           :login-error="loginError"

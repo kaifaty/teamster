@@ -42,7 +42,7 @@ export function useMapPanels({ props, sources, model, host, fleetPanel, summaryB
     [...(host.value?.querySelectorAll<HTMLElement>(selector) ?? [])].find((el) => el.offsetParent !== null) ?? null;
 
   // Another source has other systems and ships.
-  watch(sources.sourceKind, () => {
+  watch(sources.source, () => {
     repo.value = null;
     selected.value = null;
     shipOpen.value = false;

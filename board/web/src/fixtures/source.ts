@@ -171,7 +171,7 @@ export function fixtureSource(): BoardSource {
   };
   return {
     label: "фикстуры",
-    ...fixtureProjectTasks(),
+    ...fixtureProjectTasks(() => push?.({ type: "project_tasks_changed" })),
     act,
     connect(onMessage, onState) {
       let index = -1; // -1 = the snapshot, then the stream; the cycle repeats like a reconnect.

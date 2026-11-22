@@ -1,5 +1,5 @@
 import { sendBoardAction, type ActionSender } from "./actions";
-import type { ProjectTask, ProjectTaskChange, ProjectTasks } from "./projectTasks";
+import { projectTaskErrors, type ProjectTask, type ProjectTaskChange, type ProjectTasks } from "./projectTasks";
 import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import type { DutyChatView } from "../dutyChatTypes";
 import { connectSocket, type ConnectionState } from "./socket";
@@ -65,7 +65,8 @@ export function serverSource(): BoardSource {
       const response = await sendBoardAction("project-task", change);
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.task?.id) {
-        throw new Error(data?.error ?? data?.detail ?? `HTTP ${response.status}`);
+        const reason = data?.error ?? data?.detail ?? `HTTP ${response.status}`;
+        throw new Error(projectTaskErrors[reason] ?? reason);
       }
       return data.task;
     },

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// A ship's own screen, its bridge. Clicking a ship on the map opens it over the galaxy, as the science station's
-// screen: a header, then «Сейчас» across the screen — the state in words, the route strip, the agent's full report and
+// The existing details and actions of a managed run or desktop session, opened over the map.
+// A header, then «Сейчас» across the screen — the state in words, the route strip, the agent's full report and
 // what is needed from you — and under it two columns: «Что сделано» and the voyage log; the ship's card, the other
 // orders and the documents. A session is a flagship: «Сейчас» and its card only.
 // The orders run at once through the board server; a board that only reads copies the equal command.
@@ -33,12 +33,13 @@ const props = defineProps<{
   frame: string;
   /** The system's emblem; null draws the repository's first letter. */
   emblem: string | null;
+  mapTaskTitle?: string;
 }>();
 /**
- * `show`: «Показать на карте», the screen gives way to the ship's system with the ship picked. `task`: an order's answer
+ * `show`: «Показать на карте» returns to the linked project task. `task`: an order's answer
  * carried the ship as it is now, for the board to show at once.
  */
-const emit = defineEmits<{ close: []; show: [repo: string]; task: [task: TaskSummary] }>();
+const emit = defineEmits<{ close: []; show: []; task: [task: TaskSummary] }>();
 
 const { detail, detailError, detailState, loadDetail, resetDetail } = useTaskDetail(() => props.source.fetchDetail(props.slug));
 const loading = computed(() => detailState.value === "loading");
@@ -140,7 +141,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <nav class="links" aria-label="Переходы">
           <a v-if="shown?.pr" class="key" :href="shown.pr" target="_blank" rel="noopener">{{ prLabel(shown.pr) }} ↗</a>
           <a v-if="link" class="key" :href="link">Открыть в Claude</a>
-          <button v-if="shown" type="button" class="key" title="Закрыть экран и показать задачу на карте её репозитория" @click="emit('show', shown.repo)">Показать на карте</button>
+          <button v-if="mapTaskTitle" type="button" class="key" :title="mapTaskTitle" @click="emit('show')">Показать на карте</button>
         </nav>
       </header>
 

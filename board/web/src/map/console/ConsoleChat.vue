@@ -24,7 +24,7 @@ const props = defineProps<{
   /** The narrow window's sheet: no close button, the sheet folds it. */
   sheet?: boolean;
 }>();
-const emit = defineEmits<{ close: []; choose: [text: string]; task: [repo: string, slug: string]; retry: [key: number]; dismiss: [key: number] }>();
+const emit = defineEmits<{ close: []; choose: [text: string]; task: [slug: string]; retry: [key: number]; dismiss: [key: number] }>();
 
 // The list stays at its bottom while the user leaves it there, and goes there with the user's own message; scrolled up,
 // it stays put and offers the news. The jumps are instant, so that the list knows at once where it stands.
@@ -94,8 +94,8 @@ const PENDING_WORD = { sending: "отправляю…", sent: "отправле
           <p v-if="row.started.length" class="started">
             <span class="c-muted">Запущено:</span>
             <template v-for="task in row.started" :key="task.slug">
-              <a v-if="task.repo" href="#" class="task-link" :title="`Открыть задачу ${task.slug} на карте`" @click.prevent="emit('task', task.repo, task.slug)">{{ task.slug }}</a>
-              <span v-else class="task-gone" title="Этой задачи нет на карте: она закрыта или ещё не появилась">{{ task.slug }}</span>
+              <a v-if="task.repo" href="#" class="task-link" :title="`Открыть запуск ${task.slug}`" @click.prevent="emit('task', task.slug)">{{ task.slug }}</a>
+              <span v-else class="task-gone" title="Запуск сейчас недоступен на доске">{{ task.slug }}</span>
             </template>
           </p>
           <time class="when">{{ shortClock(row.at, now) }}</time>

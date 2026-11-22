@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { flushPromises, mount } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
-import { ref } from "vue";
+import { describe, expect, it } from "vitest";
+import { fixtureProjectTasks } from "../fixtures/projectTasks";
 import snapshotJson from "../fixtures/snapshot.json";
 import type { BoardSource } from "../lib/source";
 import { createBoard } from "../store/board";
@@ -10,10 +10,6 @@ import MapConsole from "./console/MapConsole.vue";
 import { queueOf } from "./console/queue";
 import type { Star } from "./fleet";
 import MapView from "./MapView.vue";
-
-// The scene draws with WebGL, which the test has not: the map stands without it.
-vi.mock("./scene", async () => ({ ...(await vi.importActual<object>("./scene/types")), createFleetScene: vi.fn() }));
-vi.mock("./use/useFleetScene", () => ({ useFleetScene: () => ({ failure: ref(null), retry: () => {} }) }));
 
 const snapshot = snapshotJson as unknown as Snapshot;
 
@@ -25,6 +21,7 @@ function source(): BoardSource {
       onMessage({ type: "snapshot", snapshot });
       return () => {};
     },
+    ...fixtureProjectTasks(),
     fetchDetail: async () => null,
     fetchFile: async () => null,
     fetchFeed: async () => null,
@@ -37,15 +34,16 @@ function source(): BoardSource {
 }
 
 describe("the map's control panel", () => {
-  it("counts the tasks the systems' badges count: the reflection's own run is not one of them", async () => {
+  it("excludes reflection runs from both the duty counts and the operational queues", async () => {
     const board = createBoard(source());
     board.start();
     const wrapper = mount(MapView, { props: { board, active: true }, attachTo: document.body });
     await flushPromises();
+    await wrapper.get('button[aria-controls="map-tools"]').trigger("click");
     const panel = wrapper.findComponent(MapConsole);
     const tasks = panel.props("tasks") as TaskSummary[];
     const stars = panel.props("stars") as Star[];
-    // The fixture has a reflection run waiting with an alarm: the board's tasks hold it, the systems do not.
+    // The snapshot includes a reflection run with an alarm.
     expect(board.tasks.value.some((task) => task.slug === "reflect-review-patterns" && task.column === "attention")).toBe(true);
     expect(tasks.map((task) => task.slug)).not.toContain("reflect-review-patterns");
     expect(queueOf(tasks, "attention").length).toBe(stars.reduce((sum, star) => sum + star.attention, 0));

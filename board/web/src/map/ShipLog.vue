@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The ship's log at the bottom of the map: the fleet's completed phases and the lead's verdicts, newest first.
 import { computed, ref, watch } from "vue";
-import type { LogEvent } from "../types";
+import type { LogEvent, TaskSummary } from "../types";
 import { describeEvent, eventKey } from "../lib/events";
 import { formatFullTime } from "../lib/format";
 import { loadJson, saveJson } from "../lib/storage";
@@ -10,17 +10,15 @@ import { SUN_KINDS } from "./palette";
 
 const props = defineProps<{
   events: readonly LogEvent[];
+  tasks: readonly TaskSummary[];
+  projects: ReadonlySet<string>;
   error: string | null;
-  /** The open system; null shows the whole galaxy. */
-  repo: string | null;
   frame: string;
-  /** Systems the map can open; a line about any other one, or without a repository, leads nowhere. */
-  systems: ReadonlySet<string>;
   emblemOf: (repo: string | null) => string | null;
-  /** A narrow window or a star system: folded, the log is one line, and whether it is open is the map's to keep. */
+  /** A folded panel shows one log line. */
   compact?: boolean;
 }>();
-const emit = defineEmits<{ go: [event: LogEvent] }>();
+const emit = defineEmits<{ record: [slug: string]; project: [name: string] }>();
 /** Open while compact; the map folds it again and measures the dock folded. */
 const open = defineModel<boolean>("open", { default: false });
 
@@ -41,12 +39,16 @@ const clock = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-dig
 /** The colour of the system's sun, as the map paints it. */
 const sunColour = (repo: string) => SUN_KINDS[hashName(repo) % SUN_KINDS.length]!.glow;
 
+const bySlug = computed(() => new Map(props.tasks.map((task) => [task.slug, task])));
 const rows = computed(() => {
-  const list = props.repo ? props.events.filter((event) => event.repo === props.repo) : props.events;
+  const list = props.events;
   const rows = [];
   for (let i = list.length - 1; i >= 0 && rows.length < SHOWN; i--) {
     const event = list[i]!;
     const line = describeEvent(event);
+    const record = event.slug ? bySlug.value.get(event.slug) : null;
+    const slug = record && (!event.repo || event.repo === record.repo) && (record.created ?? 0) <= event.at ? record.slug : null;
+    const project = event.repo && props.projects.has(event.repo) ? event.repo : null;
     rows.push({
       key: eventKey(event),
       event,
@@ -54,7 +56,7 @@ const rows = computed(() => {
       full: formatFullTime(event.at),
       text: line.text,
       tone: line.tone,
-      go: event.repo !== null && props.systems.has(event.repo),
+      slug, project, go: !!(slug || project),
       emblem: props.emblemOf(event.repo),
       colour: event.repo ? sunColour(event.repo) : "#6f6a60",
       title: [formatFullTime(event.at), event.repo, line.text, event.note].filter(Boolean).join("\n"),
@@ -65,16 +67,16 @@ const rows = computed(() => {
 
 const note = computed(() => {
   if (props.error) return `Журнал не загрузился: ${props.error}`;
-  if (!rows.value.length) return props.repo ? "В этом репозитории за сутки тихо." : "За сутки в журнале ни строчки.";
+  if (!rows.value.length) return "За сутки в журнале ни строчки.";
   return null;
 });
 
 /** The folded log's one line: the newest row. */
 const line = computed(() => rows.value[0] ?? null);
 
-function pick(row: { go: boolean; event: LogEvent }) {
-  if (!row.go) return;
-  emit("go", row.event);
+function pick(row: { slug: string | null; project: string | null }) {
+  if (row.slug) emit("record", row.slug);
+  else if (row.project) emit("project", row.project);
 }
 
 const hideImage = (event: Event) => {
@@ -85,7 +87,7 @@ const hideImage = (event: Event) => {
 <template>
   <section class="log" :class="{ open: unfolded, compact, folded }" :style="{ '--frame': `url(${frame})` }" aria-labelledby="log-title">
     <header class="l-head">
-      <h2 id="log-title" :class="{ 'sr-only': folded }">События<span v-if="repo" class="l-where"> · {{ repo }}</span></h2>
+      <h2 id="log-title" :class="{ 'sr-only': folded }">События</h2>
       <!-- Folded, the toggle is the log's one line. -->
       <button
         type="button"
@@ -171,11 +173,6 @@ const hideImage = (event: Event) => {
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.l-where {
-  color: #9b907c;
-  font-weight: 400;
 }
 
 .l-toggle {

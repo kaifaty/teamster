@@ -1,71 +1,126 @@
 <script setup lang="ts">
-// The fleet's map: a Pixi scene of the galaxy and its star systems, with HTML labels over it, the toolbar, the control
-// panel at the bottom (./console) and the panels. The composables in ./use hold its parts; the builders in ./overlay make
-// its labels' texts, and the components there draw them.
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { isCurrent, recordLabel, sessionNames } from "../lib/projectTasks";
 import type { Board } from "../store/board";
 import type { Login } from "../types";
-import AddSubscription from "./account/AddSubscription.vue";
 import AccountView from "./account/AccountView.vue";
+import AddSubscription from "./account/AddSubscription.vue";
 import OpenCodeAccount from "./account/OpenCodeAccount.vue";
 import frameLight from "./art/frame-light.png";
 import MapConsole from "./console/MapConsole.vue";
 import DaySummary from "./DaySummary.vue";
-import FleetPanel from "./FleetPanel.vue";
-import MapToolbar from "./MapToolbar.vue";
-import GalaxyLabels from "./overlay/GalaxyLabels.vue";
-import SystemLabels from "./overlay/SystemLabels.vue";
+import { stars, tanks } from "./fleet";
+import ProjectTaskMap from "./ProjectTaskMap.vue";
+import { research } from "./research";
 import ShipView from "./ship/ShipView.vue";
 import StationView from "./station/StationView.vue";
 import { useArrivalChime } from "./use/useArrivalChime";
-import { useFleetScene } from "./use/useFleetScene";
-import { useGalaxyModel } from "./use/useGalaxyModel";
-import { useMapPanels } from "./use/useMapPanels";
 import { useMapSources } from "./use/useMapSources";
-import { useOverlayLabels } from "./use/useOverlayLabels";
-import { useStageInsets } from "./use/useStageInsets";
-import { useStarLabels } from "./use/useStarLabels";
-import { useSystemFleet } from "./use/useSystemFleet";
+import { useProjectTasks } from "./use/useProjectTasks";
 
-/** `machine`: the machine whose card is open over the map, or null. */
 const props = defineProps<{ board: Board; active: boolean; machine?: string | null }>();
-/**
- * `machine`: a machine was clicked in the control panel, with the button to give the focus back to; `panel`: the map
- * opened a ship's bridge or the science station's screen, which replace the machine's card.
- */
-const emit = defineEmits<{ board: []; machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
-
-const host = ref<HTMLElement | null>(null);
-const overlay = ref<HTMLElement | null>(null);
-const fleetPanel = ref<InstanceType<typeof FleetPanel> | null>(null);
-const mapConsole = ref<InstanceType<typeof MapConsole> | null>(null);
-const summaryButton = computed(() => mapConsole.value?.summaryButton ?? null);
-
-// The order matters: each part reads the ones made before it, and the scene comes last, after everything it draws.
+const emit = defineEmits<{ machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
+const board = props.board;
+const { data, error, refresh, save } = useProjectTasks(board, () => props.active);
 const sources = useMapSources(props);
-const { now, demo, sourceKind, source, loaded, tasks, emblemOf, events, eventsError, loadResearch } = sources;
-const subscriptionsReadOnly = computed(() => demo || sources.researchView.value?.actions?.reason === "read_only");
-
-const model = useGalaxyModel(props, sources);
-const { starList, systemNames, pickerGroups, station, tankList, machinesData } = model;
-
-const panels = useMapPanels({
-  props,
-  sources,
-  model,
-  host,
-  fleetPanel,
-  summaryButton,
-  onMachine: (id, opener) => emit("machine", id, opener),
-  onPanel: () => emit("panel"),
+const { now, tasks, emblemOf, researchView, loadResearch } = sources;
+const { sound } = useArrivalChime(sources);
+const counts = computed(() => stars(tasks.value));
+const subscriptions = computed(() => tanks(board.state.value.accounts?.data ?? null, now.value));
+const station = computed(() => research(researchView.value, board.tasks.value, counts.value.map((repo) => repo.repo)));
+watch(() => station.value?.running, (running, was) => {
+  if (was && !running) void loadResearch();
 });
-const { repo, repoModel, selected, shipOpen, hovered, selectedTask, researchOpen, open, openResearch, closeResearch, close, openShip, showOnMap } = panels;
-const { account, openAccount, closeAccount } = panels;
-const addOpener = ref<HTMLElement | null>(null);
+const readOnly = computed(() => data.value ? !data.value.writable : !researchView.value || researchView.value.actions?.reason === "read_only");
+const subscriptionsReadOnly = computed(() => import.meta.env.MODE === "fixture" || readOnly.value);
+
+const query = matchMedia("(max-width: 760px)");
+const narrow = ref(query.matches);
+const logOpen = ref(false);
+function resize() {
+  narrow.value = query.matches;
+  logOpen.value = false;
+}
+onMounted(() => query.addEventListener("change", resize));
+onBeforeUnmount(() => query.removeEventListener("change", resize));
+
+const map = ref<InstanceType<typeof ProjectTaskMap> | null>(null);
+const consolePanel = ref<InstanceType<typeof MapConsole> | null>(null);
+const toolsOpen = ref(false);
+const projects = computed(() => new Set(data.value?.tasks.filter(isCurrent).map((task) => task.project)));
+const sessions = computed(() => sessionNames(data.value?.tasks ?? [], board.tasks.value));
+type RecordTarget = string | { taskId: string; sessionId: string };
+const recordTarget = ref<RecordTarget | null>(null);
+const linkedTask = computed(() => {
+  const target = recordTarget.value;
+  if (!target) return;
+  return data.value?.tasks.find((task) => typeof target === "string"
+    ? Object.values(task.session_slugs).includes(target) : task.id === target.taskId);
+});
+const record = computed(() => {
+  const target = recordTarget.value;
+  return target && (typeof target === "string" ? target : linkedTask.value?.session_slugs[target.sessionId]);
+});
+const recordTask = computed(() => record.value ? board.state.value.tasks[record.value] ?? null : null);
+const researchOpen = ref(false);
+const summaryOpen = ref(false);
+const account = ref<string | null>(null);
 const initialLogin = ref<Login | null>(null);
-function finishAdd(key: string, login?: Login) {
+const addOpener = ref<HTMLElement | null>(null);
+let recordOpener: HTMLElement | null = null;
+let accountOpener: HTMLElement | null = null;
+let researchOpener: HTMLElement | null = null;
+
+function openRecord(target: RecordTarget) {
+  recordOpener = document.activeElement as HTMLElement | null;
+  recordTarget.value = target;
+  emit("panel");
+}
+function pickRecord(event: Event) {
+  const picker = event.currentTarget as HTMLSelectElement;
+  if (picker.value) openRecord(picker.value);
+  picker.value = "";
+}
+function closeRecord() {
+  recordTarget.value = null;
+  void nextTick(() => recordOpener?.focus());
+}
+function showLinkedTask() {
+  const task = linkedTask.value;
+  if (!task) return;
+  recordTarget.value = account.value = null;
+  researchOpen.value = false;
+  map.value?.select(task.id, true);
+}
+function openAgent(slug: string, project: string) {
+  if (board.state.value.tasks[slug] || !projects.value.has(project)) return openRecord(slug);
+  researchOpen.value = false;
+  map.value?.focusProject(project);
+}
+function openResearch() {
+  researchOpener = document.activeElement as HTMLElement | null;
+  account.value = recordTarget.value = null;
+  researchOpen.value = true;
+  emit("panel");
+}
+function closeResearch() {
+  researchOpen.value = false;
+  void nextTick(() => researchOpener?.focus());
+}
+function openAccount(key: string, opener: HTMLElement | null, login?: Login) {
+  recordTarget.value = null;
+  researchOpen.value = false;
   initialLogin.value = login ?? null;
-  openAccount(key, addOpener.value);
+  account.value = key;
+  accountOpener = opener;
+  emit("panel");
+}
+function closeAccount() {
+  account.value = null;
+  void nextTick(() => accountOpener?.focus());
+}
+function finishAdd(key: string, login?: Login) {
+  openAccount(key, addOpener.value, login);
   addOpener.value = null;
 }
 function closeAdd() {
@@ -73,257 +128,62 @@ function closeAdd() {
   addOpener.value = null;
   void nextTick(() => opener?.focus());
 }
-const { openMachine, enter, leave, goTo, openTask, summaryOpen, closeSummary } = panels;
-const { narrow, logOpen, fleetVisible, toggleFleet, showStation } = panels;
-
-const { sound } = useArrivalChime(sources);
-
-const labels = useOverlayLabels(sources, model);
-const { starLabels, constellationLabels } = labels;
-
-const { entries, groups, plates, hidden } = useSystemFleet(sources, model, panels);
-
-const stars = useStarLabels(overlay, repo, model, labels);
-const stage = useStageInsets(host, model, panels, stars.scheduleLabels);
-const { failure, flying, retry } = useFleetScene({ props, host, overlay, sources, model, panels, entries, stars, stage });
+function closeSummary() {
+  summaryOpen.value = false;
+  void nextTick(() => consolePanel.value?.summaryButton?.focus());
+}
+watch([() => props.active, () => props.machine], ([active, machine]) => {
+  if (active && !machine) return;
+  recordTarget.value = account.value = addOpener.value = null;
+  researchOpen.value = summaryOpen.value = false;
+});
 </script>
 
 <template>
-  <section class="map" aria-label="Карта задач">
-    <MapToolbar
-      v-model:repoModel="repoModel"
-      :repo="repo"
-      :emblem-of="emblemOf"
-      :star-list="starList"
-      :picker-groups="pickerGroups"
-      :fleet-visible="fleetVisible"
-      :entries="entries"
-      @leave="leave"
-      @toggle-fleet="toggleFleet"
-    />
+  <section class="map" aria-label="Карта заданий">
+    <ProjectTaskMap ref="map" :data="data" :error="error" :sessions="sessions" :save="save"
+      @record="(taskId, sessionId) => openRecord({ taskId, sessionId })" @retry="refresh" @panel="emit('panel')">
+      <button type="button" class="btn tools-toggle" :aria-expanded="toolsOpen" aria-controls="map-tools"
+        title="Запуски и сессии, дежурный, подписки, машины и рефлексия" @click="toolsOpen = !toolsOpen">Инструменты</button>
+    </ProjectTaskMap>
+    <section v-if="toolsOpen" id="map-tools" aria-label="Инструменты доски">
+      <select class="btn record-picker" aria-label="Открыть запуск или сессию" @change="pickRecord">
+        <option value="" disabled selected>Запуски и сессии</option>
+        <option v-for="item in board.tasks.value" :key="item.slug" :value="item.slug">{{ recordLabel(item) }}</option>
+      </select>
+      <MapConsole ref="consolePanel" v-model:log-open="logOpen" v-model:summary-open="summaryOpen" v-model:sound="sound"
+        :frame="frameLight" :now="now" :tanks="subscriptions" :stars="counts" :machines="board.state.value.machines"
+        :machine="machine ?? null" :account="account" :station="station" :research-open="researchOpen"
+        :log-events="board.events.value" :events-error="board.eventsError.value" :emblem-of="emblemOf"
+        :narrow="narrow" :tasks="tasks" :projects="projects" :host="board" :read-only="readOnly"
+        @project="map?.focusProject($event)" @task="openRecord"
+        @open-account="openAccount" @add-subscription="addOpener = $event"
+        @machine="(id, opener) => emit('machine', id, opener)" @open-research="openResearch" />
+    </section>
 
-    <div v-if="failure" class="fallback" role="alert">
-      <p v-if="failure === 'webgl'">Карта не смогла запустить графику в этом браузере. Задачи видны на доске.</p>
-      <p v-else-if="failure === 'system'">Не удалось загрузить текстуры системы. Можно попробовать ещё раз или перейти на доску.</p>
-      <p v-else>Видеокарта сбросила карту. Можно попробовать ещё раз или перейти на доску.</p>
-      <p>
-        <a href="#" @click.prevent="emit('board')">Открыть доску</a>
-        <template v-if="failure !== 'webgl'"> · <a href="#" @click.prevent="retry">Повторить</a></template>
-      </p>
-    </div>
-
-    <div v-show="!failure" ref="host" class="stage">
-      <div ref="overlay" class="overlay" :class="{ flying }" :style="{ '--frame': `url(${frameLight})` }">
-        <GalaxyLabels v-if="!repo" :star-labels="starLabels" :constellation-labels="constellationLabels" @enter="enter" />
-        <SystemLabels v-else :plates="plates" @show-station="showStation" />
-      </div>
-      <FleetPanel
-        v-if="fleetVisible"
-        ref="fleetPanel"
-        :groups="groups"
-        :total="entries.length"
-        :hidden="hidden"
-        :selected="selected"
-        :hovered="hovered"
-        :frame="frameLight"
-        @pick="open"
-        @hover="hovered = $event"
-        @close="toggleFleet"
-      />
-      <MapConsole
-        ref="mapConsole"
-        v-model:logOpen="logOpen"
-        v-model:summaryOpen="summaryOpen"
-        v-model:sound="sound"
-        v-model:sourceKind="sourceKind"
-        :frame="frameLight"
-        :now="now"
-        :tanks="tankList"
-        :stars="starList"
-        :machines="machinesData"
-        :machine="machine ?? null"
-        :account="account"
-        :station="station"
-        :research-open="researchOpen"
-        :log-events="events"
-        :events-error="eventsError"
-        :repo="repo"
-        :system-names="systemNames"
-        :emblem-of="emblemOf"
-        :narrow="narrow"
-        :tasks="tasks"
-        :demo="demo"
-        :host="source"
-        @go="goTo"
-        @task="openTask"
-        @open-account="(key, opener) => { initialLogin = null; openAccount(key, opener); }"
-        @add-subscription="addOpener = $event"
-        @machine="openMachine"
-        @open-research="openResearch"
-      />
-      <p v-if="!loaded" class="status">Жду первый снимок доски…</p>
-      <p v-else-if="!starList.length" class="status">Пока ни одной задачи.</p>
-      <p v-else-if="repo && !entries.length" class="status">
-        В этом репозитории сейчас нет задач: все закрыты.
-      </p>
-    </div>
-
-    <StationView
-      v-if="researchOpen && active && station"
-      :research="station"
-      :now="now"
-      :frame="frameLight"
-      :covered="shipOpen || !!machine"
-      :source="source.source"
-      :refresh="loadResearch"
-      :tasks="source.state.value.tasks"
-      :launches="source.state.value.launches"
-      @close="closeResearch"
-      @open="open"
-      @ship="openShip"
-    />
-    <OpenCodeAccount
-      v-if="active && account?.startsWith('opencode:')"
-      :provider="account.slice('opencode:'.length)"
-      :accounts="source.state.value.accounts"
-      :source="source.source"
-      :read-only="subscriptionsReadOnly"
-      :frame="frameLight"
-      @close="closeAccount"
-    />
-    <AccountView
-      v-else-if="account && active"
-      :key="account"
-      :account-key="account"
-      :initial-login="initialLogin"
-      :scenario="sourceKind === 'scenario'"
-      :covered="shipOpen || !!machine"
-      :accounts="source.state.value.accounts"
-      :logins="source.state.value.logins"
-      :tasks="source.state.value.tasks"
-      :source="source.source"
-      :now="now"
-      :frame="frameLight"
-      @close="closeAccount"
-      @open="open"
-    />
-    <ShipView
-      v-if="shipOpen && selected && active"
-      :slug="selected"
-      :task="selectedTask"
-      :opencode="source.state.value.accounts?.opencode"
-      :source="source.source"
-      :now="now"
-      :frame="frameLight"
-      :emblem="emblemOf(selectedTask?.repo ?? null)"
-      @close="close"
-      @show="showOnMap"
-      @task="board.put"
-    />
-    <DaySummary v-if="summaryOpen && active" :source="source.source" :events="events" :frame="frameLight" @close="closeSummary" />
-    <AddSubscription
-      v-if="addOpener && active"
-      :source="source.source"
-      :read-only="subscriptionsReadOnly"
-      :accounts="source.state.value.accounts"
-      @open="finishAdd"
-      @close="closeAdd"
-    />
+    <StationView v-if="researchOpen && active && station" :research="station" :now="now" :frame="frameLight"
+      :covered="!!record || !!machine" :source="board.source" :refresh="loadResearch" :tasks="board.state.value.tasks"
+      :launches="board.state.value.launches" @close="closeResearch" @open="openRecord" @ship="openAgent" />
+    <OpenCodeAccount v-if="active && account?.startsWith('opencode:')" :provider="account.slice('opencode:'.length)"
+      :accounts="board.state.value.accounts" :source="board.source" :read-only="subscriptionsReadOnly" :frame="frameLight"
+      @close="closeAccount" />
+    <AccountView v-else-if="account && active" :key="account" :account-key="account" :initial-login="initialLogin" :read-only="readOnly"
+      :covered="!!record || !!machine" :accounts="board.state.value.accounts" :logins="board.state.value.logins"
+      :tasks="board.state.value.tasks" :source="board.source" :now="now" :frame="frameLight"
+      @close="closeAccount" @open="openRecord" />
+    <ShipView v-if="record && active" :slug="record" :task="recordTask" :opencode="board.state.value.accounts?.opencode"
+      :source="board.source" :now="now" :frame="frameLight" :emblem="emblemOf(recordTask?.repo ?? null)"
+      :map-task-title="linkedTask?.title" @close="closeRecord" @show="showLinkedTask" @task="board.put" />
+    <DaySummary v-if="summaryOpen && active" :source="board.source" :events="board.events.value" :frame="frameLight" @close="closeSummary" />
+    <AddSubscription v-if="addOpener && active" :source="board.source" :read-only="subscriptionsReadOnly"
+      :accounts="board.state.value.accounts" @open="finishAdd" @close="closeAdd" />
   </section>
 </template>
 
 <style scoped>
-.map {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.stage {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  background: #05070d;
-}
-
-.stage :deep(.map-canvas) {
-  position: absolute;
-  left: 0;
-  top: 0;
-  display: block;
-  touch-action: none;
-  outline: none;
-}
-
-.status,
-.fallback {
-  max-width: min(440px, calc(100% - 32px));
-  margin: 0;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--muted);
-  text-align: center;
-  box-shadow: var(--shadow);
-}
-
-.status {
-  position: absolute;
-  left: 50%;
-  top: 40%;
-  z-index: 1;
-  pointer-events: none;
-  transform: translate(-50%, -50%);
-}
-
-.fallback {
-  margin: 72px auto 0;
-  color: var(--text);
-}
-
-.fallback p {
-  margin: 4px 0;
-}
-
-/* Labels stand on the dark sky in both of the board's themes, so their colours are fixed. */
-.overlay {
-  --tx: 0px;
-  --ty: 0px;
-  --zoom: 1;
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  overflow: hidden;
-  pointer-events: none;
-  color: #e8e2d4;
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.overlay.flying {
-  visibility: hidden;
-}
-
-/* The open system's ships, at the right side of the map under the toolbar and above the control panel. */
-.stage > .fleet {
-  position: absolute;
-  top: var(--below-toolbar, 46px);
-  right: 10px;
-  z-index: 2;
-  width: 300px;
-  max-height: calc(100% - var(--below-toolbar, 46px) - var(--console-room, 0px) - 8px);
-}
-
-@media (max-width: 760px) {
-  /* The list opens over the map, above the control panel's strip. */
-  .stage > .fleet {
-    left: 4px;
-    right: 4px;
-    width: auto;
-  }
-}
+.map { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tools-toggle { margin-inline-start: auto; }
+#map-tools { flex: none; background: var(--surface); }
+#map-tools > .console { position: relative; }
+.record-picker { margin: 5px 12px; max-width: calc(100% - 24px); }
 </style>
