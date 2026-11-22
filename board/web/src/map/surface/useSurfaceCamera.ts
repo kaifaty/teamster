@@ -60,8 +60,11 @@ export function useSurfaceCamera(
   }
   function move(next: Camera, factor = 1, at?: Point) {
     const view = available();
-    const zoomed = zoomCamera(next, factor, at ?? { x: view.width / 2, y: view.height / 2 }, fit(view), CLOSE_ZOOM);
-    camera.value = containSurfaceCamera(zoomed, layout.value, view);
+    const fitted = fit(view);
+    const zoomed = zoomCamera(next, factor, at ?? { x: view.width / 2, y: view.height / 2 }, fitted, CLOSE_ZOOM);
+    // At the fitted scale both axes are centred, even after a pan or a round trip through the zoom controls.
+    atHome = zoomed.zoom <= fitted.zoom * (1 + 1e-9);
+    camera.value = atHome ? fitted : containSurfaceCamera(zoomed, layout.value, view);
   }
   function centre(at: Point, zoom: number, view = available()) {
     atHome = false;
@@ -93,19 +96,52 @@ export function useSurfaceCamera(
     if (selectedId.value !== null && layout.value.sites.has(selectedId.value)) focusTask(selectedId.value);
     else home();
   }
-  function pan(from: Camera, dx: number, dy: number) {
-    atHome = false;
+  function pan(dx: number, dy: number) {
+    const from = camera.value;
     move({ ...from, tx: from.tx + dx, ty: from.ty + dy });
   }
   function zoomBy(factor: number, at?: Point) {
-    atHome = false;
     move(camera.value, factor, at);
   }
-  watch(() => layout.value.coastline, (next, old) => {
-    if (!old || !next) initialView();
-    else if (atHome) home();
-    else move(camera.value);
-  });
+  watch(layout, (next, old) => {
+    if (!old.sites.size || !next.sites.size) return initialView();
+    const coastChanged = next.coastline !== old.coastline;
+    if (atHome) {
+      if (coastChanged) home();
+      return;
+    }
+
+    const cam = camera.value, view = available(), fallback = { ...cam };
+    let nearest = Infinity, removed = Infinity, tx = cam.tx, ty = cam.ty;
+    // The selected building takes priority while visible. Otherwise follow the nearest surviving landmark.
+    function anchor(from: Point, to: Point | undefined, selected = false) {
+      const x = from.x * cam.zoom + cam.tx, y = from.y * cam.zoom + cam.ty;
+      let visible = x >= 0 && x <= view.width && y >= 0 && y <= view.height;
+      if (selected && !visible && field.value) {
+        // A building below a floating side card can also be visible outside the free rectangle.
+        const el = field.value, box = el.getBoundingClientRect();
+        visible = el.contains(el.ownerDocument.elementFromPoint(box.left + x, box.top + y));
+      }
+      const distance = selected && visible ? -1 : Math.hypot(x - view.width / 2, y - view.height / 2);
+      if (!to) {
+        removed = Math.min(removed, distance);
+        return;
+      }
+      if (distance >= nearest) return;
+      nearest = distance;
+      tx = cam.tx + (from.x - to.x) * cam.zoom;
+      ty = cam.ty + (from.y - to.y) * cam.zoom;
+      fallback.tx = visible ? tx : view.width / 2 - to.x * cam.zoom;
+      fallback.ty = visible ? ty : view.height / 2 - to.y * cam.zoom;
+    }
+    for (const region of old.regions.values()) {
+      anchor(region.label, next.regions.get(region.project)?.label);
+      for (const site of region.sites) anchor(site, next.sites.get(site.task.id), site.task.id === selectedId.value);
+    }
+    if (nearest === Infinity) home();
+    else if (removed < nearest) move(fallback);
+    else if (coastChanged || tx !== cam.tx || ty !== cam.ty) move({ ...cam, tx, ty });
+  }, { flush: "post" });
 
   let observer: ResizeObserver;
   let unlisten: () => void;
@@ -119,18 +155,24 @@ export function useSurfaceCamera(
       size.value = { width, height };
       if (!before.width && atHome) initialView();
       else if (atHome) home();
-      else pan(camera.value, (width - before.width) / 2, (height - before.height) / 2);
+      else pan((width - before.width) / 2, (height - before.height) / 2);
     }
     resize();
     observer = new ResizeObserver(resize);
     observer.observe(el);
+    let dragged = { x: 0, y: 0 };
     const input = createInput({
       now: () => performance.now(), origin: () => el.getBoundingClientRect(),
-      viewport: available, camera: () => camera.value,
+      viewport: available, camera: () => { dragged = { x: 0, y: 0 }; return camera.value; },
       onMap: () => true, paused: () => false, stopGlide() {}, hover() {}, leave() {},
       capture: id => el.setPointerCapture(id),
       cursor: style => { el.style.cursor = style; },
-      pan: (dx, dy) => pan(camera.value, dx, dy), drag: pan, zoom: zoomBy, fit: home,
+      pan, drag(_, x, y) {
+        // A live layout update can move the camera between two events of the same drag.
+        pan(x - dragged.x, y - dragged.y);
+        dragged = { x, y };
+      },
+      zoom: zoomBy, fit: home,
       click(at) {
         // Pointer capture delivers the release to the field, even for a tap on a building.
         const box = el.getBoundingClientRect();

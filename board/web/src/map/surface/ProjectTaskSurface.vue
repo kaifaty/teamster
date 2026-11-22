@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useId } from "vue";
+import { computed, ref, useId, watch } from "vue";
 import { ZOOM_NOTCH } from "../navigation";
 import { at } from "../overlay/style";
 import forest from "./art/forest.webp";
@@ -27,6 +27,33 @@ defineExpose({ focusTask, focusProject });
 
 const id = useId();
 const regions = computed(() => [...layout.value.regions.values()].sort((a, b) => a.project.localeCompare(b.project, "ru")));
+const labels = computed(() => {
+  const counts = new Map<string, number>();
+  const names = [...regions.value].sort((a, b) => b.sites.length - a.sites.length).map(region => {
+    const stems = [...region.project.matchAll(/[-._/ ](?=.)/g)].map(m => region.project.slice(0, m.index));
+    for (const stem of [...stems, region.project]) counts.set(stem, (counts.get(stem) ?? 0) + 1);
+    return { region, stems };
+  });
+  return names.map(({ region, stems }) => {
+    // Keep the part that distinguishes projects, even when they share several leading words.
+    const common = stems.filter(stem => counts.get(stem)! > 1).pop();
+    const stem = common ?? stems[0];
+    const split = stem === undefined ? 0 : stem.length + 1;
+    return { region, prefix: region.project.slice(0, split), suffix: region.project.slice(split), shared: common !== undefined };
+  });
+});
+watch([field, labels, () => camera.value.zoom], ([el]) => {
+  if (!el) return;
+  const elements = Array.from(el.querySelectorAll<HTMLElement>(".region"));
+  const boxes = compact.value ? elements.map(label => label.getBoundingClientRect()) : [];
+  const taken: DOMRect[] = [];
+  elements.forEach((label, i) => {
+    const box = boxes[i];
+    const covered = box && taken.some(r => box.left < r.right && box.right > r.left && box.top < r.bottom && box.bottom > r.top);
+    label.style.visibility = covered ? "hidden" : "";
+    if (box && !covered) taken.push(box);
+  });
+}, { flush: "post" });
 const visibleSites = computed(() => {
   const box = bounds.value;
   const pad = 125 / camera.value.zoom;
@@ -123,10 +150,11 @@ function chooseProject(event: Event) {
         </g>
       </svg>
       <div
-        v-for="region in regions" :key="region.project" class="region" :class="{ compact }"
+        v-for="{ region, prefix, suffix, shared } in labels" :key="region.project" class="region" :class="{ compact }"
         :style="{ ...at(region.label.x, region.label.y), '--label-width': region.labelWidth + 'px' }" :title="region.project"
       >
-        <b>{{ region.project }}</b>
+        <b v-if="compact"><span v-if="prefix && (!shared || region.labelWidth * camera.zoom >= 48)">{{ prefix }}</span><wbr><span>{{ suffix }}</span></b>
+        <b v-else>{{ region.project }}</b>
         <small v-if="!compact">{{ region.biome === "forest" ? "Хвойное пограничье" : "Вулканическое плато" }}</small>
       </div>
       <SurfaceSite
@@ -173,11 +201,9 @@ function chooseProject(event: Event) {
   width: max-content; max-width: clamp(32px, calc(var(--label-width) * var(--zoom)), 340px); text-align: center; pointer-events: none;
   color: #fff8df; text-shadow: 0 1px 3px #213b2b, 0 0 7px #253a29, 0 0 13px #35422e;
 }
-.region b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 27px/1.1 "Iowan Old Style", Georgia, serif; }
-.region.compact b {
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  white-space: normal; overflow-wrap: anywhere; text-wrap: balance; hyphens: auto; font-size: clamp(10px, calc(52px * var(--zoom)), 21px);
-}
+.region b { display: block; overflow-wrap: anywhere; font: 600 27px/1.1 "Iowan Old Style", Georgia, serif; }
+.region.compact b { font-size: clamp(10px, calc(52px * var(--zoom)), 21px); }
+.region.compact b span { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }
 .region small { font-size: 10px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
 .empty {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0;

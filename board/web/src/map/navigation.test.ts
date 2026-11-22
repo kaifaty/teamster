@@ -105,20 +105,28 @@ it("keeps land visible after a long pan and every edge building reachable at det
   });
 });
 
-it("pans between clearings in small steps and reclamps when the focused project disappears", async () => {
-  const tasks: SurfaceTask[] = ["a", "b"].map(id => ({
-    id, project: "A", title: id, status: "active", parent_id: null, depends_on: [], pull_requests: [],
-  }));
-  const pair = layoutSurface(tasks), live = shallowRef(pair);
+function observeSurface(tasks: SurfaceTask[]) {
+  const live = shallowRef(layoutSurface(tasks)), selected = shallowRef<string | null>(null);
   const view = { width: 360, height: 560 }, field = document.createElement("div");
   field.getBoundingClientRect = () => DOMRect.fromRect(view);
   let surface!: ReturnType<typeof useSurfaceCamera>;
   const wrapper = mount({
     setup() {
-      surface = useSurfaceCamera(shallowRef(field), live, shallowRef(null), () => {});
+      surface = useSurfaceCamera(shallowRef(field), live, selected, () => {});
       return () => null;
     },
   });
+  return { field, live, selected, surface, view, wrapper };
+}
+
+const tasks: SurfaceTask[] = ["a", "b"].map(id => ({
+  id, project: "A", title: id, status: "active", parent_id: null, depends_on: [], pull_requests: [],
+}));
+const extra = Array.from({ length: 24 }, (_, i) => ({ ...tasks[0]!, id: `extra-${i}`, project: "B" }));
+
+it("pans between clearings in small steps and reclamps when the focused project disappears", async () => {
+  const { field, live, surface, view, wrapper } = observeSurface(tasks);
+  const pair = live.value;
   const [left, right] = [...pair.sites.values()].sort((a, b) => a.x - b.x);
   surface.focusTask(left!.task.id);
   surface.zoomBy(1.5);
@@ -128,16 +136,45 @@ it("pans between clearings in small steps and reclamps when the focused project 
   expect(rightX).toBeGreaterThanOrEqual(0);
   expect(rightX).toBeLessThan(view.width);
 
-  const extra = Array.from({ length: 24 }, (_, i) => ({ ...tasks[0]!, id: `extra-${i}`, project: "B" }));
   live.value = layoutSurface([...tasks, ...extra]);
   await nextTick();
   const edge = live.value.regions.get("B")!.sites.reduce((a, b) => a.x > b.x ? a : b);
   surface.focusTask(edge.task.id);
   surface.zoomBy(1.5);
-  const expected = containSurfaceCamera(surface.camera.value, pair, view);
-  expect(surface.camera.value).not.toEqual(expected);
+  const before = surface.camera.value;
   live.value = pair;
   await nextTick();
-  expect(surface.camera.value).toEqual(expected);
+  const after = surface.camera.value;
+  expect(after).not.toEqual(before);
+  expect(after.zoom).toBe(before.zoom);
+  expect(after).toEqual(containSurfaceCamera(after, pair, view));
+  wrapper.unmount();
+});
+
+it("refits a centred overview and keeps a visible selection in place during live growth", async () => {
+  const { field, live, selected, surface, wrapper } = observeSurface(tasks);
+  surface.zoomBy(ZOOM_NOTCH);
+  surface.zoomBy(1 / ZOOM_NOTCH);
+  field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+  surface.zoomBy(1 / ZOOM_NOTCH);
+  live.value = layoutSurface([...tasks, ...extra]);
+  await nextTick();
+  const afterGrowth = surface.camera.value;
+  surface.home();
+  expect(afterGrowth).toEqual(surface.camera.value);
+
+  const id = extra[0]!.id;
+  selected.value = id;
+  surface.focusTask(id);
+  // The selected building stays on screen while another building is closer to the centre.
+  for (let i = 0; i < 3; i++) field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+  const position = () => {
+    const site = live.value.sites.get(id)!, cam = surface.camera.value;
+    return [site.x * cam.zoom + cam.tx, site.y * cam.zoom + cam.ty, cam.zoom];
+  };
+  const beforeGrowth = position();
+  live.value = layoutSurface([...tasks, ...extra, { ...tasks[0]!, id: "c" }]);
+  await nextTick();
+  expect(position()).toEqual(beforeGrowth);
   wrapper.unmount();
 });
