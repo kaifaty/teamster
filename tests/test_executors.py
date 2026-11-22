@@ -513,8 +513,10 @@ class ExecutorTests(RotationTestCase):
         with acp.AcpClient([sys.executable, "-I", str(agent), "configured", "--literal=two words; *"],
                            repo, lambda update: None, lambda params: None, env=self.env) as client:
             self.assertEqual(client.open_session(config_options={"reasoning_effort": "high"}), "session-1")
-            with self.assertRaisesRegex(ValueError, "Usage limit reached"):
+            with self.assertRaisesRegex(acp.AcpRequestError, "Usage limit reached") as failure:
                 client.prompt("Work")
+            self.assertEqual(failure.exception.code, -32603)
+            self.assertEqual(failure.exception.data, {"message": "Usage limit reached"})
 
     def test_executor_selection_stays_in_contract(self):
         violations = []
