@@ -523,8 +523,10 @@ it("grows and reclaims adjoining land with the current workload, including the l
   const tasks = [1, 4, 16].flatMap((count, project) => Array.from({ length: count }, (_, i) =>
     ({ ...trail, id: `${project}-${i}`, project: String(project) })));
   const overrides = { "0": "forest", "1": "forest", "2": "forest" };
-  const initialSize = layoutSurface(tasks.slice(0, 1)).world;
+  const initialSize = { ...layoutSurface(tasks.slice(0, 1)).world };
   const full = layoutSurface(tasks, overrides);
+  expect(full.world.width).toBeGreaterThan(initialSize.width);
+  expect(full.world.height).toBeGreaterThan(initialSize.height);
   const regions = [...full.regions.values()];
   expect(regions.map(r => r.sites.length)).toEqual([1, 4, 16]);
   expect(new Set(regions.flatMap(r => r.sites.map(s => `${s.x},${s.y}`))).size).toBe(21);
