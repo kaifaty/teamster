@@ -273,25 +273,21 @@ def save(st):
         write_state(st)
 
 
-def session_process(st):
-    """The name and pid of a live duty transport or OpenCode worker holding its session."""
+def session_processes(st):
+    """Live process groups holding the task's session after its supervisor exits."""
     if st.get("kind") == "duty":
         for name in ("Claude", "Codex"):
             pid = st.get(name.lower() + "_pid")
             if procs.alive(pid):
-                return name, pid
+                yield name, pid
+                return
     elif st.get("opencode_pid"):
-        pid = st["opencode_pid"]
-        try:
-            if os.getpgid(pid) == pid:
-                env = procs.process_environment(pid)
-                owner = f"{opencode_runner.PROCESS_MARKER}={st['pid']}".encode()
-                directory = os.fsencode("PWD=" + os.path.realpath(st["worktree"]))
-                if owner in env and directory in env:
-                    return "OpenCode", pid
-        except ProcessLookupError:
-            pass
-    return None, None
+        for group in opencode_runner.orphan_groups(st):
+            yield "OpenCode", group
+
+
+def session_process(st):
+    return next(session_processes(st), (None, None))
 
 
 def busy_message(st, queue_hint=False):

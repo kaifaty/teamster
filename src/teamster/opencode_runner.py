@@ -10,13 +10,37 @@ from . import acp, clock, procs
 PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
 
 
-def _set_title(worktree, env, session_id, title, check_active):
+def orphan_groups(st):
+    """Find the recorded ACP group and its title update, even after either leader exits."""
+    owner = f"{PROCESS_MARKER}={st['pid']}".encode()
+    directory = os.fsencode("PWD=" + os.path.realpath(st["worktree"]))
+    acp_pid = st["opencode_pid"]
+    title_owner = owner + f":title:{acp_pid}".encode()
+    seen = set()
+    for entry in procs.sh(["ps", "-U", str(os.getuid()), "-o", "pid="]).split():
+        pid = int(entry)
+        env = procs.process_environment(pid)
+        if directory not in env or (owner not in env and title_owner not in env):
+            continue
+        try:
+            group = os.getpgid(pid)
+        except ProcessLookupError:
+            continue
+        if group != acp_pid and title_owner not in env:
+            continue
+        if group > 1 and group != os.getpgrp() and group not in seen:
+            seen.add(group)
+            yield group
+
+
+def _set_title(worktree, env, acp_pid, session_id, title, check_active):
     # ACP v1 has no rename command. Set the title before OpenCode can generate one.
     argv = ["opencode", "api", "--standalone", "session.update", "--param",
             f"sessionID={session_id}", "--data", json.dumps({"title": title})]
     check_active()
     with tempfile.TemporaryFile() as errors:
-        proc = subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
+        title_env = {**env, PROCESS_MARKER: f"{env[PROCESS_MARKER]}:title:{acp_pid}"}
+        proc = subprocess.Popen(argv, cwd=worktree, env=title_env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=errors, start_new_session=True)
         try:
             while proc.poll() is None:
@@ -72,7 +96,7 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
                 session_id = opened
                 created(session_id)
             if title is not None:
-                _set_title(worktree, env, session_id, title, check_active)
+                _set_title(worktree, env, client.process.pid, session_id, title, check_active)
             check_active()
             client.on_update = update
             reason = client.prompt(prompt)

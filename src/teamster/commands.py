@@ -750,7 +750,8 @@ def cmd_stop(a):
         st = task_state.load(a.slug)
         pid = st.get("pid")
         if not procs.alive(pid):
-            name, orphan = task_state.session_process(st)
+            processes = task_state.session_processes(st)
+            name, orphan = next(processes, (None, None))
             if orphan is None:
                 print("not running")
                 return
@@ -768,6 +769,8 @@ def cmd_stop(a):
                         break
                     time.sleep(0.2)
             procs.end_group(orphan)
+            for _, group in processes:
+                procs.end_group(group)
             if marker:
                 codex_duty.end_duty_terminals(marker)
             st.pop(name.lower() + "_pid", None)
