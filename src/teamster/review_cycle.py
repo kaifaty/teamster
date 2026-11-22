@@ -27,6 +27,8 @@ def configure_reviewer(st, cfg, explicit=None, *, required=False):
                 providers.append("claude" if preferred == "codex" else "codex")
         st["reviewer"] = next((name for name in providers if reviewer_available(name)), providers[0])
     reviewer = reviewers.from_entry(st)
+    if "work_binding" in st and reviewer.name != executors.from_state(st).name:
+        return  # The review entry reports that this provider needs a separate task.
     available = reviewer_available(reviewer.name)
     if required or explicit is not None or available:
         reviewer.prepare(cfg)

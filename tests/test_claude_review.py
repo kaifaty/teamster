@@ -41,7 +41,7 @@ fixture = json.loads(Path(os.environ["CODEX_FAKE_CLAUDE_FIXTURE"]).read_text())
 lookup = fixture.get("security", {}).get(sys.argv[3], {})
 if lookup.get("unavailable"):
     sys.exit(44)
-print("fixture-claude-reviewer-oauth-secret")
+print(lookup.get("token", "fixture-claude-reviewer-oauth-secret"))
 '''
 
 FAKE_CLAUDE = r'''import json
@@ -102,6 +102,9 @@ if acp:
     params = setup["params"]
     assert params["cwd"] == os.getcwd() and params["mcpServers"] == []
     session_id = params.get("sessionId", str(uuid.uuid4()))
+    if setup["method"] == "session/resume" and fixture.get("missing_session") == session_id:
+        send({"jsonrpc": "2.0", "id": setup["id"], "error": {"code": -32002, "message": "Session not found"}})
+        sys.exit(0)
     meta = params["_meta"]
     assert meta["claudeCode"]["emitRawSDKMessages"]
     options = meta["claudeCode"]["options"]
@@ -3313,7 +3316,7 @@ class ClaudeReviewTests(RotationTestCase):
             "five_hour": {"resetsAt": self.reset}, "seven_day": {"resetsAt": self.reset}}})
         self.assertIn("claude default: weight 1; 5h unknown", self.cli("accounts"))
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-limits", "--review")
+        self.legacy_work("claude-limits", "--review")
         self.wait("claude-limits")
         work = self.state("claude-limits")["result"]
         self.cli("review", "claude-limits", "--reviewer", "claude")
@@ -4389,7 +4392,7 @@ class ClaudeReviewTests(RotationTestCase):
             {"mode": "complete", "reply": self.review_result(False)}, work])
         self.account(third, "C", self.reset + 7200, runs=[work])
         rooms = {"main": 89, "second": 89, "third": 89}
-        self.start("duty-own")
+        self.legacy_work("duty-own")
         self.wait("duty-own")
         self.assertEqual(self.state("duty-own")["account"], "main")
         self.write_duty("codex", "main", codex=rooms)

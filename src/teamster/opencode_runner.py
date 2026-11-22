@@ -12,7 +12,7 @@ from . import acp, clock, procs
 PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
 
 
-def work_connection(worktree, model):
+def provider_connection(worktree, model):
     """Resolve the single connection that can serve this provider in the ACP process's environment."""
     provider = model.split("/", 1)[0]
     try:
@@ -138,7 +138,9 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
         if session_id and f"session not found: {session_id}" in str(error):
             return "failed", f"Saved OpenCode session {session_id} was not found"
         if isinstance(error, acp.AcpRequestError):
+            data = error.data if isinstance(error.data, dict) else {}
             detail = str(error).lower()
-            if any(marker in detail for marker in ("429", "rate_limit", "rate limit", "usage limit", "quota exceeded")):
+            if (error.code == 429 or data.get("errorKind") in ("rate_limit", "quota_exceeded")
+                    or any(marker in detail for marker in ("rate limit", "usage limit", "quota exceeded", "http 429"))):
                 return "exhausted", f"OpenCode quota exhausted for {model}. Check the connection's reset time and retry."
         return "failed", str(error)

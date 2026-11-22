@@ -191,7 +191,7 @@ class NotificationTests(RotationTestCase):
         clock = self.enable_fake_clock(auto_advance=False)
         self.configure()
         self.configure_notify()
-        self.start(slug)
+        self.legacy_work(slug)
         self.wait(slug)
         working = self.state(slug)
         reset = clock.time() + 3
@@ -231,7 +231,7 @@ class NotificationTests(RotationTestCase):
         slug = "notify-angle-sleep"
         self.configure()
         self.configure_notify()
-        self.start(slug)
+        self.legacy_work(slug)
         self.wait(slug)
         working = self.state(slug)
         reset = clock.time() + 3

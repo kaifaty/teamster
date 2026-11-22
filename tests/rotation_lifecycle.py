@@ -1080,7 +1080,7 @@ worker.notifications.reap_notifications = reap
 
     def test_review_waits_for_account_reset_then_starts_fresh(self):
         self.configure()
-        self.start("review-reset")
+        self.legacy_work("review-reset")
         self.wait("review-reset")
         working = self.state("review-reset")
         reset = time.time() + 4
@@ -1126,7 +1126,7 @@ worker.notifications.reap_notifications = reap
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": "Рабочий результат"},
             {"mode": "complete", "reply": "Ревью через обычный exec"}])
-        self.start("review-fallback")
+        self.start("review-fallback", "--model", "fallback-model")
         self.wait("review-fallback")
         working = self.state("review-fallback")
         self.cli("review", "review-fallback", "--review-model", "fallback-model")
@@ -1174,7 +1174,8 @@ worker.notifications.reap_notifications = reap
         report = json.loads(self.cli("report", "--slug", slug, "--json"))
         self.assertEqual(report["tasks"][0]["weekly_used_percent"], 4)
         quota_calls = [event for event in self.trace() if event.get("command") == "quota-snapshot"]
-        self.assertEqual(len(quota_calls), 4, "fallback must reuse the selection snapshot")
+        self.assertCountEqual([entry["home"] for entry in quota_calls],
+                              [str(self.home), str(self.other), str(self.home)])
 
     def test_mid_turn_limit_sleeps_and_resumes_same_thread(self):
         self.configure()  # Omitting wait_for_reset enables automatic continuation.
@@ -1461,9 +1462,9 @@ worker.notifications.reap_notifications = reap
         self.assertTrue(state.get("exhausted"))
         self.assertFalse(state.get("rotations"))
         self.assertEqual(len(self.invocations()), 1)
-        self.assertIn("== all accounts at limit; earliest reset", output)
-        self.assertIn(datetime.datetime.fromtimestamp(self.reset).strftime("%Y-%m-%d %H:%M"), output)
-        self.assertIn("(second)", output)
+        self.assertIn("== assigned account at limit; earliest reset", output)
+        self.assertIn(datetime.datetime.fromtimestamp(self.reset + 3600).strftime("%Y-%m-%d %H:%M"), output)
+        self.assertIn("(main)", output)
         self.assertIn("continue with say after that", output)
 
         self.configure(soft_switch_at=80, wait_for_reset=False)
@@ -1472,7 +1473,7 @@ worker.notifications.reap_notifications = reap
             {"mode": "usage_error", "rollout_used": 80, "delay_gate": str(release)}])
         self.account(self.other, "B", self.reset + 3600, used=99)
         probes = len([event for event in self.trace() if event.get("command") == "quota-snapshot"])
-        self.start("soft-error-reset")
+        self.legacy_work("soft-error-reset")
         self.until(lambda: len([event for event in self.trace()
                                 if event.get("command") == "quota-snapshot"]) >= probes + 4)
         release.touch()
@@ -1635,7 +1636,7 @@ worker.notifications.reap_notifications = reap
         command = shlex.join([PYTHON, "-I", str(check), str(self.home / "fixture.json"),
                               str(self.other / "fixture.json")])
         slug = "rotation-before-unstarted-review"
-        self.start(slug, "--review", "--check", command)
+        self.legacy_work(slug, "--review", "--check", command)
         output = self.wait(slug)
         executions = self.invocations()
         self.assertEqual(len(executions), 2)
@@ -1669,7 +1670,7 @@ worker.notifications.reap_notifications = reap
                 self.cli("say", slug, "Try again when an account is available")
                 try:
                     output = self.wait(slug)
-                    expected = "== sleeping until " if wait_for_reset else "== all accounts at limit"
+                    expected = "== sleeping until " if wait_for_reset else "== assigned account at limit"
                     self.assertIn(expected, output)
                     self.assertIn("(Codex did not run this turn)", output)
                     self.assertEqual(len(self.invocations()), before + 1)
@@ -1689,7 +1690,7 @@ worker.notifications.reap_notifications = reap
                               (self.other, "B", self.reset))
         self.cli("say", "pause-later", "Ещё одно сообщение")
         output = self.wait("pause-later")
-        self.assertIn("== all accounts at limit", output)
+        self.assertIn("== assigned account at limit", output)
         self.assertIn("(Codex did not run this turn)", output)
         self.assertNotIn(old, output)
 
@@ -1853,7 +1854,7 @@ worker.notifications.reap_notifications = reap
         self.assertTrue(self.state("no-credits").get("exhausted"))
         self.assertFalse(self.state("no-credits").get("rotations"))
         self.assertEqual(len(self.invocations()), 1)
-        self.assertIn("all accounts at limit", output)
+        self.assertIn("assigned account at limit", output)
         self.assertTrue(any(event.get("command") == "signal" and event.get("signal") == signal.SIGINT
                             for event in self.trace()))
 

@@ -1779,8 +1779,7 @@ else:
             "mode": "usage_error", "omit_rollout": True,
             "messages": ["Work completed before the usage error"]}])
         self.account(self.other, "B", self.reset + 3600, used=99)
-        self.legacy_work("limit-error-credit-rotation", "--brief", str(self.brief),
-                 "--repo", str(self.repo), timeout=90)
+        self.legacy_work("limit-error-credit-rotation")
         output = self.wait("limit-error-credit-rotation")
         prompt = self.assert_rotation("limit-error-credit-rotation", output)
         self.assertIn("Work completed before the usage error", prompt)
@@ -1807,8 +1806,7 @@ else:
                 (self.other / "fixture.json").write_text(json.dumps(other))
                 slug = "limit-error-credit-floor-" + balance
                 before = len(self.invocations())
-                self.legacy_work(slug, "--brief", str(self.brief),
-                         "--repo", str(self.repo), timeout=90)
+                self.legacy_work(slug)
                 output = self.wait(slug)
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "exhausted")
@@ -1838,8 +1836,7 @@ else:
                                         (self.other, "B", self.reset + 3600)):
             self.account(home, account_id, reset, used=99,
                          runs=[{"mode": "usage_error", "omit_rollout": True}])
-        self.legacy_work("limit-error-credit-no-loop", "--brief", str(self.brief),
-                 "--repo", str(self.repo), timeout=90)
+        self.legacy_work("limit-error-credit-no-loop")
         self.wait("limit-error-credit-no-loop")
         state = self.state("limit-error-credit-no-loop")
         self.assertEqual(state["outcome"], "exhausted")

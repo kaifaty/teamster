@@ -239,8 +239,11 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
     def progress(telemetry):
         nonlocal weekly_before, reset_before, weekly_after, weekly_spent, weekly_stopped
         session_id = telemetry.get("session_id")
-        if session_id and session_id != st.get("session_id"):
+        cycle = st.get("cycle") or {}
+        if session_id and (session_id != st.get("session_id") or "waiting_prompt" in cycle):
             st["session_id"] = session_id
+            cycle.pop("waiting_prompt", None)
+            cycle.pop("waiting_active_seconds", None)
             task_state.save(st)
         if weekly_before is None:
             weekly_before, reset_before = telemetry.get("weekly_used_before"), telemetry.get("weekly_reset_before")
@@ -309,9 +312,11 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
 
 
 def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
-    """Prefer the task's account and session; otherwise rotate with a handoff or sleep until a reset."""
+    """Continue the assigned session, or apply the pool policy of an older record."""
     minutes = st.get("max_turn_minutes", cfg.get("max_turn_minutes"))
     deadline = None if minutes is None else clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
+    if deadline is not None:
+        deadline -= (st.get("cycle") or {}).get("waiting_active_seconds", 0)
     tried, rotation, account, reason = set(), None, None, None
     while True:
         # Limit probes and reset waits are not part of the turn's time budget.
@@ -319,10 +324,16 @@ def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, ne
         chosen = account_rotation.claude_choice(st, cfg, stopped, exclude=tried)
         if (chosen is None or account_rotation.restoring_wait(st)) and not stopped():
             st.pop("error", None)
-            retry_prompt = (prompts.reset_resume_prompt(cfg) + "\n\n" + prompt
-                            if account and st.get("session_id") else prompt)
+            retry_prompt = prompt
+            if account and st.get("session_id"):
+                retry_prompt = prompts.reset_resume_prompt(cfg)
+                if st.get("work_binding") and current_message:
+                    retry_prompt += "\n\n" + prompt
+            if st.get("work_binding") and deadline is not None:
+                st["cycle"]["waiting_active_seconds"] = max(0, minutes * config.MINUTE_SECONDS - (deadline - choice_started))
+            reason_at_limit = "assigned Claude account unavailable" if st.get("work_binding") else "all Claude accounts unavailable"
             chosen = account_rotation.wait_for_claude_account(
-                st, cfg, "all Claude accounts unavailable" + (f"; {account['name']}: {reason}" if account else ""),
+                st, cfg, reason_at_limit + (f"; {account['name']}: {reason}" if account else ""),
                 stopped, sleep, prompt=retry_prompt)
             tried = set()
         if deadline is not None:
@@ -338,7 +349,7 @@ def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, ne
         if account is not None and chosen["name"] == account["name"]:
             # Without a session, repeat the previous attempt's prompt, including any handoff.
             if st.get("session_id"):
-                attempt_prompt = prompts.reset_resume_prompt(cfg) + "\n\n" + prompt
+                attempt_prompt = retry_prompt
         elif previous and chosen["name"] != previous:
             attempt_prompt = threads.handoff(st, current_message=current_message, cfg=cfg)
             st["rotations"].append({"at": clock.CLOCK.time(), "from": previous, "to": chosen["name"],
@@ -382,7 +393,7 @@ def run_claude_turn(st, cfg, prompt, effort, current_message, stopped, sleep, ne
 def bind_claude_account(st, cfg, account):
     binding = st.get("work_binding")
     model = binding["model"] if binding else st.get("task_model") or cfg["claude"].get("model")
-    resource = claude_runner.work_connection(account)
+    resource = claude_runner.keychain_connection(account)
     task_state.bind_work(st, model, account=account["name"], **resource)
     return dict(account, credential_id=resource["credential_id"])
 
@@ -405,7 +416,7 @@ def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
 
     deadline = None if minutes is None else clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
     if "work_binding" in st:
-        task_state.bind_work(st, st["task_model"], **opencode_runner.work_connection(st["worktree"], st["task_model"]))
+        task_state.bind_work(st, st["task_model"], **opencode_runner.provider_connection(st["worktree"], st["task_model"]))
     prompt += "\n\nReturn only a JSON object matching this schema:\n" + json.dumps(result_schema.RESULT_SCHEMA)
     try:
         outcome, message = opencode_runner.run_opencode(
@@ -527,6 +538,7 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
     minutes = (cfg.get("max_review_minutes", 30) if st.get("kind") in ("review", "scout")
                else st.get("max_turn_minutes", cfg.get("max_turn_minutes")))
     control = turn_monitor.TurnControl(minutes, cfg.get("repeat_limit", 3), st.get("max_task_weekly_percent"))
+    control.elapsed = (st.get("cycle") or {}).get("waiting_active_seconds", 0)
     visited = set()
     soft_visited = {}
     rotations = 0
@@ -553,7 +565,8 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
         budgets.warn_weekly_headroom(st, cfg, [chosen])
     elif cfg["enabled"]:
         infos = account_rotation.task_snapshots(st, cfg, stopped, new_turn=new_turn)
-        budgets.warn_weekly_headroom(st, cfg, infos)
+        if "work_binding" not in st:
+            budgets.warn_weekly_headroom(st, cfg, infos)
         current = next((i for i in infos if i["name"] == st["account"]), {})
         same_account = {i["name"] for i in infos if current.get("account_id")
                         and i.get("account_id") == current["account_id"]}
@@ -609,6 +622,7 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
             model = st.get("task_model") or threads.configured_model_settings(account["home"])["model"]
             task_state.bind_work(st, model, account=account["name"], home=account["home"], account_id=chosen["account_id"])
             cfg = account_rotation.codex_work_config(st, cfg)
+            budgets.warn_weekly_headroom(st, cfg, [chosen])
     elif reviewing and st["account"] is None:
         account = cfg["accounts"][0]
     else:
@@ -680,6 +694,8 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
         visited.add(account["name"])
         review_start = len(st.get("reviews", []))
         attempt_prompt = prompts.capacity_resume_prompt(cfg) if resume_thread else prompt
+        if resume_thread and st.get("work_binding") and current_message and not reviewing:
+            attempt_prompt += "\n\n" + original_prompt
         result, decision = turn_monitor.monitor(st, cfg, account, attempt_prompt, effort, stopped, on_limit, control=control,
                                    quota_snapshot=quota_snapshot, resume_thread=resume_thread)
         quota_snapshot = None
@@ -767,8 +783,10 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
             capped = st["auth_transitions"] >= 2 * len(cfg["accounts"])
             if not capped and failures[account["name"]] == 1 and current.get("logged_in") and not accounts.exhausted(current, cfg):
                 quota_snapshot = current.get("limits")
-                if not reviewing and st.get("thread") and not st.get("work_binding"):
+                if not reviewing and st.get("thread"):
                     prompt = prompts.auth_resume_prompt(cfg)
+                    if st.get("work_binding") and current_message:
+                        prompt += "\n\n" + original_prompt
                 task_state.save(st)
                 continue
             if st.get("work_binding"):
@@ -790,8 +808,10 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
         chosen = decision["chosen"]
         if not chosen:
             retry_prompt = prompts.reset_resume_prompt(cfg)
-            if st.get("work_binding"):
+            if st.get("work_binding") and current_message:
                 retry_prompt += "\n\n" + original_prompt
+            if st.get("work_binding"):
+                st["cycle"]["waiting_active_seconds"] = control.elapsed
             chosen = account_rotation.wait_for_account(st, decision["infos"], cfg, decision["reason"], stopped, sleep,
                                                        prompt=retry_prompt if st.get("thread") and not reviewing else prompt)
             if not chosen:

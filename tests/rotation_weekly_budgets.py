@@ -356,7 +356,7 @@ class WeeklyBudgetTests(RotationTestCase):
             {"mode": "complete", "reply": self.work_result(),
              "weekly_used_before": 20, "weekly_samples_after_initial": [12],
              "weekly_used_after": 21, "final_usage_after_completion": True}])
-        self.start(slug, "--max-weekly", "5")
+        (self.start if snapshots else self.legacy_work)(slug, "--max-weekly", "5")
         self.wait(slug)
         self.assertEqual(self.state(slug)["weekly_used_percent"], 2)
         path = self.home / "fixture.json"
@@ -378,7 +378,7 @@ class WeeklyBudgetTests(RotationTestCase):
         task = json.loads(self.cli("report", "--slug", slug, "--json"))["tasks"][0]
         self.assertEqual(task["weekly_used_percent"], state["weekly_used_percent"])
         quota_calls = [event for event in self.trace() if event.get("command") == "quota-snapshot"]
-        self.assertEqual(len(quota_calls), 4 if snapshots else 0,
+        self.assertEqual(len(quota_calls), 3 if snapshots else 0,
                          "seeding must reuse account-selection snapshots, without another quota RPC")
         if snapshots:
             self.assertEqual([event["primary"]["usedPercent"] for event in quota_calls
@@ -415,7 +415,7 @@ class WeeklyBudgetTests(RotationTestCase):
         self.assertEqual([entry["weekly_spent"] for entry in
                           self.phase_telemetry_journal()[0]["usage"]], [2, 1])
         quota_calls = [event for event in self.trace() if event.get("command") == "quota-snapshot"]
-        self.assertEqual(len(quota_calls), 4)
+        self.assertEqual(len(quota_calls), 3)
         self.assertEqual([event["primary"]["usedPercent"] for event in quota_calls
                           if event["home"] == str(self.home)], [10, 20])
         task = json.loads(self.cli("report", "--slug", "weekly-auth-reseed", "--json"))["tasks"][0]
@@ -929,7 +929,7 @@ class WeeklyBudgetTests(RotationTestCase):
         self.assertNotIn("запас до switch_at", output)
         self.assertNotIn("запас до switch_at", self.cli("status", "weekly-reserve"))
         self.assertEqual(len([event for event in self.trace()
-                              if event.get("command") == "quota-snapshot"]), 4)
+                              if event.get("command") == "quota-snapshot"]), 3)
 
     def test_weekly_budget_uses_config_default_and_flag_overrides_persist_for_the_task(self):
         self.configure(language="en", max_task_weekly_percent=5)

@@ -118,15 +118,9 @@ class TimeBudgetTests(RotationTestCase):
                     return before
 
                 ready = executor.submit(publish_when_ready)
-                starter = subprocess.Popen(
-                    [PYTHON, "-I", str(SCRIPT), "start", "cap-locked-journal", "--brief", str(self.brief),
-                     "--repo", str(self.repo), "--max-minutes", "2"],
-                    cwd=self.repo, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.extra_pids.add(starter.pid)
+                self.legacy_work("cap-locked-journal", "--max-minutes", "2")
                 try:
                     before = ready.result()
-                    stdout, stderr = starter.communicate(timeout=self.fixture_timeout)
-                    self.assertEqual(starter.returncode, 0, stdout + stderr)
                     self.until(lambda: sum(event.get("command") == "quota-snapshot"
                                            for event in self.trace()[before:]) >= 2)
                     self.until(lambda: any(event.get("command") == "exec-child" for event in self.trace()))
@@ -155,9 +149,7 @@ class TimeBudgetTests(RotationTestCase):
                     self.until(lambda: not self.process_is_live(child))
                     self.assertFalse(self.consume_calls())
                 finally:
-                    if starter.poll() is None:
-                        starter.terminate()
-                    starter.communicate(timeout=self.fixture_timeout)
+                    fcntl.flock(journal, fcntl.LOCK_UN)
 
     def test_time_budget_interrupts_a_slow_account_rpc_after_a_usage_error(self):
         self.env["CODEX_TASK_MINUTE_SECONDS"] = "2"
@@ -573,7 +565,7 @@ class TimeBudgetTests(RotationTestCase):
         self.account(self.other, "B", self.reset, runs=[
             {"mode": "hold", "session_gate": str(gate)},
             {"mode": "complete", "reply": self.review_result()}])
-        self.start("cap-review-before-thread", "--review")
+        self.legacy_work("cap-review-before-thread", "--review")
         self.until(lambda: any(event.get("command") == "thread/start"
                                and event["home"] == str(self.other) for event in self.trace()))
         output = self.wait("cap-review-before-thread", timeout=12)

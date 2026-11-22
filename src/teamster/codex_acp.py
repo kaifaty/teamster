@@ -31,7 +31,11 @@ def backend():
     close_error = directory / "close-error"
     # The account may filter its shell environment. Set only the invocation's ownership key.
     terminal_marker = f"shell_environment_policy.set.{procs.TURN_PROCESS_MARKER}={json.dumps(env[procs.TURN_PROCESS_MARKER])}"
-    proc = subprocess.Popen([binary, *sys.argv[1:], "-c", terminal_marker], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+    argv = [binary, *sys.argv[1:], "-c", terminal_marker]
+    if contract.get("chatgpt_account_id"):
+        argv.extend(["-c", 'forced_login_method="chatgpt"', "-c",
+                     "forced_chatgpt_workspace_id=" + json.dumps(contract["chatgpt_account_id"])])
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
     terminal_list_requests = set()
     incoming = os.fdopen(os.dup(sys.stdin.fileno()), "rb")
     admitted_request = None
@@ -50,6 +54,8 @@ def backend():
                     settings = params.setdefault("config", {})
                     settings.pop("projects", None)
                     settings.pop("skills", None)
+                    if contract.get("chatgpt_account_id"):
+                        params["modelProvider"] = "openai"
                     if contract["review"]:
                         settings["web_search"] = "disabled"
                         settings.setdefault("features", {}).update(multi_agent=False, multi_agent_v2=False,
@@ -187,6 +193,9 @@ def codex_acp_turn():
     # An inherited adapter-specific login or gateway would select a different account.
     for key in ("DEFAULT_AUTH_REQUEST", "CODEX_CONFIG", "MODEL_PROVIDER"):
         env.pop(key, None)
+    if options.get("chatgpt_account_id"):
+        for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL"):
+            env.pop(key, None)
     settings = {"mode": mode}
     if options["effort"]:
         settings["reasoning_effort"] = options["effort"]

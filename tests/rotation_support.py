@@ -635,7 +635,9 @@ def app_server():
             if trigger and not Path(trigger).exists():
                 gate = None
             if not gate and (home / "exec-count").exists():
-                gate = value.get("rate_limits_gate_after_exec")
+                gate = value.pop("rate_limits_gate_after_exec", None)
+                if gate:
+                    fixture_path.write_text(json.dumps(value))
             if gate and not Path(gate).exists():
                 trace({"command": "quota-waiting", "gate": gate, "source": "rpc"})
                 while not Path(gate).exists():
@@ -1059,7 +1061,7 @@ def acp_agent():
         emit(dict(fields, jsonrpc="2.0"))
     def update(event, **fields):
         send(method="session/update", params={"sessionId": thread, "update": dict(fields, sessionUpdate=event)})
-    catalog = ("fake-model Task.1_a Review.2_b Fast-2 Strong-2 Strong-3 Strong-4 checkpoint-model "
+    catalog = ("fake-model profile-model Task.1_a Review.2_b Fast-2 Strong-2 Strong-3 Strong-4 checkpoint-model "
                "work-model checkpoint-review angle-model codex-review-model fallback-model model-a model-b model-c "
                "configured-review fixture-reflect fixture-codex-work fixture-codex-review fixture-codex-scout gpt-6.2-sol review-model gpt-5 gpt-5.5 gpt-6-sol gpt-6.1-sol fixture-probe-model")
     choices = {"model": catalog.split(), "reasoning_effort": "low medium high xhigh max ultra".split(),
@@ -1584,19 +1586,22 @@ class RotationTestCase(unittest.TestCase):
     def start(self, slug, *args):
         return self.cli("start", slug, "--brief", str(self.brief), "--repo", str(self.repo), *args)
 
+    def released_work_record(self, worker, settings):
+        fixture = ROOT / "tests/fixtures/state-1.101.1/sleeping/state.json"
+        record = json.loads(fixture.read_text())
+        record.update({k: settings[k] for k in record.keys() & settings.keys() if k != "plugin_version"})
+        worker.task_state.save(record)
+        return worker.task_state.load(settings["slug"])
+
     def legacy_work(self, slug, *args):
         """Exercise the supervisor on a released, unassigned work record in this fixture's checkout."""
         worker = load_worker(self.env, clear=True)
         spawn = worker.supervisor.spawn
-        fixture = ROOT / "tests/fixtures/state-1.101.1/sleeping/state.json"
 
         def launch_record(settings, prompt, *turn, **options):
             # Reuse CLI setup for the temporary worktree, brief and command options.
             # Restore the release record before handing it to the normal disk loader and supervisor.
-            record = json.loads(fixture.read_text())
-            record.update({k: settings[k] for k in record.keys() & settings.keys() if k != "plugin_version"})
-            worker.task_state.save(record)
-            proc = spawn(worker.task_state.load(slug), prompt, *turn, **options)
+            proc = spawn(self.released_work_record(worker, settings), prompt, *turn, **options)
             self.extra_pids.add(proc.pid)
             self.addCleanup(proc.wait, timeout=10)
             return proc
@@ -1764,7 +1769,8 @@ class RotationTestCase(unittest.TestCase):
         self.assertEqual(sleeping["account"], account)
         self.assertTrue(sleeping["reason"])
         expected = datetime.datetime.fromtimestamp(sleeping["until"]).strftime("%Y-%m-%d %H:%M")
-        self.assertIn("== all accounts at limit; auto-continue at " + expected +
+        label = "assigned account at limit" if state.get("work_binding") else "all accounts at limit"
+        self.assertIn("== " + label + "; auto-continue at " + expected +
                       " (" + account + "); run wait again to follow", output)
         self.assertIn("== commits on ", output)
         return state

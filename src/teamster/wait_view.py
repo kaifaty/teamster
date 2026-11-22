@@ -21,10 +21,11 @@ def wait_rotation_lines(st):
             yield f"== account {r['account']} needs login: run login {r['account']}"
         else:
             yield f"== rotated {r['from']} → {r['to']}: {r['reason']}, new thread {r['thread'] or '?'}"
+    at_limit = "assigned account at limit" if st.get("work_binding") else "all accounts at limit"
     if st.get("outcome") == "sleeping":
         if procs.alive(st.get("pid")):
             s = st["sleeping"]
-            label = "account status unknown; retry at" if s.get("probe") else "all accounts at limit; auto-continue at"
+            label = "account status unknown; retry at" if s.get("probe") else at_limit + "; auto-continue at"
             yield f"== {label} {config.local_time(s['until'])} ({s['account'] or 'unknown'}); run wait again to follow"
         elif task_state.interruption(st) is None:
             yield "== paused, supervisor gone; continue with say"
@@ -33,7 +34,7 @@ def wait_rotation_lines(st):
         reset = f"{config.local_time(e['reset'])} ({e['account']})" if e["reset"] is not None else "unknown"
         if e.get("reason"):
             yield f"== paused: {e['reason']}"
-        yield f"== all accounts at limit; earliest reset {reset}; continue with say after that"
+        yield f"== {at_limit}; earliest reset {reset}; continue with say after that"
 
 
 def wait_publication_lines(st):

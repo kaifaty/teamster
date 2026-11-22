@@ -51,6 +51,9 @@ class ReviewFixTests(RotationTestCase):
         original_spawn = worker.supervisor.spawn
 
         def inline_supervisor(st, *args, **kwargs):
+            # This extension reviewer predates work bindings and runs on released work records.
+            if "work_binding" in st:
+                st = self.released_work_record(worker, st)
             # Preserve the supervisor cycle while retaining the test-only registry.
             proc = SimpleNamespace(pid=os.getpid(), poll=lambda: 0)
             with mock.patch.object(worker.supervisor.subprocess, "Popen", return_value=proc):
@@ -79,7 +82,7 @@ class ReviewFixTests(RotationTestCase):
             self.assertEqual(state["outcome"], "completed", state.get("error"))
             self.assertEqual(state["review_result"]["verdict"], "clean")
             run.assert_called_once()
-            self.assertEqual(prepare.call_count, 2)
+            self.assertEqual(prepare.call_count, 1)
             entry, = state["reviews"]
             self.assertEqual(entry["reviewer"], name)
             self.assertIn("Fixture review complete.", cli("wait", "registered-review"))
@@ -643,7 +646,7 @@ class ReviewFixTests(RotationTestCase):
         sleeping = self.state("claude-executor-sleep")
         self.assertEqual(sleeping["outcome"], "sleeping")
         self.assertEqual(sleeping["sleeping"]["account"], accounts[0]["name"])
-        self.assertIn("all accounts at limit; auto-continue at", output)
+        self.assertIn("assigned account at limit; auto-continue at", output)
         os.kill(sleeping["pid"], signal.SIGTERM)
         self.until(lambda: self.state("claude-executor-sleep").get("pid") is None)
         self.cli("resume", "claude-executor-sleep")
@@ -671,6 +674,25 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(self.state("claude-executor-sleep")["outcome"], "stopped")
         self.assertEqual(len(self.claude_invocations()), 4)
         self.assertEqual(self.invocations(), [])
+
+        slug = "claude-executor-sleep"
+        self.cli("review", slug, "--reviewer", "codex")
+        self.assertIn("separate linked task", self.cli("wait", slug))
+        self.assertEqual(self.invocations(), [])
+        (self.home / "claude-tasks" / "claude-limits.json").unlink()
+        source = json.loads(self.claude_fixture_path.read_text())
+        service = accounts[0]["token_keychain"]
+        source["security"] = {service: {"token": "replacement-fixture-token"}}
+        self.claude_fixture_path.write_text(json.dumps(source))
+        self.cli("say", slug, "Continue with the original credential.")
+        self.assertIn("assigned work connection", self.cli("wait", slug))
+        source.update(security={}, missing_session=initial["session_id"])
+        self.claude_fixture_path.write_text(json.dumps(source))
+        self.cli("say", slug, "Continue in the original session.")
+        self.assertIn("Saved Claude session was not found", self.cli("wait", slug))
+        failed = self.state(slug)
+        self.assertEqual((failed["work_binding"], failed["session_id"]), (initial["work_binding"], initial["session_id"]))
+        self.assertEqual(len(self.claude_invocations()), 4)
 
     def test_claude_executor_sleep_after_a_missing_token_repeats_the_handoff(self):
         self.fixture_timeout = 90
@@ -1299,7 +1321,7 @@ class ReviewFixTests(RotationTestCase):
             {"mode": "complete", "reply": clean}])
 
         self.start("angles-fix", "--review-angles", "correctness,concurrency,tests", "--fix-rounds", "1",
-                   "--model", "work-model", "--review-model", "angle-model")
+                   "--model", "work-model")
         self.wait("angles-fix")
         state = self.state("angles-fix")
         self.assertEqual([entry["angle"] for entry in state["reviews"]],
@@ -1311,9 +1333,8 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(state["review_result"]["verdict"], "clean")
         executions = self.invocations()
         self.assertEqual(len(executions), 7)
-        for index, execution in enumerate(executions):
-            self.assertEqual(execution["model"],
-                             "work-model" if index in (0, 4) else "angle-model")
+        for execution in executions:
+            self.assertEqual(execution["model"], "work-model")
             if execution["review"]:
                 self.assertEqual(execution["thread_config"]["web_search"], "disabled")
         self.assertTrue(executions[4]["resume"])
@@ -1690,7 +1711,7 @@ class ReviewFixTests(RotationTestCase):
         self.configure()
         self.configure_notify(events=["turn_finished"])
         slug = "review-angle-selection-signal"
-        self.start(slug)
+        self.legacy_work(slug)
         self.wait(slug)
         self.notification(slug, "turn_finished")
         self.account(self.home, "A", self.reset, used=99)
@@ -2440,7 +2461,7 @@ class ReviewFixTests(RotationTestCase):
                 {"id": "F1", "decision": "fixed", "note": "Fixed after account rotation"},
                 {"id": "F2", "decision": "fixed", "note": "Also fixed after account rotation"}])},
             {"mode": "complete", "reply": self.review_result(False)}])
-        self.start("fix-rotation", "--review", "--fix-rounds", "1")
+        self.legacy_work("fix-rotation", "--review", "--fix-rounds", "1")
         output = self.wait("fix-rotation")
         executions = self.invocations()
         self.assertEqual([event["review"] for event in executions], [False, True, False, False, True])

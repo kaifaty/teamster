@@ -280,6 +280,9 @@ class ResumeTests(RotationTestCase):
         binary.write_text("#!" + sys.executable + """
 import json, os, signal, subprocess, sys
 from pathlib import Path
+if sys.argv[1:] == ["auth", "list", "--format", "json"]:
+    print(json.dumps([{"id": "offline", "connections": [{"id": "fixture-owner", "type": "credential"}]}]))
+    sys.exit(0)
 if sys.argv[1] == "api":
     assert sys.argv[3] == "session.update"
     if json.loads(sys.argv[-1])["title"] == "orphan-title" and not Path("title-pids").exists():

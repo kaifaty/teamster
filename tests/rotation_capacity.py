@@ -227,8 +227,10 @@ class CapacityRetryTests(RotationTestCase):
         worker = self.worker()
         for index in (0, 2, 4, 6):
             self.assert_resumed_same_thread(executions[index], executions[index + 1], self.home)
-            self.assertEqual(executions[index + 1]["prompt"],
-                             worker.prompts.capacity_resume_prompt({"language": "en"}))
+            self.assertTrue(executions[index + 1]["prompt"].startswith(
+                worker.prompts.capacity_resume_prompt({"language": "en"})))
+            if index == 4:
+                self.assertIn("F1", executions[index + 1]["prompt"])
             for execution in executions[index:index + 2]:
                 self.assert_output_schema(execution, "capacity-phases", review=index in (2, 6))
         self.assertEqual(executions[0]["thread"], executions[4]["thread"])

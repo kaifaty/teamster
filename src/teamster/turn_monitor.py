@@ -230,6 +230,12 @@ def monitor_thread_started(st, account, stream, reviewing, wrapup, attempt_start
         st.setdefault("reviews", []).append(stream.review_entry)
     elif not reviewing:
         st["thread"] = thread
+        cycle = st.get("cycle") or {}
+        cycle.pop("waiting_prompt", None)
+        cycle.pop("waiting_active_seconds", None)
+        binding = st.get("work_binding")
+        if binding and binding["model"] == "default" and stream.model:
+            binding.setdefault("native_model", stream.model)
     if not reviewing and not any(t["account"] == account["name"] and t["thread"] == thread for t in st["threads"]):
         st["threads"].append({"account": account["name"], "thread": thread, "started": clock.CLOCK.time()})
     if (st["rotations"] and not st["rotations"][-1].get("event")
@@ -519,7 +525,7 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
     model = review_model if reviewing else st.get("task_model")
     binding = st.get("work_binding")
     if binding:
-        model = None if binding["model"] == "default" else binding["model"]
+        model = binding.get("native_model") if binding["model"] == "default" else binding["model"]
     schema = (None if kind == "scout" else result_schema.REFLECT_SCHEMA if kind == "reflect" else
               result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA)
     # A resume may report the previous turn's override. Reapply the configured
@@ -531,6 +537,8 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
     options = {"binary": config.codex_binary(), "adapter": config.task_adapter("codex"), "thread": thread,
                "slug": st["slug"], "model": model, "effort": effort, "sandbox": sandbox,
                "roots": st.get("writable_dirs", []), "schema": schema, "review": reviewing}
+    if binding:
+        options["chatgpt_account_id"] = binding["account_id"]
     stream.model = model or defaults["model"]
     stream.reasoning_effort = effort or defaults["reasoning_effort"]
     path = threads.rollout_path(account["home"], thread) if thread else None

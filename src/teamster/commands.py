@@ -266,7 +266,7 @@ def cmd_start(a):
         executor.prepare(effort, cfg)
     except ValueError as exc:
         procs.die(str(exc))
-    review = {"reviewer": executor.reviewer(cfg)}
+    review = {"executor": executor.name, "work_binding": None, "reviewer": executor.reviewer(cfg)}
     review_cycle.configure_reviewer(review, cfg, getattr(a, "reviewer", None), required=a.review)
     if (config.TASKS / a.slug).exists():
         procs.die(f"task {a.slug!r} exists; pick another slug or clean it")
@@ -312,7 +312,7 @@ def cmd_start(a):
             'report that with the numbers instead of fixing it.'))
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "repo": str(repo), "worktree": str(wt), "branch": branch, "base": a.base,
-          "executor": executor.name, "work_binding": None, "effort": effort, "task_type": a.task_type,
+          "effort": effort, "task_type": a.task_type,
           "task_model": None if model == "default" else model,
           "review_model": None if getattr(a, "review_model", None) == "default" else getattr(a, "review_model", None),
           "account": cfg["accounts"][0]["name"] if executor.account_field is not None else None,

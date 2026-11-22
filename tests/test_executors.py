@@ -196,6 +196,9 @@ def install_fake_opencode(root):
                 else:
                     assert method == "session/prompt" and config[0]["currentValue"] == "offline/model"
                     assert state["title"]
+                    if (home / "quota-exhausted").exists():
+                        send(id=request["id"], error={"code": 429, "message": "Quota exceeded"})
+                        continue
                     prompt = params["prompt"][0]["text"]
                     answer = json.loads((home / "response.json").read_text())
                     wrapup = "The turn's time budget has expired." in prompt
@@ -339,6 +342,13 @@ class ExecutorTests(RotationTestCase):
                 self.assertIn("assigned work connection", self.cli("wait", slug))
                 self.assertEqual(self.state(slug)["work_binding"], binding)
                 (self.root / "connection-id").unlink()
+                (self.root / "quota-exhausted").touch()
+                self.cli("say", slug, "Continue on the original connection.")
+                self.assertIn("reset time", self.cli("wait", slug))
+                limited = self.state(slug)
+                self.assertEqual((limited["outcome"], limited["work_binding"], limited["session_id"]),
+                                 ("exhausted", binding, session))
+                (self.root / "quota-exhausted").unlink()
                 (self.root / session).unlink()
             self.cli("say", slug, "Make a third change to tracked.txt.")
             output = self.cli("wait", slug, "--timeout", "30", timeout=45)
@@ -354,7 +364,7 @@ class ExecutorTests(RotationTestCase):
                 stderr = self.home / "claude-tasks" / slug / "stderr.log"
                 self.assertNotIn("PRIVATE-SESSION-METADATA", stderr.read_text())
                 calls = (self.root / "opencode-calls").read_text().splitlines()
-                self.assertEqual(calls.count("session/prompt"), 4)
+                self.assertEqual((calls.count("session/new"), calls.count("session/prompt")), (2, 5))
 
                 (self.root / "delete-after-resume").touch()
                 other = "opencode-parallel"

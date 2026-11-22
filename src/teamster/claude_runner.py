@@ -47,7 +47,7 @@ def account_environment(account, timeout):
     return environment, token
 
 
-def work_connection(account):
+def keychain_connection(account):
     """The Keychain slot is reusable. Identify the opaque setup token without saving it."""
     _, token = account_environment(account, config.ACCOUNT_TIMEOUT)
     if not token:
