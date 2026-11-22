@@ -95,6 +95,18 @@ Use `start --task-type LABEL` to select a configured [task profile](settings.md#
 Use `start --executor codex|claude|opencode` to pin the task worker. Automatic selection starts with a task profile's executor when present, then follows the [work role profile](settings.md#role-profiles) or the configured executor default. The saved executor handles `say`, review fixes, CI repairs and wrap-up. Claude and OpenCode work require `--sandbox off`.
 The [review role profile](settings.md#role-profiles) chooses the reviewer order. Without it, Claude tasks prefer Codex reviews and other workers use the configured reviewer. Use `--reviewer claude` on `start`, `say`, or `review` to select the isolated Claude pool. It prefers another account when Claude also implements. See [account setup](accounts.md#claude-account-pool).
 
+Ordinary Codex and Claude tasks, reviews, scouts and reflections require the stock `codex-acp`
+or `claude-agent-acp` executable on the supervisor's `PATH`, alongside the selected native CLI.
+Teamster opens an ACP session for a new task and saves its native cursor before the prompt.
+`say`, review fixes and CI repairs continue the worker's session. A review starts its own session.
+The Board's task actions use the same supervisor, saved checks, budgets and publication cycle.
+Its **Открыть чат** action opens a separate interactive conversation in the worktree.
+
+Codex uses the selected account's app-server behind the adapter for sandbox settings and native
+structured output. Claude supplies its role's tools, hooks and output schema through the adapter.
+Login and account probes still use the providers' native commands. Protected duty uses Teamster's
+private ACP agent for the elected family. [Duty guards and handoffs](duty-chat.md)
+
 To delegate to OpenCode from either duty family, select the worker and its configured provider/model explicitly. A direct CLI launch can use `OPENAI_API_KEY`. Codex duty clears `OPENAI_*` variables before running commands, so a provider that relies on that key needs credentials saved in OpenCode and accessible to the worker.
 
 ```sh

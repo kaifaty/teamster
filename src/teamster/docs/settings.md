@@ -422,8 +422,8 @@ When the command runs from `versions/`, `duty plist` puts `bin/teamster` in `Pro
 
 ## Repository trust
 
-`codex exec` trusts the repository's main checkout in `config.toml` (`[projects."<repo>"] trust_level`),
-not each worktree. A first task in a new repository adds one entry.
+Codex task sessions use the repository's main checkout entry in the account's `config.toml`
+(`[projects."<repo>"] trust_level`). A first task in a new repository adds one entry.
 
 ## Upgrading an existing codex-worker installation
 

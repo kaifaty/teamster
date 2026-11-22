@@ -1,9 +1,13 @@
 # Results, outcomes and wrap-ups
 
-Implementation and review turns run with `--output-schema` and strict schemas saved in the task
-directory. Scouts keep their plain-text reports.
+Implementation and review turns request structured results. Teamster passes the schema to Codex
+on the native `turn/start` behind `codex-acp`, to Claude through the adapter's SDK options, and
+to OpenCode in the work prompt. It validates the returned JSON locally. Scouts return plain text.
 
-`claude-events.jsonl` in the task directory appends Claude CLI stdout with the OAuth token redacted for work, fixes, reviews, scouts and reflection; `clean` excludes it from the archive.
+`claude-events.jsonl` in the task directory records Claude's raw SDK messages from the ACP
+session, including tool activity, results and usage. Teamster redacts the OAuth token before writing
+each event. Codex session updates feed `events.jsonl`, and native rollout files supply its usage.
+`clean` excludes the live event logs from the archive.
 
 ## Implementation result
 
