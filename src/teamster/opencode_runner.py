@@ -161,16 +161,29 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
                 config.executor_environment(env) as worker_env:
             # OpenCode loads configured instructions after project AGENTS.md, including after compaction.
             instructions = Path(directory).resolve() / "executor.md"
+            example = {
+                name: [] if field["type"] == "array" else ""
+                for name, field in result_schema.RESULT_SCHEMA["properties"].items()
+            }
+            example.update(
+                status="done",
+                summary="Summarize the result.",
+                checks=[{"command": "Command run", "outcome": "passed", "details": "Exit 0, 1 check passed."}],
+            )
             instructions.write_text(
                 config.EXECUTOR_INSTRUCTIONS + "\n\n"
                 "Follow project guidance for the assigned implementation and its checks. "
-                "If acceptance requires independent review, even when a project file tells you to run "
+                "If a required independent review is still pending, even when a project file tells you to run "
                 "teamster scout or teamster review, leave that command to the operator. "
                 "Return your completed work and checks with status needs_decision and put a question asking "
                 "the operator to arrange the required review in questions.\n\n"
-                "Return exactly one JSON object containing your work result. Do not echo the schema or add "
-                "Markdown fences or surrounding text. Use this schema to format the result:\n"
-                + json.dumps(result_schema.RESULT_SCHEMA) + "\n", encoding="utf-8")
+                "Return one flat JSON object with the exact top-level keys in the example. "
+                "Choose status from done, partial, blocked, needs_decision. "
+                "Use passed, failed or not_run for each check outcome. "
+                "Each finding has id (such as F1), decision (fixed or rejected), and note. "
+                "Use empty arrays for empty lists and leave pr empty. "
+                "Start with { and end with }.\nExample work result:\n"
+                + json.dumps(example) + "\n", encoding="utf-8")
             overlay = json.loads(worker_env.get("OPENCODE_CONFIG_CONTENT") or "{}")
             overlay.setdefault("instructions", []).append(str(instructions))
             overlay.setdefault("policies", []).append({"action": "skill.use", "resource": "teamster", "effect": "deny"})

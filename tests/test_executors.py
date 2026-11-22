@@ -121,7 +121,9 @@ def local_opencode_provider(env, binary):
         assert 0 <= project < role, (resumed, [m["role"] for m in messages], instructions)
         assert "Inline OpenCode guidance." in instructions[:role]
         assert "status needs_decision" in instructions[role:]
-        assert "Do not echo the schema" in instructions[role:]
+        example = json.JSONDecoder().raw_decode(instructions.split("Example work result:\n", 1)[1])[0]
+        assert set(example) == set(json.loads((home / "response.json").read_text()))
+        assert example["status"] == "done" and example["checks"][0]["outcome"] == "passed"
         assert "You are a managed Teamster executor." not in messages[-1]["content"]
 
 
@@ -255,9 +257,11 @@ def install_fake_opencode(root):
                     prompt = params["prompt"][0]["text"]
                     instructions = role_file.read_text()
                     assert "managed Teamster executor" in instructions
-                    assert "status needs_decision" in instructions and "Do not echo the schema" in instructions
+                    assert "status needs_decision" in instructions
                     assert "managed Teamster executor" not in prompt
                     answer = json.loads((home / "response.json").read_text())
+                    example = json.loads(instructions.split("Example work result:\n", 1)[1])
+                    assert set(example) == set(answer)
                     wrapup = "The turn's time budget has expired." in prompt
                     if wrapup:
                         state["wrapup_context"] = prompt
