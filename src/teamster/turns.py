@@ -289,10 +289,7 @@ def claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=False, de
     result = response["result"]
     outcome = task_state.stop_outcome(st, stopped) or response["outcome"]
     if outcome == "unknown":
-        if response["reason"] in ("invalid structured output", "invalid JSON output"):
-            outcome, result = "completed", result_schema.parse_result(response["raw_message"])
-        else:
-            outcome = "failed"
+        outcome = "failed"
     if weekly_stopped and not stopped() and outcome != "failed":
         outcome = "completed" if result is not None else "budget_exhausted"
     if wrapup:

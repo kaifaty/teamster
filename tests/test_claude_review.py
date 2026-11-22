@@ -71,13 +71,54 @@ def trace(value):
     with trace_path.open("a") as stream:
         stream.write(json.dumps(value) + "\n")
 
-def emit(value):
-    print(json.dumps(value), flush=True)
+acp = Path(sys.argv[0]).name == "claude-agent-acp"
 
-session_id = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else str(uuid.uuid4())
-system_prompt = (Path(sys.argv[sys.argv.index("--append-system-prompt-file") + 1]).read_text()
-                 if "--append-system-prompt-file" in sys.argv else None)
-trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(),
+def send(message):
+    print(json.dumps(message), flush=True)
+
+def read_request(methods):
+    request = json.loads(sys.stdin.readline())
+    assert request["jsonrpc"] == "2.0" and request["method"] in methods, request
+    return request
+
+def reply(request, result):
+    send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+
+def frame(value):
+    if not acp:
+        return value
+    return {"jsonrpc": "2.0", "method": "_claude/sdkMessage", "params": {"sessionId": session_id, "message": value}}
+
+def emit(value):
+    send(frame(value))
+
+if acp:
+    assert Path(os.environ["CLAUDE_CODE_EXECUTABLE"]) == Path(os.environ["CODEX_TASK_CLAUDE"])
+    init = read_request(["initialize"])
+    assert init["params"]["protocolVersion"] == 1
+    reply(init, {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}}}})
+    setup = read_request(["session/new", "session/resume"])
+    params = setup["params"]
+    assert params["cwd"] == os.getcwd() and params["mcpServers"] == []
+    session_id = params.get("sessionId", str(uuid.uuid4()))
+    meta = params["_meta"]
+    assert meta["claudeCode"]["emitRawSDKMessages"]
+    options = meta["claudeCode"]["options"]
+    mode, = params["configOptions"]
+    reply(setup, {"sessionId": session_id, "configOptions": [{"id": "mode", "currentValue": mode["value"]}]})
+    turn = read_request(["session/prompt"])
+    assert turn["params"]["sessionId"] == session_id
+    system_prompt = meta.get("systemPrompt", {}).get("append")
+    transport = {"method": setup["method"], "resume": params.get("sessionId"), "options": options,
+                 "mode": mode["value"], "prompt": turn["params"]["prompt"][0]["text"]}
+    if run.get("saved_cursor"):
+        assert Path(run["saved_cursor"]).read_text() == session_id
+else:
+    session_id = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else str(uuid.uuid4())
+    system_prompt = (Path(sys.argv[sys.argv.index("--append-system-prompt-file") + 1]).read_text()
+                     if "--append-system-prompt-file" in sys.argv else None)
+    transport = {"stdin": sys.stdin.read()}
+trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(), **transport,
        "session_id": session_id, "system_prompt": system_prompt,
        "token_matches": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") == "fixture-claude-reviewer-oauth-secret",
        "config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
@@ -88,8 +129,7 @@ trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(),
        "inherited_provider_keys": sorted(key for key in os.environ
            if (key.startswith("CLAUDE") or key.startswith("ANTHROPIC"))
            and key not in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
-                          "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")),
-       "stdin": sys.stdin.read()})
+                          "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "CLAUDE_CODE_EXECUTABLE"))})
 stopped = [False]
 
 def interrupted(signum, frame):
@@ -120,7 +160,9 @@ if limits and mode != "rejected_buffered":
 if run.get("gate_after_limits"):
     while not Path(run["gate_after_limits"]).exists():
         time.sleep(0.01)
-if mode == "rejected_shutdown":
+if mode == "rejected_shutdown" and acp:
+    read_request(["session/cancel"])
+elif mode == "rejected_shutdown":
     while not stopped[0]:
         time.sleep(0.02)
 if mode == "hold":
@@ -174,10 +216,13 @@ if run.get("omit_result_text"):
 emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "StructuredOutput",
       "input": run.get("reply")}]}})
 if mode == "rejected_buffered":
-    os.write(1, (json.dumps({"type": "rate_limit_event", "rate_limit_info": limits}) + "\n"
-                + json.dumps(result) + "\n").encode())
+    os.write(1, (json.dumps(frame({"type": "rate_limit_event", "rate_limit_info": limits})) + "\n"
+                + json.dumps(frame(result)) + "\n").encode())
 else:
     emit(result)
+if acp:
+    reply(turn, {"stopReason": run.get("stop_reason", "end_turn")})
+    sys.stdin.read()
 sys.exit(run.get("exit_code", 0))
 '''
 
@@ -186,21 +231,21 @@ class ClaudeReviewTests(RotationTestCase):
     def test_claude_work_turn_argv_environment_and_result(self):
         self.env["COPYFILE_DISABLE"] = "0"
         result = self.work_result()
-        raw_line = '\n \t\n{"type" : "fixture", "note" : "café"}\r'
-        self.claude_fixture(runs=[{"mode": "modify", "reply": result, "non_json": raw_line},
-                                  {"reply": result}])
+        cursor = self.root / "saved-cursor"
+        self.claude_fixture(runs=[{"mode": "modify", "reply": result, "saved_cursor": str(cursor)},
+                                  {"reply": result, "saved_cursor": str(cursor)}])
         worker = self.worker()
         account = worker.claude_accounts.accounts(worker.config.accounts_config())[0]
         task_dir = self.root / "work-turn-task"
         task_dir.mkdir()
         (self.repo / "AGENTS.md").write_text("Root task instructions.\n")
-        prompts = []
         previous_events = b""
         with mock.patch.dict(os.environ, self.env, clear=True):
             for options in ({"model": "claude-work-model", "effort": "xhigh"},
                             {"session_id": "prior-session", "max_turns": 19, "effort": "max"}):
                 response = worker.claude_review.claude_runner.run_work_turn(
-                    account, self.repo, task_dir, "Implement the task.", lambda: False, **options)
+                    account, self.repo, task_dir, "Implement the task.", lambda: False,
+                    progress=lambda values: cursor.write_text(values["session_id"]), **options)
                 self.assertEqual(response["outcome"], "completed")
                 self.assertEqual(response["result"], result)
                 telemetry = response["telemetry"]
@@ -216,12 +261,9 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertTrue(events.startswith(previous_events))
                 turn_events = events[len(previous_events):]
                 self.assertTrue(turn_events.endswith(b"\n"))
-                if not previous_events:
-                    self.assertIn((raw_line + "\n").encode(), turn_events)
                 decoded = [json.loads(line) for line in turn_events.splitlines() if line.strip()]
                 self.assertEqual([event["type"] for event in decoded],
-                                 ["system", "rate_limit_event"] + (["fixture"] if not previous_events else [])
-                                 + ["assistant", "user", "assistant", "result"])
+                                 ["system", "rate_limit_event", "assistant", "user", "assistant", "result"])
                 self.assertEqual(decoded[-1]["structured_output"], result)
                 for secret in (TEST_TOKEN, "host-account-secret", str(self.claude_config_dir)):
                     self.assertNotIn(secret.encode(), events)
@@ -235,30 +277,22 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(entry["inherited_provider_keys"], [])
                 self.assertEqual(entry["cwd"], str(self.repo))
                 self.assertEqual(entry["pid"], entry["pgid"])
-                self.assertEqual(entry["stdin"], "")
-                argv = entry["argv"]
-                self.assertEqual(argv[:2], ["-p", "Implement the task."])
-                self.assertEqual(argv[argv.index("--output-format") + 1], "stream-json")
-                self.assertIn("--verbose", argv)
-                self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]),
-                                 worker.result_schema.RESULT_SCHEMA)
-                self.assertEqual(argv[argv.index("--permission-mode") + 1], "bypassPermissions")
-                self.assertIn("--strict-mcp-config", argv)
-                self.assertNotIn("--mcp-config", argv)
-                self.assertNotIn("--allowedTools", argv)
-                self.assertNotIn("--disallowedTools", argv)
-                self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), {"hooks": {"PreToolUse": [
+                self.assertEqual(entry["argv"], [])
+                self.assertEqual(entry["prompt"], "Implement the task.")
+                self.assertEqual(entry["method"], "session/resume" if "session_id" in options else "session/new")
+                self.assertEqual(entry["resume"], options.get("session_id"))
+                sdk = entry["options"]
+                self.assertEqual(sdk["outputFormat"], {"type": "json_schema", "schema": worker.result_schema.RESULT_SCHEMA})
+                self.assertEqual(entry["mode"], "bypassPermissions")
+                self.assertTrue(sdk["strictMcpConfig"])
+                self.assertNotIn("allowedTools", sdk)
+                self.assertNotIn("disallowedTools", sdk)
+                self.assertFalse(sdk["settings"]["disableAllHooks"])
+                self.assertEqual(sdk["settings"]["hooks"]["PreToolUse"], [
                     {"matcher": "Bash", "hooks": [{"type": "command", "command": shlex.join(
-                        [sys.executable, "-I", str(worker.config.BASH_GUARD)])}]}]}})
-                for key in ("session_id", "max_turns", "model", "effort"):
-                    flag = "--" + {"session_id": "resume", "max_turns": "max-turns"}.get(key, key)
-                    if key in options:
-                        self.assertEqual(argv[argv.index(flag) + 1], str(options[key]))
-                    else:
-                        self.assertNotIn(flag, argv)
-                path = Path(argv[argv.index("--append-system-prompt-file") + 1])
-                self.assertEqual(path.parent, task_dir)
-                prompts.append(path)
+                        [sys.executable, "-I", str(worker.config.BASH_GUARD)])}]}])
+                for key, sdk_key in (("model", "model"), ("effort", "effort"), ("max_turns", "maxTurns")):
+                    self.assertEqual(sdk.get(sdk_key), options.get(key))
                 text = entry["system_prompt"]
                 self.assertIn(
                     "a hook rejects background commands (`nohup`, `setsid`, `disown`, a lone `&`) and killing "
@@ -269,8 +303,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertIn("git worktree", text)
                 self.assertIn("Root task instructions.\n", text)
                 self.assertIn("nested AGENTS.md", text)
-                self.assertFalse(path.exists())
-        self.assertNotEqual(*prompts)
+                self.assertFalse(list(task_dir.glob("claude-system-*.md")))
         self.assertEqual((self.repo / "reviewer-change.txt").read_text(),
                          "Reviewer must leave this visible.\n")
         self.assertEqual(len(self.security_trace_path.read_text().splitlines()), 2)
@@ -287,7 +320,6 @@ class ClaudeReviewTests(RotationTestCase):
             response = worker.claude_review.claude_runner.run_work_turn(
                 account, self.repo, task_dir, "Work.", lambda: False)
             self.assertEqual(response["outcome"], "completed")
-            argv = self.claude_invocations()[-1]["argv"]
             text = self.claude_invocations()[-1]["system_prompt"]
             self.assertIn("a" * 65536, text)
             self.assertIn("[AGENTS.md truncated at 64 KiB]", text)
@@ -296,7 +328,6 @@ class ClaudeReviewTests(RotationTestCase):
             response = worker.claude_review.claude_runner.run_work_turn(
                 account, self.repo, task_dir, "Work again.", lambda: False)
             self.assertEqual(response["outcome"], "completed")
-            argv = self.claude_invocations()[-1]["argv"]
             text = self.claude_invocations()[-1]["system_prompt"]
             self.assertIn("git worktree", text)
             self.assertIn("nested AGENTS.md", text)
@@ -652,8 +683,7 @@ class ClaudeReviewTests(RotationTestCase):
                       "останавливай только PID, которые записал сам, а перед командой дольше 10 минут "
                       "закоммить работу.\n", entry["system_prompt"])
         self.assertEqual(worker.config.BASH_GUARD, SCRIPT.with_name("bash_guard.py").resolve())
-        argv = entry["argv"]
-        hook, = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"]
+        hook, = entry["options"]["settings"]["hooks"]["PreToolUse"]
         for command, status in (("nohup make test > test.log 2>&1 &", 2), ("pkill -f make", 2),
                                 ("make test 2>&1 | tail", 0)):
             event = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}
@@ -670,7 +700,7 @@ class ClaudeReviewTests(RotationTestCase):
                            "Commit your work before any command that may run longer than 10 minutes."):
                 self.assertIn(advice, result.stderr)
 
-    def test_claude_work_turn_ignores_non_json_but_review_rejects_it(self):
+    def test_claude_work_and_review_reject_invalid_acp_frames(self):
         diagnostic = "Unexpected stream output " + TEST_TOKEN
         self.claude_fixture(runs=[{"reply": self.work_result(), "non_json": diagnostic},
                                   {"reply": self.review_result(False), "non_json": diagnostic}])
@@ -681,18 +711,16 @@ class ClaudeReviewTests(RotationTestCase):
         with mock.patch.dict(os.environ, self.env, clear=True):
             response = worker.claude_review.claude_runner.run_work_turn(
                 account, self.repo, task_dir, "Work.", lambda: False)
-            self.assertEqual(response["outcome"], "completed")
-            self.assertEqual(response["result"], self.work_result())
-            self.assertEqual((task_dir / "stderr.log").read_text(),
-                             "Unexpected stream output [REDACTED]\n")
+            self.assertEqual(response["outcome"], "unknown")
+            self.assertIsNone(response["result"])
             self.assertFalse(list(task_dir.glob("claude-system-*.md")))
             events = (task_dir / "claude-events.jsonl").read_bytes()
             self.assertNotIn(TEST_TOKEN.encode(), events)
-            self.assertIn(b"Unexpected stream output [REDACTED]\n", events)
+            self.assertNotIn(b"Unexpected stream output", events)
             response = worker.claude_review.claude_runner.run_claude(
                 account, self.repo, "Review.", lambda: False, reviewing=True)
             self.assertEqual(response["outcome"], "unavailable")
-            self.assertEqual(response["reason"], "invalid JSON output")
+            self.assertEqual(response["reason"], "review failed")
             self.assertIsNone(response["result"])
             self.assertEqual((task_dir / "claude-events.jsonl").read_bytes(), events)
             self.assertFalse((self.repo / "claude-events.jsonl").exists())
@@ -808,6 +836,9 @@ class ClaudeReviewTests(RotationTestCase):
         self.claude = self.root / "claude"
         self.claude.write_text("#!" + PYTHON + "\n" + FAKE_CLAUDE)
         self.claude.chmod(0o700)
+        adapter = self.root / "claude-agent-acp"
+        if not adapter.exists():
+            adapter.symlink_to(self.claude)
         security = self.root / "security"
         security.write_text("#!" + PYTHON + "\n" + FAKE_SECURITY)
         security.chmod(0o700)
@@ -847,6 +878,16 @@ class ClaudeReviewTests(RotationTestCase):
         if not self.claude_trace_path.exists():
             return []
         return [json.loads(line) for line in self.claude_trace_path.read_text().splitlines()]
+
+    def assert_claude_read_only(self, entry):
+        self.assertEqual(entry["mode"], "default")
+        options = entry["options"]
+        self.assertFalse(options["allowDangerouslySkipPermissions"])
+        self.assertEqual(options["allowedTools"], ["Read", "Grep", "Glob", "Bash"])
+        self.assertEqual(options["tools"], options["allowedTools"])
+        self.assertEqual(options["disallowedTools"], ["Edit", "Write", "NotebookEdit"])
+        self.assertTrue(options["strictMcpConfig"])
+        self.assertNotIn("settings", options)
 
     def claude_invocations(self):
         return [entry for entry in self.claude_trace() if entry["command"] == "review"]
@@ -2384,19 +2425,13 @@ class ClaudeReviewTests(RotationTestCase):
         invocations = self.claude_invocations()
         self.assertEqual(len(invocations), 2)
         for entry in invocations:
-            argv = entry["argv"]
-            self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
-            self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read,Grep,Glob,Bash")
-            self.assertEqual(argv[argv.index("--disallowedTools") + 1], "Edit,Write,NotebookEdit")
-            self.assertNotIn("--json-schema", argv)
-            self.assertNotIn("bypassPermissions", argv)
-            self.assertNotIn("--settings", argv)
+            self.assert_claude_read_only(entry)
+            self.assertNotIn("outputFormat", entry["options"])
             self.assertEqual(entry["bash_timeouts"], [None, None])
             self.assertEqual(entry["cwd"], str(self.repo))
             self.assertEqual(entry["config_dir"], accounts[0]["config_dir"])
-        self.assertNotIn("--resume", invocations[0]["argv"])
-        resumed = invocations[1]["argv"]
-        self.assertEqual(resumed[resumed.index("--resume") + 1], initial["session_id"])
+        self.assertEqual(invocations[0]["method"], "session/new")
+        self.assertEqual(invocations[1]["resume"], initial["session_id"])
         for status in (self.cli("status"), self.cli("status", "claude-scout")):
             self.assertIn("executor claude", status)
             self.assertIn("sandbox read-only", status)
@@ -2484,12 +2519,10 @@ class ClaudeReviewTests(RotationTestCase):
         first, second, _ = self.claude_invocations()
         schema = self.worker().result_schema.REFLECT_SCHEMA
         for entry in (first, second):
-            argv = entry["argv"]
             self.assertEqual(entry["cwd"], str(room))
-            self.assertEqual(json.loads(argv[argv.index("--json-schema") + 1]), schema)
-            self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
-            self.assertEqual(argv[argv.index("--disallowedTools") + 1], "Edit,Write,NotebookEdit")
-        self.assertEqual(second["argv"][second["argv"].index("--resume") + 1], first["session_id"])
+            self.assertEqual(entry["options"]["outputFormat"]["schema"], schema)
+            self.assert_claude_read_only(entry)
+        self.assertEqual(second["resume"], first["session_id"])
         self.assertEqual(self.invocations(), [])
 
     def test_claude_scout_refuses_a_non_git_directory_without_a_record(self):
@@ -2629,19 +2662,16 @@ class ClaudeReviewTests(RotationTestCase):
             self.assertEqual(entry["config_dir"], str(self.claude_config_dir))
             self.assertEqual(entry["disable_background_tasks"], "1")
             self.assertEqual(entry["inherited_provider_keys"], [])
-            self.assertEqual(entry["stdin"], "")
+            self.assertEqual(entry["argv"], [])
             self.assertEqual(entry["cwd"], state["worktree"])
             self.assertEqual(entry["pid"], entry["pgid"])
-            argv = entry["argv"]
-            self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")
-            self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read,Grep,Glob,Bash")
-            self.assertEqual(argv[argv.index("--disallowedTools") + 1], "Edit,Write,NotebookEdit")
-            self.assertNotIn("--settings", argv)
+            self.assert_claude_read_only(entry)
             self.assertEqual(entry["bash_timeouts"], [None, None])
-            self.assertEqual(argv[argv.index("--max-turns") + 1], "17")
-            self.assertEqual(argv[argv.index("--model") + 1], "claude-test")
-            self.assertEqual(argv[argv.index("--effort") + 1], "high")
-            schema = json.loads(argv[argv.index("--json-schema") + 1])
+            options = entry["options"]
+            self.assertEqual(options["maxTurns"], 17)
+            self.assertEqual(options["model"], "claude-test")
+            self.assertEqual(options["effort"], "high")
+            schema = options["outputFormat"]["schema"]
             self.assertEqual(set(schema["properties"]), set(self.review_result()))
         self.assertEqual(len(self.security_trace_path.read_text().splitlines()), 2)
         self.assert_claude_review_telemetry(2)
@@ -2684,7 +2714,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(len(claude), 4)
         self.assertEqual(len({entry["pid"] for entry in claude}), 4)
         for index, angle in enumerate(("correctness", "concurrency", "correctness", "concurrency")):
-            self.assertIn("Review angle: " + angle, claude[index]["argv"][1])
+            self.assertIn("Review angle: " + angle, claude[index]["prompt"])
             self.assertRegex(output, r"== review angle " + angle + r" by claude/default \(\d+(?:\.\d+)? min\)")
         self.assert_claude_review_telemetry(4)
         self.assertEqual([row["reasoning_effort"] for row in self.phase_telemetry_journal()
@@ -2729,10 +2759,10 @@ class ClaudeReviewTests(RotationTestCase):
                         if row["slug"] == slug and row["phase"] == "review"]
                 self.assertTrue(any(row["reviewer"] == "codex" for row in rows), rows)
                 if label == "profile":
-                    claude_args = self.claude_invocations()[-1]["argv"]
+                    claude_options = self.claude_invocations()[-1]["options"]
                     codex_args = self.review_invocations()[-1]["argv"]
-                    self.assertIn("fixture-claude-review", claude_args)
-                    self.assertIn("medium", claude_args)
+                    self.assertEqual(claude_options["model"], "fixture-claude-review")
+                    self.assertEqual(claude_options["effort"], "medium")
                     self.assertIn("fixture-codex-review", codex_args)
                     self.assertIn('model_reasoning_effort="high"', codex_args)
                 if label == "rejected":
@@ -3096,10 +3126,10 @@ class ClaudeReviewTests(RotationTestCase):
         for window in self.claude_limits["unifiedWindows"].values():
             reset = datetime.datetime.fromtimestamp(window["resetsAt"]).strftime("%Y-%m-%d %H:%M")
             self.assertIn(reset, line)
-        argv = self.claude_invocations()[0]["argv"]
-        self.assertEqual(argv[argv.index("--max-turns") + 1], "40")
-        self.assertNotIn("--model", argv)
-        self.assertNotIn("--effort", argv)
+        options = self.claude_invocations()[0]["options"]
+        self.assertEqual(options["maxTurns"], 40)
+        self.assertNotIn("model", options)
+        self.assertNotIn("effort", options)
 
     def test_claude_rate_limit_event_huge_number_is_ignored(self):
         clock = self.enable_fake_clock()
@@ -4217,7 +4247,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(self.state("duty-claude-own")["claude_account"], "first")
         resumed = self.claude_invocations()[-1]
         self.assertEqual(resumed["config_dir"], accounts[0]["config_dir"])
-        self.assertEqual(resumed["argv"][resumed["argv"].index("--resume") + 1], session)
+        self.assertEqual(resumed["resume"], session)
 
     def test_duty_set_pins_ticks_keep_the_pin_and_auto_or_clear_remove_it(self):
         self.claude_pool_fixture(names=("first", "main"))

@@ -6,9 +6,10 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
-from . import claude_accounts, clock, config, procs, result_schema, sandboxing
+from . import acp, claude_accounts, clock, config, procs, result_schema, sandboxing
 
 # Claude Code's own maximum Bash timeout; work turns never allow less, and use it as the default.
 BASH_FLOOR_SECONDS = 600
@@ -214,30 +215,6 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     if executable is None:
         response["reason"] = "Claude CLI was not found"
         return response
-    schema = (result_schema.REVIEW_SCHEMA if reviewing else result_schema.REFLECT_SCHEMA if reflecting
-              else result_schema.DUTY_SCHEMA if chatting else result_schema.RESULT_SCHEMA)
-    args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose"]
-    if not scouting:
-        args += ["--json-schema", json.dumps(schema)]
-    if read_only:
-        args += ["--permission-mode", "dontAsk", "--allowedTools", "Read,Grep,Glob,Bash",
-                 "--disallowedTools", "Edit,Write,NotebookEdit"]
-    elif chatting:
-        # Never bypassPermissions: only these tools run, and the hook judges every command and write.
-        args += ["--permission-mode", "dontAsk", "--allowedTools", DUTY_TOOLS, "--disallowedTools", "NotebookEdit",
-                 "--strict-mcp-config", "--append-system-prompt-file", str(system_prompt),
-                 "--settings", duty_hook_settings(worktree)]
-    else:
-        # The hook rejects background launches and pattern kills, which end the turn early.
-        args += ["--permission-mode", "bypassPermissions", "--strict-mcp-config",
-                 "--append-system-prompt-file", str(system_prompt), "--settings", bash_hook_settings()]
-    if max_turns is not None:
-        args += ["--max-turns", str(max_turns)]
-    for key, value in (("model", model), ("effort", effort)):
-        if value:
-            args += ["--" + key, value]
-    if session_id is not None:
-        args += ["--resume", session_id]
     # Read immediately before launch. Credential output never reaches artifacts.
     remaining = config.ACCOUNT_TIMEOUT if deadline is None else deadline - clock.CLOCK.monotonic()
     if remaining <= 0:
@@ -259,8 +236,25 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         return response
     if not read_only:
         environment.update(bash_timeouts(deadline, max_minutes))
+    response["telemetry"].update(model=model, reasoning_effort=effort)
     if chatting:
-        environment[config.STARTED_BY] = "duty"
+        return _run_duty(executable, environment, response, account, worktree, prompt, stopped, deadline,
+                         model, effort, session_id, system_prompt, started, progress, task_dir, token)
+    return _run_acp(executable, environment, response, account, worktree, prompt, stopped, deadline, model,
+                    effort, session_id, system_prompt, started, progress, task_dir, token, reviewing, role, max_turns)
+
+
+def _run_duty(executable, environment, response, account, worktree, prompt, stopped, deadline,
+              model, effort, session_id, system_prompt, started, progress, task_dir, token):
+    """Protected duty transport. Its room guard applies on every new and resumed turn."""
+    environment[config.STARTED_BY] = "duty"
+    args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose",
+            "--json-schema", json.dumps(result_schema.DUTY_SCHEMA), "--permission-mode", "dontAsk",
+            "--allowedTools", DUTY_TOOLS, "--disallowedTools", "NotebookEdit", "--strict-mcp-config",
+            "--append-system-prompt-file", str(system_prompt), "--settings", duty_hook_settings(worktree)]
+    for key, value in (("model", model), ("effort", effort), ("resume", session_id)):
+        if value:
+            args += ["--" + key, value]
     try:
         proc = subprocess.Popen(args, cwd=worktree, env=environment,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -268,11 +262,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     except OSError:
         response["reason"] = "Claude CLI could not be started"
         return response
-    response["telemetry"].update(model=model, reasoning_effort=effort)
     buffer, eof, termination = b"", False, None
     events_failed = False
-    failure = ("review failed" if reviewing else "scout failed" if scouting
-               else "reflect failed" if reflecting else "duty turn failed" if chatting else "work turn failed")
     try:
         if started is not None:
             started(proc)
@@ -286,23 +277,14 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                     response["outcome"] = "budget_exhausted"
                     break
                 if eof and proc.poll() is not None:
-                    # A reflect answer found invalid is terminated here; its exit status is ours.
-                    if (not reviewing and proc.wait() != 0 and response["reason"] in
-                            ((None, failure) if reflecting else
-                             (None, "invalid structured output", "invalid JSON output", failure))):
-                        response["reason"] = failure
+                    if proc.returncode and response["reason"] not in ("authentication failed", "usage limit"):
+                        response["reason"] = "duty turn failed"
                     if response["reason"] is None:
-                        if proc.wait() != 0:
-                            response["reason"] = failure
-                        elif response["result"] is None:
+                        if response["result"] is None:
                             response["reason"] = "invalid structured output"
                         else:
                             response["outcome"] = "completed"
-                    if not read_only and not chatting and response["reason"] in (
-                            "invalid structured output", "invalid JSON output", failure):
-                        response.update(outcome="unknown", result=None)
-                    elif (scouting or reflecting or chatting) and response["reason"] in (
-                            "invalid structured output", "invalid JSON output", "invalid scout output", failure):
+                    if response["reason"] in ("invalid structured output", "invalid JSON output", "duty turn failed"):
                         response.update(outcome="failed", result=None)
                     break
                 for key, _ in selector.select(0.2):
@@ -315,62 +297,20 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                         line, separator, remaining = buffer.partition(b"\n")
                         buffer = remaining if separator else b""
                         if separator and task_dir is not None and not events_failed:
-                            try:
-                                with (Path(task_dir) / "claude-events.jsonl").open("ab") as events:
-                                    events.write(line.replace(token.encode(), b"[REDACTED]") + separator)
-                                    events.flush()
-                            except OSError:
-                                events_failed = True
-                                try:
-                                    with (Path(task_dir) / "stderr.log").open("a", encoding="utf-8") as errors:
-                                        errors.write("Could not append to claude-events.jsonl.\n")
-                                except OSError:
-                                    pass
+                            events_failed = not _write_event(task_dir, line.replace(token.encode(), b"[REDACTED]"))
                         if not line.strip():
                             continue
                         try:
                             event = json.loads(line)
                         except (ValueError, UnicodeError):
-                            if not read_only:
-                                with (Path(system_prompt).parent / "stderr.log").open(
-                                        "a", encoding="utf-8") as errors:
-                                    errors.write(line.decode("utf-8", errors="replace").replace(
-                                        token, "[REDACTED]") + "\n")
-                                continue
-                            response["reason"] = response["reason"] or "invalid JSON output"
-                            response["result"] = None
+                            with (Path(system_prompt).parent / "stderr.log").open("a", encoding="utf-8") as errors:
+                                errors.write(line.decode("utf-8", errors="replace").replace(token, "[REDACTED]") + "\n")
                             continue
-                        if not reviewing and isinstance(event, dict):
-                            if event.get("type") == "assistant":
-                                message = event.get("message", {})
-                                content = message.get("content") if isinstance(message, dict) else None
-                                if isinstance(content, list):
-                                    texts = [item["text"] for item in content
-                                             if isinstance(item, dict) and item.get("type") == "text"
-                                             and isinstance(item.get("text"), str)]
-                                    if texts:
-                                        response["raw_message"] = "\n".join(texts).replace(token, "[REDACTED]")
-                            elif event.get("type") == "result" and isinstance(event.get("result"), str):
-                                if event["result"]:
-                                    response["raw_message"] = event["result"].replace(token, "[REDACTED]")
-                        # Later events of a failed stream do not lift its mark.
-                        stream_model = (model or None) if response["reason"] is None else None
-                        # Each rejection on a known model is marked with its snapshot: a stop before
-                        # the caller returns must not leave the account excluded for every model,
-                        # and the caller does not mark again over a later success on this model.
-                        result, reason = event_result(event, response["telemetry"], token,
-                                                      account["name"], reviewing, scouting, reflecting, chatting,
-                                                      model=stream_model, limit=response)
-                        if reason is not None:
-                            response["reason"] = response["reason"] or reason
-                            response["result"] = None
-                        elif result is not None and response["reason"] is None:
-                            response["result"] = result
-                        if not reviewing and progress is not None:
+                        _record_event(event, response, token, account, model, False, "duty")
+                        if progress:
                             progress(response["telemetry"])
-                if (response["reason"] and termination is None and
-                        (read_only or response["reason"] not in
-                         ("invalid structured output", "invalid JSON output", failure))):
+                if (response["reason"] and termination is None and response["reason"] not in
+                        ("invalid structured output", "invalid JSON output", "duty turn failed")):
                     # Drain buffered and shutdown usage while terminating, even
                     # when the final result is larger than the stdout pipe.
                     termination = threading.Thread(target=procs.terminate, args=(proc,))
@@ -381,4 +321,146 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         else:
             termination.join()
         proc.stdout.close()
+    return response
+
+
+def _write_event(task_dir, line):
+    try:
+        with (Path(task_dir) / "claude-events.jsonl").open("ab") as events:
+            events.write(line + b"\n")
+        return True
+    except OSError:
+        try:
+            with (Path(task_dir) / "stderr.log").open("a", encoding="utf-8") as errors:
+                errors.write("Could not append to claude-events.jsonl.\n")
+        except OSError:
+            pass
+        return False
+
+
+def _record_event(event, response, token, account, model, reviewing, role):
+    if not reviewing and isinstance(event, dict):
+        if event.get("type") == "assistant":
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                texts = [item["text"] for item in content if isinstance(item, dict)
+                         and item.get("type") == "text" and isinstance(item.get("text"), str)]
+                if texts:
+                    response["raw_message"] = "\n".join(texts).replace(token, "[REDACTED]")
+        elif event.get("type") == "result" and isinstance(event.get("result"), str) and event["result"]:
+            response["raw_message"] = event["result"].replace(token, "[REDACTED]")
+    if (role == "work" and not reviewing and isinstance(event, dict)
+            and event.get("type") == "result" and "structured_output" not in event):
+        event = dict(event, structured_output=result_schema.parse_result(event.get("result")))
+    # A later success on a failed stream must not lift that model's limit mark.
+    result, reason = event_result(event, response["telemetry"], token, account["name"],
+                                  reviewing, role == "scout", role == "reflect", role == "duty",
+                                  model=model if not response["reason"] else None, limit=response)
+    if reason:
+        response["reason"] = response["reason"] or reason
+        response["result"] = None
+    elif response["reason"] is None and result is not None:
+        response["result"] = result
+
+
+def _run_acp(executable, environment, response, account, worktree, prompt, stopped, deadline, model,
+             effort, session_id, system_prompt, started, progress, task_dir, token, reviewing, role, max_turns):
+    read_only = reviewing or role in ("scout", "reflect")
+    options = {"strictMcpConfig": True}
+    meta = {"claudeCode": {"options": options, "emitRawSDKMessages": True}}
+    if role != "scout":
+        schema = (result_schema.REVIEW_SCHEMA if reviewing else result_schema.REFLECT_SCHEMA if role == "reflect"
+                  else result_schema.RESULT_SCHEMA)
+        options["outputFormat"] = {"type": "json_schema", "schema": schema}
+    if read_only:
+        # ACP's catalog has no dontAsk. Expose only the old allowlist, remove bypass
+        # and decline every permission request in manual mode.
+        tools = ["Read", "Grep", "Glob", "Bash"]
+        options.update(tools=tools, allowedTools=tools, disallowedTools=["Edit", "Write", "NotebookEdit"],
+                       allowDangerouslySkipPermissions=False)
+    else:
+        meta["systemPrompt"] = {"append": Path(system_prompt).read_text(encoding="utf-8")}
+        options["settings"] = {**json.loads(bash_hook_settings()), "disableAllHooks": False}
+    for key, value in (("model", model), ("effort", effort), ("maxTurns", max_turns)):
+        if value is not None:
+            options[key] = value
+    environment.update(CLAUDE_CODE_EXECUTABLE=str(Path(executable).resolve()), PWD=str(Path(worktree).resolve()))
+    failure = "review failed" if reviewing else role + " turn failed" if role == "work" else role + " failed"
+    drain_deadline = None
+    events_failed = False
+
+    def check_active():
+        if stopped():
+            raise InterruptedError
+        if deadline is not None and clock.CLOCK.monotonic() >= deadline:
+            raise TimeoutError
+        if drain_deadline is not None and time.monotonic() >= drain_deadline:
+            raise ValueError("Claude ACP did not finish shutting down")
+
+    def notification(method, params):
+        nonlocal events_failed, drain_deadline
+        if method != "_claude/sdkMessage":
+            return
+        event = params.get("message")
+        if task_dir is not None and not events_failed:
+            line = json.dumps(event, ensure_ascii=False).encode().replace(token.encode(), b"[REDACTED]")
+            events_failed = not _write_event(task_dir, line)
+        _record_event(event, response, token, account, model, reviewing, role)
+        # The ACP session, not a backend event or a replay, owns the durable cursor.
+        response["telemetry"]["session_id"] = client.session_id
+        if progress:
+            progress(response["telemetry"])
+        if response["reason"] in ("usage limit", "authentication failed") and drain_deadline is None:
+            drain_deadline = time.monotonic() + 3
+            client.cancel()
+
+    telemetry = response["telemetry"]
+    mode = "default" if read_only else "bypassPermissions"
+    try:
+        with acp.AcpClient(["claude-agent-acp"], worktree, lambda update: None, lambda params: None,
+                           check_active=check_active, on_notification=notification, env=environment,
+                           stderr=subprocess.DEVNULL) as client:
+            if started:
+                started(client.process)
+            cursor = client.open_session(session_id, meta=meta, config_options={"mode": mode})
+            if token in cursor:
+                raise ValueError("Invalid Claude session ID")
+            telemetry["session_id"] = cursor
+            if progress:
+                progress(telemetry)
+            check_active()
+            stop_reason = client.prompt(prompt)
+            drain_deadline = time.monotonic() + 3
+        if stop_reason != "end_turn" or client.process.returncode:
+            if response["reason"] not in ("usage limit", "authentication failed"):
+                response["reason"] = failure
+        elif response["result"] is None and not response["reason"]:
+            response["reason"] = "invalid structured output"
+    except (InterruptedError, TimeoutError) as error:
+        response.update(outcome="stopped" if isinstance(error, InterruptedError) else "budget_exhausted", result=None)
+        return response
+    except acp.AcpRequestError as error:
+        data = error.data if isinstance(error.data, dict) else {}
+        if error.code == -32000:
+            response["reason"] = "authentication failed"
+        elif data.get("errorKind") == "rate_limit":
+            response["reason"] = "usage limit"
+            if isinstance(data.get("rateLimit"), dict) and "limited_until" not in response:
+                stream_unavailable({"type": "rate_limit_event", "rate_limit_info": data["rateLimit"]},
+                                   account["name"], model=model, limit=response)
+        elif response["reason"] not in ("usage limit", "authentication failed"):
+            response["reason"] = failure
+    except FileNotFoundError:
+        response["reason"] = "Claude ACP adapter was not found"
+        return response
+    except (ValueError, OSError):
+        if response["reason"] not in ("usage limit", "authentication failed"):
+            response["reason"] = failure
+    if response["reason"] is None:
+        response["outcome"] = "completed"
+    else:
+        response["result"] = None
+        if not reviewing and response["reason"] not in ("usage limit", "authentication failed"):
+            response["outcome"] = "failed" if read_only else "unknown"
     return response
