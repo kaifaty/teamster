@@ -606,9 +606,14 @@ class WeeklyBudgetTests(RotationTestCase):
                 observed.append("late quota 17 after exec stopped")
                 append_quota(17)
 
+        targets = []
+        def start(argv, **kwargs):
+            targets.append(json.loads((Path(argv[-1]) / "options").read_text())["thread"])
+            return (proc, wrap)[len(targets) - 1]
+
         with mock.patch.object(worker.accounts, "prepare_home"), \
                 mock.patch.object(worker.procs, "terminate", side_effect=terminate), \
-                mock.patch.object(worker.turn_monitor.subprocess, "Popen", side_effect=[proc, wrap]) as popen, \
+                mock.patch.object(worker.turn_monitor.subprocess, "Popen", side_effect=start) as popen, \
                 mock.patch.object(worker.turn_monitor.selectors, "DefaultSelector", side_effect=[selector, wrap_selector]), \
                 mock.patch.object(worker.os, "read", side_effect=read), \
                 mock.patch.object(worker.turn_monitor.fcntl, "ioctl", return_value=bytes(4)), \
@@ -618,7 +623,7 @@ class WeeklyBudgetTests(RotationTestCase):
         self.assertEqual(observed, ["exec quota 16, no completion", "late quota 17 after exec stopped",
                                     "wrap-up quotas 16, 18"])
         self.assertEqual(popen.call_count, 2)
-        self.assertIn("resume", popen.call_args_list[1].args[0])
+        self.assertEqual(targets, ["same-thread", "same-thread"])
         self.assertEqual(st["outcome"], "budget_exhausted")
         self.assertEqual(st["result"], result)
         self.assertEqual(st["weekly_used_percent"], 8)

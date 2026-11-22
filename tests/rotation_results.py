@@ -304,7 +304,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertEqual(state["effort"], "high")
         self.assertEqual(invocation["cwd"], str(self.repo))
         self.assert_scout_read_only(invocation)
-        self.assertIn('model_reasoning_effort="high"', invocation["argv"])
+        self.assertEqual(invocation["effort"], "high")
         prompt = invocation["prompt"]
         self.assertIn(question, prompt)
         self.assertNotIn("TASK-RULES-MUST-NOT-REACH-SCOUT", prompt)
@@ -343,7 +343,7 @@ class ResultScoutConfigTests(RotationTestCase):
                 self.assertEqual(self.state(slug)["worktree"], str(self.repo))
                 self.assert_scout_read_only(invocation)
                 if "--effort" in args:
-                    self.assertIn('model_reasoning_effort="low"', invocation["argv"])
+                    self.assertEqual(invocation["effort"], "low")
 
     def test_scout_requires_exactly_one_question_source_before_creating_a_task(self):
         question_file = self.root / "scout-question.md"
@@ -441,7 +441,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertTrue(followup["resume"])
         self.assertEqual(followup["thread"], thread)
         self.assertIn("Which tests cover its empty-input case?", followup["prompt"])
-        self.assertIn('model_reasoning_effort="low"', followup["argv"])
+        self.assertEqual(followup["effort"], "low")
         self.assertEqual(self.state("scout-say")["kind"], "scout")
         for invocation in (first, followup):
             self.assert_scout_read_only(invocation)
@@ -619,7 +619,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertEqual(truncated, header + (b"x" * (size - 4) + b"TAIL")[-262144:])
         invocation, = self.invocations()
         self.assertEqual(invocation["cwd"], str(room))
-        self.assertIn('sandbox_mode="read-only"', invocation["argv"])
+        self.assertEqual(invocation["sandboxPolicy"], {"type": "readOnly", "networkAccess": False})
         worker = self.worker()
         self.assertEqual(invocation["output_schema"], worker.result_schema.REFLECT_SCHEMA)
         lesson_schema = invocation["output_schema"]["properties"]["lessons"]["items"]

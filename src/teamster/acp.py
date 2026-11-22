@@ -35,11 +35,19 @@ def _offers_value(option, value):
 class AcpRequestError(ValueError):
     """A JSON-RPC failure with the provider's error code, message and data."""
 
-    def __init__(self, detail, error):
-        super().__init__(detail)
+    def __init__(self, method, error, auth_methods):
         self.code = error.get("code")
-        self.message = error.get("message")
         self.data = error.get("data")
+        self.provider_message = error.get("message")
+        detail = f"ACP {method} failed ({self.code}): {self.provider_message}"
+        if isinstance(self.data, dict) and isinstance(self.data.get("message"), str):
+            self.provider_message = self.data["message"]
+            detail += f": {self.provider_message}"
+        if self.code == -32000:
+            detail += ". Sign in using the agent CLI"
+            if auth_methods:
+                detail += " or choose --auth-method from: " + ", ".join(auth_methods)
+        super().__init__(detail)
 
 
 class AcpClient:
@@ -188,15 +196,7 @@ class AcpClient:
                     error = message["error"]
                     if not isinstance(error, dict):
                         raise ValueError(f"Invalid ACP {method} error")
-                    detail = f"ACP {method} failed ({error.get('code')}): {error.get('message')}"
-                    data = error.get("data")
-                    if isinstance(data, dict) and isinstance(data.get("message"), str):
-                        detail += f": {data['message']}"
-                    if error.get("code") == -32000:
-                        detail += ". Sign in using the agent CLI"
-                        if self.auth_methods:
-                            detail += " or choose --auth-method from: " + ", ".join(self.auth_methods)
-                    raise AcpRequestError(detail, error)
+                    raise AcpRequestError(method, error, self.auth_methods)
                 result = message.get("result")
                 if not isinstance(result, dict):
                     raise ValueError(f"Invalid ACP {method} result")

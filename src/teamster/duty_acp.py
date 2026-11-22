@@ -99,7 +99,7 @@ def run_duty(account, room, prompt, stopped, deadline, model, effort, *, thread_
     except acp.AcpRequestError as exc:
         data = exc.data if isinstance(exc.data, dict) else {}
         telemetry.update(data.get("telemetry", {}))
-        response.update(outcome=data.get("outcome", "failed"), reason=exc.message, result=None)
+        response.update(outcome=data.get("outcome", "failed"), reason=exc.provider_message, result=None)
         if "limited_until" in data:
             response["limited_until"] = data["limited_until"]
     except (OSError, ValueError, KeyError) as exc:

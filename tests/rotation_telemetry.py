@@ -127,13 +127,10 @@ class TelemetryReportTests(RotationTestCase):
                     "Strong-3", None, None, "Strong-4", None)
         self.assertEqual(len(executions), len(expected))
         for execution, model in zip(executions, expected):
-            with self.subTest(model=model, argv=execution["argv"]):
+            with self.subTest(model=model, review=execution["review"]):
                 self.assertEqual(execution["model"], model or
                                  ("configured-review" if execution["review"] else "configured-work"))
-                argv = execution["argv"]
-                self.assertEqual(argv[argv.index("--model") + 1] if "--model" in argv else None, model)
-                overrides = [arg for arg in argv if arg.startswith(("model=", "review_model="))]
-                self.assertEqual(overrides, [f'review_model="{model}"'] if model and execution["review"] else [])
+                self.assertEqual(execution["command"], "turn/start")
         rows = [row for row in self.phase_telemetry_journal() if row["slug"] == "model-choice"]
         self.assertEqual([row["model"] for row in rows], [execution["model"] for execution in executions])
         for args in (("start", "bad-model", "--brief", str(self.brief), "--model", "bad/name"),

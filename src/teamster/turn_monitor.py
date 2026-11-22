@@ -12,7 +12,7 @@ import tempfile
 import termios
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple, Optional
 
@@ -167,6 +167,8 @@ class MonitorEvents:
     capacity_failed: bool = False
     refusal: Optional[str] = None
     final_message: str = ""
+    pending_item: Optional[dict] = None
+    text_chunks: list = field(default_factory=list)
     exit_code: Optional[int] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -240,10 +242,12 @@ def monitor_event(st, account, event, stream, control, reviewing, wrapup, attemp
         return "refused", None
     if control.repeated(event):
         return "stuck", None
-    if account_rotation.limit_error(event):
+    error = event.get("error")
+    category = error.get("category") if isinstance(error, dict) else None
+    if account_rotation.limit_error(event) or (category == "limit" and "new_session" not in error.get("actions", [])):
         stream.reason = "usage limit"
-    if account_rotation.auth_error(event) or (event.get("type") == "turn.failed" and
-            "(-32000)" in str(event.get("error"))):
+    if account_rotation.auth_error(event) or category == "access" or (
+            isinstance(error, dict) and error.get("code") == -32000):
         stream.authentication_failed = True
     if not stream.reason and not stream.authentication_failed and account_rotation.capacity_error(event):
         stream.capacity_failed = True
@@ -256,9 +260,20 @@ def monitor_event(st, account, event, stream, control, reviewing, wrapup, attemp
     return None
 
 
+def flush_message(stream, log):
+    if stream.pending_item is None:
+        return
+    item = dict(stream.pending_item, text="".join(stream.text_chunks))
+    log.write((json.dumps({"type": "item.completed", "item": item}, ensure_ascii=False) + "\n").encode())
+    if item["type"] == "agent_message":
+        stream.final_message = item["text"]
+    stream.pending_item = None
+    stream.text_chunks.clear()
+
+
 def read_monitor_events(st, account, proc, ready, sel, log, stream, usage, control,
                         reviewing, wrapup, attempt_started):
-    """Append ready bytes verbatim, then decode complete lines without reordering."""
+    """Journal complete events in order, joining ACP text chunks by message ID."""
     for key, _ in ready:
         size = min(65536, usage.pending_weekly_bytes) if usage.pending_weekly_spent is not None else 65536
         chunk = os.read(key.fileobj.fileno(), size)
@@ -268,14 +283,24 @@ def read_monitor_events(st, account, proc, ready, sel, log, stream, usage, contr
             sel.unregister(key.fileobj)
             stream.eof = True
         else:
-            log.write(chunk)
             stream.buffer += chunk
             while b"\n" in stream.buffer:
                 line, stream.buffer = stream.buffer.split(b"\n", 1)
                 try:
                     event = json.loads(line)
                 except ValueError:
+                    log.write(line + b"\n")
                     continue
+                if event.get("type") == "item.delta":
+                    item = event["item"]
+                    key = {"type": item["type"], "id": item["id"]}
+                    if key != stream.pending_item:
+                        flush_message(stream, log)
+                        stream.pending_item = key
+                    stream.text_chunks.append(item["text"])
+                    continue
+                flush_message(stream, log)
+                log.write(line + b"\n")
                 result = monitor_event(st, account, event, stream, control, reviewing, wrapup, attempt_started)
                 if result is not None:
                     return result
@@ -490,7 +515,7 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
               result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA)
     options = {"binary": config.codex_binary(), "adapter": config.task_adapter("codex"), "thread": thread,
                "slug": st["slug"], "model": model, "effort": effort, "sandbox": sandbox,
-               "roots": st.get("writable_dirs", []), "schema": schema}
+               "roots": st.get("writable_dirs", []), "schema": schema, "review": reviewing}
     stream.model = model or defaults["model"]
     stream.reasoning_effort = effort or defaults["reasoning_effort"]
     stream.review_model = review_model
@@ -531,15 +556,10 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
             if proc is not None:
                 control.elapsed = budgets.monitor_time_usage(control.elapsed, control.seconds, control.minutes,
                                                      active_started, clock.CLOCK.monotonic()).elapsed
+                flush_message(stream, log)
                 finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
                                record_limits, telemetry, usage_before, weekly_started)
     if result[0] == "failed" and stream.error:
         st["error"] = stream.error
         task_state.save(st)
-    if result[0] == "completed" and schema is not None:
-        parsed = result_schema.parse_result(stream.final_message, reviewing=reviewing, reflecting=kind == "reflect")
-        if parsed is None:
-            st["error"] = f"Codex ACP returned an invalid {kind} result"
-            task_state.save(st)
-            return "failed", None
     return result
