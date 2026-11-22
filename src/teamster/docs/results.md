@@ -120,6 +120,11 @@ finished cycles and live supervisors are refused with the reason and a nonzero e
 worker or check process from the interrupted cycle is still alive. `--all` continues every candidate at once,
 also beside other running tasks: the tasks one restart cut short were running together when it came.
 
+During a Codex or Claude ACP turn, `stop` requests cancellation and ends that attempt's surviving
+terminals, including terminals in separate sessions. If the supervisor died and the worker has exited,
+`resume` cleans up those terminals before continuing the saved turn. If the worker still holds the
+session, `stop` ends it and `say` can then continue the task.
+
 The cycle continues from the step it stopped at, in the same turn and with the task's saved settings
 (`--review`, `--fix-rounds`, review angles, reviewer, check, CI and limits):
 

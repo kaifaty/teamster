@@ -749,12 +749,12 @@ def cmd_stop(a):
         st = task_state.load(a.slug)
         pid = st.get("pid")
         if not procs.alive(pid):
-            name, orphan = task_state.session_process(st)
+            name, orphan = task_state.session_process(st, terminals=True)
             if orphan is None:
                 print("not running")
                 return
             # The supervisor died before its transport, which still holds the session.
-            marker = codex_duty.duty_process_marker(orphan) if name in ("Codex", "Claude") else None
+            marker = procs.process_marker(orphan) if name in ("Codex", "Claude") else None
             if name == "Codex":
                 # App-server owns terminal groups separate from its own. Let
                 # its SIGTERM shutdown end those before the group fallback.
@@ -766,11 +766,14 @@ def cmd_stop(a):
                     if not procs.alive(orphan):
                         break
                     time.sleep(0.2)
-            procs.end_group(orphan)
-            if marker:
-                codex_duty.end_duty_terminals(marker)
-            st.pop(name.lower() + "_pid", None)
-            if name == "OpenCode":
+            if name == "ACP":
+                task_state.reap_acp_turn(st)
+            else:
+                procs.end_group(orphan)
+                if marker:
+                    codex_duty.end_duty_terminals(marker)
+                st.pop(name.lower() + "_pid", None)
+            if name in ("ACP", "OpenCode"):
                 now = clock.CLOCK.time()
                 st.update(outcome="stopped", turn_finished=now, stop_request={"at": now, "pid": pid})
                 supervisor.finish_cycle(st)
@@ -802,7 +805,7 @@ def cmd_clean(a):
         st = task_state.load(a.slug)
         if procs.alive(st.get("pid")):
             procs.die("still running; stop it first")
-        name, orphan = task_state.session_process(st)
+        name, orphan = task_state.session_process(st, terminals=True)
         if orphan is not None:
             procs.die(f"{name} process {orphan} of the last {st['kind']} turn is still running; "
                       f"end it with {config.COMMAND} stop {a.slug}, then clean")

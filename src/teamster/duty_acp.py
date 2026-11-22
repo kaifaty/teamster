@@ -23,7 +23,7 @@ import sys
 import threading
 import uuid
 
-from . import acp, claude_runner, clock, codex_duty, config, duty_chat, result_schema
+from . import acp, claude_runner, clock, codex_duty, config, duty_chat, procs, result_schema
 
 
 DUTY_META = "teamster.dev/duty"
@@ -70,7 +70,7 @@ def run_duty(account, room, prompt, stopped, deadline, model, effort, *, thread_
     system_file = duty_chat.write_system_prompt(system_text, task_dir)
     argv = duty_agent_command(account, system_file, deadline, model, effort, max_minutes)
     client = acp.AcpClient(argv, room, update, lambda params: None, check_active=check_active,
-                           env={**os.environ, config.DUTY_PROCESS_MARKER: marker})
+                           env={**os.environ, procs.TURN_PROCESS_MARKER: marker})
     try:
         check_active()
         with client:
@@ -198,7 +198,7 @@ class DutyAgent:
                 rpc, telemetry = stack.enter_context(codex_duty.codex_duty_session(
                     settings["account"], room, self.stopped, settings["deadline"], settings["model"], settings["effort"],
                     old_id, system_file.read_text(encoding="utf-8"), system_file.parent,
-                    os.environ[config.DUTY_PROCESS_MARKER]))
+                    os.environ[procs.TURN_PROCESS_MARKER]))
                 self.session = rpc.thread
                 self.update("session_info_update", {"telemetry": telemetry})
             elif settings["family"] == "claude":
