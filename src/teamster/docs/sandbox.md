@@ -11,9 +11,10 @@ shows it. For example:
 }
 ```
 
-`writable_dirs` expands `~` and makes paths absolute. In workspace mode, worker and review execs,
-including resumes and account rotations, use `workspace-write` with network access. Saved checks run
-through `codex sandbox` with the same permissions; scouts remain read-only.
+`writable_dirs` expands `~` and makes paths absolute. In workspace mode, Codex work and review
+sessions use `workspace-write` with network access, including on resumes and account rotations.
+Teamster applies the sandbox to the native app-server behind the ACP adapter. Saved checks run
+through `codex sandbox` with the same permissions. Scouts remain read-only.
 
 ## Limits
 

@@ -54,6 +54,7 @@ def spawn(st, prompt, effort=None, current_message=False, kind="work", review_af
                     st.clear()
                     st.update(latest)
                     refresh(st)
+                task_state.reap_acp_turn(st)
             return launch(st, prompt, effort, current_message, kind, review_after, fix_rounds)
 
 
@@ -102,8 +103,8 @@ def start_process(st):
     d = config.TASKS / st["slug"]
     # The supervisor runs in the worktree: pass the resolved homes, not relative variables.
     environment = dict(os.environ)
-    # A start from a duty chat turn inherits its credential and its marker; neither belongs to the task.
-    for key in ("CLAUDE_CODE_OAUTH_TOKEN", config.STARTED_BY, config.DUTY_PROCESS_MARKER):
+    # Each supervisor owns its turns independently of the turn that launched it.
+    for key in ("CLAUDE_CODE_OAUTH_TOKEN", config.STARTED_BY, procs.TURN_PROCESS_MARKER):
         environment.pop(key, None)
     if config.HOME_VARIABLES["TEAMSTER_HOME"]:
         environment["TEAMSTER_HOME"] = str(config.DATA_HOME)
@@ -190,7 +191,9 @@ def resume_refusal(st):
         if st.get("outcome") == "stopped":
             return f"{slug} was stopped with stop, not cut short by a signal; continue it with say"
         return f"{slug}: its last cycle ended {st.get('outcome')}, not cut short by a signal; continue it with say"
-    for key in ("codex_pid", "claude_pid", "check_pid"):
+    # Marked ACP workers were checked by identity in busy_message. Older records only have PIDs.
+    keys = ("check_pid",) if task_state.interrupted_acp_processes(st) else ("codex_pid", "claude_pid", "check_pid")
+    for key in keys:
         if procs.alive(st.get(key)):
             return (f"{slug}: process {st[key]} of the interrupted cycle is still alive; "
                     "end it, then run resume again")
@@ -229,6 +232,7 @@ def resume(slug, loaded):
             reason = resume_refusal(st)
             if reason is not None:
                 procs.die(reason)
+            task_state.reap_acp_turn(st)
             drop_dead_queue(slug)
             cut = task_state.interruption(st)
             cycle, step = resume_step(st)
@@ -272,7 +276,10 @@ def apply_say(st, options, cfg):
             executor = executors.get(account["family"])
         if "model" in options:
             config.validate_work_model(executor.name, options["model"])
-        if scouting:
+        if st.get("kind") == duty_chat.CHAT_KIND:
+            duty_chat.prepare_chat_backend(executor.name, options.get("effort") or st.get("effort")
+                                          or cfg["claude"].get("effort"))
+        elif scouting:
             executor.prepare_scout(options.get("effort") or st.get("effort"), cfg, st["worktree"])
         else:
             executor.prepare(options.get("effort") or st.get("effort"), cfg)

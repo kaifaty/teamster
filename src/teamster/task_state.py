@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 from typing import Callable, Literal, NamedTuple, Optional
 
-from . import clock, config, opencode_runner, procs, reviewers, threads
+from . import acp, clock, config, opencode_runner, procs, reviewers, threads
 
 
 def interruption(st):
@@ -273,25 +273,44 @@ def save(st):
         write_state(st)
 
 
-def session_process(st):
-    """The name and pid of a live duty transport or OpenCode worker holding its session."""
+def interrupted_acp_processes(st):
+    """A completed cleanup removes the record. Call after confirming the supervisor is gone."""
+    return acp.TaskProcesses.recover(config.TASKS / st["slug"])
+
+
+def reap_acp_turn(st):
+    """Called under the state lock after the supervisor is gone, before reusing its worktree."""
+    processes = interrupted_acp_processes(st)
+    if processes:
+        processes.terminate()
+        processes.clear()
+        st.pop("claude_pid", None)
+        st.pop("codex_pid", None)
+
+
+def session_processes(st, *, terminals=False):
+    """Live process groups holding the task's session after its supervisor exits."""
     if st.get("kind") == "duty":
         for name in ("Claude", "Codex"):
             pid = st.get(name.lower() + "_pid")
             if procs.alive(pid):
-                return name, pid
+                yield name, pid
+                return
+    elif processes := interrupted_acp_processes(st):
+        for pid in (st.get("claude_pid"), st.get("codex_pid")):
+            if pid and procs.process_marker(pid) == processes.marker:
+                yield "ACP", pid
+                return
+        if terminals:
+            for pid in procs.marked_processes(processes.marker, processes.parents):
+                yield "ACP", pid
     elif st.get("opencode_pid"):
-        pid = st["opencode_pid"]
-        try:
-            if os.getpgid(pid) == pid:
-                env = procs.process_environment(pid)
-                owner = f"{opencode_runner.PROCESS_MARKER}={st['pid']}".encode()
-                directory = os.fsencode("PWD=" + os.path.realpath(st["worktree"]))
-                if owner in env and directory in env:
-                    return "OpenCode", pid
-        except ProcessLookupError:
-            pass
-    return None, None
+        for group in opencode_runner.orphan_groups(st):
+            yield "OpenCode", group
+
+
+def session_process(st, *, terminals=False):
+    return next(session_processes(st, terminals=terminals), (None, None))
 
 
 def busy_message(st, queue_hint=False):

@@ -1257,15 +1257,14 @@ else:
             {"mode": "complete", "reply": "Original task completed after early authentication failure"}])
         self.start("auth-before-thread")
         output = self.wait("auth-before-thread")
-        executions = self.invocations()
+        executions = self.attempts()
         self.assertEqual(len(executions), 2)
         self.assertFalse(executions[0]["resume"])
         self.assertFalse(executions[1]["resume"], "the failed attempt never created a resumable thread")
-        self.assertEqual(executions[1]["prompt"], executions[0]["prompt"])
+        self.assertIsNone(executions[0]["prompt"])
         self.assertIn(self.brief.read_text().strip(), executions[1]["prompt"])
         self.assertEqual(executions[1]["home"], str(self.home))
-        for execution in executions:
-            self.assert_output_schema(execution, "auth-before-thread")
+        self.assert_output_schema(executions[1], "auth-before-thread")
         self.assertIn("Original task completed after early authentication failure", output)
         state = self.state("auth-before-thread")
         self.assertEqual(len(state["threads"]), 1)
@@ -1281,13 +1280,13 @@ else:
         self.account(self.other, "B", self.reset, used=99)
         reset = self.reset_after_ready(lambda: self.start("auth-before-thread-sleep"), reset, 4, after_exec=True)
         self.assert_sleeping("auth-before-thread-sleep", self.wait("auth-before-thread-sleep"), reset)
-        self.assertEqual(len(self.invocations()), 1)
+        self.assertEqual(len(self.attempts()), 1)
         self.assertFalse(self.state("auth-before-thread-sleep")["threads"])
         output = self.wait("auth-before-thread-sleep", through_sleep=True, timeout=10)
-        executions = self.invocations()
+        executions = self.attempts()
         self.assertEqual(len(executions), 2)
         self.assertFalse(executions[1]["resume"])
-        self.assertEqual(executions[1]["prompt"], executions[0]["prompt"])
+        self.assertIsNone(executions[0]["prompt"])
         self.assertIn(self.brief.read_text().strip(), executions[1]["prompt"])
         self.assertIn("Original brief completed after quota recovery", output)
         self.assertEqual(self.state("auth-before-thread-sleep")["outcome"], "completed")
@@ -2027,7 +2026,8 @@ else:
                         return {"reason": reason}
                     raise RuntimeError("stopped")
 
-                with mock.patch.object(worker.accounts, "prepare_home"), \
+                with mock.patch.dict(os.environ, self.env), \
+                        mock.patch.object(worker.accounts, "prepare_home"), \
                         mock.patch.object(worker.task_state, "save"), \
                         mock.patch.object(worker.threads, "events", return_value=[]), \
                         mock.patch.object(worker.procs, "terminate") as terminate, \
@@ -2100,7 +2100,8 @@ else:
                     return limits
 
                 selector.select.side_effect = select
-                with mock.patch.object(worker.accounts, "prepare_home"), \
+                with mock.patch.dict(os.environ, self.env), \
+                        mock.patch.object(worker.accounts, "prepare_home"), \
                         mock.patch.object(worker.task_state, "save"), \
                         mock.patch.object(worker.threads, "events", return_value=[]), \
                         mock.patch.object(worker.procs, "terminate"), \

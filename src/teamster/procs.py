@@ -1,12 +1,18 @@
 """Process execution, signaling and bounded termination."""
 import ctypes
 import os
+import re
 import select
 import signal
+import struct
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+
+# Older Teamster supervisors already clear this key when a command starts a new task.
+TURN_PROCESS_MARKER = "TEAMSTER_DUTY_PROCESS"
 
 
 def die(msg):
@@ -111,6 +117,122 @@ def process_environment(pid):
         return (Path("/proc") / str(pid) / "environ").read_bytes().split(b"\0")
     except (OSError, ValueError):
         return []
+
+
+def process_marker(pid):
+    prefix = (TURN_PROCESS_MARKER + "=").encode()
+    return next((entry[len(prefix):].decode("ascii") for entry in process_environment(pid)
+                 if entry.startswith(prefix) and re.fullmatch(b"[0-9a-f]{32}", entry[len(prefix):])), None)
+
+
+def _darwin_pids(kind, value):
+    # Sandboxed processes cannot exec the setuid /bin/ps. libproc returns byte counts.
+    listpids = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True).proc_listpids
+    size = listpids(kind, value, None, 0)
+    while size > 0:
+        pids = (ctypes.c_int * (size // ctypes.sizeof(ctypes.c_int)))()
+        used = listpids(kind, value, pids, ctypes.sizeof(pids))
+        if used < 0:
+            break
+        if used < size:
+            return pids[:used // ctypes.sizeof(ctypes.c_int)]
+        size *= 2
+    raise OSError(ctypes.get_errno(), "Could not enumerate user processes")
+
+
+def _darwin_ids(pid):
+    # XNU PROC_PIDUNIQIDENTIFIERINFO. The original parent's unique ID survives reparenting.
+    info = ctypes.create_string_buffer(56)
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+    if libproc.proc_pidinfo(pid, 17, 0, info, len(info)) == len(info):
+        return struct.unpack_from("=QQ", info, 16)
+    return None, None
+
+
+def boot_session():
+    """Darwin process unique IDs are valid only until the next boot."""
+    value = ctypes.create_string_buffer(64)
+    size = ctypes.c_size_t(len(value))
+    library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    if library.sysctlbyname(b"kern.bootsessionuuid", value, ctypes.byref(size), None, 0) != 0:
+        raise OSError(ctypes.get_errno(), "Could not identify the current boot")
+    return value.value.decode("ascii")
+
+
+def backend_ids(pid, marker):
+    """Remember the adapter's family at session admission, before it can launch user commands."""
+    parents = set()
+    pending = [pid]
+    entry = os.fsencode(TURN_PROCESS_MARKER + "=" + marker)
+    while pending:
+        parent = pending.pop()
+        unique, _ = _darwin_ids(parent)
+        env = process_environment(parent)
+        if unique is not None and unique not in parents and (entry in env or not any(env)):
+            parents.add(unique)
+            pending.extend(_darwin_pids(6, parent))  # PROC_PPID_ONLY
+    return parents
+
+
+def _user_pids():
+    uid = os.getuid()
+    if sys.platform == "darwin":
+        yield from _darwin_pids(4, uid)  # PROC_UID_ONLY
+        return
+    # The first Uid field in Linux procfs is the real UID (the selector used by ps -U).
+    real_uid = f"\nUid:\t{uid}\t".encode("ascii")
+    for process in Path("/proc").iterdir():
+        if not process.name.isdecimal():
+            continue
+        try:
+            status = (process / "status").read_bytes()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if real_uid in status:
+            yield int(process.name)
+
+
+def marked_processes(marker, parents=None):
+    """Find survivors of one invocation, including reparented terminals. Never log environments."""
+    if not marker:
+        return
+    entry = os.fsencode(TURN_PROCESS_MARKER + "=" + marker)
+    hidden = {}
+    for pid in _user_pids():
+        if pid <= 1 or pid == os.getpid():
+            continue
+        env = process_environment(pid)
+        if entry in env:
+            if parents is not None:
+                unique, _ = _darwin_ids(pid)
+                if unique is not None:
+                    parents.add(unique)
+            yield pid
+        elif parents is not None and not any(env):
+            # macOS hides system binaries' environments, even /bin/sleep's. Only
+            # follow their original lineage. A new Teamster supervisor clears its marker.
+            unique, parent = _darwin_ids(pid)
+            if unique is not None:
+                hidden[unique] = pid, parent
+    while hidden:
+        children = {unique for unique, (_, parent) in hidden.items() if parent in parents}
+        if not children:
+            break
+        parents.update(children)
+        for unique in children:
+            pid, _ = hidden.pop(unique)
+            if _darwin_ids(pid)[0] == unique:
+                yield pid
+
+
+def end_marked_processes(marker, parents=None):
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in marked_processes(marker, parents):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        time.sleep(0.05)
 
 
 def alive(pid):

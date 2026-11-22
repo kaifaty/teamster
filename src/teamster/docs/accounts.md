@@ -140,7 +140,8 @@ pool. `--executor codex` uses Codex; the default comes from `executor` in the se
 otherwise `codex`. The executor is saved and cannot change during a task. Without an explicit
 `--reviewer`, Claude tasks use Codex reviews and Codex tasks keep the configured reviewer default.
 With `--reviewer claude`, reviews prefer an available account other than the Claude worker account.
-Install Claude Code CLI, then have the human add each Anthropic subscription:
+Install Claude Code CLI and put `claude-agent-acp` on the supervisor's `PATH` for ordinary task
+turns. To add an Anthropic subscription, run the native sign-in through Teamster.
 
 ```sh
 teamster claude-login first
@@ -202,8 +203,8 @@ For example:
 The legacy `claude.config_dir` and `claude.token_keychain` settings still form a one-account pool
 named `default`. With neither configured, that account retains `~/.claude-accounts/reviewer` and
 `codex-worker-claude-reviewer`. Model and effort are shared settings under `claude`;
-see [settings.md](settings.md#claude-accounts). `claude.max_turns` limits reviews only,
-while task work has no tool-round cap. For work, task `--model` and `--effort` take
+see [settings.md](settings.md#claude-accounts). `claude.max_turns` caps review, scout and reflect
+turns. Task work has no tool-round cap. For work, task `--model` and `--effort` take
 precedence over `claude.model` and `claude.effort`; supported work efforts are `low`, `medium`,
 `high`, `xhigh` and `max`. Claude work supports only `--sandbox off`; `workspace` is rejected
 before launch. A task effort of `max` leaves Codex reviews at their configured effort, since
@@ -213,7 +214,7 @@ another pool account with the handoff below (`wait` prints the reason `unavailab
 sleeps when the whole pool is unavailable.
 
 Claude work turns, follow-ups, review fixes, CI repairs and wrap-up run with a `PreToolUse` hook on
-the Bash tool, passed with `--settings`: the package's `bash_guard.py`, run by teamster's own
+the Bash tool in the adapter's SDK settings. The hook runs the package's `bash_guard.py` with Teamster's own
 interpreter. It rejects commands that start a process in the background (`nohup`, `setsid`,
 `disown`, `coproc`, a lone `&`, also inside `trap`, `eval`, `sh -c` and `env -S`) or kill processes
 by name or pattern (`pkill`, `killall`, `kill $(pgrep …)`, `pgrep … | xargs kill`); `&&`, `&>`,

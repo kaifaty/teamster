@@ -12,7 +12,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import claude_accounts, clock, config, duty, executors, procs, reflection
+from . import claude_accounts, claude_runner, clock, config, duty, executors, procs, reflection
 
 
 CHAT_SLUG = "duty"
@@ -29,6 +29,14 @@ def chat_dir():
 
 def chat_room():
     return chat_dir() / "room"
+
+
+def prepare_chat_backend(family, effort=None):
+    if family == "claude":
+        claude_runner.validate_work_effort(effort)
+        config.require_claude()
+    else:
+        config.codex_binary()
 
 
 def chat_account(cfg):

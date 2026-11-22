@@ -94,6 +94,7 @@ class WorkspaceTests(RotationTestCase):
             {"mode": "complete", "reply": self.review_result(False)},
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result(False)}])
+        self.env["CODEX_FAKE_STATE"] = str(self.home / "claude-tasks/sandbox-inherit/state.json")
         self.start("sandbox-inherit", "--review")
         output = self.wait("sandbox-inherit")
         state = self.state("sandbox-inherit")
@@ -118,6 +119,8 @@ class WorkspaceTests(RotationTestCase):
             if event["review"]:
                 self.assertNotIn("commit_message", event["prompt"])
                 self.assertNotIn("commit_message", event["output_schema"]["properties"])
+        self.assertEqual([e["admitted_thread"] for e in executions], [e["thread"] for e in executions])
+        self.env.pop("CODEX_FAKE_STATE")
         self.start("sandbox-override", "--sandbox", "workspace")
         self.wait("sandbox-override")
         self.assertEqual(self.state("sandbox-override")["sandbox"], "workspace")
@@ -231,6 +234,9 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(len(self.invocations()), 1)
 
     def test_workspace_rules_are_localized_and_off_has_no_sandbox_flags_or_section(self):
+        settings = self.home / "config.toml"
+        config = 'sandbox_mode = "danger-full-access"\n'
+        settings.write_text(config)
         for language, heading in (("en", "## Workspace sandbox"), ("ru", "## Песочница worktree")):
             with self.subTest(language=language):
                 self.configure(language=language, sandbox="workspace")
@@ -252,6 +258,7 @@ class WorkspaceTests(RotationTestCase):
         self.wait("sandbox-default-off")
         self.assert_no_workspace_sandbox(self.invocations()[-1])
         self.assertIn("sandbox off", self.cli("status", "sandbox-default-off"))
+        self.assertEqual(settings.read_text(), config)
 
     def test_pr_supervisor_creates_from_result_and_wait_uses_receipt_url(self):
         self.configure(language="en")
@@ -677,6 +684,8 @@ class WorkspaceTests(RotationTestCase):
         real_git = shutil.which("git", path=self.env["PATH"])
         self.assertIsNotNone(real_git)
         (bin_dir / "git").symlink_to(real_git)
+        (bin_dir / "codex-acp").symlink_to(self.fake)
+        (bin_dir / "ps").symlink_to(shutil.which("ps"))
         self.env["PATH"] = str(bin_dir)
         self.account(self.home, "A", self.reset, runs=[{
             "mode": "complete", "write_files": {"tracked.txt": "pushed without gh\n"},
@@ -816,7 +825,7 @@ class WorkspaceTests(RotationTestCase):
                 self.assertNotIn("== PR created ", review_output)
                 self.assertNotIn("== committed ", review_output)
 
-    def test_workspace_rotation_and_review_fallback_keep_the_sandbox_and_scout_stays_read_only(self):
+    def test_workspace_rotation_and_acp_review_keep_the_sandbox_and_scout_stays_read_only(self):
         self.configure(language="en", sandbox="workspace", writable_dirs=[str(self.root / "cache")])
         roots = [str(self.root / "cache")]
         self.account(self.home, "A", self.reset, runs=[{"mode": "usage_error"}])
@@ -828,27 +837,20 @@ class WorkspaceTests(RotationTestCase):
         self.assertEqual(self.state("sandbox-rotation")["account"], "second")
         self.assertEqual(len(self.invocations()), 2)
         self.assertNotEqual(self.invocations()[0]["thread"], self.invocations()[1]["thread"])
-        fixture = json.loads((self.other / "fixture.json").read_text())
-        fixture["review_prompt_conflict"] = True
-        (self.other / "fixture.json").write_text(json.dumps(fixture))
         self.cli("review", "sandbox-rotation")
         self.wait("sandbox-rotation")
-        rejected, fallback = self.invocations()[-2:]
-        self.assertEqual(rejected["mode"], "review_prompt_conflict")
-        self.assertTrue(rejected["review"])
-        self.assertFalse(fallback["review"])
-        self.assertEqual(fallback["prompt"], rejected["prompt"])
+        review = self.invocations()[-1]
+        self.assertTrue(review["review"])
         for event in self.invocations():
             self.assert_workspace_sandbox(event, roots)
             self.assertIn("## Workspace sandbox", event["prompt"])
-        for event in (rejected, fallback):
-            self.assertNotIn("commit_message", event["prompt"])
-            self.assertNotIn("commit_message", event["output_schema"]["properties"])
+        self.assertNotIn("commit_message", review["prompt"])
+        self.assertNotIn("commit_message", review["output_schema"]["properties"])
         self.cli("scout", "sandbox-scout", "Read the task's implementation")
         self.wait("sandbox-scout")
         scout = self.invocations()[-1]
         self.assert_scout_read_only(scout)
-        self.assertFalse(any(value.startswith("sandbox_workspace_write.") for value in scout["argv"]))
+        self.assertNotIn("sandbox_workspace_write", scout["thread_config"])
         self.assertNotIn("## Workspace sandbox", scout["prompt"])
         self.assertIn("sandbox read-only", self.cli("status", "sandbox-scout"))
 

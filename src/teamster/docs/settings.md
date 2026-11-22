@@ -175,8 +175,8 @@ The JSON includes no tokens, credential paths, or raw account errors.
 ## Claude accounts
 
 `claude.accounts` configures a pool of isolated Claude Code CLI accounts without assigned roles.
-`--reviewer claude` selects from it before each review or angle; work and fix rounds still run in
-Codex. Settings belong in the `claude` object:
+`--reviewer claude` selects from it before each review or angle. Work and fix rounds use the
+task's selected executor. Settings belong in the `claude` object.
 
 ```json
 {
@@ -196,9 +196,9 @@ Codex. Settings belong in the `claude` object:
 | `accounts` | legacy account named `default` | nonempty list of accounts; each has a unique `name` using only `[a-z0-9-]`, an isolated `config_dir` and a `token_keychain` service for `$USER` |
 | `config_dir` | `"~/.claude-accounts/reviewer"` | legacy isolated `CLAUDE_CONFIG_DIR`, used when `accounts` is absent |
 | `token_keychain` | `"codex-worker-claude-reviewer"` | legacy macOS Keychain service, used when `accounts` is absent |
-| `model` | omitted | optional Claude `--model`, shared by all accounts |
-| `effort` | omitted | optional Claude `--effort`, shared by all accounts and independent of Codex `--effort` |
-| `max_turns` | `40` | positive integer passed as Claude review `--max-turns`, shared by all accounts; task work is uncapped |
+| `model` | omitted | Claude model, shared by all accounts |
+| `effort` | omitted | Claude reasoning effort, shared by all accounts and independent of Codex effort |
+| `max_turns` | `40` | Maximum tool rounds for Claude reviews, scouts and reflections. Task work is uncapped. |
 | `work_switch_at` | `85` | finite number in `[0, 100]`; Claude work uses an account only while both windows stay below it, keeping the rest of each week for reviews; see [accounts.md](accounts.md#claude-account-pool) |
 
 The top-level `soft_switch_at` and `switch_at` thresholds also apply to Claude's five-hour and
@@ -422,8 +422,8 @@ When the command runs from `versions/`, `duty plist` puts `bin/teamster` in `Pro
 
 ## Repository trust
 
-`codex exec` trusts the repository's main checkout in `config.toml` (`[projects."<repo>"] trust_level`),
-not each worktree. A first task in a new repository adds one entry.
+Codex task sessions use the repository's main checkout entry in the account's `config.toml`
+(`[projects."<repo>"] trust_level`). A first task in a new repository adds one entry.
 
 ## Upgrading an existing codex-worker installation
 

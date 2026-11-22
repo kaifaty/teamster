@@ -202,7 +202,7 @@ def work_route(a, cfg, role, profile=None, *, sandbox="off", directory=None):
                 claude_runner.validate_work_effort(a.effort)
             except ValueError:
                 return False
-        return ((candidate.name not in ("codex", "claude") or config.provider_installed(candidate.name))
+        return ((candidate.name not in ("codex", "claude") or config.provider_installed(candidate.name, for_task=True))
                 and (candidate.supports_sandbox or sandbox == "off")
                 and (role != "scout" or candidate.name != "claude" or git_worktree(directory)))
 
@@ -225,7 +225,7 @@ def work_route(a, cfg, role, profile=None, *, sandbox="off", directory=None):
                         break
             if target is not candidates[0][0]:
                 source = "fallback"
-        elif len(candidates) > 1 and not config.provider_installed(target.name) and compatible(candidates[1][0]):
+        elif len(candidates) > 1 and not config.provider_installed(target.name, for_task=True) and compatible(candidates[1][0]):
             target, source = candidates[1]
     _, _, defaults = executors.for_start(target.name, profile, cfg)
     role_defaults = config.role_route(cfg, role, target.name)
@@ -659,11 +659,12 @@ def print_codex_review_stats(entry, cfg):
 
 def prepare_claude_review(cfg):
     config.require_claude()
+    config.task_adapter("claude")
 
 
 def prepare_claude_work(effort, cfg):
     claude_runner.validate_work_effort(effort or cfg["claude"].get("effort"))
-    config.require_claude()
+    prepare_claude_review(cfg)
 
 
 def prepare_claude_scout(effort, cfg, directory):
@@ -724,10 +725,11 @@ executors.get("opencode").bind(sys.modules[__name__], prepare="prepare_opencode_
 
 def prepare_codex(effort, cfg, directory=None):
     config.codex_binary()
+    config.task_adapter("codex")
 
 
 def prepare_codex_review(cfg):
-    config.codex_binary()
+    prepare_codex(None, cfg)
 
 
 executors.get("codex").bind(sys.modules[__name__], prepare="prepare_codex", prepare_scout="prepare_codex")
@@ -748,12 +750,13 @@ def cmd_stop(a):
         st = task_state.load(a.slug)
         pid = st.get("pid")
         if not procs.alive(pid):
-            name, orphan = task_state.session_process(st)
+            processes = task_state.session_processes(st, terminals=True)
+            name, orphan = next(processes, (None, None))
             if orphan is None:
                 print("not running")
                 return
             # The supervisor died before its transport, which still holds the session.
-            marker = codex_duty.duty_process_marker(orphan) if name == "Codex" else None
+            marker = procs.process_marker(orphan) if name in ("Codex", "Claude") else None
             if name == "Codex":
                 # App-server owns terminal groups separate from its own. Let
                 # its SIGTERM shutdown end those before the group fallback.
@@ -765,11 +768,16 @@ def cmd_stop(a):
                     if not procs.alive(orphan):
                         break
                     time.sleep(0.2)
-            procs.end_group(orphan)
-            if marker:
-                codex_duty.end_duty_terminals(marker)
-            st.pop(name.lower() + "_pid", None)
-            if name == "OpenCode":
+            if name == "ACP":
+                task_state.reap_acp_turn(st)
+            else:
+                procs.end_group(orphan)
+                for _, group in processes:
+                    procs.end_group(group)
+                if marker:
+                    codex_duty.end_duty_terminals(marker)
+                st.pop(name.lower() + "_pid", None)
+            if name in ("ACP", "OpenCode"):
                 now = clock.CLOCK.time()
                 st.update(outcome="stopped", turn_finished=now, stop_request={"at": now, "pid": pid})
                 supervisor.finish_cycle(st)
@@ -801,7 +809,7 @@ def cmd_clean(a):
         st = task_state.load(a.slug)
         if procs.alive(st.get("pid")):
             procs.die("still running; stop it first")
-        name, orphan = task_state.session_process(st)
+        name, orphan = task_state.session_process(st, terminals=True)
         if orphan is not None:
             procs.die(f"{name} process {orphan} of the last {st['kind']} turn is still running; "
                       f"end it with {config.COMMAND} stop {a.slug}, then clean")
@@ -1180,10 +1188,7 @@ def send_to_duty(text, options, queue):
     account, refusal = duty_chat.chat_account(cfg)
     if account is None:
         procs.die(refusal)
-    if account["family"] == "claude":
-        config.require_claude()
-    else:
-        config.codex_binary()
+    duty_chat.prepare_chat_backend(account["family"])
     order = {"at": clock.CLOCK.time(), "text": text, "options": options, "source": "user"}
     if not task_state.state_path(duty_chat.CHAT_SLUG).exists():
         opened = open_duty_chat(cfg, account, order)

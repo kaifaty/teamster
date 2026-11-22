@@ -1,5 +1,4 @@
 """Turn control, event streams and rollout monitoring."""
-import fcntl
 import hashlib
 import json
 import os
@@ -7,15 +6,14 @@ import re
 import selectors
 import shlex
 import subprocess
-import sys
-import termios
+import tempfile
 import time
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple, Optional
 
-from . import account_rotation, accounts, budgets, clock, config, procs, result_schema, sandboxing, task_state, telemetry_log, threads
+from . import account_rotation, accounts, acp, budgets, clock, codex_acp, config, procs, result_schema, sandboxing, task_state, telemetry_log, threads
 
 
 def _search_command(command):
@@ -159,6 +157,7 @@ class MonitorEvents:
     buffer: bytes = b""
     eof: bool = False
     failed: bool = False
+    error: Optional[str] = None
     completed: bool = False
     reason: Optional[str] = None
     authentication_failed: bool = False
@@ -166,14 +165,15 @@ class MonitorEvents:
     refusal: Optional[str] = None
     final_message: str = ""
     exit_code: Optional[int] = None
+    pending_item: Optional[dict] = None
+    text_chunks: list = field(default_factory=list)
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
-    review_model: Optional[str] = None
 
 
 @dataclass
 class MonitorRollout:
-    """Rollout polling cursor and the stdout prefix queued at a weekly stop."""
+    """Rollout polling cursor and the time a live turn crossed its weekly budget."""
     path: Optional[Path]
     previous_stat: Optional[os.stat_result]
     usage_offset: int
@@ -182,62 +182,41 @@ class MonitorRollout:
     latest_limits: Optional[dict] = None
     next_poll: float = 0.0
     pending_weekly_spent: Optional[float] = None
-    pending_weekly_bytes: int = 0
+    weekly_observed_at: float = 0.0
     current_info: Optional[dict] = None
 
 
-def monitor_command(st, cfg, prompt, effort, reviewing, review_fallback, wrapup, thread, last):
-    """Prepare exec arguments/schema and return the effective prompt for fallback."""
-    if last.exists():
-        last.unlink()
-    args = [config.codex_binary(), "exec"]
-    if reviewing and not wrapup and not thread:
-        # Some CLI versions reject --base together with custom instructions.
-        if not review_fallback:
-            args += ["review", "--base", st["base"]]
-        args += ["--json", "-o", str(last)]
-    elif thread:
-        args += ["resume", thread, "--json", "-o", str(last)]
-    else:
-        args += ["--json", "-C", st["worktree"], "-o", str(last)]
-    if st.get("kind") in ("scout", "reflect"):
-        args += ["-c", 'sandbox_mode="read-only"']
-    else:
-        args += sandboxing.sandbox_args(st)
-        if st.get("sandbox") == "workspace":
-            rules = sandboxing.sandbox_rules(cfg, reviewing=reviewing, no_push=st.get("no_push", False))
-            try:
-                rules = sandboxing.repository_rules(rules, st["worktree"])
-            except (OSError, subprocess.CalledProcessError):
-                pass  # Keep the standard GitHub rules when origin cannot be read.
-            if not prompt.endswith(rules):
-                prompt += "\n\n" + rules
-    if st.get("kind") == "reflect":
-        schema = last.parent / "reflect-schema.json"
-        schema.write_text(json.dumps(result_schema.REFLECT_SCHEMA, indent=2), encoding="utf-8")
-        args += ["--output-schema", str(schema)]
-    elif st.get("kind") != "scout":
-        schema = last.parent / ("review-schema.json" if reviewing else "result-schema.json")
-        schema.write_text(json.dumps(result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA, indent=2), encoding="utf-8")
-        args += ["--output-schema", str(schema)]
-    model = (st.get("review_model") or config.role_route(cfg, "review", "codex").get("model")
-             if reviewing else st.get("task_model"))
-    if model:
-        args += ["--model", model]
-        if args[1:3] == ["exec", "review"]:
-            args += ["-c", f'review_model="{model}"']
-    return args + threads.effort_args(effort) + [prompt], prompt
-
-
 @contextmanager
-def monitor_process(st, account, args, errors):
-    """Own one exec process group; terminate it before the caller's final accounting."""
-    proc = subprocess.Popen(args, cwd=st["worktree"], env=accounts.account_env(account), stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=errors, start_new_session=True)
-    try:
-        yield proc
-    finally:
-        procs.terminate(proc)
+def monitor_process(st, account, options, prompt, processes):
+    """Own the ACP client group and any terminals the native backend detaches."""
+    directory = config.TASKS / st["slug"]
+    with tempfile.TemporaryDirectory(prefix="codex-acp-", dir=directory) as scratch:
+        path = Path(scratch)
+        (path / "options").write_text(json.dumps(options), encoding="utf-8")
+        (path / "prompt").write_text(prompt, encoding="utf-8")
+        env = accounts.account_env(account)
+        env[procs.TURN_PROCESS_MARKER] = processes.marker
+        with processes:
+            with (directory / "stderr.log").open("ab") as errors:
+                proc = subprocess.Popen(codex_acp.command("codex_acp_turn", scratch), cwd=st["worktree"], env=env,
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+                                        start_new_session=True)
+                processes.leader = proc
+            try:
+                yield proc, path / "completed"
+            finally:
+                try:
+                    # Older backends cannot list and close detached terminals themselves.
+                    close_error = path / "close-error"
+                    if proc.poll() is None or (close_error.is_file() and close_error.stat().st_size):
+                        processes.interrupt()
+                    with suppress(BrokenPipeError):
+                        proc.stdin.close()
+                    # Let the client send session/cancel before signaling the adapter group.
+                    with suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=1)
+                finally:
+                    procs.terminate(proc)
 
 
 def monitor_thread_started(st, account, stream, reviewing, wrapup, attempt_started):
@@ -263,6 +242,8 @@ def monitor_event(st, account, event, stream, control, reviewing, wrapup, attemp
     """Apply one decoded event in wire order; return an immediate stop, if any."""
     if event.get("type") == "thread.started":
         stream.thread = event["thread_id"]
+        stream.model = event.get("model") or stream.model
+        stream.reasoning_effort = event.get("reasoning_effort") or stream.reasoning_effort
         monitor_thread_started(st, account, stream, reviewing, wrapup, attempt_started)
     if (event.get("type") == "item.completed"
             and (event.get("item") or {}).get("type") == "agent_message"):
@@ -273,43 +254,73 @@ def monitor_event(st, account, event, stream, control, reviewing, wrapup, attemp
         return "refused", None
     if control.repeated(event):
         return "stuck", None
-    if account_rotation.limit_error(event):
+    error = event.get("error")
+    category = error.get("category") if isinstance(error, dict) else None
+    if account_rotation.limit_error(event) or (category == "limit" and "new_session" not in error.get("actions", [])):
         stream.reason = "usage limit"
-    if account_rotation.auth_error(event):
+    if account_rotation.auth_error(event) or category == "access" or (
+            isinstance(error, dict) and error.get("code") == -32000):
         stream.authentication_failed = True
     if not stream.reason and not stream.authentication_failed and account_rotation.capacity_error(event):
         stream.capacity_failed = True
     # `error` events also carry retries ("Reconnecting... 2/5") of turns that complete.
     if event.get("type") == "turn.failed":
         stream.failed = True
+        stream.error = (event.get("error") or {}).get("message", "Codex ACP turn failed")
     if event.get("type") == "turn.completed":
         stream.completed = True
     return None
 
 
-def read_monitor_events(st, account, ready, sel, log, stream, usage, control,
-                        reviewing, wrapup, attempt_started):
-    """Append ready bytes verbatim, then decode complete lines without reordering."""
+def flush_message(stream, log):
+    if stream.pending_item is None:
+        return
+    item = dict(stream.pending_item, text="".join(stream.text_chunks))
+    log.write((json.dumps({"type": "item.completed", "item": item}, ensure_ascii=False) + "\n").encode())
+    if item["type"] == "agent_message":
+        stream.final_message = item["text"]
+    stream.pending_item = None
+    stream.text_chunks.clear()
+
+
+def read_monitor_events(st, account, proc, ready, sel, log, stream, control,
+                        reviewing, wrapup, attempt_started, processes):
+    """Journal complete events in order, joining ACP text chunks by message ID."""
     for key, _ in ready:
-        size = min(65536, usage.pending_weekly_bytes) if usage.pending_weekly_spent is not None else 65536
-        chunk = os.read(key.fileobj.fileno(), size)
-        if usage.pending_weekly_spent is not None:
-            usage.pending_weekly_bytes -= len(chunk)
+        chunk = os.read(key.fileobj.fileno(), 65536)
         if not chunk:
             sel.unregister(key.fileobj)
             stream.eof = True
         else:
-            log.write(chunk)
             stream.buffer += chunk
             while b"\n" in stream.buffer:
                 line, stream.buffer = stream.buffer.split(b"\n", 1)
                 try:
                     event = json.loads(line)
                 except ValueError:
+                    log.write(line + b"\n")
                     continue
+                if event.get("type") == "item.delta":
+                    item = event["item"]
+                    key = {"type": item["type"], "id": item["id"]}
+                    if key != stream.pending_item:
+                        flush_message(stream, log)
+                        stream.pending_item = key
+                    stream.text_chunks.append(item["text"])
+                    continue
+                flush_message(stream, log)
+                log.write(line + b"\n")
                 result = monitor_event(st, account, event, stream, control, reviewing, wrapup, attempt_started)
                 if result is not None:
                     return result
+                if event.get("type") == "thread.started":
+                    # monitor_thread_started has durably saved this ID, including on rotation.
+                    processes.remember_family()
+                    try:
+                        proc.stdin.write(b"prompt\n")
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        return "failed", None
     return None
 
 
@@ -361,7 +372,7 @@ def read_monitor_rollout(usage, record_limits):
     return usage.latest_limits
 
 
-def poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_limits):
+def poll_monitor_rollout(st, cfg, account, stream, usage, control, record_limits):
     """Read a changed rollout sample; return its quota action or queue a weekly stop."""
     now = time.monotonic()
     if usage.path is None and now >= usage.next_search:
@@ -379,28 +390,25 @@ def poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_
         spent = st.get("weekly_used_percent", 0)
         if spent >= control.weekly:
             usage.pending_weekly_spent = spent
-            queued = fcntl.ioctl(proc.stdout.fileno(), termios.FIONREAD, bytes(4))
-            usage.pending_weekly_bytes = int.from_bytes(queued, sys.byteorder)
+            usage.weekly_observed_at = time.monotonic()
             return MonitorQuotaDecision("continue")
     usage.current_info = dict(account, logged_in=True, limits=limits)
     return monitor_quota_decision(usage.current_info, cfg)
 
 
-def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, stopped,
-                         on_limit, record_limits, reviewing, wrapup, attempt_started, active_started):
-    """Supervise exec/stdout and return the original (outcome, quota payload) pair."""
+def monitor_event_stream(st, cfg, account, proc, receipt, log, stream, usage, control, stopped,
+                         on_limit, record_limits, reviewing, wrapup, attempt_started, active_started, processes):
+    """Supervise the Codex ACP turn and return its outcome and quota decision."""
     with selectors.DefaultSelector() as sel:
         sel.register(proc.stdout, selectors.EVENT_READ)
         while not stream.eof or proc.poll() is None:
             if stopped():
-                procs.terminate(proc)
                 return task_state.stop_outcome(st, stopped), None
             if control.expired(active_started):
                 return "budget_exhausted", None
-            ready = ([] if usage.pending_weekly_spent is not None and usage.pending_weekly_bytes == 0
-                     else sel.select(0 if usage.pending_weekly_spent is not None else 0.2))
-            result = read_monitor_events(st, account, ready, sel, log, stream, usage, control,
-                                         reviewing, wrapup, attempt_started)
+            ready = sel.select(0.2)
+            result = read_monitor_events(st, account, proc, ready, sel, log, stream, control,
+                                         reviewing, wrapup, attempt_started, processes)
             if result is not None:
                 return result
             if wrapup:
@@ -409,12 +417,12 @@ def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, st
                     return "failed", None
                 continue
             if usage.pending_weekly_spent is not None:
-                # Rollout and stdout are separate streams. A completion
-                # sent before the quota sample can still be queued here.
-                # Drain that queued prefix (including partial JSON),
-                # without waiting for or following subsequent output.
+                # The final rollout can overtake both the shim's receipt and the ACP reply.
+                # Give the shim one short scheduling window, then allow a bounded ACP flush
+                # only for the admitted native completion. Neither wait renews on activity.
                 if not stream.completed:
-                    if ready and usage.pending_weekly_bytes > 0 and not stream.eof:
+                    allowance = 2.0 if receipt.is_file() else 0.25
+                    if not (stream.failed or stream.eof) and time.monotonic() < usage.weekly_observed_at + allowance:
                         continue
                     if control.weekly_exhausted(usage.pending_weekly_spent):
                         return "budget_exhausted", None
@@ -427,7 +435,7 @@ def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, st
             if stream.capacity_failed:
                 return "capacity", None
             if (cfg["enabled"] or control.weekly is not None) and stream.thread and proc.poll() is None:
-                request = poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_limits)
+                request = poll_monitor_rollout(st, cfg, account, stream, usage, control, record_limits)
                 if request.action != "continue":
                     result = resolve_monitor_quota(st, request, stopped, control, active_started, on_limit)
                     if result is not None:
@@ -441,27 +449,28 @@ def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
     """Close stdout, finalize results, account final rollout/telemetry, then save."""
     proc.stdout.close()
     st.pop("codex_pid", None)
-    message = last.read_text(encoding="utf-8").strip() if last.exists() else stream.final_message
+    message = stream.final_message
+    if message:
+        last.write_text(message + "\n", encoding="utf-8")
+    result = None
+    if stream.completed and stream.exit_code == 0 and not stream.failed and not stream.refusal:
+        result = result_schema.parse_result(message, reviewing=reviewing, reflecting=st.get("kind") == "reflect")
     if wrapup:
-        st["wrapup"]["result"] = None if stream.refusal else result_schema.parse_result(message, reviewing=reviewing)
+        st["wrapup"]["result"] = result
         if stream.refusal:
             st["wrapup"]["refusal"] = stream.refusal
     elif stream.review_entry is not None:
         stream.review_entry["finished"] = clock.CLOCK.time()
-        stream.review_entry["result"] = None if stream.refusal else result_schema.parse_result(message, reviewing=True)
+        stream.review_entry["result"] = result
         if stream.refusal:
             stream.review_entry.update(outcome="refused", refusal=stream.refusal)
     elif not reviewing and st.get("kind") != "scout":
-        st["result"] = None if stream.refusal else result_schema.parse_result(
-            message, reflecting=st.get("kind") == "reflect")
+        st["result"] = result
     settings = {"model": stream.model, "reasoning_effort": stream.reasoning_effort}
     final_path = usage.path
     try:
         final_path = usage.path or threads.rollout_path(account["home"], stream.thread)
-        reported = threads.rollout_model_settings(final_path, usage.usage_offset)
-        # Native review inherits the parent model unless review_model replaces it.
-        if stream.review_model is None or stream.review_model == reported.get("model"):
-            settings.update(reported)
+        settings.update(threads.rollout_model_settings(final_path, usage.usage_offset))
     except Exception as exc:
         telemetry_log.telemetry_error(st, exc)
     st.update(model=settings["model"], reasoning_effort=settings["reasoning_effort"])
@@ -479,9 +488,9 @@ def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
     task_state.save(st)
 
 
-def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback=False,
+def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
             control=None, wrapup=False, wrapup_thread=None, quota_snapshot=None, resume_thread=None):
-    """One exec attempt. The supervisor alone owns state; append CLI events verbatim."""
+    """Run one ACP session attempt, preserving native rollout and task accounting."""
     d = config.TASKS / st["slug"]
     accounts.prepare_home(account)
     reviewing = st.get("kind") == "review"
@@ -492,10 +501,35 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback
               else "" if reviewing else st.get("thread", ""))
     stream = MonitorEvents(thread)
     last = d / ("review.md" if reviewing else "last.md")
-    args, prompt = monitor_command(st, cfg, prompt, effort, reviewing, review_fallback, wrapup, thread, last)
-    settings = threads.configured_model_settings(account["home"], args)
-    stream.model, stream.reasoning_effort = settings["model"], settings["reasoning_effort"]
-    stream.review_model = settings["review_model"] if args[1:3] == ["exec", "review"] else None
+    last.unlink(missing_ok=True)
+    kind = st.get("kind", "work")
+    sandbox = ("read-only" if kind in ("scout", "reflect") else
+               "workspace-write" if st.get("sandbox") == "workspace" else None)
+    if sandbox == "workspace-write":
+        rules = sandboxing.sandbox_rules(cfg, reviewing=reviewing, no_push=st.get("no_push", False))
+        try:
+            rules = sandboxing.repository_rules(rules, st["worktree"])
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        if not prompt.endswith(rules):
+            prompt += "\n\n" + rules
+    defaults = threads.configured_model_settings(account["home"])
+    review_model = (st.get("review_model") or config.role_route(cfg, "review", "codex").get("model")
+                    or defaults["review_model"]) if reviewing else None
+    model = review_model if reviewing else st.get("task_model")
+    schema = (None if kind == "scout" else result_schema.REFLECT_SCHEMA if kind == "reflect" else
+              result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA)
+    # A resume may report the previous turn's override. Reapply the configured
+    # default when the task has cleared its model or effort override.
+    if thread:
+        model = model or defaults["model"]
+    if model or thread:
+        effort = effort or defaults["reasoning_effort"]
+    options = {"binary": config.codex_binary(), "adapter": config.task_adapter("codex"), "thread": thread,
+               "slug": st["slug"], "model": model, "effort": effort, "sandbox": sandbox,
+               "roots": st.get("writable_dirs", []), "schema": schema, "review": reviewing}
+    stream.model = model or defaults["model"]
+    stream.reasoning_effort = effort or defaults["reasoning_effort"]
     path = threads.rollout_path(account["home"], thread) if thread else None
     previous_stat = path.stat() if path else None
     usage_offset = previous_stat.st_size if previous_stat is not None else 0
@@ -517,30 +551,34 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback
     usage = MonitorRollout(path, previous_stat, usage_offset, next_search, read_offset=usage_offset)
     st["exec_event_start"] = len(threads.events(st))
     task_state.save(st)
-    with (d / "events.jsonl").open("ab", buffering=0) as log, (d / "stderr.log").open("a") as errors:
+    with (d / "events.jsonl").open("ab", buffering=0) as log:
         if stopped():
             return task_state.stop_outcome(st, stopped), None
-        error_start = errors.tell()
         attempt_started = clock.CLOCK.time()
         active_started = clock.CLOCK.monotonic()
         proc = None
+        processes = acp.TaskProcesses(d)
         try:
-            with monitor_process(st, account, args, errors) as proc:
+            with monitor_process(st, account, options, prompt, processes) as (proc, receipt):
                 st["codex_pid"] = proc.pid
                 task_state.save(st)
-                result = monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, stopped,
-                                              on_limit, record_limits, reviewing, wrapup, attempt_started, active_started)
+                result = monitor_event_stream(st, cfg, account, proc, receipt, log, stream, usage, control, stopped,
+                                              on_limit, record_limits, reviewing, wrapup, attempt_started, active_started,
+                                              processes)
         finally:
             if proc is not None:
                 control.elapsed = budgets.monitor_time_usage(control.elapsed, control.seconds, control.minutes,
                                                      active_started, clock.CLOCK.monotonic()).elapsed
+                flush_message(stream, log)
                 finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
                                record_limits, telemetry, usage_before, weekly_started)
-    if reviewing and not review_fallback and not stream.thread and stream.exit_code == 2:
-        with (d / "stderr.log").open("rb") as errors:
-            errors.seek(error_start)
-            error = errors.read().decode("utf-8", errors="replace")
-        if all(part in error for part in ("cannot be used with", "--base", "PROMPT")):
-            return monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback=True,
-                           control=control, quota_snapshot=quota_snapshot)
+    if result[0] == "failed":
+        # A rejected prompt and its final quota can arrive in either order.
+        # Once final accounting calls for a wrap-up, the rejection is already
+        # in the event journal and is not a supervisor error.
+        if control.weekly_exhausted(st.get("weekly_used_percent", 0)):
+            return "budget_exhausted", None
+        if stream.error:
+            st["error"] = stream.error
+            task_state.save(st)
     return result

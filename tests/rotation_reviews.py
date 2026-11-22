@@ -126,7 +126,8 @@ class ReviewFixTests(RotationTestCase):
                     self.assertIsNone(st["review_account"])
                     st.update(outcome="completed")
 
-                with mock.patch.object(owner, "fixture_review_turn", side_effect=unavailable) as run, \
+                with mock.patch.dict(os.environ, self.env, clear=True), \
+                        mock.patch.object(owner, "fixture_review_turn", side_effect=unavailable) as run, \
                         mock.patch.object(worker.turns, "run_turn", side_effect=complete) as fallback, \
                         mock.patch.object(worker.task_state, "save"), \
                         mock.patch.object(worker.budgets, "stop_at_weekly_budget", return_value=False), \
@@ -161,9 +162,9 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(self.git("--git-dir", str(self.root / "origin.git"), "rev-parse",
                                   initial["branch"]), self.git("rev-parse", initial["branch"]))
         first, = self.claude_invocations()
-        self.assertEqual(first["argv"][1],
+        self.assertEqual(first["prompt"],
                          (self.home / "claude-tasks" / "claude-executor" / "brief.md").read_text())
-        self.assertNotIn("--resume", first["argv"])
+        self.assertEqual(first["method"], "session/new")
         self.assertEqual(first["session_id"], initial["session_id"])
         self.assertRegex(self.cli("status", "claude-executor").lower(), r"executor[^\n]*claude")
         self.assertIn(accounts[0]["name"], self.cli("status", "claude-executor"))
@@ -185,14 +186,14 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(state["executor"], "claude")
         self.assertEqual(state["claude_account"], initial["claude_account"])
         self.assertEqual(state["session_id"], initial["session_id"])
-        self.assertEqual(followup["argv"][followup["argv"].index("--resume") + 1], initial["session_id"])
-        self.assertIn("Keep the permanent brief rules and finish the follow-up.", followup["argv"][1])
+        self.assertEqual(followup["resume"], initial["session_id"])
+        self.assertIn("Keep the permanent brief rules and finish the follow-up.", followup["prompt"])
         self.assertEqual([event["config_dir"] for event in (first, followup)],
                          [accounts[0]["config_dir"]] * 2)
         for event in (first, followup):
-            self.assertNotIn("--max-turns", event["argv"])
-            self.assertEqual(event["argv"][event["argv"].index("--model") + 1], "claude-task-model")
-            self.assertEqual(event["argv"][event["argv"].index("--effort") + 1], "high")
+            self.assertNotIn("maxTurns", event["options"])
+            self.assertEqual(event["options"]["model"], "claude-task-model")
+            self.assertEqual(event["options"]["effort"], "high")
         self.assertEqual(checks.read_text().splitlines(), ["checked", "checked"])
         self.assertEqual([check["outcome"] for check in state["checks"]], ["passed", "passed"])
         self.assertEqual(self.invocations(), [], "Codex must never run the work turn")
@@ -335,13 +336,13 @@ class ReviewFixTests(RotationTestCase):
         for event in (work, fix, ci):
             self.assertEqual(event["config_dir"], work["config_dir"])
             self.assertEqual(event["session_id"], work["session_id"])
-            self.assertEqual(event["argv"][event["argv"].index("--model") + 1], "configured-claude")
-            self.assertEqual(event["argv"][event["argv"].index("--effort") + 1], "max")
-            self.assertNotIn("--max-turns", event["argv"])
+            self.assertEqual(event["options"]["model"], "configured-claude")
+            self.assertEqual(event["options"]["effort"], "max")
+            self.assertNotIn("maxTurns", event["options"])
         for event in (fix, ci):
-            self.assertEqual(event["argv"][event["argv"].index("--resume") + 1], work["session_id"])
-        self.assertIn("F1", fix["argv"][1])
-        self.assertIn("repair this Claude CI fixture", ci["argv"][1])
+            self.assertEqual(event["resume"], work["session_id"])
+        self.assertIn("F1", fix["prompt"])
+        self.assertIn("repair this Claude CI fixture", ci["prompt"])
         events = [json.loads(line) for line in (self.home / "claude-tasks/claude-executor-fixes"
                                                / "claude-events.jsonl").read_text().splitlines()]
         self.assertEqual([event["structured_output"] for event in events if event["type"] == "result"],
@@ -350,7 +351,7 @@ class ReviewFixTests(RotationTestCase):
         self.wait("claude-executor-fixes")
         self.assertEqual(len(self.invocations()), 3)
         for event in self.invocations():
-            self.assertNotIn('model_reasoning_effort="max"', event["argv"])
+            self.assertNotEqual(event["effort"], "max")
 
     def test_claude_executor_persists_live_session_and_resumes_after_supervisor_crash(self):
         self.fixture_timeout = 90
@@ -376,7 +377,7 @@ class ReviewFixTests(RotationTestCase):
         self.cli("say", "claude-executor-crash", "Continue the interrupted task.")
         self.wait("claude-executor-crash")
         resumed = self.claude_invocations()[-1]
-        self.assertEqual(resumed["argv"][resumed["argv"].index("--resume") + 1], session_id)
+        self.assertEqual(resumed["resume"], session_id)
         self.assertEqual(resumed["config_dir"], first["config_dir"])
 
     def test_claude_executor_review_prefers_another_pool_account_without_codex(self):
@@ -402,7 +403,7 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(state["reviews"][-1]["account"], accounts[1]["name"])
         self.assertEqual([event["config_dir"] for event in (work, review)],
                          [account["config_dir"] for account in accounts])
-        self.assertNotIn("--resume", review["argv"])
+        self.assertEqual(review["method"], "session/new")
         self.cli("review", slug)
         self.wait(slug)
         resumed = self.state(slug)
@@ -412,8 +413,8 @@ class ReviewFixTests(RotationTestCase):
         self.cli("say", slug, "Continue the work.")
         self.wait(slug)
         self.assertEqual(self.state(slug)["result"]["status"], "done")
-        follow_up = self.claude_invocations()[-1]["argv"]
-        self.assertEqual(follow_up[follow_up.index("--resume") + 1], state["session_id"])
+        follow_up = self.claude_invocations()[-1]
+        self.assertEqual(follow_up["resume"], state["session_id"])
         self.cli("clean", slug)
         tasks = self.home / "claude-tasks"
         self.assertFalse((tasks / slug).exists())
@@ -471,8 +472,8 @@ class ReviewFixTests(RotationTestCase):
         rotated = self.claude_invocations()[-1]
         self.assertEqual(len(self.claude_invocations()), 2)
         self.assertEqual(rotated["config_dir"], other["config_dir"])
-        self.assertNotIn("--resume", rotated["argv"])
-        self.assertIn("Continue on another account.", rotated["argv"][1])
+        self.assertEqual(rotated["method"], "session/new")
+        self.assertIn("Continue on another account.", rotated["prompt"])
         self.assertNotEqual(state["session_id"], initial["session_id"])
         self.assertIn(f"== rotated {initial['claude_account']} → {other['name']}: unavailable for work", output)
         self.assertEqual(self.invocations(), [])
@@ -508,10 +509,10 @@ class ReviewFixTests(RotationTestCase):
         work, wrapup = self.claude_invocations()
         # Three one-second minutes cap the Bash timeouts below their usual ten-minute floor.
         self.assertEqual([work["bash_timeouts"], wrapup["bash_timeouts"]], [["3000", "3000"]] * 2)
-        self.assertEqual(wrapup["argv"][wrapup["argv"].index("--resume") + 1], work["session_id"])
+        self.assertEqual(wrapup["resume"], work["session_id"])
         self.assertEqual(wrapup["config_dir"], work["config_dir"])
-        self.assertNotIn("--max-turns", wrapup["argv"])
-        self.assertEqual(wrapup["argv"][1],
+        self.assertNotIn("maxTurns", wrapup["options"])
+        self.assertEqual(wrapup["prompt"],
                          self.worker().prompts.wrapup_prompt(state, state["turn_stop"], {"language": "en"}))
         self.assertEqual(self.invocations(), [])
 
@@ -538,7 +539,7 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(state["result"], checkpoint)
         self.assertEqual(state["wrapup"], {"outcome": "completed", "result": checkpoint})
         work, wrapup = self.claude_invocations()
-        self.assertEqual(wrapup["argv"][wrapup["argv"].index("--resume") + 1], work["session_id"])
+        self.assertEqual(wrapup["resume"], work["session_id"])
         self.assertEqual(self.invocations(), [], "weekly budget must skip the Codex review")
         self.assertIn("weekly budget 5% exhausted", output)
         rows = [row for row in self.phase_telemetry_journal() if row["phase"] == "work"]
@@ -600,11 +601,11 @@ class ReviewFixTests(RotationTestCase):
         output = self.wait("claude-executor-rotation")
         state = self.state("claude-executor-rotation")
         first, limited, rotated = self.claude_invocations()
-        self.assertEqual(limited["argv"][limited["argv"].index("--resume") + 1], initial["session_id"])
+        self.assertEqual(limited["resume"], initial["session_id"])
         self.assertEqual(limited["config_dir"], accounts[0]["config_dir"])
         self.assertEqual(rotated["config_dir"], accounts[2]["config_dir"])
-        self.assertNotIn("--resume", rotated["argv"])
-        prompt = rotated["argv"][1]
+        self.assertEqual(rotated["method"], "session/new")
+        prompt = rotated["prompt"]
         self.assertTrue(prompt.startswith(self.brief.read_text().rstrip()))
         for text in ("## Continuation", "Carry on with the follow-up.", "First account summary.",
                      "Finish the rotated work.", "git log --oneline", "git status --short"):
@@ -651,9 +652,9 @@ class ReviewFixTests(RotationTestCase):
         self.assertFalse(state.get("turn_stop"), "sleep must not count toward --max-minutes")
         first, limited, resumed = self.claude_invocations()
         for event in (limited, resumed):
-            self.assertEqual(event["argv"][event["argv"].index("--resume") + 1], initial["session_id"])
+            self.assertEqual(event["resume"], initial["session_id"])
             self.assertEqual(event["config_dir"], accounts[0]["config_dir"])
-        self.assertIn("Continue after the limit.", resumed["argv"][1])
+        self.assertIn("Continue after the limit.", resumed["prompt"])
         self.assertEqual((state["claude_account"], state["session_id"]),
                          (accounts[0]["name"], initial["session_id"]))
         self.assertEqual([entry["event"] for entry in state["rotations"]], ["sleep", "wake"])
@@ -694,10 +695,10 @@ class ReviewFixTests(RotationTestCase):
         resumed = self.claude_invocations()[-1]
         self.assertEqual(len(self.claude_invocations()), 3)
         self.assertEqual(resumed["config_dir"], accounts[1]["config_dir"])
-        self.assertNotIn("--resume", resumed["argv"])
+        self.assertEqual(resumed["method"], "session/new")
         for text in (self.brief.read_text().rstrip(), "Continue after the token returns.",
                      "First account summary.", "Finish after the token returns."):
-            self.assertIn(text, resumed["argv"][1])
+            self.assertIn(text, resumed["prompt"])
 
     def test_claude_executor_rotation_probe_time_is_outside_the_time_budget(self):
         self.fixture_timeout = 90
@@ -1209,7 +1210,7 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual([entry["review"] for entry in executions], [False, True, True])
         self.assertEqual(len({entry["thread"] for entry in executions}), 3)
         self.assertTrue(all(not entry["resume"] for entry in executions))
-        self.assertEqual(len({entry["ppid"] for entry in executions}), 1)
+        self.assertEqual(len({entry["supervisor"] for entry in executions}), 1)
         self.assertIn("Focus on behavior and acceptance criteria", executions[1]["prompt"])
         self.assertIn("Focus on races, processes, signals", executions[2]["prompt"])
         self.assertNotIn("Focus on races, processes, signals", executions[1]["prompt"])
@@ -1306,10 +1307,10 @@ class ReviewFixTests(RotationTestCase):
         executions = self.invocations()
         self.assertEqual(len(executions), 7)
         for index, execution in enumerate(executions):
-            self.assertEqual(execution["argv"][execution["argv"].index("--model") + 1],
+            self.assertEqual(execution["model"],
                              "work-model" if index in (0, 4) else "angle-model")
             if execution["review"]:
-                self.assertIn('review_model="angle-model"', execution["argv"])
+                self.assertEqual(execution["thread_config"]["web_search"], "disabled")
         self.assertTrue(executions[4]["resume"])
         self.assertEqual(executions[4]["thread"], executions[0]["thread"])
         self.assertIn("F1", executions[4]["prompt"])
@@ -1547,13 +1548,13 @@ class ReviewFixTests(RotationTestCase):
                 (self.home / "exec-count").unlink(missing_ok=True)
                 self.account(self.home, "A", self.reset, runs=[
                     {"mode": "refused", "before_thread": before_thread, "error": message}])
-                count = len(self.invocations())
+                count = len(self.attempts())
                 slug = "refused-" + ("before" if before_thread else "after")
                 self.start(slug, "--review")
                 output = self.wait(slug)
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "refused")
-                self.assertEqual(len(self.invocations()) - count, 1)
+                self.assertEqual(len(self.attempts()) - count, 1)
                 self.assertFalse(state.get("rotations"))
                 self.assertFalse(state.get("reviews"))
                 self.assertIn("== refused by the model: " + message[:200], output)
@@ -1622,14 +1623,12 @@ class ReviewFixTests(RotationTestCase):
         execution = self.review_invocations()[0]
         state = self.state("review-alone")
         task_dir = self.home / "claude-tasks" / "review-alone"
-        self.assertEqual(execution["argv"][:2], ["exec", "review"])
-        self.assertEqual(execution["argv"][execution["argv"].index("--base") + 1], working["base"])
-        self.assertIn("--json", execution["argv"])
-        self.assertIn('model_reasoning_effort="xhigh"', execution["argv"])
-        self.assertNotIn("-C", execution["argv"])
+        self.assertEqual(execution["command"], "turn/start")
+        self.assertIn(working["base"], execution["prompt"])
+        self.assertEqual(execution["effort"], "xhigh")
         self.assertEqual(execution["cwd"], working["worktree"])
         self.assertEqual(execution["home"], str(self.other))
-        self.assertEqual(execution["output"], str(task_dir / "review.md"))
+        self.assertEqual((task_dir / "review.md").read_text().strip(), "Дефект: tracked.txt:1 — проверь содержимое.")
         self.assertIn(str(task_dir / "brief.md"), execution["prompt"])
         self.assertEqual(execution["prompt"], self.worker().prompts.review_prompt(state, {"language": "ru"}))
         self.assertFalse(execution["resume"])
@@ -1756,6 +1755,7 @@ class ReviewFixTests(RotationTestCase):
 
     def test_start_review_runs_in_same_supervisor_and_say_resumes_working_thread(self):
         self.configure()
+        self.env["CODEX_ACP_PROMPT_SUGGESTIONS"] = "true"
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": "Рабочий ход завершён"},
             {"mode": "complete", "reply": "Ревью завершено: дефектов нет"},
@@ -1767,7 +1767,7 @@ class ReviewFixTests(RotationTestCase):
         self.assertFalse(executions[0]["review"])
         self.assertTrue(executions[1]["review"])
         self.assertFalse(executions[1]["resume"])
-        self.assertEqual(executions[0]["ppid"], executions[1]["ppid"])
+        self.assertEqual(executions[0]["supervisor"], executions[1]["supervisor"])
         self.assertNotEqual(executions[0]["thread"], executions[1]["thread"])
         self.assertIn("Рабочий ход завершён", output)
         self.assertIn("Ревью завершено: дефектов нет", output)
@@ -1780,6 +1780,8 @@ class ReviewFixTests(RotationTestCase):
         self.assertTrue(execution["resume"])
         self.assertEqual(execution["thread"], executions[0]["thread"])
         self.assertEqual(execution["prompt"], "Проверь ещё один случай")
+        self.assertEqual([event["prompt_suggestions"] for event in self.trace() if event["command"] == "codex-acp"],
+                         ["false", "false", "false"])
         self.assertEqual(len(self.state("review-start")["reviews"]), 1)
         self.assertIn("Исправление завершено", followup)
         self.assertNotIn("== review by", followup)
@@ -1799,7 +1801,7 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(len(executions), 3)
         self.assertTrue(executions[1]["resume"])
         self.assertTrue(executions[2]["review"])
-        self.assertEqual(executions[1]["ppid"], executions[2]["ppid"])
+        self.assertEqual(executions[1]["supervisor"], executions[2]["supervisor"])
         self.assertIn("Итог нового хода", output)
         self.assertIn("Ревью нового хода", output)
         self.assertNotIn("Начальный ход", output)
@@ -1826,8 +1828,8 @@ class ReviewFixTests(RotationTestCase):
         work, initial_review, correction, final_review = executions
         self.assertTrue(correction["resume"])
         self.assertEqual(correction["thread"], work["thread"])
-        self.assertEqual(correction["argv"][:2], ["exec", "resume"])
-        self.assertEqual(len({event["ppid"] for event in executions}), 1,
+        self.assertEqual(correction["command"], "turn/start")
+        self.assertEqual(len({event["supervisor"] for event in executions}), 1,
                          "one supervisor must finish the whole cycle before wait returns")
         state = self.state("fix-clean")
         worker = self.worker()

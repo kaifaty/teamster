@@ -181,8 +181,6 @@ TOKEN_FIELDS = ROLLOUT["TOKEN_FIELDS"]
 GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
 # A duty chat turn sets it to "duty" for the teamster commands it runs; start and scout record it.
 STARTED_BY = "TEAMSTER_STARTED_BY"
-# Per-invocation ownership of Codex duty commands, including separate terminal groups.
-DUTY_PROCESS_MARKER = "TEAMSTER_DUTY_PROCESS"
 
 
 def started_by():
@@ -227,12 +225,23 @@ def codex_binary():
     return _installed_codex() or _missing_codex()
 
 
+TASK_ADAPTERS = {"codex": "codex-acp", "claude": "claude-agent-acp"}
+
+
+def task_adapter(provider):
+    name = TASK_ADAPTERS[provider]
+    return shutil.which(name) or procs.die(
+        f"{name} was not found. Install @agentclientprotocol/{name} and add it to PATH.")
+
+
 def claude_binary():
     override = env("CODEX_TASK_CLAUDE")
     return shutil.which(str(Path(override).expanduser()) if override else "claude")
 
 
-def provider_installed(provider):
+def provider_installed(provider, *, for_task=False):
+    if for_task and not shutil.which(TASK_ADAPTERS[provider]):
+        return False
     if provider == "codex":
         return _installed_codex() is not None
     if provider == "claude":

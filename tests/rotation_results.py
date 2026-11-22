@@ -279,6 +279,13 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertIn(second["remaining"][0], rotated["prompt"])
         self.assertNotIn(json.dumps(second, ensure_ascii=False), rotated["prompt"])
         self.assertNotIn('"checks":', rotated["prompt"])
+        # An old native thread may no longer be available. A failed resume must not replay work.
+        (self.other / ("fixture-thread-" + rotated["thread"])).unlink()
+        self.cli("say", "typed-handoff", "Continue the same thread.")
+        output = self.cli("wait", "typed-handoff", "--timeout", "10")
+        self.assertIn("Missing thread " + rotated["thread"], output)
+        self.assertEqual(self.state("typed-handoff")["outcome"], "failed")
+        self.assertEqual(len(self.invocations()), 3)
 
     def assert_scout_output(self, output):
         for section in ("commits on", "== uncommitted", "== check `", "== review"):
@@ -304,7 +311,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertEqual(state["effort"], "high")
         self.assertEqual(invocation["cwd"], str(self.repo))
         self.assert_scout_read_only(invocation)
-        self.assertIn('model_reasoning_effort="high"', invocation["argv"])
+        self.assertEqual(invocation["effort"], "high")
         prompt = invocation["prompt"]
         self.assertIn(question, prompt)
         self.assertNotIn("TASK-RULES-MUST-NOT-REACH-SCOUT", prompt)
@@ -343,7 +350,7 @@ class ResultScoutConfigTests(RotationTestCase):
                 self.assertEqual(self.state(slug)["worktree"], str(self.repo))
                 self.assert_scout_read_only(invocation)
                 if "--effort" in args:
-                    self.assertIn('model_reasoning_effort="low"', invocation["argv"])
+                    self.assertEqual(invocation["effort"], "low")
 
     def test_scout_requires_exactly_one_question_source_before_creating_a_task(self):
         question_file = self.root / "scout-question.md"
@@ -441,7 +448,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertTrue(followup["resume"])
         self.assertEqual(followup["thread"], thread)
         self.assertIn("Which tests cover its empty-input case?", followup["prompt"])
-        self.assertIn('model_reasoning_effort="low"', followup["argv"])
+        self.assertEqual(followup["effort"], "low")
         self.assertEqual(self.state("scout-say")["kind"], "scout")
         for invocation in (first, followup):
             self.assert_scout_read_only(invocation)
@@ -619,7 +626,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.assertEqual(truncated, header + (b"x" * (size - 4) + b"TAIL")[-262144:])
         invocation, = self.invocations()
         self.assertEqual(invocation["cwd"], str(room))
-        self.assertIn('sandbox_mode="read-only"', invocation["argv"])
+        self.assertEqual(invocation["sandboxPolicy"], {"type": "readOnly", "networkAccess": False})
         worker = self.worker()
         self.assertEqual(invocation["output_schema"], worker.result_schema.REFLECT_SCHEMA)
         lesson_schema = invocation["output_schema"]["properties"]["lessons"]["items"]
@@ -903,6 +910,16 @@ class ResultScoutConfigTests(RotationTestCase):
                 worker.config.resolve_codex()
             self.assertIn("Codex CLI", str(error.exception))
             self.assertIn("TEAMSTER_CODEX", str(error.exception))
+
+        (self.root / "codex-acp").unlink()
+        env = dict(self.env, PATH=os.pathsep.join([str(self.root), "/usr/bin", "/bin"]))
+        result = subprocess.run([PYTHON, "-I", str(SCRIPT), "start", "no-adapter", "--brief", str(self.brief),
+                                 "--repo", str(self.repo), "--executor", "codex"],
+                                cwd=self.repo, env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("codex-acp was not found", result.stderr)
+        self.assertFalse(self.invocations())
+        self.assertFalse((self.home / "claude-tasks" / "no-adapter").exists())
 
     def test_new_settings_override_legacy_and_legacy_remains_readable(self):
         self.configure()

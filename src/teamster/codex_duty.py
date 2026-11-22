@@ -3,16 +3,17 @@
 Commands and patches require guard approvals. Plain accept is never a
 session grant; the shared duty guard remains the boundary on sandbox retries.
 """
+import contextlib
 import json
 import os
 import re
+import select
 import selectors
 import shlex
 import signal
 import subprocess
 import sys
 import time
-import uuid
 from pathlib import Path
 
 from . import accounts, clock, config, procs, result_schema
@@ -52,7 +53,7 @@ def codex_duty_overrides(marker, room):
         "sandbox_workspace_write.network_access": True,
         "shell_environment_policy.exclude": ["CODEX_SQLITE_HOME"],
         "shell_environment_policy.set." + config.STARTED_BY: "duty",
-        "shell_environment_policy.set." + config.DUTY_PROCESS_MARKER: marker,
+        "shell_environment_policy.set." + procs.TURN_PROCESS_MARKER: marker,
         "shell_environment_policy.set.TEAMSTER_HOME": str(config.DATA_HOME) if config.LAYOUT == "new" else "",
         "shell_environment_policy.set.CODEX_TASK_HOME": str(config.CODEX_HOME),
         "shell_environment_policy.set.TEAMSTER_CODEX_HOME": str(config.CODEX_HOME),
@@ -67,29 +68,15 @@ def codex_duty_overrides(marker, room):
     return values
 
 
-def duty_process_marker(pid):
-    prefix = (config.DUTY_PROCESS_MARKER + "=").encode()
-    return next((entry[len(prefix):].decode("ascii") for entry in procs.process_environment(pid)
-                 if entry.startswith(prefix) and re.fullmatch(b"[0-9a-f]{32}", entry[len(prefix):])), None)
-
-
 def end_duty_terminals(marker):
-    """End this invocation's commands even after app-server dies; never log environments.
-
-    Terminal children create new sessions. Supervisors of tasks started by the
-    duty remove this marker, so those independently managed tasks are preserved.
-    """
-    if not marker:
-        return
+    """Duty owns the terminal groups its guarded commands create."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        snapshot = subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid=,pgid="],
-                                  capture_output=True, text=True, check=True)
-        for line in snapshot.stdout.splitlines():
-            fields = line.split()
-            if len(fields) != 2:
+        for pid in procs.marked_processes(marker):
+            try:
+                group = os.getpgid(pid)
+            except ProcessLookupError:
                 continue
-            pid, group = map(int, fields)
-            if group not in (0, 1, os.getpgrp()) and duty_process_marker(pid) == marker:
+            if group not in (0, 1, os.getpgrp()):
                 procs.signal_pgid(group, sig)
         time.sleep(0.05)
 
@@ -333,6 +320,7 @@ class DutyRPC:
         self.directory = directory
         self.selector = selectors.DefaultSelector()
         self.selector.register(process.stdout, selectors.EVENT_READ)
+        os.set_blocking(process.stdin.fileno(), False)
         self.buffer = b""
         self.serial = 0
         self.replies = {}
@@ -340,12 +328,24 @@ class DutyRPC:
         self.items = {}
         self.finished = None
         self.answer = ""
+        self.answer_id = None
+        self.streamed_items = {}
+        self.on_text = None
         self.account = account
         self.credentials = None
 
-    def send(self, message):
-        self.process.stdin.write((json.dumps(message, ensure_ascii=False) + "\n").encode())
-        self.process.stdin.flush()
+    def send(self, message, *, shutdown=False):
+        fd = self.process.stdin.fileno()
+        pending = memoryview((json.dumps(message, ensure_ascii=False) + "\n").encode())
+        if shutdown:
+            # Cleanup messages fit in one pipe write. EOF and group termination
+            # also end an unresponsive server whose input pipe is full.
+            os.write(fd, pending)
+            return
+        while pending:
+            self.check()
+            if select.select([], [fd], [], 0.2)[1]:
+                pending = pending[os.write(fd, pending):]
 
     def check(self):
         if self.stopped():
@@ -456,6 +456,12 @@ class DutyRPC:
                 raise ValueError("Codex duty exposed an unexpected tool: asynchronous user message")
             if kind == "agentMessage" and method == "item/completed":
                 self.answer = item.get("text", "")
+                self.answer_id = item["id"]
+                chunks = self.streamed_items.pop(self.answer_id, None)
+                if chunks is not None and "".join(chunks) != self.answer:
+                    raise ValueError("Codex duty returned inconsistent message chunks")
+                if self.on_text and chunks is None:
+                    self.on_text(self.answer, self.answer_id)
                 self.event({"type": "item.completed", "item": {"type": "agent_message", "text": self.answer}})
             elif kind == "commandExecution":
                 self.event({"type": method.replace("/", "."), "item": {
@@ -467,6 +473,11 @@ class DutyRPC:
                     "id": item["id"], "type": "file_change", "changes": item.get("changes", [])}})
             elif kind not in ("userMessage", "reasoning", "plan", "contextCompaction", "agentMessage", "sleep"):
                 raise ValueError("Codex duty exposed an unexpected tool: " + str(kind))
+        elif method == "item/agentMessage/delta" and self.on_text and isinstance(params.get("delta"), str):
+            item_id = params.get("itemId")
+            if self.items.get(item_id, {}).get("type") == "agentMessage":
+                self.on_text(params["delta"], item_id)
+                self.streamed_items.setdefault(item_id, []).append(params["delta"])
         elif method == "item/fileChange/patchUpdated":
             item = self.items.get(params.get("itemId"))
             if item is not None and item.get("type") == "fileChange":
@@ -475,12 +486,9 @@ class DutyRPC:
             self.finished = params.get("turn")
 
 
-def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, thread_id=None,
-                   system_text="", started=None, progress=None, task_dir=None, max_minutes=None):
-    """Run and validate one turn, ending its entire process group on every exit."""
-    directory = Path(task_dir)
-    response = {"outcome": "failed", "result": None, "reason": None,
-                "telemetry": {"thread": thread_id, "model": model, "reasoning_effort": effort}}
+@contextlib.contextmanager
+def codex_duty_session(account, room, stopped, deadline, model, effort, thread_id, system_text, directory, marker):
+    """Admit one native session before ACP acknowledges new or resume."""
     process, rpc = None, None
     catalog_path = None
     try:
@@ -488,7 +496,6 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
             raise InterruptedError("stopped")
         if clock.CLOCK.monotonic() >= deadline:
             raise TimeoutError("duty time budget exhausted")
-        marker = uuid.uuid4().hex
         home = directory / "codex-home"
         if home.is_symlink():
             raise ValueError("Codex duty cannot isolate a symbolic-link home at " + str(home))
@@ -514,14 +521,20 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
                 environment.pop(key)
         environment.update(HOME=str(home), CODEX_SQLITE_HOME=str(home))
         environment[config.STARTED_BY] = "duty"
-        environment[config.DUTY_PROCESS_MARKER] = marker
+        environment[procs.TURN_PROCESS_MARKER] = marker
         process = subprocess.Popen(args, cwd=room, env=environment, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
-        if started is not None:
-            started(process)
-        if duty_process_marker(process.pid) != marker:
-            raise ValueError("Codex duty cannot identify its command processes on this platform")
         rpc = DutyRPC(process, room, stopped, deadline, directory, account)
+        # Linux may briefly expose an empty environ while the child execs its interpreter.
+        marker_deadline = time.monotonic() + 1
+        while True:
+            rpc.check()
+            observed = procs.process_marker(process.pid)
+            if observed == marker:
+                break
+            if observed is not None or process.poll() is not None or time.monotonic() >= marker_deadline:
+                raise ValueError("Codex duty cannot identify its command processes on this platform")
+            time.sleep(0.01)
         initialized = rpc.call("initialize", {"clientInfo": {"name": "teamster-duty", "version": "1"},
                                               "capabilities": {"experimentalApi": True}})
         if not isinstance(initialized, dict) or not re.search(r"\b0\.169\.0\b", initialized.get("userAgent", "")):
@@ -567,48 +580,21 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
         rpc.thread = (reply.get("thread") or {}).get("id")
         if not isinstance(rpc.thread, str) or not rpc.thread:
             raise ValueError("Codex duty returned no thread id")
-        response["telemetry"].update(thread=rpc.thread, model=reply.get("model") or model,
-                                     reasoning_effort=reply.get("reasoningEffort") or effort)
+        if thread_id and rpc.thread != thread_id:
+            raise ValueError("Codex duty resumed a different thread")
+        telemetry = {"thread": rpc.thread, "model": reply.get("model") or model,
+                     "reasoning_effort": reply.get("reasoningEffort") or effort}
         rpc.event({"type": "thread.started", "thread_id": rpc.thread})
-        if progress is not None:
-            progress(response["telemetry"])
-        turn_params = {"threadId": rpc.thread, "input": [{"type": "text", "text": prompt}],
-                       "outputSchema": result_schema.DUTY_SCHEMA}
-        if effort:
-            turn_params["effort"] = effort
-        begun = rpc.call("turn/start", turn_params)
-        rpc.turn = (begun.get("turn") or {}).get("id") or rpc.turn
-        if not rpc.turn:
-            raise ValueError("Codex duty returned no turn id")
-        while rpc.finished is None:
-            rpc.read()
-        if rpc.finished.get("status") != "completed":
-            error = rpc.finished.get("error") or {}
-            raise ValueError("Codex duty turn failed: " + str(error.get("message") or rpc.finished.get("status")))
-        try:
-            result = json.loads(rpc.answer)
-        except (ValueError, TypeError):
-            raise ValueError("invalid JSON output")
-        if not result_schema.valid_duty_result(result):
-            raise ValueError("invalid structured output")
-        response.update(outcome="completed", result=result)
-    except InterruptedError:
-        response["outcome"] = "stopped"
-    except TimeoutError:
-        response["outcome"] = "budget_exhausted"
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        response["reason"] = str(exc)
-        if any(word in str(exc).lower() for word in ("usage limit", "rate limit", "authentication")):
-            response["outcome"] = "unavailable"
+        yield rpc, telemetry
     finally:
         if rpc is not None:
             if rpc.thread and process.poll() is None:
                 try:
                     if rpc.turn:
                         rpc.send({"id": "interrupt", "method": "turn/interrupt",
-                                  "params": {"threadId": rpc.thread, "turnId": rpc.turn}})
+                                  "params": {"threadId": rpc.thread, "turnId": rpc.turn}}, shutdown=True)
                     rpc.send({"id": "clean", "method": "thread/backgroundTerminals/clean",
-                              "params": {"threadId": rpc.thread}})
+                              "params": {"threadId": rpc.thread}}, shutdown=True)
                 except OSError:
                     pass
             rpc.selector.close()
@@ -634,4 +620,28 @@ def run_codex_duty(account, room, prompt, stopped, deadline, model, effort, *, t
             process.stdout.close()
         if catalog_path is not None:
             catalog_path.unlink(missing_ok=True)
-    return response
+
+
+def codex_duty_prompt(rpc, prompt, effort, on_text):
+    """Run the schema-bound turn in the admitted session."""
+    rpc.on_text = on_text
+    turn_params = {"threadId": rpc.thread, "input": [{"type": "text", "text": prompt}],
+                   "outputSchema": result_schema.DUTY_SCHEMA}
+    if effort:
+        turn_params["effort"] = effort
+    begun = rpc.call("turn/start", turn_params)
+    rpc.turn = (begun.get("turn") or {}).get("id") or rpc.turn
+    if not rpc.turn:
+        raise ValueError("Codex duty returned no turn id")
+    while rpc.finished is None:
+        rpc.read()
+    if rpc.finished.get("status") != "completed":
+        error = rpc.finished.get("error") or {}
+        raise ValueError("Codex duty turn failed: " + str(error.get("message") or rpc.finished.get("status")))
+    try:
+        result = json.loads(rpc.answer)
+    except (ValueError, TypeError):
+        raise ValueError("invalid JSON output")
+    if not result_schema.valid_duty_result(result):
+        raise ValueError("invalid structured output")
+    return rpc.answer_id

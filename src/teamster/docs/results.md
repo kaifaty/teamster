@@ -1,9 +1,13 @@
 # Results, outcomes and wrap-ups
 
-Implementation and review turns run with `--output-schema` and strict schemas saved in the task
-directory. Scouts keep their plain-text reports.
+Implementation and review turns request structured results. Teamster passes the schema to Codex
+on the native `turn/start` behind `codex-acp`, to Claude through the adapter's SDK options, and
+to OpenCode in the work prompt. It validates the returned JSON locally. Scouts return plain text.
 
-`claude-events.jsonl` in the task directory appends Claude CLI stdout with the OAuth token redacted for work, fixes, reviews, scouts and reflection; `clean` excludes it from the archive.
+`claude-events.jsonl` in the task directory records Claude's raw SDK messages from the ACP
+session, including tool activity, results and usage. Teamster redacts the OAuth token before writing
+each event. Codex session updates feed `events.jsonl`, and native rollout files supply its usage.
+`clean` excludes the live event logs from the archive.
 
 ## Implementation result
 
@@ -87,8 +91,8 @@ separately from the implementation `result.status`, saved checks, CI and reset-c
 |---|---|---|
 | `running` | A work, scout or review phase is active. | Let the active phase finish. |
 | `sleeping` | No account is currently usable; the supervisor is waiting to retry or for a reset. | Follow [accounts.md](accounts.md#waiting-for-a-reset) for `auto-continue at` and `wait --through-sleep`. |
-| `completed` | Exec completed successfully; an implementation result or review may still be incomplete or unknown. | Read `result` or the review and continue the [default loop](lead-guide.md#the-loop). |
-| `failed` | Exec or the supervisor failed, or no usable authenticated account remains. | Read the error and logs; resolve the cause, including any requested login, before a follow-up. |
+| `completed` | The agent finished its turn successfully. Its implementation result or review may still be incomplete or unknown. | Read `result` or the review and continue the [default loop](lead-guide.md#the-loop). |
+| `failed` | The agent or supervisor failed, or no usable authenticated account remains. | Read the error and logs and resolve the cause before a follow-up. |
 | `refused` | The model refused for possible cybersecurity risk; no retry or account rotation follows. `wait` shows the first 200 characters of the refusal. | Read the refusal and reassess the task rather than starting another automatic fix cycle. |
 | `stopped` | A durable `stop` request addressed this supervisor. | Inspect the preserved work and decide whether to continue with `say`. |
 | `timeout` | The task reached its wall-clock deadline set by `start --task-timeout`. | Inspect the preserved work. |
@@ -97,7 +101,7 @@ separately from the implementation `result.status`, saved checks, CI and reset-c
 | `budget_exhausted` | The turn reached its time cap, or the task reached its weekly budget. | Use the check, wrap-up and remaining work to decide whether to split the task. For a time stop, split or send a budgeted `say`; for a weekly stop, raise the saved budget with `say --max-weekly P` only after that decision. |
 | `stuck` | The same command failed with the same nonzero exit code and last 2 KB of output `repeat_limit` times. Other commands do not reset the count; a successful run of that command does. | Investigate the failure yourself or take it to the user; do not start another automatic fix cycle. |
 
-After `budget_exhausted` or `stuck` the supervisor stops the exec process group and asks for a wrap-up
+After `budget_exhausted` or `stuck` the supervisor stops the agent's process group and asks for a wrap-up
 in the same thread, in the configured language. Time or weekly exhaustion asks for working changes to be
 committed and pushed, a `partial` result and the remaining work; repeated failure asks for a `blocked`
 result with numbers and attempts. The wrap-up has a 10-minute cap and is stopped when it reaches it.
@@ -119,6 +123,11 @@ cut short and prints `nothing to resume` when there is none. Scouts, reflections
 finished cycles and live supervisors are refused with the reason and a nonzero exit; so is a task whose
 worker or check process from the interrupted cycle is still alive. `--all` continues every candidate at once,
 also beside other running tasks: the tasks one restart cut short were running together when it came.
+
+During a Codex or Claude ACP turn, `stop` requests cancellation and ends that attempt's surviving
+terminals, including terminals in separate sessions. If the supervisor died and the worker has exited,
+`resume` cleans up those terminals before continuing the saved turn. If the worker still holds the
+session, `stop` ends it and `say` can then continue the task.
 
 The cycle continues from the step it stopped at, in the same turn and with the task's saved settings
 (`--review`, `--fix-rounds`, review angles, reviewer, check, CI and limits):

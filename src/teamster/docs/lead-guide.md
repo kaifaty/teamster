@@ -88,12 +88,27 @@ Before `start`, check that every "Done when" item can be reached within "Do not 
 
 Run every command below as `teamster …`. Teamster finds Codex through `TEAMSTER_CODEX`, then the
 ChatGPT.app bundle if present, then `codex` on `PATH`. Codex supplies its configured model and effort
-when Teamster has no work overrides.
+when Teamster has no work overrides. The adapter uses the selected account's `CODEX_HOME`.
+Existing tasks resume their saved native Codex thread. If that thread is unavailable, Teamster
+reports the resume error before sending the order.
 Use `start --model M` for work and `--review-model M` on `start`, `say`, or `review` for Codex reviews; `say` inherits or replaces them, and `default` clears an override. Read `accounts --json` before choosing ([models and JSON fields](settings.md#task-models)).
 A task keeps the teamster version it started on after an upgrade: `say` and `review` re-run in it while it is installed; `say --upgrade` moves the task to the current version ([versioned installs](settings.md#versioned-installs)).
 Use `start --task-type LABEL` to select a configured [task profile](settings.md#task-profiles) and label telemetry. `say` and `review` inherit the label, and `say --task-type LABEL` replaces it ([labels and grouped reports](telemetry.md)).
 Use `start --executor codex|claude|opencode` to pin the task worker. Automatic selection starts with a task profile's executor when present, then follows the [work role profile](settings.md#role-profiles) or the configured executor default. The saved executor handles `say`, review fixes, CI repairs and wrap-up. Claude and OpenCode work require `--sandbox off`.
 The [review role profile](settings.md#role-profiles) chooses the reviewer order. Without it, Claude tasks prefer Codex reviews and other workers use the configured reviewer. Use `--reviewer claude` on `start`, `say`, or `review` to select the isolated Claude pool. It prefers another account when Claude also implements. See [account setup](accounts.md#claude-account-pool).
+
+Ordinary Codex and Claude tasks, reviews, scouts and reflections use ACP v1 over stdio. Install
+`@agentclientprotocol/codex-acp` or `@agentclientprotocol/claude-agent-acp` for the corresponding
+provider. The supervisor needs its `codex-acp` or `claude-agent-acp` executable on `PATH` alongside the native CLI.
+Teamster opens an ACP session for a new task and saves its native cursor before the prompt.
+`say`, review fixes and CI repairs continue the worker's session. A review starts its own session.
+The Board's task actions use the same supervisor, saved checks, budgets and publication cycle.
+Its **Открыть чат** action opens a separate interactive conversation in the worktree.
+
+Codex uses the selected account's app-server behind the adapter for sandbox settings and native
+structured output. Claude supplies its role's tools, hooks and output schema through the adapter.
+Login and account probes still use the providers' native commands. Protected duty uses Teamster's
+private ACP agent for the elected family. [Duty guards and handoffs](duty-chat.md)
 
 To delegate to OpenCode from either duty family, select the worker and its configured provider/model explicitly. A direct CLI launch can use `OPENAI_API_KEY`. Codex duty clears `OPENAI_*` variables before running commands, so a provider that relies on that key needs credentials saved in OpenCode and accessible to the worker.
 
@@ -104,7 +119,7 @@ teamster say update-parser "Handle the empty input case."
 teamster wait update-parser
 ```
 
-Teamster starts a separate `opencode acp` process in the task worktree for each turn using OpenCode 2.3.2 on `PATH`. It saves the session ID returned by OpenCode and resumes that exact session on follow-ups. In sandbox-off mode the worker grants one-time tool permissions offered by OpenCode. Separate reviews use the selected Teamster reviewer and its account. [OpenCode CLI commands](https://opencode.ai/docs/cli/commands/)
+Teamster starts a separate `opencode acp` process in the task worktree for each turn using OpenCode 2.3.2 on `PATH`. It creates the session with ACP `session/new`, saves its native ID and resumes that ID on follow-ups. Before the first prompt, Teamster sets the task slug as the session title using the standalone `session.update` metadata operation. OpenCode 2.3.2 has no ACP rename command. Setting the title avoids a model request for automatic naming. In sandbox-off mode the worker grants one-time tool permissions offered by OpenCode. Separate reviews use the selected Teamster reviewer and its account. [OpenCode CLI commands](https://opencode.ai/docs/cli/commands/)
 
 | Step | Command |
 |---|---|

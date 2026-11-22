@@ -24,10 +24,9 @@ class TelemetryReportTests(RotationTestCase):
                             '[profiles."focused"]\nmodel = \'profile-model\' # selected model\n'
                             'model_reasoning_effort = "medium"\n')
         worker = self.worker()
-        args = [str(self.fake), "exec", "-c", 'model_reasoning_effort="high"', "Task prompt."]
         with mock.patch.object(worker.threads, "TOML_AVAILABLE", False):
-            self.assertEqual(worker.threads.configured_model_settings(self.home, args),
-                             {"model": "profile-model", "reasoning_effort": "high", "review_model": None})
+            self.assertEqual(worker.threads.configured_model_settings(self.home),
+                             {"model": "profile-model", "reasoning_effort": "medium", "review_model": None})
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.work_result()},
@@ -67,14 +66,14 @@ class TelemetryReportTests(RotationTestCase):
         self.until(lambda: any(row["slug"] == "metadata-unknown" and row["phase"] == "turn"
                                for row in self.telemetry_journal()))
         rows = [row for row in self.telemetry_journal() if row["slug"] == "metadata-unknown"]
-        self.assertEqual([(row["model"], row["reasoning_effort"]) for row in rows], [(None, None)] * 2)
+        self.assertEqual([(row["model"], row["reasoning_effort"]) for row in rows], [("fake-model", None)] * 2)
         # Python 3.9 must not parse prompt contents as configuration settings.
         settings.write_text('model = "configured-model"\ndeveloper_instructions = \'\'\'\n'
                             'model = "embedded-prompt-text"\nmodel_reasoning_effort = "secret"\n\'\'\'\n')
         with mock.patch.object(worker.threads, "TOML_AVAILABLE", False):
-            self.assertEqual(worker.threads.configured_model_settings(self.home, args),
-                             {"model": None, "reasoning_effort": "high", "review_model": None})
-        # Native review inherits the reported parent model without review_model.
+            self.assertEqual(worker.threads.configured_model_settings(self.home),
+                             {"model": None, "reasoning_effort": None, "review_model": None})
+        # The current review session supplies its own model and effort.
         settings.write_text('model_reasoning_effort = "medium"\n')
         self.cli("review", "metadata-profile")
         self.wait("metadata-profile")
@@ -127,13 +126,10 @@ class TelemetryReportTests(RotationTestCase):
                     "Strong-3", None, None, "Strong-4", None)
         self.assertEqual(len(executions), len(expected))
         for execution, model in zip(executions, expected):
-            with self.subTest(model=model, argv=execution["argv"]):
+            with self.subTest(model=model, review=execution["review"]):
                 self.assertEqual(execution["model"], model or
                                  ("configured-review" if execution["review"] else "configured-work"))
-                argv = execution["argv"]
-                self.assertEqual(argv[argv.index("--model") + 1] if "--model" in argv else None, model)
-                overrides = [arg for arg in argv if arg.startswith(("model=", "review_model="))]
-                self.assertEqual(overrides, [f'review_model="{model}"'] if model and execution["review"] else [])
+                self.assertEqual(execution["command"], "turn/start")
         rows = [row for row in self.phase_telemetry_journal() if row["slug"] == "model-choice"]
         self.assertEqual([row["model"] for row in rows], [execution["model"] for execution in executions])
         for args in (("start", "bad-model", "--brief", str(self.brief), "--model", "bad/name"),
@@ -161,7 +157,7 @@ class TelemetryReportTests(RotationTestCase):
             {"mode": "complete", "reply": reply, "token_usage_before": usage[0],
              "token_usage_after": usage[1], "weekly_used_before": window[0],
              "weekly_used_after": window[1],
-             "turn_context": {"model": "outer-model", "effort": "low"} if "verdict" in reply else None}
+             "turn_context": {"model": "observed-review", "effort": "low"} if "verdict" in reply else None}
             for reply, usage, window in zip(replies, usages, windows)])
         self.start("telemetry-fix", "--review", "--fix-rounds", "1", "--check", "true")
         self.wait("telemetry-fix")
@@ -185,7 +181,7 @@ class TelemetryReportTests(RotationTestCase):
             self.assertEqual(row["rotations"], 0)
         model_rows = [row for row in rows if row["phase"] not in ("check", "base_check")]
         self.assertEqual([(row["model"], row["reasoning_effort"]) for row in model_rows],
-                         [("fake-model", None), ("review-model", None)] * 2)
+                         [("fake-model", None), ("observed-review", "low")] * 2)
         self.assertEqual([row["tokens"] for row in model_rows], [
             {"input": 50, "cached_input": 20, "output": 20, "reasoning": 5},
             {"input": 100, "cached_input": 50, "output": 20, "reasoning": 10},

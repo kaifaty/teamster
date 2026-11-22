@@ -25,6 +25,12 @@ command, found on `PATH` at startup; `--teamster PATH` selects its executable ex
 `--read-only` disables all actions, including account login and refresh. They require a matching same-origin `Origin`,
 `Content-Type: application/json` and `X-Teamster-Board: 1`. The server never sends CORS headers.
 
+For a managed task, the Board invokes the same Teamster commands you can run in a terminal.
+Implementation starts the worker, `say` continues its saved session, and `review` launches the
+selected reviewer. Task details show the supervisor's activity, result, checks and PR.
+The supervisor needs the selected worker's ACP executable on its `PATH` for these turns.
+[Provider requirements and roles](../README.md#requirements)
+
 Choose **Открыть чат** in a task's details to start a separate ACP conversation in its worktree.
 The Board uses the installed `teamster acp --events` and looks on its own `PATH` for
 `codex-acp`, `claude-agent-acp`, or `opencode acp`. It prefers the task's executor and

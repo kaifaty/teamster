@@ -62,7 +62,7 @@ the reviewer is unavailable. `--reviewer` pins the provider for the task. Withou
 Claude workers prefer Codex reviews, Codex workers use the `reviewer` setting (`codex` by default),
 and the legacy Claude-to-Codex fallback applies. `--review` enables automatic review.
 
-Each Claude review uses a fresh Claude Code CLI process with the same review prompt and result
+Each Claude review opens a fresh `claude-agent-acp` session with the review prompt and result
 schema. The saved work executor handles work and fix rounds. Before each review or angle, the supervisor
 selects an account from the role-neutral `claude.accounts` pool: below `soft_switch_at` in both the
 five-hour and seven-day windows first, then below `switch_at`, ordered by earliest seven-day reset.
@@ -73,8 +73,9 @@ Claude usage does not add to the task's Codex weekly percentage. Review state, j
 
 The supervisor removes inherited `CLAUDE*` and `ANTHROPIC*` environment variables, reads the reviewer
 token from macOS Keychain immediately before launch, and supplies the isolated config directory and
-token through the environment. Claude runs with `--permission-mode dontAsk`, allows
-`Read,Grep,Glob,Bash`, and disallows `Edit,Write,NotebookEdit`. The supervisor disables Git filters
+token through the environment. Teamster requires the adapter to confirm its default permission mode,
+exposes only `Read`, `Grep`, `Glob` and `Bash`, disables permission bypass and declines permission
+requests. The supervisor disables Git filters
 and compares `HEAD`, `git status --porcelain`, and raw contents of tracked and nonignored untracked
 files before and after review: any change fails with `reviewer modified the worktree`, preserving
 the worktree for inspection.
@@ -96,8 +97,8 @@ another hour, and `claude-login <name>` clears it at once.
 A missing executable during the cycle can make a reviewer unavailable. Claude also reports an
 error result or invalid structured output as unavailable. If Codex is the standby, `wait` reports
 `== reviewer claude unavailable: <reason>; review by codex`. Failed reviews, timeouts, `stop`, and
-external signals keep their outcomes. Cancellation sends SIGINT to Claude's process group, waits
-up to 10 seconds, then sends SIGTERM if needed.
+external signals keep their outcomes. Cancellation requests an ACP turn stop and the supervisor
+reaps the adapter's process group.
 
 Account setup is in [accounts.md](accounts.md#claude-account-pool); optional model, effort and turn
 limits are in [settings.md](settings.md#claude-accounts).

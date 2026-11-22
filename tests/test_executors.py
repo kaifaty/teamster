@@ -27,6 +27,8 @@ def local_opencode_provider(env, binary):
     home = Path(env["HOME"])
     (home / "opencode").symlink_to(Path(binary).resolve(strict=True))
     requests = []
+    stop_requested = threading.Event()
+    release = threading.Event()
 
     class Provider(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -36,6 +38,10 @@ def local_opencode_provider(env, binary):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             messages = request["messages"]
             requests.append((self.path, request["model"]))
+            if "Wait here for stop" in json.dumps(messages):
+                stop_requested.set()
+                release.wait(30)
+                return
             # The second edit is possible only if OpenCode restored the first answer.
             resumed = any(m["role"] == "assistant" and "Initial edit" in (m.get("content") or "")
                           for m in messages)
@@ -84,11 +90,12 @@ def local_opencode_provider(env, binary):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            yield
+            yield stop_requested
         finally:
+            release.set()
             server.shutdown()
             thread.join()
-    assert requests == [("/v1/chat/completions", "model")] * 8, requests
+    assert requests == [("/v1/chat/completions", "model")] * 9, requests
 
 
 def fixture_work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
@@ -139,12 +146,15 @@ def install_fake_opencode(root):
                     sys.exit("Timed out in fake " + method)
 
         if sys.argv[1] == "api":
-            assert sys.argv[2:5] == ["--standalone", "session.create", "--data"]
-            assert json.loads(sys.argv[5])["title"]
-            record("session.create")
-            session_id = "ses_" + uuid.uuid4().hex
-            (home / session_id).write_text(json.dumps({"cwd": str(cwd)}))
-            print(json.dumps({"data": {"id": session_id, "description": "PRIVATE-SESSION-METADATA"}}))
+            assert sys.argv[2:5] == ["--standalone", "session.update", "--param"]
+            stored = home / sys.argv[5].split("=", 1)[1]
+            state = json.loads(stored.read_text())
+            assert state["cwd"] == str(cwd) and sys.argv[6] == "--data"
+            record("session.update")
+            if (home / "fail-title").exists():
+                sys.exit("fixture title failure")
+            state["title"] = json.loads(sys.argv[7])["title"]
+            stored.write_text(json.dumps(state))
             sys.exit(0)
 
         assert sys.argv[1:] == ["acp"]
@@ -155,6 +165,11 @@ def install_fake_opencode(root):
             record(method)
             if method == "initialize":
                 result = {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}}}}
+            elif method == "session/new":
+                assert Path(params["cwd"]) == cwd == Path.cwd()
+                session_id = "ses_" + uuid.uuid4().hex
+                (home / session_id).write_text(json.dumps({"cwd": str(cwd)}))
+                result = {"sessionId": session_id, "configOptions": config}
             else:
                 session_id = params["sessionId"]
                 stored = home / session_id
@@ -174,6 +189,7 @@ def install_fake_opencode(root):
                     result = {"configOptions": config}
                 else:
                     assert method == "session/prompt" and config[0]["currentValue"] == "offline/model"
+                    assert state["title"]
                     prompt = params["prompt"][0]["text"]
                     answer = json.loads((home / "response.json").read_text())
                     wrapup = "The turn's time budget has expired." in prompt
@@ -244,7 +260,7 @@ class ExecutorTests(RotationTestCase):
         (self.root / "response.json").write_text(json.dumps(self.work_result(checks=[])))
         flags = ["--executor", "opencode", "--model", "offline/model", "--task-type", "feature", "--no-push"]
         labels = {"opencode-work": "alpha", "opencode-parallel": "beta"}
-        with provider:
+        with provider as stop_requested:
             worktrees = self.git("worktree", "list", "--porcelain")
             for configured, options in (("off", ["--sandbox", "workspace"]), ("workspace", [])):
                 self.configure(accounts=[], claude={"accounts": []}, task_profiles=profiles, sandbox=configured)
@@ -293,6 +309,18 @@ class ExecutorTests(RotationTestCase):
             session = sessions[slug]
             worktree = Path(self.state(slug)["worktree"])
             if real_binary:
+                info = subprocess.check_output(
+                    ["opencode", "api", "--standalone", "session.get", "--param", f"sessionID={session}"],
+                    cwd=worktree, env=dict(self.env, PWD=str(worktree)), timeout=30)
+                self.assertEqual(json.loads(info)["data"]["title"], slug)
+                other = "opencode-parallel"
+                self.cli("say", other, "Wait here for stop.")
+                self.assertTrue(stop_requested.wait(30))
+                pid = self.state(other)["opencode_pid"]
+                self.cli("stop", other)
+                self.assertEqual(self.state(other)["outcome"], "stopped")
+                self.assertEqual(self.state(other)["session_id"], sessions[other])
+                self.assertFalse(self.process_is_live(pid))
                 subprocess.run(["opencode", "session", "delete", "--standalone", session], cwd=worktree,
                                env=dict(self.env, PWD=str(worktree)), stdin=subprocess.DEVNULL,
                                capture_output=True, check=True, timeout=30)
@@ -351,10 +379,18 @@ class ExecutorTests(RotationTestCase):
                     gate.unlink(missing_ok=True)
                     waiting.unlink(missing_ok=True)
 
-        stop_at("session.create", self.start, slug, "--executor", "opencode", "--model", "offline/model", "--no-push")
+        stop_at("session/new", self.start, slug, "--executor", "opencode", "--model", "offline/model", "--no-push")
         self.assertFalse(self.state(slug).get("session_id"))
+        failure = self.root / "fail-title"
+        failure.touch()
+        self.cli("say", slug, "Retry the interrupted request.")
+        self.assertIn("fixture title failure", self.cli("wait", slug, "--timeout", "30"))
+        session = self.state(slug)["session_id"]
+        self.assertNotIn("session/prompt", (self.root / "opencode-calls").read_text())
+        failure.unlink()
         self.cli("say", slug, "Retry the interrupted request.")
         self.assertIn("Initial edit alpha (retried)", self.wait(slug))
+        self.assertEqual(self.state(slug)["session_id"], session)
         stop_at("session/resume", self.cli, "say", slug, "Make the second change to tracked.txt.")
 
         calls = (self.root / "opencode-calls").read_text().splitlines()
@@ -391,6 +427,52 @@ class ExecutorTests(RotationTestCase):
         self.assertIn("Initial edit alpha (retried)", self.wait(slug))
         self.assertEqual(self.state(slug)["session_id"], session)
 
+    def test_codex_backend_rejects_schema_bearing_turn_outside_admitted_session(self):
+        bridge = self.worker().turn_monitor.codex_acp
+        # An echo backend makes any forwarded request visible on stdout.
+        echo = self.root / "echo-backend"
+        echo.write_text("#!/bin/sh\nexec /bin/cat\n")
+        echo.chmod(0o700)
+        (self.root / "options").write_text("{}")
+        env = dict(self.env, TEAMSTER_ACP_BACKEND=str(echo), TEAMSTER_ACP_TURN_DIR=str(self.root))
+        env[bridge.procs.TURN_PROCESS_MARKER] = "fixture-turn"
+        request = {"id": 1, "method": "turn/start", "params": {
+            "threadId": "title-thread", "outputSchema": {"type": "object", "properties": {"title": {"type": "string"}}}}}
+        for admitted in (False, True):
+            with self.subTest(admitted=admitted):
+                if admitted:
+                    (self.root / "target").write_text("worker-thread")
+                result = subprocess.run(bridge.command("backend", "app-server"), cwd=self.root, env=env,
+                                        input=json.dumps(request) + "\n", text=True, capture_output=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("outside the admitted ACP session", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertFalse((self.root / "sent").exists())
+
+    def test_codex_close_distinguishes_legacy_missing_method_from_cleanup_failure(self):
+        self.configure(language="en")
+        result = self.work_result()
+        self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": result, "spawn_child": "detached"}])
+        fixture = self.home / "fixture.json"
+        account = json.loads(fixture.read_text())
+        for slug, reply, error in (
+                ("legacy-close", {"error": {"code": -32601, "message": "Method not found"}}, None),
+                ("invalid-close", {"result": {}}, "Invalid background terminal list"),
+                ("internal-close", {"error": {"code": -32603, "message": "Method not found"}}, "Method not found")):
+            with self.subTest(slug=slug):
+                fixture.write_text(json.dumps(dict(account, terminal_list_reply=reply)))
+                self.start(slug, "--executor", "codex")
+                output = self.cli("wait", slug, "--timeout", "30")
+                child = [row["child_pid"] for row in self.trace() if row.get("command") == "exec-child"][-1]
+                self.extra_pids.add(child)
+                self.assertFalse(self.process_is_live(child))
+                state = self.state(slug)
+                self.assertEqual(state["outcome"], "failed" if error else "completed")
+                self.assertEqual(state["result"], None if error else result)
+                if error:
+                    self.assertIn(error, state["error"])
+                    self.assertNotIn("== result: done", output)
+
     def test_acp_stdio_conversation(self):
         self.env["HOME"] = str(self.root)
         repo = self.root / "work tree"
@@ -417,15 +499,29 @@ class ExecutorTests(RotationTestCase):
             assert Path.cwd() == Path(__file__).parent / "work tree"
             init = receive("initialize")
             assert init["params"]["protocolVersion"] == 1
-            reply(init, protocolVersion=1, agentCapabilities={"loadSession": True},
+            reply(init, protocolVersion=1, agentCapabilities={"loadSession": True,
+                  "sessionCapabilities": {} if mode == "configured" else {"close": {}}},
                   authMethods=[{"id": "fixture", "name": "Fixture"}])
             if mode == "load":
                 auth = receive("authenticate")
                 assert auth["params"]["methodId"] == "fixture"
                 reply(auth)
-            session = receive("session/" + mode)
+            session = receive("session/" + ("new" if mode == "configured" else mode))
             assert session["params"]["cwd"] == str(Path.cwd())
-            if mode == "new":
+            if mode == "configured":
+                option = {"id": "reasoning_effort", "type": "select", "currentValue": "low",
+                          "options": [{"group": "efforts", "name": "Efforts",
+                                       "options": [{"value": "high", "name": "High"}]}]}
+                reply(session, sessionId="session-1", configOptions=[option])
+                selected = receive("session/set_config_option")
+                assert selected["params"] == {"sessionId": "session-1",
+                    "configId": "reasoning_effort", "value": "high"}
+                reply(selected, configOptions=[dict(option, currentValue="high")])
+                prompt = receive("session/prompt")
+                send(id=prompt["id"], error={"code": -32603, "message": "Internal error",
+                                            "data": {"message": "Usage limit reached"}})
+                sys.exit(0)
+            elif mode == "new":
                 reply(session, sessionId="session-1")
             else:
                 assert session["params"]["sessionId"] == "session-1"
@@ -450,6 +546,9 @@ class ExecutorTests(RotationTestCase):
                      "update": {"sessionUpdate": "agent_message_chunk",
                                 "content": {"type": "text", "text": "Reply to " + text}}})
                 reply(prompt, stopReason="end_turn")
+            closing = receive("session/close")
+            assert closing["params"]["sessionId"] == "session-1"
+            reply(closing)
             '''))
         for mode, options in (("new", []), ("load", ["--resume", "session-1", "--auth-method", "fixture"])):
             with self.subTest(mode=mode):
@@ -459,6 +558,28 @@ class ExecutorTests(RotationTestCase):
                                      capture_output=True, timeout=15)
                 self.assertEqual(run.returncode, 0, run.stderr)
                 self.assertEqual(run.stdout, "Reply to first turn\nReply to 1\n")
+
+        acp = self.worker().commands.acp
+        with acp.AcpClient([sys.executable, "-I", str(agent), "configured", "--literal=two words; *"],
+                           repo, lambda update: None, lambda params: None, env=self.env) as client:
+            self.assertEqual(client.open_session(config_options={"reasoning_effort": "high"}), "session-1")
+            with self.assertRaisesRegex(acp.AcpRequestError, "Usage limit reached") as failure:
+                client.prompt("Work")
+            self.assertEqual(failure.exception.code, -32603)
+            self.assertEqual(failure.exception.data, {"message": "Usage limit reached"})
+
+    def test_codex_tool_updates_keep_board_edit_paths_and_subagent_prompts(self):
+        transport = self.worker().turn_monitor.codex_acp
+        updates = transport.Updates()
+        diff = {"type": "diff", "path": "src/main.py", "oldText": "old", "newText": "new"}
+        with mock.patch.object(transport, "emit") as emit:
+            updates.update({"sessionUpdate": "tool_call", "toolCallId": "edit", "kind": "edit",
+                            "title": "Editing files", "content": [diff, diff]})
+            updates.update({"sessionUpdate": "tool_call", "toolCallId": "agent", "kind": "other",
+                            "title": "spawnAgent", "rawInput": {"senderThreadId": "one", "prompt": "Inspect tests"}})
+        self.assertEqual([call.args[0]["item"] for call in emit.call_args_list],
+                         [{"id": "edit", "type": "file_change", "changes": [{"path": "src/main.py"}]},
+                          {"id": "agent", "type": "collab_tool_call", "tool": "spawnAgent", "prompt": "Inspect tests"}])
 
     def test_executor_selection_stays_in_contract(self):
         violations = []

@@ -1,14 +1,14 @@
 # teamster
 
 Let the lead plan and review while a worker implements in its own git worktree. The tool runs
-Codex or Claude as the worker through an installed Python command. A thin plugin supports Claude Code
+Codex, Claude or OpenCode as the worker through an installed Python command. A thin plugin supports Claude Code
 as the lead; the lead writes the brief, reviews the result and decides when to merge.
 
-The lead writes a bounded brief, starts the worker, and waits in the background. Codex commits and pushes;
-the supervisor opens and updates the PR in every mode, using Codex's result title and description.
-Optional Codex reviews run in fresh threads, and the supervisor can send findings back for bounded
+The lead writes a bounded brief, starts the worker, and waits in the background. The supervisor
+opens and updates the PR using the worker's result title and description.
+Optional Codex or Claude reviews run in fresh sessions, and the supervisor can send findings back for bounded
 fix rounds. The lead checks the final diff and review and handles merging. Optional account monitoring
-can pause a task until a usage window resets. On GitHub, `--ci` waits for PR checks and gives Codex
+can pause a task until a usage window resets. On GitHub, `--ci` waits for PR checks and gives the worker
 one bounded repair turn with failed-check logs before the lead reviews the final result.
 
 This repository contains the `teamster` command and its thin Claude Code plugin, distributed
@@ -29,15 +29,23 @@ Existing data, login homes and Keychain service names stay the same.
 ## Requirements
 
 - Claude Code with plugin support to use it as the lead.
-- Codex CLI installed and signed in to a ChatGPT account with Codex access.
 - Python 3.9 or newer, using only the standard library.
 - Git, a repository with an `origin` remote, and permission to push task branches.
 - macOS or Linux.
 - Optional: GitHub CLI (`gh`), authenticated for the repository, for supervisor PR publication and inspection.
 
-Install [Codex CLI](https://github.com/openai/codex) if needed (`npm install -g @openai/codex`), then run
-`codex login`. The worker uses your existing Codex model, reasoning, and permission settings. There is
-no required model or reasoning level.
+Install the executables for each provider you use on the machine running Teamster. Ordinary task
+turns now use Agent Client Protocol (ACP) v1 over stdio.
+
+| Provider | Required for ordinary turns | Supported roles |
+|---|---|---|
+| Codex | The selected Codex CLI, signed in with `codex login`, and `codex-acp` on `PATH` (`npm install -g @openai/codex @agentclientprotocol/codex-acp`). [Codex adapter](https://github.com/agentclientprotocol/codex-acp) | Work, review, scout, reflect |
+| Claude | Claude Code, a Teamster account configured with `teamster claude-login`, and `claude-agent-acp` on `PATH` (`npm install -g @agentclientprotocol/claude-agent-acp`). [Claude adapter](https://github.com/agentclientprotocol/claude-agent-acp) | Work, review, scout, reflect |
+| OpenCode | `opencode` on `PATH` with the `acp` and standalone `session.update` commands, and a configured provider/model. | Work |
+
+Work includes follow-ups, fixes, CI repairs and wrap-up. For protected duty chat, Teamster ships a
+private ACP agent that invokes the selected Codex or Claude CLI with the duty's native guards.
+Account login, quota probes and saved workspace checks also use their native tools.
 
 Choose a model per task with `start --model M`, and a separate Codex review model with
 `--review-model M` on `start`, `say`, or `review`. Follow-ups inherit both choices; `say --model default`
@@ -140,11 +148,11 @@ Bash command.
 For GitHub repositories, `start --ci` or `"ci": true` enables CI for the task. Follow-ups inherit
 the setting and repair-round limit (initially 1); `say --ci` enables it, `say --no-ci` disables it,
 and `say --ci-rounds N` changes the limit. The supervisor waits for the published PR's exact HEAD
-and sends failures to Codex for bounded repairs. See
+and sends failures to the task's worker for bounded repairs. See
 [CI details](src/teamster/docs/ci.md).
 The lead merges only after `CI … passed` and rechecks `gh pr checks <url>` immediately before merging.
 
-Work and review turns use strict JSON schemas through `--output-schema`. `wait` renders the work's
+Teamster validates work and review results against their JSON schemas. `wait` renders the work's
 status (`done`, `partial`, `blocked`, or `needs_decision`), summary, checks, PR, questions, and remaining
 work, plus round summaries, rejected findings with reasons, the latest review, and the stop reason.
 Implementation results include `findings` decisions (`fixed` or `rejected`), empty on ordinary turns.
