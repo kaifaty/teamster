@@ -257,7 +257,7 @@ class ResumeTests(RotationTestCase):
             {"mode": "hold"}, {"mode": "complete", "reply": self.work_result()}])
         slug = "resume-killed"
         self.start(slug)
-        self.until(lambda: self.state(slug).get("codex_pid"), timeout=60)
+        self.until(lambda: bool(self.invocations()), timeout=60)
         state = self.state(slug)
         # A shutdown kills the supervisor and its worker without a chance to record anything.
         os.kill(state["pid"], signal.SIGKILL)

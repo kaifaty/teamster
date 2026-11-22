@@ -32,6 +32,13 @@ def _offers_value(option, value):
     return False
 
 
+class AcpRequestError(ValueError):
+    def __init__(self, detail, code, provider_message):
+        super().__init__(detail)
+        self.code = code
+        self.provider_message = provider_message
+
+
 class AcpClient:
     """Run one agent, delivering session updates and permission requests to the caller.
 
@@ -172,14 +179,16 @@ class AcpClient:
                     if not isinstance(error, dict):
                         raise ValueError(f"Invalid ACP {method} error")
                     detail = f"ACP {method} failed ({error.get('code')}): {error.get('message')}"
+                    provider_message = error.get("message")
                     data = error.get("data")
                     if isinstance(data, dict) and isinstance(data.get("message"), str):
-                        detail += f": {data['message']}"
+                        provider_message = data["message"]
+                        detail += f": {provider_message}"
                     if error.get("code") == -32000:
                         detail += ". Sign in using the agent CLI"
                         if self.auth_methods:
                             detail += " or choose --auth-method from: " + ", ".join(self.auth_methods)
-                    raise ValueError(detail)
+                    raise AcpRequestError(detail, error.get("code"), provider_message)
                 result = message.get("result")
                 if not isinstance(result, dict):
                     raise ValueError(f"Invalid ACP {method} result")

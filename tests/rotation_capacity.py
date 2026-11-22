@@ -69,11 +69,11 @@ class CapacityRetryTests(RotationTestCase):
             {"mode": "complete", "reply": self.work_result()}])
         self.start("capacity-before-thread")
         output = self.wait("capacity-before-thread")
-        executions = self.invocations()
+        executions = self.attempts()
         self.assertEqual(len(executions), 2)
         self.assertTrue(all(not execution["resume"] for execution in executions))
         self.assertNotEqual(executions[0]["thread"], executions[1]["thread"])
-        self.assertEqual(executions[1]["prompt"], executions[0]["prompt"])
+        self.assertIsNone(executions[0]["prompt"])
         self.assertIn(self.brief.read_text().strip(), executions[1]["prompt"])
         self.assertTrue(all(execution["home"] == str(self.home) for execution in executions))
         state = self.state("capacity-before-thread")
@@ -91,7 +91,7 @@ class CapacityRetryTests(RotationTestCase):
             {"mode": "complete", "reply": self.review_result(False)}])
         self.start("capacity-review-thread", "--review")
         self.wait("capacity-review-thread")
-        reviews = self.invocations()[1:]
+        reviews = self.attempts()[1:]
         self.assertEqual([execution["resume"] for execution in reviews], [False, True, True])
         self.assertEqual(len({execution["thread"] for execution in reviews}), 1)
         self.assertEqual(self.state("capacity-review-thread")["capacity_retries"], 2)

@@ -62,7 +62,7 @@ class TimeBudgetTests(RotationTestCase):
         executions = self.invocations()
         self.assertEqual(len(executions), 2)
         for execution in executions:
-            self.assertEqual(execution["argv"][execution["argv"].index("--model") + 1], "checkpoint-model")
+            self.assertEqual(execution["model"], "checkpoint-model")
         self.assertTrue(executions[1]["resume"])
         self.assertEqual(executions[1]["thread"], executions[0]["thread"])
         self.assert_output_schema(executions[1], "time-cap")
@@ -480,7 +480,7 @@ class TimeBudgetTests(RotationTestCase):
         self.assertEqual(self.state("cap-config")["outcome"], "completed")
         self.cli("say", "cap-config", "Use the configured default again")
         self.until(lambda: len(self.invocations()) == 4 and
-                   self.state("cap-config").get("codex_pid") == self.invocations()[3]["pid"])
+                   self.state("cap-config").get("codex_pid") == self.invocations()[3]["pgid"])
         clock.sleep(3.7)
         self.wait("cap-config", timeout=12)
         self.assertEqual(self.state("cap-config")["outcome"], "budget_exhausted")
@@ -543,9 +543,9 @@ class TimeBudgetTests(RotationTestCase):
         self.assertEqual(state["reviews"][-1]["result"], checkpoint)
         executions = self.invocations()
         self.assertEqual(len(executions), 3)
-        self.assertEqual(executions[0]["argv"][executions[0]["argv"].index("--model") + 1], "work-model")
+        self.assertEqual(executions[0]["model"], "work-model")
         for execution in executions[1:]:
-            self.assertEqual(execution["argv"][execution["argv"].index("--model") + 1], "checkpoint-review")
+            self.assertEqual(execution["model"], "checkpoint-review")
         self.assertTrue(executions[1]["review"])
         self.assertTrue(executions[2]["resume"])
         self.assertEqual(executions[2]["thread"], executions[1]["thread"])
@@ -571,14 +571,14 @@ class TimeBudgetTests(RotationTestCase):
             {"mode": "usage_error", "limit_after": 0.05}])
         gate = self.root / "release-rotated-review-before-thread"
         self.account(self.other, "B", self.reset, runs=[
-            {"mode": "hold", "rollout_gate": str(gate)},
+            {"mode": "hold", "session_gate": str(gate)},
             {"mode": "complete", "reply": self.review_result()}])
         self.start("cap-review-before-thread", "--review")
-        self.until(lambda: any(event.get("command") == "rollout-waiting"
+        self.until(lambda: any(event.get("command") == "thread/start"
                                and event["home"] == str(self.other) for event in self.trace()))
         output = self.wait("cap-review-before-thread", timeout=12)
         state = self.state("cap-review-before-thread")
-        executions = self.invocations()
+        executions = self.attempts()
         self.assertFalse(gate.exists(), "the replacement review must never publish thread.started")
         self.assertEqual(state["outcome"], "budget_exhausted")
         self.assertEqual(state["wrapup"]["outcome"], "not_run")

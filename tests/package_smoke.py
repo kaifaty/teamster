@@ -103,6 +103,7 @@ class PackageSmokeTest(unittest.TestCase):
         fake.write_text("#!" + sys.executable + "\nimport os\nos.environ.setdefault(\"CODEX_FAKE_TRACE\", "
                         + repr(str(trace)) + ")\n" + FAKE_CODEX)
         fake.chmod(0o700)
+        (fake_bin / "codex-acp").symlink_to(fake)
         git_dir = str(Path(shutil.which("git")).parent)
         env = {"PATH": os.pathsep.join([str(fake_bin), git_dir, "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
                "HOME": str(home), "CODEX_TASK_HOME": str(codex_home), "CODEX_TASK_CODEX": str(fake),
@@ -203,9 +204,9 @@ class PackageSmokeTest(unittest.TestCase):
                     ["git", "show", "--name-only", "--format=", state["branch"]], cwd=str(repo), env=env,
                     text=True, capture_output=True, check=True).stdout)
                 events = [json.loads(line) for line in trace.read_text().splitlines()]
-                execs = [event for event in events if event.get("command") == "exec"]
+                execs = [event for event in events if event.get("command") == "turn/start"]
                 # The detached supervisor started from the installed __main__.py ran the turn.
-                self.assertEqual(execs[-1]["ppid"], supervisor)
+                self.assertEqual(execs[-1]["supervisor"], supervisor)
                 rules_name = "rules.ru.md" if language == "ru" else "rules.md"
                 rules = (installed / rules_name).read_text(encoding="utf-8")
                 self.assertEqual(rules, (PACKAGE / rules_name).read_text(encoding="utf-8"))

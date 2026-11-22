@@ -71,10 +71,9 @@ class LifecycleTests(RotationTestCase):
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "completed")
                 self.assertEqual((state["executor"], state["task_model"], state["effort"]), ("codex", model, effort))
-                argv = self.invocations()[-1]["argv"]
-                self.assertEqual(argv[argv.index("--model") + 1] if "--model" in argv else None, model)
-                self.assertEqual([arg for arg in argv if arg.startswith("model_reasoning_effort=")],
-                                 [f'model_reasoning_effort="{effort}"'] if effort else [])
+                native = self.invocations()[-1]
+                self.assertEqual(native["model"], model or "fake-model")
+                self.assertEqual(native["effort"], effort)
 
         self.configure(role_profiles={
             "work": [{"provider": "claude", "model": "fixture-claude", "effort": "low"},
@@ -111,8 +110,7 @@ class LifecycleTests(RotationTestCase):
         self.wait("role-scout")
         scout = self.state("role-scout")
         self.assertEqual((scout["task_model"], scout["effort"]), ("fixture-codex-scout", "high"))
-        argv = self.invocations()[-1]["argv"]
-        self.assertEqual(argv[argv.index("--model") + 1], "fixture-codex-scout")
+        self.assertEqual(self.invocations()[-1]["model"], "fixture-codex-scout")
         self.assertEqual(json.loads(self.cli("accounts", "--json"))["claude"], [])
 
         self.assertEqual(self.worker().cli.task_type("a" * 32), "a" * 32)
@@ -579,18 +577,16 @@ worker.notifications.reap_notifications = reap
                 if before_thread:
                     # This existing fake gate returns on cancellation without ever
                     # emitting thread.started; elapsed time cannot open the window.
-                    held["rollout_gate"] = str(release)
+                    held["session_gate"] = str(release)
                 self.account(self.home, "A", self.reset, runs=[
                     {"mode": "complete", "reply": self.work_result()},
                     {"mode": "complete", "reply": self.review_result()}, held])
                 slug = "second-angle-signal-" + ("early" if before_thread else "late")
-                before = len(self.invocations())
+                before = len(self.attempts())
                 self.start(slug, "--review-angles", "correctness,concurrency", "--fix-rounds", "2")
-                self.until(lambda: len(self.invocations()) == before + 3)
-                review_thread = self.invocations()[-1]["thread"]
+                self.until(lambda: len(self.attempts()) == before + 3)
+                review_thread = self.attempts()[-1]["thread"]
                 if before_thread:
-                    self.until(lambda: any(event["command"] == "rollout-waiting"
-                                           and event["thread"] == review_thread for event in self.trace()))
                     self.assertFalse(release.exists())
                     self.assertNotIn(review_thread, [entry["thread"] for entry in self.state(slug)["reviews"]])
                 else:
@@ -602,7 +598,7 @@ worker.notifications.reap_notifications = reap
                 self.assertEqual(state["outcome"], "interrupted")
                 self.assertEqual(state["signal"]["name"], "SIGTERM")
                 self.assertFalse(state.get("rounds"), "interrupted reviews cannot start a fix round")
-                self.assertEqual(len(self.invocations()), before + 3)
+                self.assertEqual(len(self.attempts()), before + 3)
 
                 expected_time = datetime.datetime.fromtimestamp(state["signal"]["at"]).strftime("%Y-%m-%d %H:%M")
                 self.assertIn("== interrupted externally by SIGTERM at " + expected_time, output)
@@ -963,7 +959,7 @@ worker.notifications.reap_notifications = reap
         first, queued = self.invocations()
         self.assertEqual(queued["prompt"], "First order\n\nSecond order")
         self.assertTrue(queued["resume"])
-        self.assertIn('model_reasoning_effort="high"', queued["argv"])
+        self.assertEqual(queued["effort"], "high")
         state = self.state(slug)
         self.assertEqual((state["turns"], state["outcome"], state["task_type"], state["max_turn_minutes"],
                           state["check"], state["checks"]), (2, "completed", "alpha", 30, None, []))
@@ -1125,44 +1121,34 @@ worker.notifications.reap_notifications = reap
         self.assertTrue(any(event.get("command") == "signal" and event.get("thread") == review["thread"]
                             and event.get("signal") == signal.SIGINT for event in self.trace()))
 
-    def test_review_falls_back_when_base_and_prompt_conflict(self):
+    def test_review_sends_base_and_custom_instructions_in_one_acp_prompt(self):
         self.configure()
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": "Рабочий результат"},
             {"mode": "complete", "reply": "Ревью через обычный exec"}])
         self.start("review-fallback")
         self.wait("review-fallback")
-        fixture = json.loads((self.home / "fixture.json").read_text())
-        fixture["review_prompt_conflict"] = True
-        (self.home / "fixture.json").write_text(json.dumps(fixture))
         working = self.state("review-fallback")
         self.cli("review", "review-fallback", "--review-model", "fallback-model")
         output = self.wait("review-fallback")
         executions = self.invocations()
-        self.assertEqual(len(executions), 3)
-        rejected, fallback = executions[1:]
-        for execution in (rejected, fallback):
-            self.assertEqual(execution["argv"][execution["argv"].index("--model") + 1], "fallback-model")
-        self.assertEqual(rejected["mode"], "review_prompt_conflict")
-        self.assertFalse(rejected["thread"])
-        self.assertFalse(fallback["review"])
-        self.assertFalse(fallback["resume"])
-        self.assertEqual(fallback["cwd"], working["worktree"])
-        self.assertEqual(Path(fallback["output"]).name, "review.md")
-        self.assertEqual(fallback["prompt"], rejected["prompt"])
-        self.assert_output_schema(rejected, "review-fallback", review=True)
-        self.assert_output_schema(fallback, "review-fallback", review=True)
-        self.assertIn("git diff $(git merge-base " + shlex.quote(working["base"]) + " HEAD)", fallback["prompt"])
-        self.assertEqual(fallback["ppid"], rejected["ppid"])
+        self.assertEqual(len(executions), 2)
+        review = executions[1]
+        self.assertEqual(review["model"], "fallback-model")
+        self.assertTrue(review["review"])
+        self.assertFalse(review["resume"])
+        self.assertEqual(review["cwd"], working["worktree"])
+        self.assert_output_schema(review, "review-fallback", review=True)
+        self.assertIn("git diff $(git merge-base " + shlex.quote(working["base"]) + " HEAD)", review["prompt"])
         state = self.state("review-fallback")
         self.assertEqual(state["thread"], working["thread"])
         self.assertEqual(len(state["reviews"]), 1)
-        self.assertEqual(state["reviews"][0]["thread"], fallback["thread"])
+        self.assertEqual(state["reviews"][0]["thread"], review["thread"])
         self.assertIn("== review by main (", output)
         self.assertIn("Ревью через обычный exec", output)
         self.assertNotIn("== errors:", output)
 
-    def test_review_fallback_reuses_selection_snapshot_for_weekly_budget(self):
+    def test_acp_review_uses_selection_snapshot_for_weekly_budget(self):
         self.configure(language="en")
         self.account(self.home, "A", self.reset, used=8, runs=[
             {"mode": "complete", "reply": self.work_result(),
@@ -1174,19 +1160,11 @@ worker.notifications.reap_notifications = reap
         self.start(slug, "--max-weekly", "3")
         self.wait(slug)
         self.assertEqual(self.state(slug).get("weekly_used_percent", 0), 0)
-        fixture_path = self.home / "fixture.json"
-        fixture = json.loads(fixture_path.read_text())
-        fixture["review_prompt_conflict"] = True
-        fixture_path.write_text(json.dumps(fixture))
         self.cli("review", slug)
         output = self.wait(slug)
         executions = self.invocations()
-        self.assertEqual(len(executions), 3)
-        rejected, fallback = executions[1:]
-        self.assertEqual(rejected["mode"], "review_prompt_conflict")
-        self.assertFalse(rejected["thread"])
-        self.assertFalse(fallback["review"])
-        self.assertEqual(fallback["prompt"], rejected["prompt"])
+        self.assertEqual(len(executions), 2)
+        self.assertTrue(executions[-1]["review"])
         state = self.state(slug)
         self.assertEqual(state["weekly_used_percent"], 4)
         self.assertEqual(state["outcome"], "budget_exhausted")

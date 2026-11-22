@@ -689,48 +689,8 @@ def app_server():
         emit({"id": 99999, "result": {"ignored": True}})
         emit({"id": request["id"], "result": result})
 
-def execute():
-    argv = sys.argv[2:]
-    resumed = bool(argv and argv[0] == "resume")
-    review = bool(argv and argv[0] == "review")
+def execute(invocation, thread, emit):
     value = fixture()
-    prompt = argv[-1]
-    output = Path(argv[argv.index("-o") + 1]) if "-o" in argv else None
-    schema = Path(argv[argv.index("--output-schema") + 1]) if "--output-schema" in argv else None
-    # Resolve the model independently of the worker, including Codex profile precedence.
-    root, profiles, section = {}, {}, ""
-    settings = home / "config.toml"
-    for line in settings.read_text().splitlines() if settings.exists() else []:
-        line = line.strip()
-        if line.startswith("["):
-            match = re.fullmatch(r'\[profiles\.(?:"([^\"]+)"|([A-Za-z0-9_-]+))\]', line)
-            section = (match[1] or match[2]) if match else None
-            continue
-        match = re.match(r"(model|review_model|profile)\s*=\s*[\"']([^\"']+)[\"']", line)
-        if match and section is not None:
-            (root if section == "" else profiles.setdefault(section, {}))[match[1]] = match[2]
-    for index, arg in enumerate(argv[:-1]):
-        if arg == "-c":
-            key, separator, raw = argv[index + 1].partition("=")
-            if separator and key in ("model", "review_model", "profile"):
-                root[key] = json.loads(raw)
-    selected = dict(root, **profiles.get(root.get("profile"), {}))
-    model = argv[argv.index("--model") + 1] if "--model" in argv else selected.get("model")
-    if review:
-        model = selected.get("review_model") or model
-    invocation = {"command": "exec", "resume": resumed, "review": review,
-                  "prompt": prompt, "pid": os.getpid(), "ppid": os.getppid(),
-                  "sqlite_home": os.environ.get("CODEX_SQLITE_HOME"),
-                  "argv": sys.argv[1:], "cwd": os.getcwd(),
-                  "output": str(output) if output else None,
-                  "schema_path": str(schema) if schema else None,
-                  "output_schema": json.loads(schema.read_text()) if schema else None, "model": model}
-    if review and value.get("review_prompt_conflict"):
-        trace(dict(invocation, thread="", mode="review_prompt_conflict"))
-        print("error: the argument '--base <BRANCH>' cannot be used with '[PROMPT]'", file=sys.stderr,
-              flush=True)
-        return 2
-    thread = argv[1] if resumed else str(uuid.uuid4())
     counter = home / "exec-count"
     number = int(counter.read_text()) if counter.exists() else 0
     counter.write_text(str(number + 1))
@@ -960,8 +920,7 @@ def execute():
     if not isinstance(reply, str):
         reply = json.dumps(reply, ensure_ascii=False)
     message(reply)
-    if output:
-        output.write_text(reply + "\n")
+
     completed = {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 2}}
     if run.get("final_usage_after_completion"):
         # The model turn can finish before the CLI flushes its last quota
@@ -976,11 +935,188 @@ def execute():
         emit(completed)
     return 0
 
-command = sys.argv[1]
-if command == "app-server":
+def native_turn(request, thread, resumed, thread_params):
+    params = request["params"]
+    schema = params.get("outputSchema")
+    review = schema is not None and "verdict" in schema["properties"]
+    invocation = {"command": "turn/start", "resume": resumed, "review": review,
+                  "prompt": params["input"][0]["text"], "pid": os.getpid(),
+                  "sqlite_home": os.environ.get("CODEX_SQLITE_HOME"), "cwd": os.getcwd(),
+                  "sandboxPolicy": params.get("sandboxPolicy"), "approvalPolicy": params["approvalPolicy"],
+                  "output_schema": schema, "model": params["model"], "effort": params["effort"],
+                  "thread_config": thread_params.get("config", {}),
+                  "supervisor": int(subprocess.check_output(["ps", "-o", "ppid=", "-p", str(os.getpgrp())]))}
+    if os.environ.get("CODEX_FAKE_STATE"):
+        state = json.loads(Path(os.environ["CODEX_FAKE_STATE"]).read_text())
+        invocation["admitted_thread"] = state["reviews"][-1]["thread"] if review else state["thread"]
+    turn = {"id": str(uuid.uuid4()), "items": [], "status": "inProgress"}
+    emit({"id": request["id"], "result": {"turn": turn}})
+    def notify(method, **fields):
+        emit({"method": method, "params": dict(threadId=thread, turnId=turn["id"], **fields)})
+    def event(value):
+        kind = value["type"]
+        if kind == "turn.started":
+            notify("turn/started", turn=turn)
+        elif kind in ("item.started", "item.completed"):
+            item = value["item"]
+            if item["type"] == "agent_message":
+                item = {"type": "agentMessage", "id": item["id"], "text": item["text"]}
+            elif item["type"] == "command_execution":
+                item = {"type": "commandExecution", "id": item["id"], "command": item["command"],
+                        "exitCode": item["exit_code"], "aggregatedOutput": item["aggregated_output"]}
+            notify(kind.replace(".", "/"), item=item)
+        elif kind == "turn.completed":
+            notify("turn/completed", turn=dict(turn, status="completed"))
+        elif kind in ("error", "turn.failed"):
+            error = value.get("error") or {"message": value["message"]}
+            retry = error["message"].startswith("Reconnecting")
+            notify("error", error=error, willRetry=retry)
+            if not retry:
+                notify("turn/completed", turn=dict(turn, status="failed", error=error))
+    return execute(invocation, thread, event)
+
+
+def work_server():
+    resumed = False
+    thread = None
+    for line in sys.stdin:
+        request = json.loads(line)
+        method = request["method"]
+        params = request.get("params", {})
+        if method in ("thread/start", "thread/resume"):
+            resumed = method == "thread/resume"
+            thread = params["threadId"] if resumed else str(uuid.uuid4())
+            stored = home / ("fixture-thread-" + thread)
+            if resumed and not stored.exists():
+                emit({"id": request["id"], "error": {"code": -32002, "message": "Missing thread " + thread}})
+                continue
+            thread_params = params
+            counter = home / "exec-count"
+            index = int(counter.read_text()) if counter.exists() else 0
+            runs = fixture()["runs"]
+            run = runs[min(index, len(runs) - 1)]
+            if run.get("before_thread") or run.get("session_gate"):
+                invocation = {"command": method, "resume": resumed, "review": params.get("config", {}).get("web_search") == "disabled",
+                              "prompt": None}
+                if run.get("session_gate"):
+                    trace(dict(invocation, thread=thread))
+                    while not Path(run["session_gate"]).exists():
+                        time.sleep(0.02)
+                else:
+                    def failed(event):
+                        error = event.get("error") or {"message": event["message"]}
+                        emit({"id": request["id"], "error": dict(error, code=-32603)})
+                    execute(invocation, thread, failed)
+                    continue
+            stored.touch()
+            settings, profiles, section = {}, {}, None
+            for line in (home / "config.toml").read_text().splitlines() if (home / "config.toml").exists() else []:
+                line = line.strip()
+                if line.startswith("["):
+                    section = line.strip("[]").removeprefix("profiles.").strip('"')
+                match = re.match(r"""(model|model_reasoning_effort|profile)\s*=\s*["']([^"']+)""", line)
+                if match:
+                    (settings if section is None else profiles.setdefault(section, {}))[match[1]] = match[2]
+            settings.update(profiles.get(settings.get("profile"), {}))
+            result = {"thread": {"id": thread}, "model": settings.get("model", "fake-model"),
+                      "reasoningEffort": settings.get("model_reasoning_effort")}
+        elif method == "turn/start":
+            if params["threadId"] != thread:
+                sys.exit("wrong native thread")
+            native_turn(request, thread, resumed, thread_params)
+            continue
+        else:
+            result = {}
+        emit({"id": request["id"], "result": result})
+
+
+def acp_agent():
+    # Script the adapter half of the boundary; the real CODEX_PATH shim still admits the native turn.
+    backend = subprocess.Popen([os.environ["CODEX_PATH"], "app-server"], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, text=True, env=dict(os.environ, CODEX_FAKE_WORK_SERVER="1"))
+    def rpc(method, **params):
+        backend.stdin.write(json.dumps({"id": 1, "method": method, "params": params}) + "\n")
+        backend.stdin.flush()
+        response = json.loads(backend.stdout.readline())
+        if "error" in response:
+            raise ValueError(response["error"]["message"])
+        return response["result"]
+    def send(**fields):
+        emit(dict(fields, jsonrpc="2.0"))
+    def update(event, **fields):
+        send(method="session/update", params={"sessionId": thread, "update": dict(fields, sessionUpdate=event)})
+    catalog = ("fake-model Task.1_a Review.2_b Fast-2 Strong-2 Strong-3 Strong-4 checkpoint-model "
+               "work-model checkpoint-review angle-model codex-review-model fallback-model model-a model-b model-c "
+               "configured-review fixture-reflect fixture-codex-work fixture-codex-scout gpt-6.2-sol review-model gpt-5 gpt-5.5 gpt-6-sol gpt-6.1-sol fixture-probe-model")
+    choices = {"model": catalog.split(), "reasoning_effort": "low medium high xhigh max ultra".split(),
+               "mode": ["workspace-write", "read-only"]}
+    selected = {}
+    def options():
+        return [{"id": key, "name": key, "type": "select", "currentValue": selected.get(key),
+                 "options": [{"name": v, "value": v} for v in values]} for key, values in choices.items()]
+    try:
+        for line in sys.stdin:
+            request = json.loads(line)
+            method, params = request["method"], request["params"]
+            result = {}
+            if method == "initialize":
+                assert params["protocolVersion"] == 1
+                rpc("initialize")
+                result = {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}}}}
+            elif method in ("session/new", "session/resume"):
+                fields = {"threadId": params["sessionId"]} if method == "session/resume" else {}
+                try:
+                    opened = rpc("thread/resume" if fields else "thread/start", cwd=params["cwd"], **fields)
+                except ValueError as exc:
+                    send(id=request["id"], error={"code": -32603, "message": str(exc)})
+                    continue
+                thread = opened["thread"]["id"]
+                selected.update(model=opened["model"], reasoning_effort=opened["reasoningEffort"],
+                                mode=os.environ["INITIAL_AGENT_MODE"])
+                choices["model"].append(selected["model"])
+                result = {"sessionId": thread, "configOptions": options()}
+            elif method == "session/set_config_option":
+                selected[params["configId"]] = params["value"]
+                result = {"configOptions": options()}
+            elif method == "session/set_title":
+                rpc("thread/name/set", threadId=thread, name=params["title"])
+            elif method == "session/prompt":
+                assert params["sessionId"] == thread
+                rpc("turn/start", threadId=thread, model=selected["model"], effort=selected["reasoning_effort"],
+                    approvalPolicy="on-request", sandboxPolicy={"type": "readOnly"}, input=params["prompt"])
+                while True:
+                    native = json.loads(backend.stdout.readline())
+                    body = native["params"]
+                    if native["method"] == "item/completed":
+                        item = body["item"]
+                        if item["type"] == "agentMessage":
+                            update("agent_message_chunk", messageId=item["id"], content={"type":"text","text":item["text"]})
+                        elif item["type"] == "commandExecution":
+                            update("tool_call", toolCallId=item["id"], title=item["command"], kind="execute",
+                                   rawInput={"command": item["command"]})
+                            update("tool_call_update", toolCallId=item["id"], status="completed",
+                                   _meta={"terminal_exit":{"exit_code":item["exitCode"]}},
+                                   content=[{"type":"content","content":{"type":"text","text":item["aggregatedOutput"]}}])
+                    elif native["method"] == "turn/completed":
+                        result = {"stopReason": "end_turn"}
+                        if body["turn"]["status"] == "failed":
+                            result["_meta"] = {"jetbrains":{"air":{"sessionFailure":{"severity":"error",
+                                "category":"provider_error","title":body["turn"]["error"]["message"]}}}}
+                        break
+            else:
+                raise ValueError("unexpected ACP method " + method)
+            send(id=request["id"], result=result)
+    finally:
+        backend.stdin.close()
+        backend.wait()
+
+command = sys.argv[1] if len(sys.argv) > 1 else ""
+if Path(sys.argv[0]).name == "codex-acp":
+    acp_agent()
+elif command == "app-server" and os.environ.get("CODEX_FAKE_WORK_SERVER"):
+    work_server()
+elif command == "app-server":
     app_server()
-elif command == "exec":
-    sys.exit(execute())
 elif command == "sandbox":
     trace({"command": "sandbox", "argv": sys.argv[1:], "cwd": os.getcwd()})
     args = sys.argv[sys.argv.index("--") + 1:]
@@ -1175,6 +1311,7 @@ class RotationTestCase(unittest.TestCase):
         self.fake = self.root / "codex"
         self.fake.write_text("#!" + PYTHON + "\n" + FAKE_CODEX)
         self.fake.chmod(0o700)
+        (self.root / "codex-acp").symlink_to(self.fake)
         self.gh_trace_path = self.root / "fake-gh-trace.jsonl"
         fake_gh = self.root / "gh"
         fake_gh.write_text("#!" + PYTHON + "\n" + FAKE_GH)
@@ -1192,7 +1329,7 @@ class RotationTestCase(unittest.TestCase):
             '  *) exec ' + shlex.quote(real_git) + ' "$@" ;;\n'
             "esac\n")
         fake_git.chmod(0o700)
-        self.env = dict(os.environ, CODEX_TASK_HOME=str(self.home),
+        self.env = dict(os.environ, HOME=str(self.root), CODEX_TASK_HOME=str(self.home),
                         CODEX_TASK_CODEX=str(self.fake), CODEX_FAKE_TRACE=str(self.trace_path),
                         CODEX_FAKE_GH_TRACE=str(self.gh_trace_path),
                         CODEX_FAKE_GH_STATE=str(self.root / "fake-gh-state.json"),
@@ -1439,7 +1576,10 @@ class RotationTestCase(unittest.TestCase):
         return events
 
     def invocations(self):
-        return [event for event in self.trace() if event.get("command") == "exec"]
+        return [event for event in self.trace() if event.get("command") == "turn/start"]
+
+    def attempts(self):
+        return [event for event in self.trace() if event.get("command") in ("thread/start", "thread/resume", "turn/start")]
 
     def review_invocations(self):
         return [event for event in self.invocations() if event.get("review")]
@@ -1582,13 +1722,8 @@ class RotationTestCase(unittest.TestCase):
         return state
 
     def assert_scout_read_only(self, invocation):
-        argv = invocation["argv"]
-        self.assertIn('sandbox_mode="read-only"', argv)
-        index = argv.index('sandbox_mode="read-only"')
-        self.assertGreater(index, 0)
-        self.assertEqual(argv[index - 1], "-c")
-        self.assertNotIn("--output-schema", argv)
-        self.assertIsNone(invocation["schema_path"])
+        self.assertEqual(invocation["sandboxPolicy"], {"type": "readOnly", "networkAccess": False})
+        self.assertEqual(invocation["approvalPolicy"], "never")
         self.assertIsNone(invocation["output_schema"])
 
     def work_result(self, status="done", **changes):
@@ -1641,12 +1776,9 @@ class RotationTestCase(unittest.TestCase):
                 "options": [[] for _ in questions] if options is None else options}
 
     def assert_output_schema(self, invocation, slug, review=False):
-        filename = "review-schema.json" if review else "result-schema.json"
-        expected = self.home / "claude-tasks" / slug / filename
-        self.assertIn("--output-schema", invocation["argv"])
-        self.assertEqual(invocation["schema_path"], str(expected))
         schema = invocation["output_schema"]
-        self.assertEqual(schema, json.loads(expected.read_text()))
+        contracts = self.worker().result_schema
+        self.assertEqual(schema, contracts.REVIEW_SCHEMA if review else contracts.RESULT_SCHEMA, slug)
 
         def strict(value):
             if isinstance(value, dict):
@@ -1677,6 +1809,12 @@ class RotationTestCase(unittest.TestCase):
             self.assertCountEqual(decision["enum"], ["fixed", "rejected"])
 
     def assert_workspace_sandbox(self, invocation, writable_dirs=()):
+        if invocation["command"] == "turn/start":
+            self.assertEqual(invocation["sandboxPolicy"], {
+                "type": "workspaceWrite", "writableRoots": list(writable_dirs), "networkAccess": True,
+                "excludeTmpdirEnvVar": False, "excludeSlashTmp": False})
+            self.assertEqual(invocation["approvalPolicy"], "never")
+            return
         argv = invocation["argv"]
         settings = [argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "-c"]
         sandbox = [value for value in settings if value.startswith("sandbox_")]
@@ -1691,5 +1829,8 @@ class RotationTestCase(unittest.TestCase):
         self.assertNotIn("--add-dir", argv)
 
     def assert_no_workspace_sandbox(self, invocation):
+        if invocation["command"] == "turn/start":
+            self.assertIsNone(invocation["sandboxPolicy"])
+            return
         self.assertFalse(any(value.startswith("sandbox_") for value in invocation["argv"]),
                          invocation["argv"])
