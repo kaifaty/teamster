@@ -1,6 +1,10 @@
 # Lead guide
 
-The lead plans, writes the brief, reviews the result and merges; the worker implements in its own git worktree.
+This guide is for the operator. The lead plans, writes the brief, reviews the result and merges.
+Managed executors perform their assigned work or review and return any request for another session in their result.
+The operator can then run `teamster review` for an independent review or `teamster say` to continue the worker's session.
+For Codex, the thread's native rollout under the account's `sessions/YYYY/MM/DD/` records tool attempts.
+Match each `response_item` of type `function_call` or `custom_tool_call` to its output by `call_id` to see a rejected command.
 
 Reference detail lives in the package docs. Read any file below with `teamster docs <name>`
 (use its name without `.md`), only when its topic comes up:

@@ -29,9 +29,10 @@ def backend():
     contract = json.loads((directory / "options").read_text())
     target = directory / "target"
     close_error = directory / "close-error"
-    # The account may filter its shell environment. Set only the invocation's ownership key.
+    # The account may filter its shell environment. Preserve the turn owner and executor role.
     terminal_marker = f"shell_environment_policy.set.{procs.TURN_PROCESS_MARKER}={json.dumps(env[procs.TURN_PROCESS_MARKER])}"
-    argv = [binary, *sys.argv[1:], "-c", terminal_marker]
+    argv = [binary, *sys.argv[1:], "-c", terminal_marker,
+            "-c", f'shell_environment_policy.set.{config.MANAGED_EXECUTOR}="1"']
     if contract.get("chatgpt_account_id"):
         argv.extend(["-c", 'forced_login_method="chatgpt"', "-c",
                      "forced_chatgpt_workspace_id=" + json.dumps(contract["chatgpt_account_id"])])
@@ -53,14 +54,16 @@ def backend():
                     # exec honors the account's trusted projects and configured tool restrictions.
                     settings = params.setdefault("config", {})
                     settings.pop("projects", None)
-                    settings.pop("skills", None)
+                    # Codex applies session skill selectors after the account's own rules.
+                    settings["skills"] = {"config": [{"name": "teamster", "enabled": False}]}
+                    settings.setdefault("features", {}).update(multi_agent=False, multi_agent_v2=False)
+                    settings.setdefault("agents", {})["enabled"] = False
+                    settings.setdefault("plugins", {}).setdefault("teamster@kaifaty", {})["enabled"] = False
                     if contract.get("chatgpt_account_id"):
                         params["modelProvider"] = "openai"
                     if contract["review"]:
                         settings["web_search"] = "disabled"
-                        settings.setdefault("features", {}).update(multi_agent=False, multi_agent_v2=False,
-                                                                   view_image=False)
-                        settings.setdefault("agents", {})["enabled"] = False
+                        settings["features"]["view_image"] = False
                     if contract["sandbox"] == "workspace-write":
                         settings["sandbox_workspace_write"] = {"network_access": True, "writable_roots": contract["roots"]}
                     params["approvalPolicy"] = "never"
@@ -207,9 +210,11 @@ def codex_acp_turn():
             raise InterruptedError("Supervisor closed the Codex turn")
 
     try:
-        with acp.AcpClient([options["adapter"]], os.getcwd(), lambda _: None, lambda _: None,
-                           check_active=check_active, env=env, own_group=False) as client:
+        with config.executor_environment(env) as worker_env, acp.AcpClient(
+                [options["adapter"]], os.getcwd(), lambda _: None, lambda _: None,
+                check_active=check_active, env=worker_env, own_group=False) as client:
             session = client.open_session(options["thread"] or None, model=options["model"], config_options=settings,
+                                          system_prompt=config.EXECUTOR_INSTRUCTIONS,
                                           capabilities={"_meta": {"terminal_output_delta": True, "jetbrains": {"air": {
                                               "version": 1, "capabilities": ["sessionFailure"]}}}})
             emit({"type": "thread.started", "thread_id": session, **client.config_values})

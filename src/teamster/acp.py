@@ -291,7 +291,7 @@ class AcpClient:
                 deadline = time.monotonic() + 3
 
     def open_session(self, session_id=None, auth_method=None, model=None, *, meta=None, initial_config=None,
-                     config_options=None, capabilities=None):
+                     config_options=None, capabilities=None, system_prompt=None):
         """Open an ACP v1 session and confirm the requested initial and subsequent selections."""
         self.session_id = None
         info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": capabilities or {},
@@ -308,6 +308,8 @@ class AcpClient:
                 raise ValueError(f"Unsupported ACP auth method {auth_method!r}. Available: {available}")
             self._call("authenticate", {"methodId": auth_method})
         params = {"cwd": self.cwd, "mcpServers": []}
+        if system_prompt:
+            params["systemPrompt"] = {"mode": "append", "content": [{"type": "text", "text": system_prompt}]}
         if meta is not None:
             params["_meta"] = meta
         if initial_config:

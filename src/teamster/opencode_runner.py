@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import acp, clock, procs
+from . import acp, clock, config, procs
 
 
 PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
@@ -18,6 +18,7 @@ def provider_connection(worktree, model):
     """Read the native, merged model route in the same project and environment as ACP."""
     provider, model_name = model.split("/", 1)
     env = dict(os.environ, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
+    config.mark_executor(env)
 
     def listing(*args):
         reply = subprocess.run(["opencode", *args], cwd=worktree, env=env, stdin=subprocess.DEVNULL,
@@ -156,9 +157,14 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
 
     try:
         check_active()
+        overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
+        overlay.setdefault("policies", []).extend([{"action": "tool.use", "resource": "subagent:*", "effect": "deny"},
+                                                  {"action": "skill.use", "resource": "teamster", "effect": "deny"}])
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay)
         # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
-        with acp.AcpClient(["opencode", "acp"], worktree, lambda event: None, allow_once,
-                           check_active=check_active, env=env, stderr=subprocess.DEVNULL if bound else None) as client:
+        with config.executor_environment(env) as worker_env, acp.AcpClient(
+                ["opencode", "acp"], worktree, lambda event: None, allow_once, check_active=check_active,
+                env=worker_env, stderr=subprocess.DEVNULL if bound else None) as client:
             if started:
                 started(client.process)
             opened = client.open_session(session_id, model=model)
@@ -166,10 +172,10 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
                 session_id = opened
                 created(session_id)
             if title is not None:
-                _set_title(worktree, env, client.process.pid, session_id, title, check_active, bound)
+                _set_title(worktree, worker_env, client.process.pid, session_id, title, check_active, bound)
             check_active()
             client.on_update = update
-            reason = client.prompt(prompt)
+            reason = client.prompt(config.EXECUTOR_INSTRUCTIONS + "\n\n" + prompt)
         check_active()
         if client.process.returncode:
             return "failed", f"OpenCode exited with {client.process.returncode}"

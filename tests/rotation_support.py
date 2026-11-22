@@ -215,7 +215,7 @@ def duty_config(layers=None):
             node[names[-1]] = value
     return settings
 
-def duty_command_environment():
+def shell_environment():
     policy = duty_config().get("shell_environment_policy", {})
     inherit = policy.get("inherit", "all")
     if inherit == "all":
@@ -371,7 +371,7 @@ def duty_turn(request, thread, model, models):
                       "threadId": thread["id"], "turnId": turn, "item": dict(item, status="declined")}})
             continue
         trace({"command": "duty-executed", "item_id": item_id, "params": approval})
-        environment = duty_command_environment()
+        environment = shell_environment()
         if step.get("execute"):
             trace({"command": "duty-command-environment", "started_by": environment.get("TEAMSTER_STARTED_BY"),
                    "command_marker": environment.get("TEAMSTER_DUTY_PROCESS"),
@@ -419,7 +419,7 @@ def duty_turn(request, thread, model, models):
                   "item": dict(item, status="failed" if item.get("exitCode") not in (None, 0) else "completed")}})
     if run.get("child"):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
-                                 env=duty_command_environment(), start_new_session=True)
+                                 env=shell_environment(), start_new_session=True)
         trace({"command": "duty-child", "child_pid": child.pid})
     if run.get("mode") == "crash":
         sys.exit(1)
@@ -847,6 +847,26 @@ def execute(invocation, thread, emit):
                 "command": command["command"], "exit_code": command["exit_code"],
                 "aggregated_output": command.get("aggregated_output", "fixture command failed\n")}
         emit({"type": command.get("event_type", "item.completed"), "item": item})
+
+    def shell(command):
+        call_id = str(uuid.uuid4())
+        append(rollout, {"type": "response_item", "payload": {"type": "function_call", "call_id": call_id,
+               "name": "exec_command", "arguments": json.dumps({"cmd": command})}})
+        proc = subprocess.run(["/bin/sh", "-c", command], env=shell_environment(), text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+        append(rollout, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": call_id,
+               "output": f"Exit code: {proc.returncode}\n{proc.stdout}"}})
+        emit({"type": "item.completed", "item": {"id": call_id, "type": "command_execution", "command": command,
+              "exit_code": proc.returncode, "aggregated_output": proc.stdout}})
+        return proc.stdout
+
+    for command in run.get("shell", []):
+        shell(command)
+    if run.get("required_review") and run["required_review"] in shell("cat AGENTS.md"):
+        if "Only the operator may delegate" in invocation["instructions"]:
+            run["reply"] = dict(run["reply"], status="needs_decision", questions=["Please assign an independent review."])
+        else:
+            shell(run["required_review"])
     for text in run.get("messages", []):
         message(text)
     if run.get("modify"):
@@ -953,6 +973,7 @@ def native_turn(request, thread, resumed, thread_params):
                   "sqlite_home": os.environ.get("CODEX_SQLITE_HOME"), "cwd": os.getcwd(),
                   "sandboxPolicy": params.get("sandboxPolicy"), "approvalPolicy": params["approvalPolicy"],
                   "output_schema": schema, "model": params["model"], "effort": params["effort"],
+                  "instructions": thread_params.get("developerInstructions", ""),
                   "thread_config": thread_params.get("config", {}), "thread_sandbox": thread_params.get("sandbox"),
                   "supervisor": int(subprocess.check_output(["ps", "-o", "ppid=", "-p", str(os.getpgrp())]))}
     if os.environ.get("CODEX_FAKE_STATE"):
@@ -1045,6 +1066,8 @@ def work_server():
 
 def acp_agent():
     # Script the adapter half of the boundary; the real CODEX_PATH shim still admits the native turn.
+    assert os.environ.get("TEAMSTER_MANAGED_EXECUTOR") == "1"
+    assert not {"BOARD_TOKEN", "BOARD_EXTERNAL_DUTY_CONFIG", "BOARD_URL"}.intersection(os.environ)
     trace({"command": "codex-acp", "prompt_suggestions": os.environ.get("CODEX_ACP_PROMPT_SUGGESTIONS")})
     backend = subprocess.Popen([os.environ["CODEX_PATH"], "app-server"], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, text=True, env=dict(os.environ, CODEX_FAKE_WORK_SERVER="1"))
@@ -1075,12 +1098,16 @@ def acp_agent():
             result = {}
             if method == "initialize":
                 assert params["protocolVersion"] == 1
+                assert params["clientInfo"]["name"] == "teamster"
                 rpc("initialize")
                 result = {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}, "close": {}}}}
             elif method in ("session/new", "session/resume"):
                 fields = {"threadId": params["sessionId"]} if method == "session/resume" else {}
+                if "systemPrompt" in params:
+                    assert params["systemPrompt"]["mode"] == "append"
+                    fields["developerInstructions"] = params["systemPrompt"]["content"][0]["text"]
                 try:
-                    opened = rpc("thread/resume" if fields else "thread/start", cwd=params["cwd"], **fields)
+                    opened = rpc("thread/resume" if method == "session/resume" else "thread/start", cwd=params["cwd"], **fields)
                 except ValueError as exc:
                     send(id=request["id"], error={"code": -32603, "message": str(exc)})
                     continue

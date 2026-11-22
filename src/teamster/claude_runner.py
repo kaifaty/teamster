@@ -385,7 +385,9 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     if launch is None:
         return response
     executable, environment, token = launch
-    options = {"strictMcpConfig": True}
+    settings = {"enabledPlugins": {"teamster@kaifaty": False}}
+    options = {"strictMcpConfig": True, "settings": settings}
+    instructions = config.EXECUTOR_INSTRUCTIONS
     meta = {"claudeCode": {"options": options, "emitRawSDKMessages": True}}
     if role != "scout":
         schema = (result_schema.REVIEW_SCHEMA if reviewing else result_schema.REFLECT_SCHEMA if role == "reflect"
@@ -398,8 +400,9 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         options.update(tools=tools, allowedTools=tools, disallowedTools=["Edit", "Write", "NotebookEdit"],
                        allowDangerouslySkipPermissions=False)
     else:
-        meta["systemPrompt"] = {"append": Path(system_prompt).read_text(encoding="utf-8")}
-        options["settings"] = bash_hook_settings()
+        instructions = Path(system_prompt).read_text(encoding="utf-8") + instructions
+        settings.update(bash_hook_settings())
+        options["disallowedTools"] = ["Agent", "Task"]
     for key, value in (("model", model), ("effort", effort), ("maxTurns", max_turns)):
         if value is not None:
             options[key] = value
@@ -449,15 +452,15 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
 
     telemetry = response["telemetry"]
     mode = "default" if read_only else "bypassPermissions"
-    client = acp.AcpClient([config.TASK_ADAPTERS["claude"]], worktree, lambda update: None, lambda params: None,
-                           check_active=check_active, on_notification=notification, env=environment,
-                           stderr=subprocess.DEVNULL)
     try:
-        with processes, client:
+        with config.executor_environment(environment) as worker_env, processes, acp.AcpClient(
+                [config.TASK_ADAPTERS["claude"]], worktree, lambda update: None, lambda params: None,
+                check_active=check_active, on_notification=notification, env=worker_env,
+                stderr=subprocess.DEVNULL) as client:
             processes.leader = client.process
             if started:
                 started(client.process)
-            cursor = client.open_session(session_id, meta=meta, initial_config={"mode": mode})
+            cursor = client.open_session(session_id, meta=meta, initial_config={"mode": mode}, system_prompt=instructions)
             if token in cursor:
                 raise ValueError("Invalid Claude session ID")
             telemetry["session_id"] = cursor

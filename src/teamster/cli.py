@@ -52,6 +52,7 @@ The internal _run <slug> supervisor survives the caller and resumes assigned wor
 import argparse
 import datetime
 import math
+import os
 import re
 import sys
 
@@ -513,6 +514,8 @@ def main():
                                  + ("--since" if a.since is not None else "--repo"))
     else:
         a = p.parse_args()
+    if os.environ.get(config.MANAGED_EXECUTOR) == "1" and a.cmd not in ("docs", "path"):
+        p.exit(1, f"teamster: '{a.cmd}' is reserved for the operator. Return the request in your result.\n")
     if a.cmd == "start":
         try:
             config.validate_work_model(a.executor, a.model)

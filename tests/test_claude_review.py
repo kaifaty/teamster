@@ -119,7 +119,11 @@ if acp:
               "params": {"sessionId": session_id, "toolCall": {"title": "Write"},
                          "options": [{"optionId": "write", "kind": "allow_once"}]}})
         assert json.loads(sys.stdin.readline())["result"]["outcome"] == {"outcome": "cancelled"}
-    system_prompt = meta.get("systemPrompt", {}).get("append")
+    assert params["systemPrompt"]["mode"] == "append"
+    system_prompt = params["systemPrompt"]["content"][0]["text"]
+    assert "managed Teamster executor" in system_prompt
+    assert os.environ.get("TEAMSTER_MANAGED_EXECUTOR") == "1"
+    assert not {"BOARD_TOKEN", "BOARD_EXTERNAL_DUTY_CONFIG", "BOARD_URL"}.intersection(os.environ)
     transport = {"method": setup["method"], "resume": params.get("sessionId"), "options": options,
                  "mode": mode["value"], "prompt": turn["params"]["prompt"][0]["text"]}
     if run.get("saved_cursor"):
@@ -252,6 +256,7 @@ sys.exit(run.get("exit_code", 0))
 
 class ClaudeReviewTests(RotationTestCase):
     def test_claude_work_turn_argv_environment_and_result(self):
+        self.env.update(BOARD_TOKEN="fixture-token", BOARD_EXTERNAL_DUTY_CONFIG=str(self.root / "board.json"))
         self.env["COPYFILE_DISABLE"] = "0"
         result = self.work_result()
         cursor = self.root / "saved-cursor"
@@ -310,7 +315,8 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(entry["mode"], "bypassPermissions")
                 self.assertTrue(sdk["strictMcpConfig"])
                 self.assertNotIn("allowedTools", sdk)
-                self.assertNotIn("disallowedTools", sdk)
+                self.assertEqual(sdk["disallowedTools"], ["Agent", "Task"])
+                self.assertEqual(sdk["settings"]["enabledPlugins"], {"teamster@kaifaty": False})
                 self.assertFalse(sdk["settings"]["disableAllHooks"])
                 self.assertEqual(sdk["settings"]["hooks"]["PreToolUse"], [
                     {"matcher": "Bash", "hooks": [{"type": "command", "command": shlex.join(
@@ -981,7 +987,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(options["tools"], options["allowedTools"])
         self.assertEqual(options["disallowedTools"], ["Edit", "Write", "NotebookEdit"])
         self.assertTrue(options["strictMcpConfig"])
-        self.assertNotIn("settings", options)
+        self.assertEqual(options["settings"], {"enabledPlugins": {"teamster@kaifaty": False}})
 
     def claude_invocations(self):
         return [entry for entry in self.claude_trace() if entry["command"] == "review"]
