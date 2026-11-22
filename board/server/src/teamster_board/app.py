@@ -518,13 +518,15 @@ def create_app(settings=None):
         if board.settings.read_only:
             return error(403, "read_only")
         try:
-            return {"task": await asyncio.to_thread(board.project_tasks.save, data)}
+            task = await asyncio.to_thread(board.project_tasks.save, data)
         except KeyError:
             return error(404, "Unknown project task")
         except ValueError as exc:
             return error(400, str(exc))
         except (OSError, sqlite3.Error):
             return error(503, "project_tasks_unavailable")
+        board.publish({"type": "project_tasks_changed"})
+        return {"task": task}
 
     @app.get("/api/events")
     async def events(since: float | None = None, until: float | None = None):

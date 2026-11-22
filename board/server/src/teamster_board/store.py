@@ -21,6 +21,10 @@ FAILURES = {"failed", "stopped", "interrupted", "budget_exhausted", "conflict", 
             "refused", "unavailable", "exhausted", "running", "sleeping", "timeout"}
 
 
+def ready_for_review(result_status, outcome):
+    return result_status == "done" and outcome not in FAILURES
+
+
 def branch_changes(worktree, base):
     """Read branch statistics only for a worktree and ref supplied by task state."""
     if (not text(worktree) or not text(base) or base.startswith("-") or base == "@"
@@ -301,7 +305,7 @@ class Store:
         elif is_alive:
             column = "sleeping" if outcome == "sleeping" else "running"
         else:
-            column = "review_me" if status == "done" and outcome not in FAILURES else "attention"
+            column = "review_me" if ready_for_review(status, outcome) else "attention"
         current_phase, started_at = phase(state, is_alive)
         if record.observed_phase != current_phase:
             record.observed_phase = current_phase

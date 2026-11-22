@@ -9,10 +9,12 @@ from uuid import uuid4
 
 from .actions import string
 from .duty_tasks import task_id
+from .store import ready_for_review
 from .task_files import ARCHIVED, safe_slug
 
 
-STATUSES = ("active", "needs_input", "blocked", "ready", "done", "cancelled")
+TERMINAL = ("done", "cancelled")
+STATUSES = ("active", "needs_input", "blocked", "ready", *TERMINAL)
 PR_PATH = re.compile(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(pulls?)/([1-9][0-9]*)/?")
 HOST_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
 PR_HOST = re.compile(rf"(?:{HOST_LABEL}(?:\.{HOST_LABEL})*|\[[0-9a-fA-F:.]+\])(?::[0-9]+)?")
@@ -82,20 +84,35 @@ def _fields(project, title, status="active", sessions=()):
             "depends_on": [], "sessions": list(sessions), "pull_requests": []}
 
 
+def _managed_status(source):
+    verdict = source["lead_verdict"]
+    if verdict:
+        return "done" if verdict in ("accepted", "revised") else "cancelled"
+    if source["kind"] == "scout" and (source["archived"] or not source["alive"]):
+        return "done" if source["outcome"] == "completed" else "cancelled"
+    ready = ready_for_review(source["result_status"], source["outcome"])
+    if source["archived"]:
+        return "done" if ready else "cancelled"
+    if source["alive"]:
+        return "active"
+    if ready:
+        return "ready"
+    return "needs_input" if source["result_status"] == "needs_decision" else "blocked"
+
+
 def _cards(saved, sources):
     cards = dict(saved)
     attached = {ref for card in saved.values() for ref in card["sessions"]}
     for ref, source in sources.items():
-        column = source["column"]
-        if (ref in cards or ref in attached or source["kind"] == "session"
-                or column == "closed" or source["lead_verdict"]):
+        if source["kind"] == "session":
             continue
-        status = "active"
-        if column == "review_me":
-            status = "ready"
-        elif column == "attention":
-            status = "needs_input" if source["result_status"] == "needs_decision" else "blocked"
-        cards[ref] = _fields(source["repo"], source["slug"], status, [ref])
+        if ref in saved:
+            if saved[ref].get("follow_source"):
+                cards[ref] = dict(saved[ref], status=_managed_status(source))
+        elif ref not in attached:
+            status = _managed_status(source)
+            if status not in TERMINAL:
+                cards[ref] = dict(_fields(source["repo"], source["slug"], status, [ref]), follow_source=True)
     return cards
 
 
@@ -116,11 +133,13 @@ def _managed_links(refs, sources):
 
 def _public(identity, card, sources):
     fields = dict(card)
+    fields.pop("follow_source", None)
     hidden = set(fields.pop("hidden_prs", ()))
     slug, managed = _managed_links(card["sessions"], sources)
+    session_slugs = {ref: sources[ref]["slug"] for ref in card["sessions"] if ref in sources}
     prs = {pr["url"]: pr for pr in card["pull_requests"]}
     prs.update((url, pr) for url, pr in managed.items() if url not in hidden)
-    return dict(fields, id=identity, source_slug=slug, pull_requests=list(prs.values()))
+    return dict(fields, id=identity, source_slug=slug, session_slugs=session_slugs, pull_requests=list(prs.values()))
 
 
 def _links(card, field):
@@ -164,6 +183,8 @@ def _edit(data, current, sources):
         if any(ref not in sources and ref not in current["sessions"] for ref in refs):
             raise ValueError("Unknown session")
         card["sessions"] = list(dict.fromkeys(refs))
+    if "status" in data or data.get("id") not in card["sessions"]:
+        card.pop("follow_source", None)
     if "pull_requests" in data:
         card["pull_requests"] = _pull_requests(data["pull_requests"])
         # Replacing the displayed list can also remove a managed URL. New publications still appear.
@@ -201,6 +222,9 @@ class ProjectTasks:
                 previous, record = self._archives.get(name, (None, None))
                 if signature != previous:
                     record = self.store._record(name)
+                elif record is not None:
+                    # A new journal verdict can arrive after clean without changing state.json.
+                    record.summary = self.store._summary(name, record)
                 if record is not None:
                     _add_managed(sources, record)
                     cached[name] = (signature, record)
@@ -215,19 +239,32 @@ class ProjectTasks:
     @staticmethod
     def _load(db, *, create=False):
         version, = db.execute("PRAGMA user_version").fetchone()
-        if version == 0:
-            if create:
-                db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, fields TEXT NOT NULL)")
-                db.execute("PRAGMA user_version = 1")
-            return {}
-        if version != 1:
+        if version not in (0, 1, 2):
             raise sqlite3.DatabaseError("Unsupported project task database version")
-        return {identity: json.loads(fields) for identity, fields in db.execute("SELECT id, fields FROM tasks")}
+        if version == 0:
+            if not create:
+                return {}
+            db.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, fields TEXT NOT NULL)")
+        saved = {identity: json.loads(fields) for identity, fields in db.execute("SELECT id, fields FROM tasks")}
+        if version == 1:
+            # V1 stored plain snapshots for parent/dependency pins, without their status origin.
+            linked = {ref for card in saved.values() for ref in _links(card, "parent_id") + card["depends_on"]}
+            for ref in linked:
+                card = saved[ref]
+                if (card["status"] not in TERMINAL
+                        and card == _fields(card["project"], ref.partition(":")[0], card["status"], [ref])):
+                    card["follow_source"] = True
+                    if create:
+                        db.execute("UPDATE tasks SET fields = ? WHERE id = ?", (json.dumps(card, ensure_ascii=False), ref))
+        if create and version < 2:
+            db.execute("PRAGMA user_version = 2")
+        return saved
 
     def tasks(self):
         saved = {}
         if self.path.exists():
             with self._connect("ro") as db:
+                db.execute("BEGIN")
                 saved = self._load(db)
         sources = self._sources(saved)
         return [_public(identity, card, sources) for identity, card in _cards(saved, sources).items()]

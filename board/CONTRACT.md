@@ -72,8 +72,10 @@ Duty selection and automatic elections run the installed `teamster` command.
   path. Assistant events may carry ISO `timestamp` values.
 - Map art: `board-art/<repo>/` in the task home, holding any of `sky.jpg`, `planet.png`, `emblem.png` and `biome.txt`. It stays
   outside the repository because project names and themes can be private, and is written by hand.
-- Project tasks are Board-owned records in `<data home>/board-project-tasks.sqlite3` (schema version 1).
-  The first save creates the database. Each edit and its link checks share a SQLite write transaction.
+- Project tasks are Board-owned records in `<data home>/board-project-tasks.sqlite3` (schema version 2).
+  Each edit and its link checks share a SQLite write transaction. The first successful save creates the task
+  table or upgrades version 1. Reads can use either version. In version 1 a referenced managed card with
+  its original fields and a nonterminal status is treated as following its source.
 - Constellations: `board-constellations.json` in the task home, written by hand and read on each request, for the same
   reason kept outside the repository: `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse"]}]}`.
 - Reflection: `tasks/.archive/INDEX.md` (the lesson table), `tasks/.archive/batch-<YYYY-MM-DD>[suffix].md`
@@ -139,6 +141,7 @@ interface ProjectTask {
   parent_id: string | null;
   depends_on: string[];       // project task IDs
   sessions: string[];         // stable managed work IDs or desktop session slugs
+  session_slugs: Record<string, string>; // available session reference → current Board slug, read-only
   pull_requests: { provider: "github" | "forgejo"; url: string }[];
   source_slug: string | null; // read-only address for GET /api/tasks/{slug}
 }
@@ -722,27 +725,34 @@ children, for progress counts. Draw tasks in the four current states even if the
 The same response includes unclaimed work from the Board's task cache. A managed work, review or
 scout record needs its own slug matching the folder, an explicit repository and a creation time.
 Its projected card uses the repository basename, the slug as its title and the existing managed ID
-(`<slug>:<created.hex()>`). Running and sleeping map to `active`, `review_me` to `ready`, and `attention`
-to `needs_input` for a `needs_decision` result or `blocked` otherwise. A closed column (including
-archive) or a lead verdict on the current turn ends the projection. Desktop sessions, duty,
-reflection, queues and CI events create no project tasks.
+(`<slug>:<created.hex()>`). Running and sleeping map to `active`. An idle work or review with a successful
+`done` result is `ready`, a `needs_decision` result is `needs_input`, and other idle results are `blocked`.
+These rules also apply when age alone puts the source in the ordinary Board's `closed` column.
+An archive, a finished scout, or a lead verdict on the current turn ends an unclaimed projection.
+Desktop sessions, duty, reflection, queues and CI events create no project tasks.
 
 `POST /api/actions/project-task` returns the saved card after each edit.
 
 - Send `project` and `title` to create a task with a new ID. Both are trimmed. The project is a safe
   single path component of up to 255 characters and the title is 1–200 characters. The default status is
   `active`, with a null parent and empty lists.
-- Send an existing `id` to update just the supplied fields. Editing a projected task or naming it as
-  a parent or dependency saves it under the same ID with its current status. From then on its status
-  changes through explicit edits.
+- Send an existing `id` to update just the supplied fields. Editing a projection or referencing it as a
+  parent or dependency preserves its ID. Its status follows the same managed run across turns and archives.
+  The current verdict `accepted` or `revised` gives `done`, and `dropped` or `redone` gives `cancelled`.
+  Without a verdict, archived work ready for review and successfully completed scouts count as `done`.
+  Other archives and finished scouts count as `cancelled`. These saved rows remain available for links and counts.
+  Posting `status` explicitly or detaching the original session gives the card its own lifecycle.
+  A card created with `project` and `title` has its own status from the start.
 - Supply `parent_id: null` to detach a child. Arrays replace their previous contents. IDs must exist,
   and parent chains and dependency chains are checked separately for cycles. Duplicate links collapse.
 - In `sessions`, send a Board slug or a returned stable reference. Managed slugs resolve to the
   ID for that run of `teamster start` or `teamster scout`. Desktop references use the existing
   `local_…` slug. Retaining a saved reference works after its source disappears. A session belongs
-  to one saved task. Attaching managed work to a common card absorbs its projection. For the ordinary task screen, use
-  `GET /api/tasks/{source_slug}`. The field holds the first attached managed slug still in the live
-  directory and is `null` when all such records are absent.
+  to one saved task. Attaching managed work to a common card absorbs its projection. For each available
+  reference, `session_slugs[ref]` is its address for `GET /api/tasks/{slug}`. Archived runs use their
+  timestamped directory name even when a new run reuses the original slug. A missing source keeps its
+  entry in `sessions` and has no key in `session_slugs`. The `source_slug` shortcut holds the first
+  attached managed slug still in the live directory, or `null` if none is available.
 - In `pull_requests`, send provider/URL pairs. GitHub uses `github.com/<owner>/<repo>/pull/<number>`
   and self-hosted Forgejo uses `<host>[:port]/<owner>/<repo>/pulls/<number>`. Both take HTTP(S)
   with a positive PR number. Credentials are rejected. The server strips the query, fragment,
@@ -1492,6 +1502,8 @@ Server → client only; the server ignores client messages. Every message is one
 
 - `{"type": "snapshot", "snapshot": Snapshot}` — first message after connect.
 - `{"type": "task", "task": TaskSummary}` — a task appeared or changed.
+- `{"type": "project_tasks_changed"}` — sent after a successful `POST /api/actions/project-task`.
+  Re-read `GET /api/project-tasks` for the committed cards and links.
 - `{"type": "task_removed", "slug": string}` — a live task folder disappeared (it is then sent again as
   `closed` if it was archived), or a session's metadata disappeared or became archived.
 - `{"type": "activity", "slug": string, "activity": Activity}` — new latest activity of a live task.
