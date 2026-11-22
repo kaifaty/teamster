@@ -315,7 +315,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(entry["mode"], "bypassPermissions")
                 self.assertTrue(sdk["strictMcpConfig"])
                 self.assertNotIn("allowedTools", sdk)
-                self.assertEqual(sdk["disallowedTools"], ["Agent", "Task"])
+                self.assertNotIn("disallowedTools", sdk)
                 self.assertEqual(sdk["settings"]["enabledPlugins"], {"teamster@kaifaty": False})
                 self.assertFalse(sdk["settings"]["disableAllHooks"])
                 self.assertEqual(sdk["settings"]["hooks"]["PreToolUse"], [

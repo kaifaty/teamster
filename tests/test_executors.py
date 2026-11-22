@@ -192,7 +192,7 @@ def install_fake_opencode(root):
         assert sys.argv[1:] == ["acp"]
         assert os.environ.get("COPYFILE_DISABLE") == "1"
         overlay = json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
-        assert {"action": "tool.use", "resource": "subagent:*", "effect": "deny"} in overlay["policies"]
+        assert {"action": "tool.use", "resource": "subagent:*", "effect": "deny"} not in overlay["policies"]
         assert {"action": "skill.use", "resource": "teamster", "effect": "deny"} in overlay["policies"]
         if "model" in overlay:
             assert overlay["model"] == "offline/model"
@@ -332,7 +332,12 @@ class ExecutorTests(RotationTestCase):
         first, review, followup = self.invocations()
         for turn in (first, review, followup):
             self.assertIn("managed Teamster executor", turn["instructions"])
-            self.assertFalse(turn["thread_config"]["agents"]["enabled"])
+            if turn["review"]:
+                self.assertFalse(turn["thread_config"]["agents"]["enabled"])
+            else:
+                self.assertNotIn("enabled", turn["thread_config"].get("agents", {}))
+                for feature in ("multi_agent", "multi_agent_v2"):
+                    self.assertNotIn(feature, turn["thread_config"].get("features", {}))
             self.assertIn({"name": "teamster", "enabled": False}, turn["thread_config"]["skills"]["config"])
             self.assertFalse(turn["thread_config"]["plugins"]["teamster@kaifaty"]["enabled"])
         self.assertTrue(review["review"])
@@ -346,13 +351,15 @@ class ExecutorTests(RotationTestCase):
         slug = "operator-control"
         nested = "teamster scout nested-review 'Review tracked.txt'"
         queued = shlex.join([sys.executable, "-I", str(SCRIPT), "say", slug, "Unexpected order", "--queue"])
+        denied = [nested, queued, "teamster _run missing", "teamster wait missing"]
+        reads = [f"teamster status {slug}", f"teamster stats {slug}", "teamster report --json"]
         # Stand in for an older installation later on PATH. The executor must reach this checkout's CLI.
         old = self.root / "teamster"
         old.write_text("#!/bin/sh\nexit 91\n")
         old.chmod(0o700)
         self.configure(language="en")
         fixture = self.account(self.home, "A", self.reset, runs=[
-            {"mode": "complete", "shell": [nested, queued], "reply": self.work_result(checks=[])}])
+            {"mode": "complete", "shell": denied + reads, "reply": self.work_result(checks=[])}])
         # The native shell starts with only core variables. Keep any regression inside the fake installation.
         fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": {
             "CODEX_TASK_CODEX": str(self.fake), "CODEX_TASK_HOME": str(self.home), "CODEX_FAKE_TRACE": str(self.trace_path)}}}
@@ -362,10 +369,12 @@ class ExecutorTests(RotationTestCase):
         state = self.state(slug)
         items = self.response_items(state["thread"])
         calls = [item for item in items if item["type"] in ("function_call", "custom_tool_call")]
-        self.assertEqual([json.loads(call["arguments"])["cmd"] for call in calls], [nested, queued])
+        self.assertEqual([json.loads(call["arguments"])["cmd"] for call in calls], denied + reads)
         outputs = {item["call_id"]: item["output"] for item in items if item["type"] == "function_call_output"}
-        for call, verb in zip(calls, ("scout", "say")):
+        for call, verb in zip(calls, ("scout", "say", "_run", "wait")):
             self.assertIn(f"Exit code: 1\nteamster: '{verb}' is reserved for the operator", outputs[call["call_id"]])
+        for call in calls[len(denied):]:
+            self.assertIn("Exit code: 0", outputs[call["call_id"]])
         self.assertEqual(list(self.home.glob("fixture-thread-*")), [self.home / ("fixture-thread-" + state["thread"])])
         self.assertFalse((self.home / "claude-tasks" / "nested-review").exists())
         self.assertEqual(state["turns"], 1)

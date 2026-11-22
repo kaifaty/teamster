@@ -402,7 +402,6 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     else:
         instructions = Path(system_prompt).read_text(encoding="utf-8") + instructions
         settings.update(bash_hook_settings())
-        options["disallowedTools"] = ["Agent", "Task"]
     for key, value in (("model", model), ("effort", effort), ("maxTurns", max_turns)):
         if value is not None:
             options[key] = value

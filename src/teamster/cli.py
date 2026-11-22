@@ -369,6 +369,15 @@ HOME_LOCKED_COMMANDS = ("start", "scout", "reflect", "lesson", "say", "review", 
                         "claude-probe", "upgrade", "versions")
 
 
+def executor_read(a):
+    # wait can finalize interrupted tasks. accounts probes and updates cached limits.
+    return (a.cmd in ("docs", "path", "status", "stats", "report")
+            or (a.cmd == "duty" and a.duty_command in ("status", "plist"))
+            or (a.cmd == "versions" and not a.prune)
+            or (a.cmd == "migrate-home" and not a.apply)
+            or (a.cmd == "upgrade" and not a.yes and a.source and os.path.isdir(os.path.expanduser(a.source))))
+
+
 def main():
     p = argparse.ArgumentParser(prog="teamster", description=HELP_TEXT, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=config.plugin_version())
@@ -514,7 +523,7 @@ def main():
                                  + ("--since" if a.since is not None else "--repo"))
     else:
         a = p.parse_args()
-    if os.environ.get(config.MANAGED_EXECUTOR) == "1" and a.cmd not in ("docs", "path"):
+    if os.environ.get(config.MANAGED_EXECUTOR) == "1" and not executor_read(a):
         p.exit(1, f"teamster: '{a.cmd}' is reserved for the operator. Return the request in your result.\n")
     if a.cmd == "start":
         try:

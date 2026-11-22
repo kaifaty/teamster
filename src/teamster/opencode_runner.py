@@ -158,8 +158,7 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
     try:
         check_active()
         overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
-        overlay.setdefault("policies", []).extend([{"action": "tool.use", "resource": "subagent:*", "effect": "deny"},
-                                                  {"action": "skill.use", "resource": "teamster", "effect": "deny"}])
+        overlay.setdefault("policies", []).append({"action": "skill.use", "resource": "teamster", "effect": "deny"})
         env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay)
         # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
         with config.executor_environment(env) as worker_env, acp.AcpClient(

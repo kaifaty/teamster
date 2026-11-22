@@ -56,14 +56,14 @@ def backend():
                     settings.pop("projects", None)
                     # Codex applies session skill selectors after the account's own rules.
                     settings["skills"] = {"config": [{"name": "teamster", "enabled": False}]}
-                    settings.setdefault("features", {}).update(multi_agent=False, multi_agent_v2=False)
-                    settings.setdefault("agents", {})["enabled"] = False
                     settings.setdefault("plugins", {}).setdefault("teamster@kaifaty", {})["enabled"] = False
                     if contract.get("chatgpt_account_id"):
                         params["modelProvider"] = "openai"
                     if contract["review"]:
                         settings["web_search"] = "disabled"
-                        settings["features"]["view_image"] = False
+                        settings.setdefault("features", {}).update(multi_agent=False, multi_agent_v2=False,
+                                                                   view_image=False)
+                        settings.setdefault("agents", {})["enabled"] = False
                     if contract["sandbox"] == "workspace-write":
                         settings["sandbox_workspace_write"] = {"network_access": True, "writable_roots": contract["roots"]}
                     params["approvalPolicy"] = "never"
