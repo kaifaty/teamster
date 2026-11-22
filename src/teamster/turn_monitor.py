@@ -172,7 +172,6 @@ class MonitorEvents:
     exit_code: Optional[int] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
-    review_model: Optional[str] = None
 
 
 @dataclass
@@ -461,10 +460,7 @@ def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
     final_path = usage.path
     try:
         final_path = usage.path or threads.rollout_path(account["home"], stream.thread)
-        reported = threads.rollout_model_settings(final_path, usage.usage_offset)
-        # Native review inherits the parent model unless review_model replaces it.
-        if stream.review_model is None or stream.review_model == reported.get("model"):
-            settings.update(reported)
+        settings.update(threads.rollout_model_settings(final_path, usage.usage_offset))
     except Exception as exc:
         telemetry_log.telemetry_error(st, exc)
     st.update(model=settings["model"], reasoning_effort=settings["reasoning_effort"])
@@ -507,7 +503,7 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
             pass
         if not prompt.endswith(rules):
             prompt += "\n\n" + rules
-    defaults = threads.configured_model_settings(account["home"], [])
+    defaults = threads.configured_model_settings(account["home"])
     review_model = (st.get("review_model") or config.role_route(cfg, "review", "codex").get("model")
                     or defaults["review_model"]) if reviewing else None
     model = review_model if reviewing else st.get("task_model")
@@ -518,7 +514,6 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
                "roots": st.get("writable_dirs", []), "schema": schema, "review": reviewing}
     stream.model = model or defaults["model"]
     stream.reasoning_effort = effort or defaults["reasoning_effort"]
-    stream.review_model = review_model
     path = threads.rollout_path(account["home"], thread) if thread else None
     previous_stat = path.stat() if path else None
     usage_offset = previous_stat.st_size if previous_stat is not None else 0

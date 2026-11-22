@@ -2743,7 +2743,7 @@ class ClaudeReviewTests(RotationTestCase):
         codex = self.invocations()
         self.assertEqual([entry["review"] for entry in codex], [False, False])
         for entry in codex:
-            self.assertEqual(entry["argv"][entry["argv"].index("--model") + 1], "work-model")
+            self.assertEqual(entry["model"], "work-model")
         self.assertTrue(codex[1]["resume"])
         self.assertIn(self.review_result()["findings"][0]["detail"], codex[1]["prompt"])
         invocations = self.claude_invocations()
@@ -2853,11 +2853,11 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertTrue(any(row["reviewer"] == "codex" for row in rows), rows)
                 if label == "profile":
                     claude_options = self.claude_invocations()[-1]["options"]
-                    codex_args = self.review_invocations()[-1]["argv"]
+                    codex_turn = self.review_invocations()[-1]
                     self.assertEqual(claude_options["model"], "fixture-claude-review")
                     self.assertEqual(claude_options["effort"], "medium")
-                    self.assertIn("fixture-codex-review", codex_args)
-                    self.assertIn('model_reasoning_effort="high"', codex_args)
+                    self.assertEqual(codex_turn["model"], "fixture-codex-review")
+                    self.assertEqual(codex_turn["effort"], "high")
                 if label == "rejected":
                     report = json.loads(self.cli("report", "--slug", slug, "--json"))
                     self.assertEqual(report["tasks"][0]["last_verdict"], "clean")

@@ -1054,7 +1054,7 @@ def acp_agent():
         send(method="session/update", params={"sessionId": thread, "update": dict(fields, sessionUpdate=event)})
     catalog = ("fake-model Task.1_a Review.2_b Fast-2 Strong-2 Strong-3 Strong-4 checkpoint-model "
                "work-model checkpoint-review angle-model codex-review-model fallback-model model-a model-b model-c "
-               "configured-review fixture-reflect fixture-codex-work fixture-codex-scout gpt-6.2-sol review-model gpt-5 gpt-5.5 gpt-6-sol gpt-6.1-sol fixture-probe-model")
+               "configured-review fixture-reflect fixture-codex-work fixture-codex-review fixture-codex-scout gpt-6.2-sol review-model gpt-5 gpt-5.5 gpt-6-sol gpt-6.1-sol fixture-probe-model")
     choices = {"model": catalog.split(), "reasoning_effort": "low medium high xhigh max ultra".split(),
                "mode": ["workspace-write", "read-only"]}
     selected = {}

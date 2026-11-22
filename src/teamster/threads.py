@@ -15,10 +15,6 @@ except ImportError:
     TOML_AVAILABLE = False
 
 
-def effort_args(effort):
-    return ["-c", f'model_reasoning_effort="{effort}"'] if effort else []
-
-
 def config_string(value):
     """Read a single TOML string setting without depending on Python 3.11."""
     match = re.fullmatch(r'''("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?''', value.strip())
@@ -31,7 +27,7 @@ def config_string(value):
         return None
 
 
-def configured_model_settings(home, args):
+def configured_model_settings(home):
     """Best-effort fallback for only the selected model, effort and profile."""
     root, profiles, section = {}, {}, ""
     try:
@@ -62,30 +58,14 @@ def configured_model_settings(home, args):
             continue
         target = root if section == "" else profiles.setdefault(section, {})
         target[key] = config_string(raw)
-    overrides, cli_model = {}, None
-    for index, arg in enumerate(args[:-1]):
-        if arg == "--model":
-            cli_model = args[index + 1]
-        elif arg in ("-c", "--config") and index + 1 < len(args) - 1:
-            key, separator, raw = args[index + 1].partition("=")
-            if separator and key in ("model", "review_model", "model_reasoning_effort", "profile"):
-                overrides[key] = config_string(raw) if raw.strip().startswith(("'", '"')) else raw.strip()
     selected = dict(root)
-    profile = overrides.get("profile", root.get("profile"))
+    profile = root.get("profile")
     profile = profiles.get(profile, {}) if isinstance(profile, str) else {}
     if isinstance(profile, dict):
         selected.update(profile)
-    selected.update(overrides)
-    if cli_model is not None:
-        selected["model"] = cli_model
-    review_model = selected.get("review_model")
-    review_model = review_model if isinstance(review_model, str) and review_model else None
-    model = (review_model or selected.get("model")
-             if args[1:3] == ["exec", "review"] else selected.get("model"))
-    effort = selected.get("model_reasoning_effort")
-    return {"model": model if isinstance(model, str) and model else None,
-            "reasoning_effort": effort if isinstance(effort, str) and effort else None,
-            "review_model": review_model}
+    settings = {"model": selected.get("model"), "review_model": selected.get("review_model"),
+                "reasoning_effort": selected.get("model_reasoning_effort")}
+    return {key: value if isinstance(value, str) and value else None for key, value in settings.items()}
 
 
 def rollout_model_settings(path, offset=0):
