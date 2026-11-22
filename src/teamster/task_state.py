@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 from typing import Callable, Literal, NamedTuple, Optional
 
-from . import clock, config, opencode_runner, procs, reviewers, threads
+from . import acp, clock, config, opencode_runner, procs, reviewers, threads
 
 
 def interruption(st):
@@ -273,7 +273,22 @@ def save(st):
         write_state(st)
 
 
-def session_processes(st):
+def interrupted_acp_processes(st):
+    """A completed cleanup removes the record. Call after confirming the supervisor is gone."""
+    return acp.TaskProcesses.recover(config.TASKS / st["slug"])
+
+
+def reap_acp_turn(st):
+    """Called under the state lock after the supervisor is gone, before reusing its worktree."""
+    processes = interrupted_acp_processes(st)
+    if processes:
+        processes.terminate()
+        processes.clear()
+        st.pop("claude_pid", None)
+        st.pop("codex_pid", None)
+
+
+def session_processes(st, *, terminals=False):
     """Live process groups holding the task's session after its supervisor exits."""
     if st.get("kind") == "duty":
         for name in ("Claude", "Codex"):
@@ -281,13 +296,21 @@ def session_processes(st):
             if procs.alive(pid):
                 yield name, pid
                 return
+    elif processes := interrupted_acp_processes(st):
+        for pid in (st.get("claude_pid"), st.get("codex_pid")):
+            if pid and procs.process_marker(pid) == processes.marker:
+                yield "ACP", pid
+                return
+        if terminals:
+            for pid in procs.marked_processes(processes.marker, processes.parents):
+                yield "ACP", pid
     elif st.get("opencode_pid"):
         for group in opencode_runner.orphan_groups(st):
             yield "OpenCode", group
 
 
-def session_process(st):
-    return next(session_processes(st), (None, None))
+def session_process(st, *, terminals=False):
+    return next(session_processes(st, terminals=terminals), (None, None))
 
 
 def busy_message(st, queue_hint=False):

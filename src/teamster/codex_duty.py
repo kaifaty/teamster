@@ -53,7 +53,7 @@ def codex_duty_overrides(marker, room):
         "sandbox_workspace_write.network_access": True,
         "shell_environment_policy.exclude": ["CODEX_SQLITE_HOME"],
         "shell_environment_policy.set." + config.STARTED_BY: "duty",
-        "shell_environment_policy.set." + config.DUTY_PROCESS_MARKER: marker,
+        "shell_environment_policy.set." + procs.TURN_PROCESS_MARKER: marker,
         "shell_environment_policy.set.TEAMSTER_HOME": str(config.DATA_HOME) if config.LAYOUT == "new" else "",
         "shell_environment_policy.set.CODEX_TASK_HOME": str(config.CODEX_HOME),
         "shell_environment_policy.set.TEAMSTER_CODEX_HOME": str(config.CODEX_HOME),
@@ -68,29 +68,15 @@ def codex_duty_overrides(marker, room):
     return values
 
 
-def duty_process_marker(pid):
-    prefix = (config.DUTY_PROCESS_MARKER + "=").encode()
-    return next((entry[len(prefix):].decode("ascii") for entry in procs.process_environment(pid)
-                 if entry.startswith(prefix) and re.fullmatch(b"[0-9a-f]{32}", entry[len(prefix):])), None)
-
-
 def end_duty_terminals(marker):
-    """End this invocation's commands even after app-server dies; never log environments.
-
-    Terminal children create new sessions. Supervisors of tasks started by the
-    duty remove this marker, so those independently managed tasks are preserved.
-    """
-    if not marker:
-        return
+    """Duty owns the terminal groups its guarded commands create."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        snapshot = subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid=,pgid="],
-                                  capture_output=True, text=True, check=True)
-        for line in snapshot.stdout.splitlines():
-            fields = line.split()
-            if len(fields) != 2:
+        for pid in procs.marked_processes(marker):
+            try:
+                group = os.getpgid(pid)
+            except ProcessLookupError:
                 continue
-            pid, group = map(int, fields)
-            if group not in (0, 1, os.getpgrp()) and duty_process_marker(pid) == marker:
+            if group not in (0, 1, os.getpgrp()):
                 procs.signal_pgid(group, sig)
         time.sleep(0.05)
 
@@ -535,10 +521,10 @@ def codex_duty_session(account, room, stopped, deadline, model, effort, thread_i
                 environment.pop(key)
         environment.update(HOME=str(home), CODEX_SQLITE_HOME=str(home))
         environment[config.STARTED_BY] = "duty"
-        environment[config.DUTY_PROCESS_MARKER] = marker
+        environment[procs.TURN_PROCESS_MARKER] = marker
         process = subprocess.Popen(args, cwd=room, env=environment, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
-        if duty_process_marker(process.pid) != marker:
+        if procs.process_marker(process.pid) != marker:
             raise ValueError("Codex duty cannot identify its command processes on this platform")
         rpc = DutyRPC(process, room, stopped, deadline, directory, account)
         initialized = rpc.call("initialize", {"clientInfo": {"name": "teamster-duty", "version": "1"},

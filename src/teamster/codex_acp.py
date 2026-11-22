@@ -2,13 +2,13 @@
 import json
 import os
 from pathlib import Path
+import select
 import shlex
-import signal
 import subprocess
 import sys
 import threading
 
-from . import acp, config
+from . import acp, config, procs
 
 
 def command(operation, *args):
@@ -29,7 +29,9 @@ def backend():
     contract = json.loads((directory / "options").read_text())
     target = directory / "target"
     close_error = directory / "close-error"
-    proc = subprocess.Popen([binary, *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
+    # The account may filter its shell environment. Set only the invocation's ownership key.
+    terminal_marker = f"shell_environment_policy.set.{procs.TURN_PROCESS_MARKER}={json.dumps(env[procs.TURN_PROCESS_MARKER])}"
+    proc = subprocess.Popen([binary, *sys.argv[1:], "-c", terminal_marker], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
     terminal_list_requests = set()
     incoming = os.fdopen(os.dup(sys.stdin.fileno()), "rb")
 
@@ -176,12 +178,12 @@ def codex_acp_turn():
     settings = {"mode": mode}
     if options["effort"]:
         settings["reasoning_effort"] = options["effort"]
-    parent = os.getppid()
 
     def check_active():
-        if os.getppid() != parent:
-            # The supervisor cannot clean up this group after an unhandled crash.
-            os.killpg(os.getpgrp(), signal.SIGKILL)
+        # Outside the synchronous prompt admission below, readability means the
+        # supervisor closed its end of the pipe, including on sudden death.
+        if select.select([sys.stdin], [], [], 0)[0]:
+            raise InterruptedError("Supervisor closed the Codex turn")
 
     try:
         with acp.AcpClient([options["adapter"]], os.getcwd(), lambda _: None, lambda _: None,

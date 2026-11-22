@@ -11,12 +11,12 @@ import sys
 import tempfile
 import termios
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple, Optional
 
-from . import account_rotation, accounts, budgets, clock, codex_acp, config, procs, result_schema, sandboxing, task_state, telemetry_log, threads
+from . import account_rotation, accounts, acp, budgets, clock, codex_acp, config, procs, result_schema, sandboxing, task_state, telemetry_log, threads
 
 
 def _search_command(command):
@@ -189,22 +189,34 @@ class MonitorRollout:
 
 
 @contextmanager
-def monitor_process(st, account, options, prompt):
-    """Keep the ACP client, adapter, backend and tool children in one supervised group."""
+def monitor_process(st, account, options, prompt, processes):
+    """Own the ACP client group and any terminals the native backend detaches."""
     directory = config.TASKS / st["slug"]
     with tempfile.TemporaryDirectory(prefix="codex-acp-", dir=directory) as scratch:
         path = Path(scratch)
         (path / "options").write_text(json.dumps(options), encoding="utf-8")
         (path / "prompt").write_text(prompt, encoding="utf-8")
-        with (directory / "stderr.log").open("ab") as errors:
-            proc = subprocess.Popen(codex_acp.command("codex_acp_turn", scratch), cwd=st["worktree"],
-                                    env=accounts.account_env(account), stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE, stderr=errors, start_new_session=True)
-        try:
-            yield proc
-        finally:
-            procs.terminate(proc)
-            proc.stdin.close()
+        env = accounts.account_env(account)
+        env[procs.TURN_PROCESS_MARKER] = processes.marker
+        with processes:
+            with (directory / "stderr.log").open("ab") as errors:
+                proc = subprocess.Popen(codex_acp.command("codex_acp_turn", scratch), cwd=st["worktree"], env=env,
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+                                        start_new_session=True)
+                processes.leader = proc
+            try:
+                yield proc
+            finally:
+                try:
+                    if proc.poll() is None:
+                        processes.interrupt()
+                    with suppress(BrokenPipeError):
+                        proc.stdin.close()
+                    # Let the client send session/cancel before signaling the adapter group.
+                    with suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=1)
+                finally:
+                    procs.terminate(proc)
 
 
 def monitor_thread_started(st, account, stream, reviewing, wrapup, attempt_started):
@@ -272,7 +284,7 @@ def flush_message(stream, log):
 
 
 def read_monitor_events(st, account, proc, ready, sel, log, stream, usage, control,
-                        reviewing, wrapup, attempt_started):
+                        reviewing, wrapup, attempt_started, processes):
     """Journal complete events in order, joining ACP text chunks by message ID."""
     for key, _ in ready:
         size = min(65536, usage.pending_weekly_bytes) if usage.pending_weekly_spent is not None else 65536
@@ -306,6 +318,7 @@ def read_monitor_events(st, account, proc, ready, sel, log, stream, usage, contr
                     return result
                 if event.get("type") == "thread.started":
                     # monitor_thread_started has durably saved this ID, including on rotation.
+                    processes.remember_family()
                     try:
                         proc.stdin.write(b"prompt\n")
                         proc.stdin.flush()
@@ -388,20 +401,19 @@ def poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_
 
 
 def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, stopped,
-                         on_limit, record_limits, reviewing, wrapup, attempt_started, active_started):
+                         on_limit, record_limits, reviewing, wrapup, attempt_started, active_started, processes):
     """Supervise the Codex ACP turn and return its outcome and quota decision."""
     with selectors.DefaultSelector() as sel:
         sel.register(proc.stdout, selectors.EVENT_READ)
         while not stream.eof or proc.poll() is None:
             if stopped():
-                procs.terminate(proc)
                 return task_state.stop_outcome(st, stopped), None
             if control.expired(active_started):
                 return "budget_exhausted", None
             ready = ([] if usage.pending_weekly_spent is not None and usage.pending_weekly_bytes == 0
                      else sel.select(0 if usage.pending_weekly_spent is not None else 0.2))
             result = read_monitor_events(st, account, proc, ready, sel, log, stream, usage, control,
-                                         reviewing, wrapup, attempt_started)
+                                         reviewing, wrapup, attempt_started, processes)
             if result is not None:
                 return result
             if wrapup:
@@ -550,12 +562,14 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
         attempt_started = clock.CLOCK.time()
         active_started = clock.CLOCK.monotonic()
         proc = None
+        processes = acp.TaskProcesses(d)
         try:
-            with monitor_process(st, account, options, prompt) as proc:
+            with monitor_process(st, account, options, prompt, processes) as proc:
                 st["codex_pid"] = proc.pid
                 task_state.save(st)
                 result = monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, stopped,
-                                              on_limit, record_limits, reviewing, wrapup, attempt_started, active_started)
+                                              on_limit, record_limits, reviewing, wrapup, attempt_started, active_started,
+                                              processes)
         finally:
             if proc is not None:
                 control.elapsed = budgets.monitor_time_usage(control.elapsed, control.seconds, control.minutes,

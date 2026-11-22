@@ -174,6 +174,14 @@ if mode == "rejected_shutdown" and acp:
 elif mode == "rejected_shutdown":
     while not stopped[0]:
         time.sleep(0.02)
+if run.get("detached_terminal"):
+    import subprocess
+    terminal = subprocess.Popen(["/bin/sleep", "90"], start_new_session=True, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                preexec_fn=lambda: signal.signal(signal.SIGTERM, signal.SIG_IGN))
+    trace({"command": "terminal", "child_pid": terminal.pid})
+    if mode == "crash":
+        sys.exit(17)
 if mode == "hold":
     child = os.fork() if run.get("child") else None
     if child == 0:
@@ -182,6 +190,9 @@ if mode == "hold":
             time.sleep(0.02)
         sys.exit(130)
     trace({"command": "holding"})
+    if run.get("detached_terminal"):
+        cancel = read_request(["session/cancel"])
+        trace({"command": "cancel", "session_id": cancel["params"]["sessionId"]})
     while not stopped[0]:
         time.sleep(0.02)
     if child is not None:
@@ -810,7 +821,8 @@ class ClaudeReviewTests(RotationTestCase):
 
     def test_claude_work_turn_stop_deadline_and_invalid_effort(self):
         self.enable_fake_clock(auto_advance=False)
-        self.claude_fixture(runs=[{"mode": "hold", "child": True}])
+        hold = {"mode": "hold", "child": True, "detached_terminal": True}
+        self.claude_fixture(runs=[hold, hold, {"mode": "crash", "detached_terminal": True}])
         worker = self.worker()
         account = worker.claude_accounts.accounts(worker.config.accounts_config())[0]
         task_dir = self.root / "work-turn-task"
@@ -838,6 +850,10 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(response["outcome"], expected)
                 trace = self.claude_trace()
                 parent = self.claude_invocations()[-1]
+                self.assertIn(parent["session_id"], [e["session_id"] for e in trace if e["command"] == "cancel"])
+                terminal = next(e["child_pid"] for e in trace if e["command"] == "terminal")
+                self.extra_pids.add(terminal)
+                self.assertFalse(self.process_is_live(terminal))
                 child = next(event for event in trace if event["command"] == "holding_child")
                 self.extra_pids.update((parent["pid"], child["pid"]))
                 self.assertEqual(parent["pid"], parent["pgid"])
@@ -847,6 +863,64 @@ class ClaudeReviewTests(RotationTestCase):
                     self.assertTrue(any(event["command"] == "signal" and event["signal"] == 2
                                         and event["pid"] == pid for event in trace))
                 self.assertFalse(list(task_dir.glob("claude-system-*.md")))
+            response = worker.claude_review.claude_runner.run_work_turn(
+                account, self.repo, task_dir, "Crash with an open terminal.", lambda: False)
+            self.assertEqual(response["reason"], "work turn failed")
+            terminal = [e["child_pid"] for e in self.claude_trace() if e["command"] == "terminal"][-1]
+            self.extra_pids.add(terminal)
+            self.assertFalse(self.process_is_live(terminal))
+
+    def test_resume_after_supervisor_death_reaps_only_the_original_acp_terminal(self):
+        hold = {"mode": "hold", "detached_terminal": True}
+        self.claude_fixture(runs=[hold, hold, {"reply": self.work_result()}])
+        slug = "claude-recover"
+        self.start(slug, "--executor", "claude", "--no-push")
+        self.until(lambda: any(e["command"] == "terminal" for e in self.claude_trace()))
+        state = self.state(slug)
+        terminal = next(e["child_pid"] for e in self.claude_trace() if e["command"] == "terminal")
+
+        # A task started from this turn inherits its environment at the CLI boundary.
+        worker = self.worker()
+        marker = worker.procs.process_marker(state["claude_pid"])
+        self.assertIsNotNone(marker)
+        with mock.patch.dict(self.env, {worker.procs.TURN_PROCESS_MARKER: marker}):
+            self.start("claude-independent", "--executor", "claude", "--no-push", "--parallel")
+        self.until(lambda: len([e for e in self.claude_trace() if e["command"] == "terminal"]) == 2)
+        other = self.state("claude-independent")
+        other_terminal = [e["child_pid"] for e in self.claude_trace() if e["command"] == "terminal"][-1]
+        self.extra_pids.update((terminal, other_terminal))
+        self.assertIsNone(worker.procs.process_marker(other["pid"]))
+
+        os.kill(state["claude_pid"], signal.SIGSTOP)
+        os.kill(state["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(state["pid"]))
+        refused = subprocess.run([PYTHON, "-I", str(SCRIPT), "resume", slug], env=self.env, cwd=self.repo,
+                                 capture_output=True, text=True, timeout=15)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("teamster stop " + slug, refused.stderr)
+        os.kill(state["claude_pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(state["claude_pid"]))
+
+        # Simulate reuse of the recorded PID by a live group leader in the very same worktree.
+        with subprocess.Popen(["/bin/sleep", "90"], cwd=state["worktree"], start_new_session=True) as unrelated:
+            try:
+                worker.task_state.write_state(dict(state, claude_pid=unrelated.pid))
+                self.assertIn("resumed " + slug + " from work", self.cli("resume", slug))
+                self.wait(slug)
+                self.assertEqual(self.state(slug)["outcome"], "completed")
+                self.assertEqual(self.claude_invocations()[-1]["resume"], state["session_id"])
+                self.assertFalse(self.process_is_live(terminal))
+                self.assertIsNone(unrelated.poll())
+                for pid in (other["pid"], other["claude_pid"], other_terminal):
+                    self.assertTrue(self.process_is_live(pid))
+            finally:
+                unrelated.terminate()
+        os.kill(other["claude_pid"], signal.SIGSTOP)
+        os.kill(other["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(other["pid"]))
+        self.assertIn("ended ACP process", self.cli("stop", "claude-independent"))
+        self.assertFalse(self.process_is_live(other_terminal))
+        self.assertEqual(self.state("claude-independent")["outcome"], "stopped")
 
     def claude_fixture(self, runs=None, **settings):
         self.claude = self.root / "claude"
@@ -1901,7 +1975,7 @@ class ClaudeReviewTests(RotationTestCase):
                 command = adapter.duty_agent_command(account, system_file, worker.clock.CLOCK.monotonic() + 60,
                                                      None, "high", 1)
                 updates = []
-                env = {**self.env, worker.config.DUTY_PROCESS_MARKER: uuid.uuid4().hex}
+                env = {**self.env, worker.procs.TURN_PROCESS_MARKER: uuid.uuid4().hex}
                 with worker.commands.acp.AcpClient(command, self.repo, updates.append, lambda params: None,
                                                    env=env) as client:
                     session = client.open_session(None if action == "disconnect" else cursor)
@@ -2038,7 +2112,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.cli("wait", "noted", timeout=60)
         self.until(lambda: self.chat_settled(3), timeout=60)
         self.assertRegex(self.codex_duty_invocations()[1]["duty_marker"], r"^[0-9a-f]{32}$")
-        self.assertIsNone(self.invocations()[0]["duty_marker"])
+        self.assertNotEqual(self.invocations()[0]["duty_marker"], self.codex_duty_invocations()[1]["duty_marker"])
         self.assertEqual((self.invocations()[0]["home"], self.invocations()[0]["sqlite_home"]),
                          (str(self.other), None))
         self.assertEqual(len(self.state("duty")["duty_auto_turns"]), 1)

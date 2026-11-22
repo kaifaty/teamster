@@ -4,11 +4,76 @@ import os
 from pathlib import Path
 import select
 import subprocess
+import sys
 import time
+import uuid
 
 import teamster
 
 from . import procs
+
+
+class TaskProcesses:
+    """Ownership of a single ordinary ACP attempt, recoverable until shutdown finishes."""
+
+    filename = "acp-processes.json"
+
+    def __init__(self, task_dir, marker=None):
+        self.path = Path(task_dir) / self.filename if task_dir is not None else None
+        self.marker = marker or uuid.uuid4().hex
+        self.parents = None
+        self.leader = None
+        self.interrupted = False
+
+    @classmethod
+    def recover(cls, task_dir):
+        try:
+            saved = json.loads((task_dir / cls.filename).read_bytes())
+        except FileNotFoundError:
+            return None
+        scope = cls(task_dir, saved["marker"])
+        if "boot" in saved and sys.platform == "darwin" and saved["boot"] == procs.boot_session():
+            scope.parents = set(saved["parents"])
+        return scope
+
+    def _save(self):
+        if self.path is not None:
+            record = {"marker": self.marker}
+            if self.parents is not None:
+                record.update(boot=procs.boot_session(), parents=sorted(self.parents))
+            temporary = self.path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(record), encoding="ascii")
+            temporary.replace(self.path)
+
+    def remember_family(self):
+        if sys.platform == "darwin" and self.leader.poll() is None:
+            # At admission this is just the backend. Just before cancel, also keep
+            # the IDs of tools whose intervening shell may disappear during shutdown.
+            parents = procs.backend_ids(self.leader.pid, self.marker)
+            self.parents = parents.union(self.parents or ())
+            self._save()
+
+    def interrupt(self):
+        if not self.interrupted and self.leader is not None:
+            self.remember_family()
+        self.interrupted = True
+
+    def __enter__(self):
+        self._save()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.leader is not None and (self.interrupted or self.leader.returncode or
+                                        exc_value is not None and not isinstance(exc_value, AcpRequestError)):
+            self.terminate()
+        self.clear()
+
+    def clear(self):
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
+
+    def terminate(self):
+        procs.end_marked_processes(self.marker, self.parents)
 
 
 def _select_config(result, config_id):

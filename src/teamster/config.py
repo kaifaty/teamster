@@ -181,8 +181,6 @@ TOKEN_FIELDS = ROLLOUT["TOKEN_FIELDS"]
 GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
 # A duty chat turn sets it to "duty" for the teamster commands it runs; start and scout record it.
 STARTED_BY = "TEAMSTER_STARTED_BY"
-# Per-invocation ownership of Codex duty commands, including separate terminal groups.
-DUTY_PROCESS_MARKER = "TEAMSTER_DUTY_PROCESS"
 
 
 def started_by():

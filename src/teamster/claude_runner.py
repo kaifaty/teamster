@@ -400,13 +400,18 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     account_errors = ("usage limit", "authentication failed")
     drain_deadline = None
     events_failed = False
+    processes = acp.TaskProcesses(task_dir)
+    environment[procs.TURN_PROCESS_MARKER] = processes.marker
 
     def check_active():
         if stopped():
+            processes.interrupt()
             raise InterruptedError
         if deadline is not None and clock.CLOCK.monotonic() >= deadline:
+            processes.interrupt()
             raise TimeoutError
         if drain_deadline is not None and time.monotonic() >= drain_deadline:
+            processes.interrupt()
             raise ValueError("Claude ACP did not finish shutting down")
 
     def notification(method, params):
@@ -427,14 +432,17 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
             progress(response["telemetry"])
         if response["reason"] in account_errors and drain_deadline is None:
             drain_deadline = time.monotonic() + procs.GROUP_STEPS[0][1]
+            processes.interrupt()
             client.cancel()
 
     telemetry = response["telemetry"]
     mode = "default" if read_only else "bypassPermissions"
-    try:
-        with acp.AcpClient([config.TASK_ADAPTERS["claude"]], worktree, lambda update: None, lambda params: None,
+    client = acp.AcpClient([config.TASK_ADAPTERS["claude"]], worktree, lambda update: None, lambda params: None,
                            check_active=check_active, on_notification=notification, env=environment,
-                           stderr=subprocess.DEVNULL) as client:
+                           stderr=subprocess.DEVNULL)
+    try:
+        with processes, client:
+            processes.leader = client.process
             if started:
                 started(client.process)
             cursor = client.open_session(session_id, meta=meta, initial_config={"mode": mode})
@@ -443,8 +451,11 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
             telemetry["session_id"] = cursor
             if progress:
                 progress(telemetry)
+            processes.remember_family()
             check_active()
             stop_reason = client.prompt(prompt)
+            if stop_reason == "cancelled":
+                processes.interrupt()
             drain_deadline = time.monotonic() + procs.GROUP_STEPS[0][1]
         if stop_reason != "end_turn" or client.process.returncode:
             if response["reason"] not in account_errors:

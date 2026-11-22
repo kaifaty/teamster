@@ -435,6 +435,7 @@ class ExecutorTests(RotationTestCase):
         echo.chmod(0o700)
         (self.root / "options").write_text("{}")
         env = dict(self.env, TEAMSTER_ACP_BACKEND=str(echo), TEAMSTER_ACP_TURN_DIR=str(self.root))
+        env[bridge.procs.TURN_PROCESS_MARKER] = "fixture-turn"
         request = {"id": 1, "method": "turn/start", "params": {
             "threadId": "title-thread", "outputSchema": {"type": "object", "properties": {"title": {"type": "string"}}}}}
         for admitted in (False, True):
