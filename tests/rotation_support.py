@@ -1777,6 +1777,12 @@ class RotationTestCase(unittest.TestCase):
 
     def assert_output_schema(self, invocation, slug, review=False):
         schema = invocation["output_schema"]
+        if review:
+            settings = invocation["thread_config"]
+            self.assertEqual(settings["web_search"], "disabled")
+            self.assertFalse(settings["agents"]["enabled"])
+            for feature in ("multi_agent", "multi_agent_v2", "view_image"):
+                self.assertIs(settings["features"][feature], False)
         contracts = self.worker().result_schema
         self.assertEqual(schema, contracts.REVIEW_SCHEMA if review else contracts.RESULT_SCHEMA, slug)
 

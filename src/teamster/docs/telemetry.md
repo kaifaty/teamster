@@ -17,9 +17,8 @@ without a fixed list; examples are `feature`, `fix`, `refactor`, `mechanical`, `
 Every model phase and final `turn` row includes `model`, `reasoning_effort`, and `task_type`.
 Execution metadata from Codex takes precedence over explicit CLI overrides and the invoked account's
 `config.toml`, including its selected profile. `--effort` is an explicit reasoning override.
-Native `codex exec review` inherits its parent's model and session context unless `review_model`
-selects a different model; that override and the configured effort then supply the fallback values.
-Ordinary review fallback uses its own session context.
+Each Codex review opens its own ACP session. The journal records the selected session model and effort,
+including a review model override, and uses native rollout metadata when available.
 Claude reviews record the reviewer's known model and effort. Unknown values are null, including when
 configuration or session metadata cannot be read; telemetry does not change model selection.
 On Python 3.9–3.10, the configuration fallback reads simple string settings; configurations with

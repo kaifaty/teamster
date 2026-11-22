@@ -142,7 +142,7 @@ class Updates:
                           "command": command, "exit_code": exit_info["exit_code"], "aggregated_output": "".join(chunks)}})
 
 
-def run():
+def codex_acp_turn():
     """The supervisor owns this process group and admits the prompt after saving the session ID."""
     directory = Path(sys.argv[1])
     options = json.loads((directory / "options").read_text())
@@ -171,7 +171,7 @@ def run():
             session = client.open_session(options["thread"] or None, model=options["model"], config_options=settings,
                                           capabilities={"_meta": {"terminal_output_delta": True, "jetbrains": {"air": {
                                               "version": 1, "capabilities": ["sessionFailure"]}}}})
-            emit({"type": "thread.started", "thread_id": session})
+            emit({"type": "thread.started", "thread_id": session, **client.config_values})
             if sys.stdin.buffer.readline() != b"prompt\n":
                 raise InterruptedError("Supervisor closed before admitting the Codex prompt")
             (directory / "target").write_text(session)

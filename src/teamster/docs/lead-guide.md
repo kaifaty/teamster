@@ -88,7 +88,10 @@ Before `start`, check that every "Done when" item can be reached within "Do not 
 
 Run every command below as `teamster …`. Teamster finds Codex through `TEAMSTER_CODEX`, then the
 ChatGPT.app bundle if present, then `codex` on `PATH`. Codex supplies its configured model and effort
-when Teamster has no work overrides.
+when Teamster has no work overrides. Codex work, scout, reflect, review, fix, and wrap-up require
+`codex-acp` on `PATH` (`npm install -g @agentclientprotocol/codex-acp`). They use ACP v1 over stdio
+with the selected account's `CODEX_HOME`. Existing tasks resume their saved native Codex thread.
+If that thread is unavailable, Teamster reports the resume error before sending the order.
 Use `start --model M` for work and `--review-model M` on `start`, `say`, or `review` for Codex reviews; `say` inherits or replaces them, and `default` clears an override. Read `accounts --json` before choosing ([models and JSON fields](settings.md#task-models)).
 A task keeps the teamster version it started on after an upgrade: `say` and `review` re-run in it while it is installed; `say --upgrade` moves the task to the current version ([versioned installs](settings.md#versioned-installs)).
 Use `start --task-type LABEL` to select a configured [task profile](settings.md#task-profiles) and label telemetry. `say` and `review` inherit the label, and `say --task-type LABEL` replaces it ([labels and grouped reports](telemetry.md)).

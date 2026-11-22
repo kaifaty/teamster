@@ -2026,7 +2026,8 @@ else:
                         return {"reason": reason}
                     raise RuntimeError("stopped")
 
-                with mock.patch.object(worker.accounts, "prepare_home"), \
+                with mock.patch.dict(os.environ, self.env), \
+                        mock.patch.object(worker.accounts, "prepare_home"), \
                         mock.patch.object(worker.task_state, "save"), \
                         mock.patch.object(worker.threads, "events", return_value=[]), \
                         mock.patch.object(worker.procs, "terminate") as terminate, \
@@ -2099,7 +2100,8 @@ else:
                     return limits
 
                 selector.select.side_effect = select
-                with mock.patch.object(worker.accounts, "prepare_home"), \
+                with mock.patch.dict(os.environ, self.env), \
+                        mock.patch.object(worker.accounts, "prepare_home"), \
                         mock.patch.object(worker.task_state, "save"), \
                         mock.patch.object(worker.threads, "events", return_value=[]), \
                         mock.patch.object(worker.procs, "terminate"), \

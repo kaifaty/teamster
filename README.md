@@ -35,7 +35,7 @@ Existing data, login homes and Keychain service names stay the same.
 - macOS or Linux.
 - Optional: GitHub CLI (`gh`), authenticated for the repository, for supervisor PR publication and inspection.
 
-Install [Codex CLI](https://github.com/openai/codex) if needed (`npm install -g @openai/codex`), then run
+Install the Codex CLI and ACP adapter with `npm install -g @openai/codex @agentclientprotocol/codex-acp`, then run
 `codex login`. The worker uses your existing Codex model, reasoning, and permission settings. There is
 no required model or reasoning level.
 
