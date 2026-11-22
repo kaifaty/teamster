@@ -194,7 +194,7 @@ def install_fake_opencode(root):
         overlay = json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
         assert {"action": "tool.use", "resource": "subagent:*", "effect": "deny"} not in overlay["policies"]
         assert {"action": "skill.use", "resource": "teamster", "effect": "deny"} in overlay["policies"]
-        if "model" in overlay:
+        if not (home / "unbound-direct-call").exists():
             assert overlay["model"] == "offline/model"
             assert all(overlay["agents"][agent]["model"] == "offline/model" for agent in ("title", "summary", "compaction"))
             assert overlay["providers"]["offline"]["models"]["other"]["disabled"]
@@ -351,7 +351,8 @@ class ExecutorTests(RotationTestCase):
         slug = "operator-control"
         nested = "teamster scout nested-review 'Review tracked.txt'"
         queued = shlex.join([sys.executable, "-I", str(SCRIPT), "say", slug, "Unexpected order", "--queue"])
-        denied = [nested, queued, "teamster _run missing", "teamster wait missing"]
+        start = shlex.join(["teamster", "start", "nested-work", "--brief", str(self.brief), "--no-push"])
+        denied = [nested, queued, start, f"teamster review {slug}", "teamster _run missing", "teamster wait missing"]
         reads = [f"teamster status {slug}", f"teamster stats {slug}", "teamster report --json"]
         # Stand in for an older installation later on PATH. The executor must reach this checkout's CLI.
         old = self.root / "teamster"
@@ -371,12 +372,14 @@ class ExecutorTests(RotationTestCase):
         calls = [item for item in items if item["type"] in ("function_call", "custom_tool_call")]
         self.assertEqual([json.loads(call["arguments"])["cmd"] for call in calls], denied + reads)
         outputs = {item["call_id"]: item["output"] for item in items if item["type"] == "function_call_output"}
-        for call, verb in zip(calls, ("scout", "say", "_run", "wait")):
+        for call, verb in zip(calls, ("scout", "say", "start", "review", "_run", "wait")):
             self.assertIn(f"Exit code: 1\nteamster: '{verb}' is reserved for the operator", outputs[call["call_id"]])
         for call in calls[len(denied):]:
             self.assertIn("Exit code: 0", outputs[call["call_id"]])
         self.assertEqual(list(self.home.glob("fixture-thread-*")), [self.home / ("fixture-thread-" + state["thread"])])
         self.assertFalse((self.home / "claude-tasks" / "nested-review").exists())
+        self.assertFalse((self.home / "claude-tasks" / "nested-work").exists())
+        self.assertFalse(state["reviews"])
         self.assertEqual(state["turns"], 1)
         self.assertFalse(self.worker().threads.followup_messages(state))
 
@@ -788,6 +791,7 @@ class ExecutorTests(RotationTestCase):
         (self.root / "response.json").write_text(json.dumps(self.work_result()))
         runner = self.worker().turns.opencode_runner
         with mock.patch.dict(os.environ, self.env, clear=True):
+            (self.root / "unbound-direct-call").touch()
             for reply in ("truncated", "provider-error", "wrong-session", "length", "crash-after-answer"):
                 with self.subTest(reply=reply):
                     (self.root / "reply-mode").write_text(reply)
@@ -796,6 +800,7 @@ class ExecutorTests(RotationTestCase):
                         lambda: False, None, title="opencode-failure", created=lambda session: None)
                     self.assertEqual(outcome, "failed")
 
+        (self.root / "unbound-direct-call").unlink()
         (self.root / "reply-mode").write_text("incomplete-json")
         self.brief.write_text("Make the first change [alpha].")
         slug = "opencode-incomplete"

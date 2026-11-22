@@ -863,7 +863,9 @@ def execute(invocation, thread, emit):
     for command in run.get("shell", []):
         shell(command)
     if run.get("required_review") and run["required_review"] in shell("cat AGENTS.md"):
-        if "Only the operator may delegate" in invocation["instructions"]:
+        if ("Only the operator may delegate" in invocation["instructions"] and
+                "If independent review or another Teamster session is needed, return your work and the request "
+                "to the operator" in invocation["instructions"]):
             run["reply"] = dict(run["reply"], status="needs_decision", questions=["Please assign an independent review."])
         else:
             shell(run["required_review"])

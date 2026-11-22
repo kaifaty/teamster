@@ -261,7 +261,7 @@ class ClaudeReviewTests(RotationTestCase):
         result = self.work_result()
         cursor = self.root / "saved-cursor"
         self.claude_fixture(runs=[{"mode": "modify", "reply": result, "saved_cursor": str(cursor)},
-                                  {"reply": result, "saved_cursor": str(cursor)},
+                                  {"reply": result, "saved_cursor": str(cursor), "ask_write": True},
                                   {"reply": result, "offered_mode": "auto"}])
         worker = self.worker()
         account = worker.claude_accounts.accounts(worker.config.accounts_config())[0]
@@ -307,7 +307,10 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(entry["cwd"], str(self.repo))
                 self.assertEqual(entry["pid"], entry["pgid"])
                 self.assertEqual(entry["argv"], [])
-                self.assertEqual(entry["prompt"], "Implement the task.")
+                expected = "Implement the task."
+                if "session_id" in options:
+                    expected = worker.config.EXECUTOR_INSTRUCTIONS + "\n\n" + expected
+                self.assertEqual(entry["prompt"], expected)
                 self.assertEqual(entry["method"], "session/resume" if "session_id" in options else "session/new")
                 self.assertEqual(entry["resume"], options.get("session_id"))
                 sdk = entry["options"]

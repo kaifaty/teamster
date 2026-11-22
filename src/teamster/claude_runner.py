@@ -467,6 +467,9 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                 progress(telemetry)
             processes.remember_family()
             check_active()
+            # On resume the adapter applies a new system prompt only after compaction.
+            if session_id:
+                prompt = config.EXECUTOR_INSTRUCTIONS + "\n\n" + prompt
             stop_reason = client.prompt(prompt)
             if stop_reason == "cancelled":
                 processes.interrupt()
