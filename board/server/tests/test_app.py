@@ -741,6 +741,10 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
         assert set(task) == SUMMARY_FIELDS
         assert task["kind"] == "session"
         assert task["alive"] is False
+        assert client.get("/api/project-tasks").json()["tasks"] == []
+        card = client.post("/api/actions/project-task", json={
+            "project": "project", "title": "Ship the update", "sessions": ["local_example"],
+        }, headers={"Origin": "http://localhost", "X-Teamster-Board": "1"}).json()["task"]
         detail = client.get("/api/tasks/local_example").json()
         assert set(detail) == SUMMARY_FIELDS | {"timeline", "files", "cargo", "limits", "messages",
                                                "activity_log", "actions", "queue", "report", "changes"}
@@ -784,6 +788,8 @@ def test_session_rest_websocket_status_activity_and_removal(tmp_path):
             client.portal.call(application.state.board.poll)
             assert receive_until(socket, "task_removed") == {"type": "task_removed", "slug": "local_example"}
             assert client.get("/api/tasks/local_example").status_code == 404
+            assert card["sessions"] == ["local_example"]
+            assert client.get("/api/project-tasks").json()["tasks"] == [card]
             state["isArchived"] = False
             metadata.write_text(json.dumps(state))
             client.portal.call(application.state.board.poll)
@@ -1094,6 +1100,105 @@ def test_constellations_come_from_the_data_home(board):
     assert client.get("/api/constellations").json() == {
         "constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*"]}], "error": None}
     assert client.put("/api/constellations", content=b"{}").status_code == 405
+
+
+def test_project_tasks_follow_managed_work_and_survive_restart(board):
+    client, app, directory, state, settings = board
+    read, write = "/api/project-tasks", "/api/actions/project-task"
+    client.headers.update({"Origin": "http://localhost", "X-Teamster-Board": "1"})
+    github = {"provider": "github", "url": "https://github.com/team/repo/pull/7"}
+    forgejo = {"provider": "forgejo", "url": "http://forge.internal:3000/team/repo/pulls/19"}
+    for slug, kind in (("survey", "scout"), ("study", "reflect"), ("duty", "duty")):
+        other = directory.parent / slug
+        other.mkdir()
+        (other / "state.json").write_text(json.dumps(dict(state, slug=slug, kind=kind)))
+    state.update(pid=None, outcome="completed", result={"status": "done"}, publish={"pr": github["url"]})
+    (directory / "state.json").write_text(json.dumps(state))
+    biome = write_art(settings, "repository", {"biome.txt": b"tundra\n"}) / "biome.txt"
+    (write_art(settings, "other") / "biome.txt").symlink_to(biome)
+    client.portal.call(app.state.board.poll)
+    view = client.get(read).json()
+    assert view["writable"] and view["biomes"] == {"repository": "tundra"}
+    sources = {row["source_slug"]: row for row in view["tasks"]}
+    assert {slug: row["status"] for slug, row in sources.items()} == {"demo": "ready", "survey": "active"}
+    demo = sources["demo"]
+    assert demo["pull_requests"] == [github]
+    assert not (settings.task_home / "board-project-tasks.sqlite3").exists()
+
+    refs = demo["sessions"] + sources["survey"]["sessions"]
+    card = client.post(write, json={"project": "repository", "title": "Ship the feature",
+                                    "sessions": ["demo", "survey", "demo"],
+                                    "pull_requests": [forgejo, forgejo]}).json()["task"]
+    assert card["sessions"] == refs and card["source_slug"] == "demo"
+    assert card["pull_requests"] == [forgejo, github] and card["status"] == "active"
+    assert client.get(read).json()["tasks"] == [card]
+    # Pin the published link too, then archive the work with a different publication.
+    card = client.post(write, json={"id": card["id"], "pull_requests": [github, forgejo],
+                                    "status": "ready"}).json()["task"]
+    later = dict(github, url=github["url"] + "1")
+    state["publish"]["pr"] = later["url"]
+    (directory / "state.json").write_text(json.dumps(state))
+    archive = directory.parent / ".archive"
+    archive.mkdir(exist_ok=True)
+    for slug in ("demo", "survey"):
+        (directory.parent / slug).rename(archive / (slug + "-20261120T000000Z"))
+    # Push both linked records beyond the ordinary Board's 50-record archive window.
+    for index in range(50):
+        newer = archive / f"recent-{index}-20261121T000000Z"
+        newer.mkdir()
+        (newer / "state.json").write_text("{}")
+    settings.action_teamster = None
+    with TestClient(create_app(settings), base_url="http://localhost", headers=dict(client.headers)) as restarted:
+        saved = dict(card, source_slug=None, pull_requests=[github, forgejo, later])
+        assert restarted.get(read).json() == {"tasks": [saved], "writable": True, "biomes": view["biomes"]}
+        directory.mkdir()
+        (directory / "state.json").write_text(json.dumps(dict(state, created=100)))
+        restarted.portal.call(restarted.app.state.board.poll)
+        rows = restarted.get(read).json()["tasks"]
+        assert saved in rows
+        new, = [row for row in rows if row["source_slug"] == "demo"]
+        assert new["id"] != demo["id"] and new["sessions"][0] not in refs
+        settings.path("telemetry").write_text(json.dumps({
+            "kind": "verdict", "repo": "repository", "slug": "demo", "created": 100, "at": 200, "verdict": "accepted",
+        }) + "\n")
+        restarted.portal.call(restarted.app.state.board.poll)
+        assert restarted.get(read).json()["tasks"] == [saved]
+        cleared = restarted.post(write, json={"id": card["id"], "sessions": [], "pull_requests": []}).json()["task"]
+        assert cleared == dict(saved, sessions=[], pull_requests=[])
+        linked = restarted.post(write, json={"id": card["id"], "sessions": ["demo-20261120T000000Z"]}).json()["task"]
+        assert linked["sessions"] == demo["sessions"] and linked["source_slug"] is None
+
+
+def test_project_task_links_and_write_protection(board):
+    client, _, _, _, settings = board
+    read, write = "/api/project-tasks", "/api/actions/project-task"
+    client.headers.update({"Origin": "http://localhost", "X-Teamster-Board": "1"})
+    parent = client.get(read).json()["tasks"][0]["id"]
+    child = client.post(write, json={"project": "repository", "title": "Release notes",
+                                     "parent_id": parent}).json()["task"]["id"]
+    # Opposite edges in different graphs are valid. Save independent edits through concurrent connections.
+    with ThreadPoolExecutor(2) as pool:
+        replies = list(pool.map(lambda body: client.post(write, json=body), [
+            {"id": parent, "depends_on": [child, child]}, {"id": child, "status": "done"},
+        ]))
+    assert [reply.status_code for reply in replies] == [200, 200]
+    rows = {row["id"]: row for row in client.get(read).json()["tasks"]}
+    assert rows[parent]["depends_on"] == [child]
+    assert (rows[child]["parent_id"], rows[child]["status"]) == (parent, "done")
+    for change in ({"id": parent, "parent_id": child}, {"id": child, "depends_on": [parent]},
+                   {"id": child, "parent_id": child}, {"id": child, "depends_on": ["missing"]},
+                   {"id": child, "sessions": ["missing"]},
+                   {"id": child, "pull_requests": [{"provider": "github", "url": "javascript:alert(1)"}]}):
+        assert client.post(write, json=change).status_code == 400
+    assert client.post(write, json={"id": "missing", "title": "Update"}).status_code == 404
+    for headers in ({"Origin": "http://foreign.test"}, {"Content-Type": "text/plain"}, {"X-Teamster-Board": "0"}):
+        assert client.post(write, json={"id": child, "status": "active"}, headers=headers).status_code == 403
+    settings.read_only = True
+    with TestClient(create_app(settings), base_url="http://localhost", headers=dict(client.headers)) as locked:
+        denied = locked.post(write, json={"id": child, "status": "active"})
+        assert denied.status_code == 403 and denied.json()["error"] == "read_only"
+        view = locked.get(read).json()
+        assert not view["writable"] and {row["id"]: row for row in view["tasks"]} == rows
 
 
 @pytest.fixture

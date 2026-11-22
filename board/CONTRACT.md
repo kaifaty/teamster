@@ -70,8 +70,10 @@ Duty selection and automatic elections run the installed `teamster` command.
   tailed through the same bounded incremental reader as task activity. Until a transcript is found,
   check the direct path on each poll and search `projects/*/` at most once per 60 seconds. Cache a found
   path. Assistant events may carry ISO `timestamp` values.
-- Map art: `board-art/<repo>/` in the task home, holding any of `sky.jpg`, `planet.png` and `emblem.png`. It stays
+- Map art: `board-art/<repo>/` in the task home, holding any of `sky.jpg`, `planet.png`, `emblem.png` and `biome.txt`. It stays
   outside the repository because project names and themes can be private, and is written by hand.
+- Project tasks are Board-owned records in `<data home>/board-project-tasks.sqlite3` (schema version 1).
+  The first save creates the database. Each edit and its link checks share a SQLite write transaction.
 - Constellations: `board-constellations.json` in the task home, written by hand and read on each request, for the same
   reason kept outside the repository: `{"constellations": [{"name": "MyWallet", "repos": ["mytonwallet-*", "my-pulse"]}]}`.
 - Reflection: `tasks/.archive/INDEX.md` (the lesson table), `tasks/.archive/batch-<YYYY-MM-DD>[suffix].md`
@@ -127,6 +129,18 @@ interface Events {
   until: number;
   events: LogEvent[];         // ascending at, at most 5000 newest matching events
   truncated?: true;          // present only when older matching events were dropped by the limit
+}
+
+interface ProjectTask {
+  id: string;
+  project: string;            // repository basename
+  title: string;
+  status: "active" | "needs_input" | "blocked" | "ready" | "done" | "cancelled";
+  parent_id: string | null;
+  depends_on: string[];       // project task IDs
+  sessions: string[];         // stable managed work IDs or desktop session slugs
+  pull_requests: { provider: "github" | "forgejo"; url: string }[];
+  source_slug: string | null; // read-only address for GET /api/tasks/{slug}
 }
 
 interface TaskSummary {
@@ -698,6 +712,55 @@ Session columns use the first matching rule:
 
 Closed sessions and tasks share the limit of 50 records, ranked by `updated_at`.
 The additional fields are additive; existing clients may ignore `title` and `link`.
+
+### Project tasks
+
+The map uses `GET /api/project-tasks`. Each saved task tracks one outcome through acceptance or
+cancellation. The response includes every saved direct child, including `done` and `cancelled`
+children, for progress counts. Draw tasks in the four current states even if they have no live session.
+
+The same response includes unclaimed work from the Board's task cache. A managed work, review or
+scout record needs its own slug matching the folder, an explicit repository and a creation time.
+Its projected card uses the repository basename, the slug as its title and the existing managed ID
+(`<slug>:<created.hex()>`). Running and sleeping map to `active`, `review_me` to `ready`, and `attention`
+to `needs_input` for a `needs_decision` result or `blocked` otherwise. A closed column (including
+archive) or a lead verdict on the current turn ends the projection. Desktop sessions, duty,
+reflection, queues and CI events create no project tasks.
+
+`POST /api/actions/project-task` returns the saved card after each edit.
+
+- Send `project` and `title` to create a task with a new ID. Both are trimmed. The project is a safe
+  single path component of up to 255 characters and the title is 1–200 characters. The default status is
+  `active`, with a null parent and empty lists.
+- Send an existing `id` to update just the supplied fields. Editing a projected task or naming it as
+  a parent or dependency saves it under the same ID with its current status. From then on its status
+  changes through explicit edits.
+- Supply `parent_id: null` to detach a child. Arrays replace their previous contents. IDs must exist,
+  and parent chains and dependency chains are checked separately for cycles. Duplicate links collapse.
+- In `sessions`, send a Board slug or a returned stable reference. Managed slugs resolve to the
+  ID for that run of `teamster start` or `teamster scout`. Desktop references use the existing
+  `local_…` slug. Retaining a saved reference works after its source disappears. A session belongs
+  to one saved task. Attaching managed work to a common card absorbs its projection. For the ordinary task screen, use
+  `GET /api/tasks/{source_slug}`. The field holds the first attached managed slug still in the live
+  directory and is `null` when all such records are absent.
+- In `pull_requests`, send provider/URL pairs. GitHub uses `github.com/<owner>/<repo>/pull/<number>`
+  and self-hosted Forgejo uses `<host>[:port]/<owner>/<repo>/pulls/<number>`. Both take HTTP(S)
+  with a positive PR number. Credentials are rejected. The server strips the query, fragment,
+  trailing slash and default port and compares normalized URLs locally.
+  Published PRs on linked managed records appear automatically. Explicitly listed PRs persist
+  after a source changes or closes. Omitting a previously displayed URL from a replacement list
+  removes it, including a managed URL. Newly linked work still contributes its publications.
+
+Reads use the existing task/session poll cache. A linked task outside the 50 recent archives is
+located through the same poll's folder index. Its state is read on demand and cached by mtime and size.
+The `biomes` dictionary reads optional `board-art/<repo>/biome.txt` under the same safe path rules
+as pictures. The file holds one ASCII name matching `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`, with optional
+surrounding whitespace and a 128-byte file limit. Missing or invalid values leave the project out of
+the dictionary.
+
+Writes use the Board's same-origin JSON action headers and 64 KiB body limit. `--read-only`
+sets `writable` to false and returns 403 on writes. Card edits run locally even when the Teamster
+executable is unavailable. Unknown update IDs return 404, invalid fields or links return 400.
 
 ### Research
 
@@ -1301,6 +1364,8 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
 ## REST
 
 - `GET /api/snapshot` → `Snapshot`, including `logins` and `accounts.last_logins`.
+- `GET /api/project-tasks` → `{tasks: ProjectTask[], biomes: Record<string, string>, writable: boolean}`.
+- `POST /api/actions/project-task` → `{task: ProjectTask}`. See “Project tasks” for creation and partial updates.
 - `POST /api/actions/login`, `/api/actions/login/input`, `/api/actions/login/cancel`,
   `/api/actions/account-refresh` and `/api/actions/account-remove` → the responses described
   under account actions above.

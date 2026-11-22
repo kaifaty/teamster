@@ -267,6 +267,7 @@ class Store:
         self._desktop_sessions = DesktopSessions()
         self.session_records = self._desktop_sessions.records
         self.records = {}
+        self.older_archives = {}
         self.telemetry_path = Path(telemetry_path) if telemetry_path is not None else None
         self._journal = Journal()
         self.lock = threading.RLock()
@@ -278,7 +279,7 @@ class Store:
     _safe_slug = staticmethod(safe_slug)
 
     def _paths(self, *, strict=False):
-        return task_paths(self.tasks_path, strict=strict)
+        return task_paths(self.tasks_path, strict=strict, older_archives=self.older_archives)
 
     def lead_verdict(self, slug, record, repo):
         """Read the current verdict without consuming this store's pending journal events."""

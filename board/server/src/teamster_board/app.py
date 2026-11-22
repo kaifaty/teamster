@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -20,13 +21,14 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from . import opencode
 from .accounts import Accounts, Reports, probe
 from .actions import Actions, action_body, error
-from .art import MEDIA_TYPES, art_file, art_index
+from .art import MEDIA_TYPES, art_file, art_index, project_biomes
 from .constellations import read_constellations
 from .external_duty import ExternalDutyConfig, register as register_external_duty
 from .duty import Duty
 from .duty_chat import DutyChat
 from .logins import Logins
 from .machines import Machines
+from .project_tasks import ProjectTasks
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
 from .task_chat import task_chat
@@ -167,6 +169,7 @@ class Board:
             sessions_seconds=settings.sessions_seconds, session_stale_hours=settings.session_stale_hours,
             telemetry_path=settings.path("telemetry"),
         )
+        self.project_tasks = ProjectTasks(settings.task_home / "board-project-tasks.sqlite3", self.store)
         self.research = Research(settings.path("tasks"), settings.reflection_task,
                                  settings.research_seconds, claude_desktop_dir=settings.claude_desktop_dir)
         self.loop = None
@@ -497,6 +500,31 @@ def create_app(settings=None):
     @app.get("/api/snapshot")
     async def snapshot():
         return await board.snapshot()
+
+    @app.get("/api/project-tasks")
+    def project_tasks():
+        try:
+            tasks = board.project_tasks.tasks()
+        except (OSError, sqlite3.Error):
+            return error(503, "project_tasks_unavailable")
+        return {"tasks": tasks, "biomes": project_biomes(board.settings.path("board_art")),
+                "writable": not board.settings.read_only}
+
+    @app.post("/api/actions/project-task")
+    async def project_task_action(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        if board.settings.read_only:
+            return error(403, "read_only")
+        try:
+            return {"task": await asyncio.to_thread(board.project_tasks.save, data)}
+        except KeyError:
+            return error(404, "Unknown project task")
+        except ValueError as exc:
+            return error(400, str(exc))
+        except (OSError, sqlite3.Error):
+            return error(503, "project_tasks_unavailable")
 
     @app.get("/api/events")
     async def events(since: float | None = None, until: float | None = None):

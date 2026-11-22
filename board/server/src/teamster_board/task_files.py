@@ -104,7 +104,7 @@ def directories(root, *, strict=False):
         return []
 
 
-def task_paths(tasks_path, *, strict=False):
+def task_paths(tasks_path, *, strict=False, older_archives=None):
     paths = [(path, False) for path in directories(tasks_path, strict=strict)]
     archived = []
     if not tasks_path.is_symlink():
@@ -125,8 +125,16 @@ def task_paths(tasks_path, *, strict=False):
                 if strict:
                     raise
                 continue
-            archived.append((metadata.st_mtime_ns, path.name, path))
-    paths.extend((path, True) for _, _, path in sorted(archived, reverse=True)[:50])
+            archived.append((metadata.st_mtime_ns, path.name, path, metadata.st_size))
+    archived.sort(reverse=True)
+    paths.extend((path, True) for _, _, path, _ in archived[:50])
+    if older_archives is not None:
+        # Keep addresses from this directory scan. Only explicitly linked older states need to be opened.
+        older_archives.clear()
+        for mtime, name, _, size in archived[50:]:
+            match = ARCHIVED.fullmatch(name)
+            if match:
+                older_archives.setdefault(match[1], {})[name] = (mtime, size)
     return paths
 
 
