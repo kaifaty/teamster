@@ -282,6 +282,10 @@ import json, os, signal, subprocess, sys
 from pathlib import Path
 if sys.argv[1] == "api":
     assert sys.argv[3] == "session.update"
+    if json.loads(sys.argv[-1])["title"] == "orphan-title" and not Path("title-pids").exists():
+        child = subprocess.Popen(["sleep", "90"])
+        Path("title-pids").write_text(f"{os.getpid()} {child.pid}")
+        child.wait()
     sys.exit(0)
 assert sys.argv[1] == "acp"
 for line in sys.stdin:
@@ -296,6 +300,7 @@ for line in sys.stdin:
         assert method == "session/prompt"
         break
     print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+# Keep the transport alive even after coordinator EOF.
 child = subprocess.Popen(["sleep", "90"])
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 Path("orphan-pids").write_text(f"{os.getpid()} {child.pid}")
@@ -310,6 +315,31 @@ child.wait()
         state = self.state(slug)
         orphan, child = map(int, marker.read_text().split())
         self.extra_pids.update((orphan, child))
+
+        # Both process groups hold the session when its supervisor dies during naming.
+        title_slug = "orphan-title"
+        self.start(title_slug, "--executor", "opencode", "--model", "offline/model", "--parallel", "--no-push")
+        title_state = self.state(title_slug)
+        title_marker = Path(title_state["worktree"]) / "title-pids"
+        self.until(lambda: title_marker.exists() and len(title_marker.read_text().split()) == 2)
+        title_pids = list(map(int, title_marker.read_text().split()))
+        self.extra_pids.update(title_pids)
+        os.kill(title_state["pid"], signal.SIGKILL)
+        acp_marker = title_marker.parent / "orphan-pids"
+        self.until(lambda: acp_marker.exists() and len(acp_marker.read_text().split()) == 2)
+        acp_pids = list(map(int, acp_marker.read_text().split()))
+        self.assertEqual(acp_pids[0], title_state["opencode_pid"])
+        self.extra_pids.update(acp_pids)
+        self.assertIn(f"teamster stop {title_slug}", self.refused("say", title_slug, "Continue."))
+        self.cli("stop", title_slug)
+        self.assertFalse(any(self.process_is_live(pid) for pid in title_pids + acp_pids))
+        self.assertTrue(all(self.process_is_live(pid) for pid in (state["pid"], orphan, child)))
+        acp_marker.unlink()
+        self.cli("say", title_slug, "Retry after the interrupted title update.")
+        self.until(acp_marker.exists)
+        self.assertEqual(self.state(title_slug)["session_id"], title_state["session_id"])
+        self.cli("stop", title_slug)
+
         os.kill(state["pid"], signal.SIGKILL)
         self.until(lambda: not self.process_is_live(state["pid"]))
         for args in (("say", slug, "Continue."), ("resume", slug), ("clean", slug)):
