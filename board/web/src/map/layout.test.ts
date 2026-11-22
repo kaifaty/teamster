@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { HULL_SIZE } from "./fleet";
 import { PLACES } from "./placement";
+import { layoutSurface } from "./surface/layout";
+import type { SurfaceTask } from "./surface/types";
 import {
   CHECKPOINT, COUNT_ROOM, MAX_ZOOM, ROUTE, inCheckpoint, lanesOf, STATIONS, SUN_RADIUS, backdropOf, clampCamera, defaultCovered, fitCamera, freeView, parkingOf, parkingOrder,
   homeWorld, plateAt, plateRoom, skyChoices, stationOf, systemWorldSize, toolbarBand,
@@ -474,4 +476,32 @@ describe("constellations in the galaxy", () => {
     const again = galaxyLayout(stars, size, blocked, after, LABEL_ZOOM_FULL, groups);
     expect(again.places).toEqual(after.places);
   });
+});
+
+it("keeps occupied clearings and banks when neighbouring task cards change", () => {
+  const root: SurfaceTask = { id: "parent", project: "Gothic", title: "Trail", status: "active", parent_id: null, depends_on: [], pull_requests: [] };
+  const child: SurfaceTask = { ...root, id: "child", status: "needs_input", parent_id: root.id, depends_on: [root.id] };
+  const neighbour: SurfaceTask = { ...child, id: "neighbour", status: "blocked" };
+  const other: SurfaceTask = { ...root, id: "other", project: "TEAMSTER", status: "ready" };
+  const cards: SurfaceTask[] = [other, child, neighbour, root, { ...child, id: "dropped", status: "cancelled" }];
+  const before = layoutSurface(cards);
+  expect(layoutSurface([...cards].reverse()).sites).toEqual(before.sites);
+
+  const updated: SurfaceTask[] = [
+    { ...root, id: "a", project: "A" }, { ...root, id: "b" },
+    ...cards.map(task => task === neighbour ? { ...task, status: "done" as const } : task),
+  ];
+  const after = layoutSurface(updated, {}, before);
+  for (const { id } of [root, child, other]) {
+    const { x, y } = before.sites.get(id)!;
+    expect(after.sites.get(id)).toMatchObject({ x, y });
+  }
+  expect(after.sites.size).toBe(5);
+  expect(after.sites.get(root.id)).toMatchObject({ accepted: 1, children: 2, dependents: [child.id] });
+
+  // The browser has only the saved banks and slots when it opens the map again.
+  const reloaded = layoutSurface([...updated].reverse(), {}, { placement: JSON.parse(JSON.stringify(after.placement)) });
+  expect(reloaded.sites).toEqual(after.sites);
+  const quiet = layoutSurface(updated.filter(task => task.project !== other.project), {}, reloaded);
+  expect(quiet.placement[before.regions.get(other.project)!.bank]).toEqual({ project: other.project, slots: {} });
 });
