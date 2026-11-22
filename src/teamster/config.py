@@ -227,6 +227,11 @@ def codex_binary():
     return _installed_codex() or _missing_codex()
 
 
+def codex_adapter():
+    return shutil.which("codex-acp") or procs.die(
+        "codex-acp was not found. Install @agentclientprotocol/codex-acp and add it to PATH.")
+
+
 def claude_binary():
     override = env("CODEX_TASK_CLAUDE")
     return shutil.which(str(Path(override).expanduser()) if override else "claude")

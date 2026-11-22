@@ -10,6 +10,7 @@ Layer 1:
     acp (implemented): interactive Agent Client Protocol sessions over stdio.
     config (implemented): paths, settings, binaries, and account configuration.
 Layer 2:
+    codex_acp (implemented): Codex ACP turn transport and native app-server launcher.
     clock (implemented): real and simulated clocks.
     sandboxing (implemented): workspace filters and sandbox rules.
     notifications (implemented): notification processes and delivery.

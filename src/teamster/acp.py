@@ -39,10 +39,12 @@ class AcpClient:
     The harness owns model selection, credentials, tools and session storage.
     """
 
-    def __init__(self, argv, cwd, on_update, on_permission, *, check_active=None, env=None):
+    def __init__(self, argv, cwd, on_update, on_permission, *, check_active=None, env=None, own_group=True):
         self.argv = argv
         self.cwd = str(Path(cwd).resolve())
         self.env = env
+        self.own_group = own_group
+        self.prompt_meta = {}
         self.on_update = on_update
         self.on_permission = on_permission
         self.check_active = check_active
@@ -55,7 +57,7 @@ class AcpClient:
     def __enter__(self):
         env = self.env if self.env is not None else {**os.environ, "PWD": self.cwd}
         self.process = subprocess.Popen(self.argv, cwd=self.cwd, env=env,
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=self.own_group)
         if self.check_active:
             os.set_blocking(self.process.stdin.fileno(), False)
         return self
@@ -82,7 +84,11 @@ class AcpClient:
         finally:
             self.process.stdout.close()
             # The leader may have exited with tool processes still in its group.
-            procs.terminate(self.process)
+            if self.own_group:
+                procs.terminate(self.process)
+            elif self.process.poll() is None:
+                self.process.kill()
+                self.process.wait()
 
     def _send(self, **message):
         line = (json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False) + "\n").encode()
@@ -184,10 +190,10 @@ class AcpClient:
                 self._send(method="session/cancel", params={"sessionId": self.session_id})
                 deadline = time.monotonic() + 3
 
-    def open_session(self, session_id=None, auth_method=None, model=None, *, config_options=None):
+    def open_session(self, session_id=None, auth_method=None, model=None, *, config_options=None, capabilities=None):
         """Open a v1 session and confirm requested select options, model first."""
         self.session_id = None
-        info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": {},
+        info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": capabilities or {},
                                          "clientInfo": {"name": "teamster", "version": teamster.__version__}})
         if info.get("protocolVersion") != 1:
             raise ValueError(f"Unsupported ACP protocol version: {info.get('protocolVersion')}")
@@ -231,12 +237,16 @@ class AcpClient:
                 self.on_update(update["update"])
         return self.session_id
 
+    def set_title(self, title):
+        self._call("session/set_title", {"sessionId": self.session_id, "title": title})
+
     def prompt(self, text):
         """Run one text turn and return its stop reason, including cancellation."""
         if self.session_id is None:
             raise ValueError("Open an ACP session before sending a prompt")
         result = self._call("session/prompt", {"sessionId": self.session_id,
                                               "prompt": [{"type": "text", "text": text}]})
+        self.prompt_meta = result.get("_meta") or {}
         reason = result.get("stopReason")
         if not isinstance(reason, str) or not reason:
             raise ValueError("ACP agent returned no stop reason")
