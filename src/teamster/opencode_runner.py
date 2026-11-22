@@ -10,6 +10,29 @@ from . import acp, clock, procs
 PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
 
 
+def _set_title(worktree, env, session_id, title, check_active):
+    # ACP v1 has no rename command. Set the title before OpenCode can generate one.
+    argv = ["opencode", "api", "--standalone", "session.update", "--param",
+            f"sessionID={session_id}", "--data", json.dumps({"title": title})]
+    check_active()
+    with tempfile.TemporaryFile() as errors:
+        proc = subprocess.Popen(argv, cwd=worktree, env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=errors, start_new_session=True)
+        try:
+            while proc.poll() is None:
+                check_active()
+                try:
+                    proc.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    pass
+            if proc.returncode:
+                errors.seek(0)
+                detail = errors.read(4096).decode(errors="replace").strip()
+                raise ValueError(f"OpenCode session title update failed ({proc.returncode}): {detail}")
+        finally:
+            procs.terminate(proc)
+
+
 def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, title, created, started=None):
     """Create a titled session if needed, then work only in that existing session."""
     def check_active():
@@ -39,43 +62,18 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
 
     try:
         check_active()
-        if not session_id:
-            # Giving the session its title at creation avoids a separate model call for an automatic title.
-            argv = ["opencode", "api", "--standalone", "session.create", "--data", json.dumps({"title": title})]
-            with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
-                proc = subprocess.Popen(argv, cwd=worktree, env=env,
-                                        stdin=subprocess.DEVNULL, stdout=output, stderr=errors, start_new_session=True)
-                try:
-                    if started:
-                        started(proc)
-                    while proc.poll() is None:
-                        check_active()
-                        try:
-                            proc.wait(timeout=0.2)
-                        except subprocess.TimeoutExpired:
-                            pass
-                    if proc.returncode:
-                        errors.seek(0)
-                        detail = errors.read(4096).decode(errors="replace").strip()
-                        return "failed", detail or f"OpenCode session creation exited with {proc.returncode}"
-                    output.seek(0)
-                    try:
-                        session_id = json.load(output)["data"]["id"]
-                    except (KeyError, TypeError):
-                        session_id = None
-                    if not isinstance(session_id, str) or not session_id:
-                        return "failed", "OpenCode returned no session ID"
-                    created(session_id)
-                finally:
-                    procs.terminate(proc)
-
-        check_active()
         # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
         with acp.AcpClient(["opencode", "acp"], worktree, lambda event: None, allow_once,
                            check_active=check_active, env=env) as client:
             if started:
                 started(client.process)
-            client.open_session(session_id, model=model)
+            opened = client.open_session(session_id, model=model)
+            if not session_id:
+                session_id = opened
+                created(session_id)
+            if title is not None:
+                _set_title(worktree, env, session_id, title, check_active)
+            check_active()
             client.on_update = update
             reason = client.prompt(prompt)
         check_active()

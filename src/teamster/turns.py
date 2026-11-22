@@ -393,7 +393,8 @@ def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
     try:
         outcome, message = opencode_runner.run_opencode(
             st["worktree"], prompt, st["model"], st.get("session_id"), stopped, deadline,
-            title=st["slug"], started=started, created=created)
+            title=None if st.get("session_id") and threads.session_messages(st) else st["slug"],
+            started=started, created=created)
     finally:
         st.pop("opencode_pid", None)
         task_state.save(st)

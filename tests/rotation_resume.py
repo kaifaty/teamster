@@ -278,16 +278,28 @@ class ResumeTests(RotationTestCase):
         # OpenCode has a separate process group and may keep writing after its supervisor dies.
         binary = self.root / "opencode"
         binary.write_text("#!" + sys.executable + """
-import os, signal, subprocess, sys
+import json, os, signal, subprocess, sys
 from pathlib import Path
 if sys.argv[1] == "api":
-    print('{"data":{"id":"ses_recovery"}}')
-else:
-    assert sys.argv[1] == "acp"
-    child = subprocess.Popen(["sleep", "90"])
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    Path("orphan-pids").write_text(f"{os.getpid()} {child.pid}")
-    child.wait()
+    assert sys.argv[3] == "session.update"
+    sys.exit(0)
+assert sys.argv[1] == "acp"
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    if method == "initialize":
+        result = {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
+    elif method in ("session/new", "session/load", "session/set_config_option"):
+        result = {"sessionId": "ses_recovery", "configOptions": [{"id": "model", "type": "select",
+                  "options": [{"value": "offline/model"}], "currentValue": "offline/model"}]}
+    else:
+        assert method == "session/prompt"
+        break
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+child = subprocess.Popen(["sleep", "90"])
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+Path("orphan-pids").write_text(f"{os.getpid()} {child.pid}")
+child.wait()
 """)
         binary.chmod(0o700)
         slug = "orphan-opencode"
