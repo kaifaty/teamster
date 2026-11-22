@@ -4681,7 +4681,12 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         fake.write_text("#!" + sys.executable + """
 import os, sys, time
 from pathlib import Path
-if sys.argv[1] == "api":
+if sys.argv[1:] == ["api", "--standalone", "model.list"]:
+    print('{"data":[{"providerID":"offline","id":"model","enabled":true,'
+          '"settings":{"baseURL":"http://127.0.0.1:1/v1"}}]}')
+elif sys.argv[1:] == ["auth", "list", "--standalone", "--format", "json"]:
+    print("[]")
+elif sys.argv[1] == "api":
     print('{"data":{"id":"ses_board"}}')
 else:
     assert sys.argv[1] == "acp"
