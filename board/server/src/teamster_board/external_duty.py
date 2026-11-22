@@ -115,7 +115,7 @@ class ExternalDuty:
         else:
             self.environment["TEAMSTER_HOME"] = str(self.home)
 
-    def authorized(self, request, *, write=False):
+    def authorized(self, request):
         if request.client is None:
             return False
         try:
@@ -129,7 +129,7 @@ class ExternalDuty:
         presented = values[0].encode("latin-1")
         if hmac.compare_digest(presented, ("Bearer " + self.config.token).encode("ascii")):
             return True
-        return not write and self.config.observer_token is not None and hmac.compare_digest(
+        return request.method == "GET" and self.config.observer_token is not None and hmac.compare_digest(
             presented, ("Bearer " + self.config.observer_token).encode("ascii"),
         )
 
@@ -327,8 +327,8 @@ def register(app, board):
     except OSError:
         LOGGER.exception("External duty could not initialize the event journal")
 
-    async def call(request, handler, *args, write=False):
-        if not api.authorized(request, write=write):
+    async def call(request, handler, *args):
+        if not api.authorized(request):
             return response(*failure(403, "forbidden"))
         try:
             return response(*await asyncio.to_thread(handler, *args))
@@ -359,7 +359,7 @@ def register(app, board):
         return await call(request, read)
 
     async def mutate(request, route, task_id=None):
-        if not api.authorized(request, write=True):
+        if not api.authorized(request):
             return response(*failure(403, "forbidden"))
         content_types = request.headers.getlist("content-type")
         if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
@@ -367,7 +367,7 @@ def register(app, board):
         data = await json_body(request)
         if not isinstance(data, dict):
             return response(*failure(data.status_code, "invalid_request"))
-        return await call(request, api.operation, route, task_id, data, write=True)
+        return await call(request, api.operation, route, task_id, data)
 
     @router.post("/tasks")
     async def start(request: Request):
