@@ -724,10 +724,11 @@ executors.get("opencode").bind(sys.modules[__name__], prepare="prepare_opencode_
 
 def prepare_codex(effort, cfg, directory=None):
     config.codex_binary()
+    config.codex_adapter()
 
 
 def prepare_codex_review(cfg):
-    config.codex_binary()
+    prepare_codex(None, cfg)
 
 
 executors.get("codex").bind(sys.modules[__name__], prepare="prepare_codex", prepare_scout="prepare_codex")

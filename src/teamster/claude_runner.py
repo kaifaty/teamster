@@ -437,7 +437,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                            stderr=subprocess.DEVNULL) as client:
             if started:
                 started(client.process)
-            cursor = client.open_session(session_id, meta=meta, config_options={"mode": mode})
+            cursor = client.open_session(session_id, meta=meta, initial_config={"mode": mode})
             if token in cursor:
                 raise ValueError("Invalid Claude session ID")
             telemetry["session_id"] = cursor

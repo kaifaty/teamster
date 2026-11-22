@@ -11,13 +11,25 @@ import teamster
 from . import procs
 
 
-def _model_config(result):
+def _select_config(result, config_id):
     options = result.get("configOptions")
     if isinstance(options, list):
         for item in options:
-            if isinstance(item, dict) and item.get("id") == "model" and item.get("type") == "select":
+            if isinstance(item, dict) and item.get("id") == config_id and item.get("type") == "select":
                 return item
     return {}
+
+
+def _offers_value(option, value):
+    for choice in option.get("options") or []:
+        if not isinstance(choice, dict):
+            continue
+        if "group" in choice:
+            if _offers_value(choice, value):
+                return True
+        elif choice.get("value") == value:
+            return True
+    return False
 
 
 class AcpRequestError(ValueError):
@@ -38,12 +50,13 @@ class AcpClient:
     """
 
     def __init__(self, argv, cwd, on_update, on_permission, *, check_active=None, env=None,
-                 on_notification=None, stderr=None):
+                 on_notification=None, stderr=None, own_group=True):
         self.argv = argv
         self.cwd = str(Path(cwd).resolve())
         self.env = env
         self.stderr = stderr
         self.on_notification = on_notification
+        self.own_group = own_group
         self.on_update = on_update
         self.on_permission = on_permission
         self.check_active = check_active
@@ -57,7 +70,7 @@ class AcpClient:
         env = self.env if self.env is not None else {**os.environ, "PWD": self.cwd}
         self.process = subprocess.Popen(self.argv, cwd=self.cwd, env=env,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=self.stderr, start_new_session=True)
+                                        stderr=self.stderr, start_new_session=self.own_group)
         if self.check_active:
             os.set_blocking(self.process.stdin.fileno(), False)
         return self
@@ -84,7 +97,11 @@ class AcpClient:
         finally:
             self.process.stdout.close()
             # The leader may have exited with tool processes still in its group.
-            procs.terminate(self.process)
+            if self.own_group:
+                procs.terminate(self.process)
+            elif self.process.poll() is None:
+                self.process.kill()
+                self.process.wait()
 
     def _send(self, **message):
         line = (json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=False) + "\n").encode()
@@ -172,6 +189,9 @@ class AcpClient:
                     if not isinstance(error, dict):
                         raise ValueError(f"Invalid ACP {method} error")
                     detail = f"ACP {method} failed ({error.get('code')}): {error.get('message')}"
+                    data = error.get("data")
+                    if isinstance(data, dict) and isinstance(data.get("message"), str):
+                        detail += f": {data['message']}"
                     if error.get("code") == -32000:
                         detail += ". Sign in using the agent CLI"
                         if self.auth_methods:
@@ -198,10 +218,11 @@ class AcpClient:
                 self.cancel()
                 deadline = time.monotonic() + 3
 
-    def open_session(self, session_id=None, auth_method=None, model=None, *, meta=None, config_options=None):
-        """Negotiate v1 and open a new session or load an existing session."""
+    def open_session(self, session_id=None, auth_method=None, model=None, *, meta=None, initial_config=None,
+                     config_options=None, capabilities=None):
+        """Open an ACP v1 session and confirm the requested initial and subsequent selections."""
         self.session_id = None
-        info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": {},
+        info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": capabilities or {},
                                          "clientInfo": {"name": "teamster", "version": teamster.__version__}})
         if info.get("protocolVersion") != 1:
             raise ValueError(f"Unsupported ACP protocol version: {info.get('protocolVersion')}")
@@ -215,8 +236,8 @@ class AcpClient:
         params = {"cwd": self.cwd, "mcpServers": []}
         if meta is not None:
             params["_meta"] = meta
-        if config_options:
-            params["configOptions"] = [{"configId": key, "value": value} for key, value in config_options.items()]
+        if initial_config:
+            params["configOptions"] = [{"configId": key, "value": value} for key, value in initial_config.items()]
         pending = []
         if session_id is not None:
             capabilities = info.get("agentCapabilities", {})
@@ -234,33 +255,27 @@ class AcpClient:
             session_id = result.get("sessionId")
             if not isinstance(session_id, str) or not session_id:
                 raise ValueError("ACP agent returned no session ID")
-        if config_options:
-            options = result.get("configOptions")
-            if not isinstance(options, list):
-                raise ValueError("ACP agent returned no session configuration")
-            for key, value in config_options.items():
-                selected = [item.get("currentValue") for item in options
-                            if isinstance(item, dict) and item.get("id") == key]
-                if selected != [value]:
-                    raise ValueError(f"ACP agent did not confirm {key} {value!r}")
-        if model is not None:
-            choices = _model_config(result).get("options")
-            if not isinstance(choices, list) or not any(
-                isinstance(choice, dict) and choice.get("value") == model for choice in choices
-            ):
-                raise ValueError(f"ACP agent does not offer model {model!r} in this session")
-            selection = {"sessionId": session_id, "configId": "model", "value": model}
-            try:
-                confirmed = self._call("session/set_config_option", selection, pending)
-            except ValueError:
-                raise ValueError(f"ACP agent could not select model {model!r}") from None
-            if _model_config(confirmed).get("currentValue") != model:
-                raise ValueError(f"ACP agent did not confirm model {model!r}")
+        selections = {"model": model} if model is not None else {}
+        selections.update(config_options or {})
+        for key, value in selections.items():
+            if not _offers_value(_select_config(result, key), value):
+                raise ValueError(f"ACP agent does not offer {key} {value!r} in this session")
+            selection = {"sessionId": session_id, "configId": key, "value": value}
+            result = self._call("session/set_config_option", selection, pending)
+        # Selecting one option can change another, for example a model's default effort.
+        for key, value in {**(initial_config or {}), **selections}.items():
+            selected = [option.get("currentValue") for option in result.get("configOptions") or []
+                        if isinstance(option, dict) and option.get("id") == key]
+            if selected != [value]:
+                raise ValueError(f"ACP agent did not confirm {key} {value!r}")
         self.session_id = session_id
         for update in pending:
             if update.get("sessionId") == session_id:
                 self.on_update(update["update"])
         return self.session_id
+
+    def set_title(self, title):
+        self._call("session/set_title", {"sessionId": self.session_id, "title": title})
 
     def cancel(self):
         """Ask the agent to interrupt its prompt while continuing to receive final usage."""

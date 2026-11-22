@@ -8,6 +8,7 @@ import selectors
 import shlex
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 from contextlib import contextmanager
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NamedTuple, Optional
 
-from . import account_rotation, accounts, budgets, clock, config, procs, result_schema, sandboxing, task_state, telemetry_log, threads
+from . import account_rotation, accounts, budgets, clock, codex_acp, config, procs, result_schema, sandboxing, task_state, telemetry_log, threads
 
 
 def _search_command(command):
@@ -159,6 +160,7 @@ class MonitorEvents:
     buffer: bytes = b""
     eof: bool = False
     failed: bool = False
+    error: Optional[str] = None
     completed: bool = False
     reason: Optional[str] = None
     authentication_failed: bool = False
@@ -186,58 +188,23 @@ class MonitorRollout:
     current_info: Optional[dict] = None
 
 
-def monitor_command(st, cfg, prompt, effort, reviewing, review_fallback, wrapup, thread, last):
-    """Prepare exec arguments/schema and return the effective prompt for fallback."""
-    if last.exists():
-        last.unlink()
-    args = [config.codex_binary(), "exec"]
-    if reviewing and not wrapup and not thread:
-        # Some CLI versions reject --base together with custom instructions.
-        if not review_fallback:
-            args += ["review", "--base", st["base"]]
-        args += ["--json", "-o", str(last)]
-    elif thread:
-        args += ["resume", thread, "--json", "-o", str(last)]
-    else:
-        args += ["--json", "-C", st["worktree"], "-o", str(last)]
-    if st.get("kind") in ("scout", "reflect"):
-        args += ["-c", 'sandbox_mode="read-only"']
-    else:
-        args += sandboxing.sandbox_args(st)
-        if st.get("sandbox") == "workspace":
-            rules = sandboxing.sandbox_rules(cfg, reviewing=reviewing, no_push=st.get("no_push", False))
-            try:
-                rules = sandboxing.repository_rules(rules, st["worktree"])
-            except (OSError, subprocess.CalledProcessError):
-                pass  # Keep the standard GitHub rules when origin cannot be read.
-            if not prompt.endswith(rules):
-                prompt += "\n\n" + rules
-    if st.get("kind") == "reflect":
-        schema = last.parent / "reflect-schema.json"
-        schema.write_text(json.dumps(result_schema.REFLECT_SCHEMA, indent=2), encoding="utf-8")
-        args += ["--output-schema", str(schema)]
-    elif st.get("kind") != "scout":
-        schema = last.parent / ("review-schema.json" if reviewing else "result-schema.json")
-        schema.write_text(json.dumps(result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA, indent=2), encoding="utf-8")
-        args += ["--output-schema", str(schema)]
-    model = (st.get("review_model") or config.role_route(cfg, "review", "codex").get("model")
-             if reviewing else st.get("task_model"))
-    if model:
-        args += ["--model", model]
-        if args[1:3] == ["exec", "review"]:
-            args += ["-c", f'review_model="{model}"']
-    return args + threads.effort_args(effort) + [prompt], prompt
-
-
 @contextmanager
-def monitor_process(st, account, args, errors):
-    """Own one exec process group; terminate it before the caller's final accounting."""
-    proc = subprocess.Popen(args, cwd=st["worktree"], env=accounts.account_env(account), stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=errors, start_new_session=True)
-    try:
-        yield proc
-    finally:
-        procs.terminate(proc)
+def monitor_process(st, account, options, prompt):
+    """Keep the ACP client, adapter, backend and tool children in one supervised group."""
+    directory = config.TASKS / st["slug"]
+    with tempfile.TemporaryDirectory(prefix="codex-acp-", dir=directory) as scratch:
+        path = Path(scratch)
+        (path / "options").write_text(json.dumps(options), encoding="utf-8")
+        (path / "prompt").write_text(prompt, encoding="utf-8")
+        with (directory / "stderr.log").open("ab") as errors:
+            proc = subprocess.Popen(codex_acp.command("run", scratch), cwd=st["worktree"],
+                                    env=accounts.account_env(account), stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=errors, start_new_session=True)
+        try:
+            yield proc
+        finally:
+            procs.terminate(proc)
+            proc.stdin.close()
 
 
 def monitor_thread_started(st, account, stream, reviewing, wrapup, attempt_started):
@@ -275,19 +242,21 @@ def monitor_event(st, account, event, stream, control, reviewing, wrapup, attemp
         return "stuck", None
     if account_rotation.limit_error(event):
         stream.reason = "usage limit"
-    if account_rotation.auth_error(event):
+    if account_rotation.auth_error(event) or (event.get("type") == "turn.failed" and
+            "(-32000)" in str(event.get("error"))):
         stream.authentication_failed = True
     if not stream.reason and not stream.authentication_failed and account_rotation.capacity_error(event):
         stream.capacity_failed = True
     # `error` events also carry retries ("Reconnecting... 2/5") of turns that complete.
     if event.get("type") == "turn.failed":
         stream.failed = True
+        stream.error = (event.get("error") or {}).get("message", "Codex ACP turn failed")
     if event.get("type") == "turn.completed":
         stream.completed = True
     return None
 
 
-def read_monitor_events(st, account, ready, sel, log, stream, usage, control,
+def read_monitor_events(st, account, proc, ready, sel, log, stream, usage, control,
                         reviewing, wrapup, attempt_started):
     """Append ready bytes verbatim, then decode complete lines without reordering."""
     for key, _ in ready:
@@ -310,6 +279,13 @@ def read_monitor_events(st, account, ready, sel, log, stream, usage, control,
                 result = monitor_event(st, account, event, stream, control, reviewing, wrapup, attempt_started)
                 if result is not None:
                     return result
+                if event.get("type") == "thread.started":
+                    # monitor_thread_started has durably saved this ID, including on rotation.
+                    try:
+                        proc.stdin.write(b"prompt\n")
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        return "failed", None
     return None
 
 
@@ -399,7 +375,7 @@ def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, st
                 return "budget_exhausted", None
             ready = ([] if usage.pending_weekly_spent is not None and usage.pending_weekly_bytes == 0
                      else sel.select(0 if usage.pending_weekly_spent is not None else 0.2))
-            result = read_monitor_events(st, account, ready, sel, log, stream, usage, control,
+            result = read_monitor_events(st, account, proc, ready, sel, log, stream, usage, control,
                                          reviewing, wrapup, attempt_started)
             if result is not None:
                 return result
@@ -441,7 +417,9 @@ def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
     """Close stdout, finalize results, account final rollout/telemetry, then save."""
     proc.stdout.close()
     st.pop("codex_pid", None)
-    message = last.read_text(encoding="utf-8").strip() if last.exists() else stream.final_message
+    message = stream.final_message
+    if message:
+        last.write_text(message + "\n", encoding="utf-8")
     if wrapup:
         st["wrapup"]["result"] = None if stream.refusal else result_schema.parse_result(message, reviewing=reviewing)
         if stream.refusal:
@@ -479,9 +457,9 @@ def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
     task_state.save(st)
 
 
-def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback=False,
+def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
             control=None, wrapup=False, wrapup_thread=None, quota_snapshot=None, resume_thread=None):
-    """One exec attempt. The supervisor alone owns state; append CLI events verbatim."""
+    """Run one ACP session attempt, preserving native rollout and task accounting."""
     d = config.TASKS / st["slug"]
     accounts.prepare_home(account)
     reviewing = st.get("kind") == "review"
@@ -492,10 +470,30 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback
               else "" if reviewing else st.get("thread", ""))
     stream = MonitorEvents(thread)
     last = d / ("review.md" if reviewing else "last.md")
-    args, prompt = monitor_command(st, cfg, prompt, effort, reviewing, review_fallback, wrapup, thread, last)
-    settings = threads.configured_model_settings(account["home"], args)
-    stream.model, stream.reasoning_effort = settings["model"], settings["reasoning_effort"]
-    stream.review_model = settings["review_model"] if args[1:3] == ["exec", "review"] else None
+    last.unlink(missing_ok=True)
+    kind = st.get("kind", "work")
+    sandbox = ("read-only" if kind in ("scout", "reflect") else
+               "workspace-write" if st.get("sandbox") == "workspace" else None)
+    if sandbox == "workspace-write":
+        rules = sandboxing.sandbox_rules(cfg, reviewing=reviewing, no_push=st.get("no_push", False))
+        try:
+            rules = sandboxing.repository_rules(rules, st["worktree"])
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        if not prompt.endswith(rules):
+            prompt += "\n\n" + rules
+    defaults = threads.configured_model_settings(account["home"], [])
+    review_model = (st.get("review_model") or config.role_route(cfg, "review", "codex").get("model")
+                    or defaults["review_model"]) if reviewing else None
+    model = review_model if reviewing else st.get("task_model")
+    schema = (None if kind == "scout" else result_schema.REFLECT_SCHEMA if kind == "reflect" else
+              result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA)
+    options = {"binary": config.codex_binary(), "adapter": config.codex_adapter(), "thread": thread,
+               "slug": st["slug"], "model": model, "effort": effort, "sandbox": sandbox,
+               "roots": st.get("writable_dirs", []), "schema": schema}
+    stream.model = model or defaults["model"]
+    stream.reasoning_effort = effort or defaults["reasoning_effort"]
+    stream.review_model = review_model
     path = threads.rollout_path(account["home"], thread) if thread else None
     previous_stat = path.stat() if path else None
     usage_offset = previous_stat.st_size if previous_stat is not None else 0
@@ -517,15 +515,14 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback
     usage = MonitorRollout(path, previous_stat, usage_offset, next_search, read_offset=usage_offset)
     st["exec_event_start"] = len(threads.events(st))
     task_state.save(st)
-    with (d / "events.jsonl").open("ab", buffering=0) as log, (d / "stderr.log").open("a") as errors:
+    with (d / "events.jsonl").open("ab", buffering=0) as log:
         if stopped():
             return task_state.stop_outcome(st, stopped), None
-        error_start = errors.tell()
         attempt_started = clock.CLOCK.time()
         active_started = clock.CLOCK.monotonic()
         proc = None
         try:
-            with monitor_process(st, account, args, errors) as proc:
+            with monitor_process(st, account, options, prompt) as proc:
                 st["codex_pid"] = proc.pid
                 task_state.save(st)
                 result = monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, stopped,
@@ -536,11 +533,13 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback
                                                      active_started, clock.CLOCK.monotonic()).elapsed
                 finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
                                record_limits, telemetry, usage_before, weekly_started)
-    if reviewing and not review_fallback and not stream.thread and stream.exit_code == 2:
-        with (d / "stderr.log").open("rb") as errors:
-            errors.seek(error_start)
-            error = errors.read().decode("utf-8", errors="replace")
-        if all(part in error for part in ("cannot be used with", "--base", "PROMPT")):
-            return monitor(st, cfg, account, prompt, effort, stopped, on_limit, review_fallback=True,
-                           control=control, quota_snapshot=quota_snapshot)
+    if result[0] == "failed" and stream.error:
+        st["error"] = stream.error
+        task_state.save(st)
+    if result[0] == "completed" and schema is not None:
+        parsed = result_schema.parse_result(stream.final_message, reviewing=reviewing, reflecting=kind == "reflect")
+        if parsed is None:
+            st["error"] = f"Codex ACP returned an invalid {kind} result"
+            task_state.save(st)
+            return "failed", None
     return result
