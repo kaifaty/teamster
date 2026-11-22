@@ -753,7 +753,7 @@ def cmd_stop(a):
                 print("not running")
                 return
             # The supervisor died before its transport, which still holds the session.
-            marker = codex_duty.duty_process_marker(orphan) if name == "Codex" else None
+            marker = codex_duty.duty_process_marker(orphan) if name in ("Codex", "Claude") else None
             if name == "Codex":
                 # App-server owns terminal groups separate from its own. Let
                 # its SIGTERM shutdown end those before the group fallback.

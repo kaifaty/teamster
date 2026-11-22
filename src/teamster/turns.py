@@ -2,7 +2,7 @@
 import json
 import sys
 
-from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, duty, duty_chat, executors, notifications, opencode_runner, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
+from . import account_rotation, accounts, budgets, checking, claude_accounts, claude_review, claude_runner, clock, config, duty, duty_acp, duty_chat, executors, notifications, opencode_runner, procs, prompts, publishing, result_schema, task_state, telemetry_log, threads, turn_monitor
 
 
 LIMIT_REASONS = ("usage limit", "authentication failed", "token unavailable")
@@ -101,19 +101,6 @@ def run_claude_scout_turn(st, cfg, prompt, effort, current_message, stopped, sle
         st["error"] = (f"No available Claude account for {'reflect' if reflecting else 'scout'}"
                        + (f": {st['error']}" if st.get("error") else ""))
     task_state.save(st)
-
-
-def run_claude_duty(account, room, prompt, stopped, deadline, model, effort, *, thread_id=None,
-                    system_text="", started=None, progress=None, task_dir=None, max_minutes=None):
-    """Adapt the Claude duty transport to the executor's shared duty contract."""
-    system_prompt = duty_chat.write_system_prompt(system_text, task_dir)
-    try:
-        return claude_runner.run_claude(
-            account, room, prompt, stopped, deadline, model, effort,
-            session_id=thread_id, system_prompt=system_prompt, started=started,
-            progress=progress, task_dir=task_dir, role="duty", max_minutes=max_minutes)
-    finally:
-        system_prompt.unlink(missing_ok=True)
 
 
 def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
@@ -826,7 +813,8 @@ def claude_wrapup_turn(st, cfg, account, prompt, effort, stopped, thread):
 
 
 executors.get("codex").bind(sys.modules[__name__], turn="_run_turn", scout="_run_turn", wrapup="codex_wrapup_turn")
-executors.get("codex").bind(codex_duty, duty="run_codex_duty")
+executors.get("codex").bind(duty_acp, duty="run_duty")
+executors.get("claude").bind(duty_acp, duty="run_duty")
 executors.get("claude").bind(sys.modules[__name__], turn="run_claude_turn", scout="run_claude_scout_turn",
-                             wrapup="claude_wrapup_turn", duty="run_claude_duty")
+                             wrapup="claude_wrapup_turn")
 executors.get("opencode").bind(sys.modules[__name__], turn="run_opencode_turn", wrapup="opencode_wrapup_turn")

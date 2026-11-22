@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
@@ -121,7 +122,8 @@ if acp:
     if run.get("saved_cursor"):
         assert Path(run["saved_cursor"]).read_text() == session_id
 else:
-    session_id = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else str(uuid.uuid4())
+    session_id = next((sys.argv[sys.argv.index(flag) + 1] for flag in ("--resume", "--session-id") if flag in sys.argv),
+                      str(uuid.uuid4()))
     system_prompt = (Path(sys.argv[sys.argv.index("--append-system-prompt-file") + 1]).read_text()
                      if "--append-system-prompt-file" in sys.argv else None)
     transport = {"stdin": sys.stdin.read()}
@@ -569,7 +571,7 @@ class ClaudeReviewTests(RotationTestCase):
                 params = {"threadId": "thread", "turnId": "turn", "itemId": "command",
                           "command": shlex.join(["/bin/zsh", "-lc", command]), "cwd": str(room)}
                 with mock.patch.dict(os.environ, self.env, clear=True):
-                    decision, adapter_reason = worker.turns.codex_duty.approval(
+                    decision, adapter_reason = worker.commands.codex_duty.approval(
                         "item/commandExecution/requestApproval", params, {}, room, "thread", "turn")
                 self.assertEqual(decision, "decline" if expected or command in codex_refused else "accept", adapter_reason)
                 if command in codex_refused:
@@ -1075,7 +1077,7 @@ class ClaudeReviewTests(RotationTestCase):
             {"params": {"command": shlex.join(["/bin/zsh", "-lc", "cat /dev/null > outside.txt"]), "cwd": str(self.root)},
              "write": str(outside)},
         ]
-        self.codex_duty_runs([{"reply_from_command_output": True, "requests": requests, "sleep": True},
+        self.codex_duty_runs([{"reply_from_command_output": True, "requests": requests, "sleep": True, "stream_answer": True},
                               {"reply_from_command_output": True, "requests": [{"params": {
                                   "command": "cat " + shlex.quote(str(second_input)), "cwd": str(room)}, "execute": True}]},
                               {"reply": self.duty_answer("Decide.", "needs_decision")}])
@@ -1368,8 +1370,8 @@ class ClaudeReviewTests(RotationTestCase):
                     writer.result(timeout=5)
 
                 with mock.patch.object(Path, "read_text", read_during_update), mock.patch.object(
-                        worker.turns.codex_duty.time, "sleep", side_effect=retry_pause) as pause:
-                    models = worker.turns.codex_duty.codex_duty_catalog({"home": str(self.home)}, directory / "models.json")
+                        worker.commands.codex_duty.time, "sleep", side_effect=retry_pause) as pause:
+                    models = worker.commands.codex_duty.codex_duty_catalog({"home": str(self.home)}, directory / "models.json")
                 pause.assert_called_once_with(0.05)
                 self.assertEqual(reads, ["", original])
                 self.assertEqual([info["slug"] for info in models],
@@ -1387,8 +1389,8 @@ class ClaudeReviewTests(RotationTestCase):
             return read_text(path, *args, **kwargs)
 
         with mock.patch.object(Path, "read_text", read_torn_utf8), mock.patch.object(
-                worker.turns.codex_duty.time, "sleep", side_effect=lambda delay: source.write_text(original)) as pause:
-            models = worker.turns.codex_duty.codex_duty_catalog({"home": str(self.home)}, directory / "models.json")
+                worker.commands.codex_duty.time, "sleep", side_effect=lambda delay: source.write_text(original)) as pause:
+            models = worker.commands.codex_duty.codex_duty_catalog({"home": str(self.home)}, directory / "models.json")
         pause.assert_called_once_with(0.05)
         self.assertEqual(len(reads), 2)
         self.assertEqual([info["slug"] for info in models],
@@ -1417,8 +1419,8 @@ class ClaudeReviewTests(RotationTestCase):
             else:
                 source.write_text(content)
             with self.subTest(content=content), mock.patch.dict(os.environ, self.env, clear=True):
-                response = worker.turns.codex_duty.run_codex_duty(
-                    {"home": str(self.home)}, self.repo, "Discuss.", lambda: False,
+                response = worker.turns.duty_acp.run_duty(
+                    {"family": "codex", "home": str(self.home)}, self.repo, "Discuss.", lambda: False,
                     worker.clock.CLOCK.monotonic() + 60, None, None, task_dir=directory)
                 self.assertEqual(response["outcome"], "failed", response)
                 self.assertEqual(response["reason"], "Codex duty needs a usable " + str(source)
@@ -1427,8 +1429,9 @@ class ClaudeReviewTests(RotationTestCase):
 
     def test_codex_duty_rejects_async_user_messages(self):
         worker = self.worker()
-        rpc = object.__new__(worker.turns.codex_duty.DutyRPC)
+        rpc = object.__new__(worker.commands.codex_duty.DutyRPC)
         rpc.thread, rpc.turn, rpc.items, rpc.directory = "thread", "turn", {}, self.root
+        rpc.on_text, rpc.streamed_items = None, {}
         answer = json.dumps(self.duty_answer("Final answer."))
         rpc.notification("item/completed", {"threadId": "thread", "turnId": "turn", "item": {
             "id": "final", "type": "agentMessage", "text": answer}})
@@ -1615,7 +1618,7 @@ class ClaudeReviewTests(RotationTestCase):
             item = {"id": "patch", "type": "fileChange", "changes": [{"path": path, "kind": kind, "diff": ""}]}
             params = {"threadId": "thread", "turnId": "turn", "itemId": "patch"}
             with self.subTest(path=path, destination=destination), mock.patch.dict(os.environ, self.env, clear=True):
-                decision, reason = worker.turns.codex_duty.approval(
+                decision, reason = worker.commands.codex_duty.approval(
                     "item/fileChange/requestApproval", params, {"patch": item}, room, "thread", "turn")
                 self.assertEqual(decision, expected, reason)
         with mock.patch.dict(os.environ, self.env, clear=True):
@@ -1629,7 +1632,7 @@ class ClaudeReviewTests(RotationTestCase):
                         {"path": str(outside / "another.md"), "kind": {"type": "add"}, "diff": ""}] + item["changes"])}),
                     ("item/fileChange/requestApproval", None, {"patch": item}),
                     ("item/unknown/requestApproval", params, {"patch": item})):
-                decision, reason = worker.turns.codex_duty.approval(method, params, items, room, "thread", "turn")
+                decision, reason = worker.commands.codex_duty.approval(method, params, items, room, "thread", "turn")
                 self.assertEqual(decision, "decline", reason)
 
     def test_duty_chat_handoff_between_families_does_not_resume_a_stale_cursor(self):
@@ -1798,7 +1801,7 @@ class ClaudeReviewTests(RotationTestCase):
                               {"reply": self.duty_answer("Recovered.")},
                               {"mode": "hold", "child": True}])
         worker = self.worker()
-        account = worker.accounts.account_named(worker.config.accounts_config(), "main")
+        account = dict(worker.accounts.account_named(worker.config.accounts_config(), "main"), family="codex")
         directory = self.root / "duty-task"
         directory.mkdir()
         with mock.patch.dict(os.environ, self.env, clear=True):
@@ -1813,7 +1816,7 @@ class ClaudeReviewTests(RotationTestCase):
                         advanced[0] = True
                     return ready and expected == "stopped"
 
-                response = worker.turns.codex_duty.run_codex_duty(
+                response = worker.turns.duty_acp.run_duty(
                     account, self.repo, "Discuss.", stopped,
                     worker.clock.CLOCK.monotonic() + 60, "gpt-6.1-sol", "high",
                     system_text="Duty fixture instructions.", task_dir=directory)
@@ -1825,7 +1828,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(parent["pid"], parent["pgid"])
                 self.assertFalse(self.process_is_live(parent["pid"]))
                 self.assertFalse(self.process_is_live(child))
-            failed = worker.turns.codex_duty.run_codex_duty(
+            failed = worker.turns.duty_acp.run_duty(
                 account, self.repo, "Crash.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
                 "gpt-6.1-sol", "high", system_text="Duty fixture instructions.", task_dir=directory)
             crash_trace = self.trace()
@@ -1837,7 +1840,7 @@ class ClaudeReviewTests(RotationTestCase):
             self.assertFalse(any(entry["command"] == "duty-executed" for entry in crash_trace))
             for child in crashed_children:
                 self.assertFalse(self.process_is_live(child))
-            recovered = worker.turns.codex_duty.run_codex_duty(
+            recovered = worker.turns.duty_acp.run_duty(
                 account, self.repo, "Recover.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
                 "gpt-6.1-sol", "high", thread_id=failed["telemetry"]["thread"],
                 system_text="Duty fixture instructions.", task_dir=directory)
@@ -1873,6 +1876,77 @@ class ClaudeReviewTests(RotationTestCase):
                 self.cli("stop", "duty", timeout=60)
                 holding.communicate(timeout=60)
 
+    def test_duty_acp_stdio_resumes_streams_and_reaps_native_children(self):
+        hold = {"mode": "hold", "child": True}
+        answer = self.duty_answer("Continued.")
+        claude, *_ = self.claude_pool_fixture(runs=[
+            hold, {"assistant_text": "Reading " + TEST_TOKEN, "reply": answer},
+            {"limits": {"status": "rejected", "resetsAt": self.reset}}])
+        self.codex_duty_runs([hold])
+        worker = self.worker()
+        adapter = worker.turns.duty_acp
+        directory = self.root / "duty-task"
+        # A pre-ACP Codex rollout in the duty's native store.
+        cursor = "24c31bc2-00c7-4010-b6e0-d455d855b7ab"
+        stored = directory / "codex-home" / "duty-threads" / cursor
+        stored.parent.mkdir(parents=True)
+        stored.write_text(json.dumps({"model": "gpt-6.1-sol"}))
+        codex = {"family": "codex", "home": self.home}
+        claude = dict(claude, family="claude")
+        for account, action in ((codex, "cancel"), (claude, "disconnect"), (claude, "reply")):
+            with self.subTest(family=account["family"], action=action):
+                system_file = worker.turns.duty_chat.write_system_prompt("Guarded duty instructions.", directory)
+                command = adapter.duty_agent_command(account, system_file, worker.clock.CLOCK.monotonic() + 60,
+                                                     None, "high", 1)
+                updates = []
+                env = {**self.env, worker.config.DUTY_PROCESS_MARKER: uuid.uuid4().hex}
+                with worker.commands.acp.AcpClient(command, self.repo, updates.append, lambda params: None,
+                                                   env=env) as client:
+                    session = client.open_session(None if action == "disconnect" else cursor)
+                    if action == "reply":
+                        self.assertEqual(client.prompt("--verbose"), "end_turn")
+                        native = self.claude_invocations()[-1]
+                        self.assertEqual(native["session_id"], cursor)
+                        self.assertEqual(native["argv"][-2:], ["--", "--verbose"])
+                        texts = [event["content"]["text"] for event in updates
+                                 if event["sessionUpdate"] == "agent_message_chunk"]
+                        self.assertEqual(texts[:-1], ["Reading [REDACTED]"])
+                        self.assertEqual(json.loads(texts[-1]), answer)
+                        self.assertNotIn(TEST_TOKEN, json.dumps([command, native["argv"], updates]))
+                        continue
+                    # Drive the real pipe independently of the supervisor. The backend
+                    # must finish cleanup even while the parent keeps stdout open.
+                    client._send(id=31, method="session/prompt", params={"sessionId": session,
+                                 "prompt": [{"type": "text", "text": "Hold."}]})
+                    if action == "cancel":
+                        self.assertEqual(session, cursor)
+                        self.until(lambda: any(e["command"] == "duty-holding" for e in self.trace()))
+                        native = self.codex_duty_invocations()[-1]["pid"]
+                        child = next(e["child_pid"] for e in self.trace() if e["command"] == "duty-child")
+                        client._send(method="session/cancel", params={"sessionId": session})
+                        reply = client._read(time.monotonic() + 15)
+                        self.assertEqual((reply["id"], reply["result"]["stopReason"]), (31, "cancelled"))
+                    else:
+                        self.until(lambda: any(e["command"] == "holding_child" for e in self.claude_trace()))
+                        native = self.claude_invocations()[-1]["pid"]
+                        child = next(e["pid"] for e in self.claude_trace() if e["command"] == "holding_child")
+                        info = client._read(time.monotonic() + 15)
+                        self.assertEqual((info["method"], info["params"]["sessionId"]), ("session/update", session))
+                        self.assertEqual(self.claude_invocations()[-1]["session_id"], session)
+                        client.process.stdin.close()
+                    self.extra_pids.update((native, child))
+                    self.assertNotEqual(native, client.process.pid)
+                    self.assertEqual(client.process.wait(timeout=15), 0)
+                    self.assertFalse(self.process_is_live(native))
+                    self.assertFalse(self.process_is_live(child))
+
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            limited = worker.executors.get("claude").call(
+                "duty", claude, self.repo, "Continue.", lambda: False, worker.clock.CLOCK.monotonic() + 60,
+                "fixture-claude", "high", thread_id=cursor, task_dir=directory)
+        self.assertEqual((limited["outcome"], limited["reason"], limited["limited_until"]),
+                         ("unavailable", "usage limit", self.reset))
+
     def test_codex_duty_orphan_refuses_messages_and_clean_until_stop(self):
         self.configure(language="en")
         self.codex_duty_runs([{"mode": "hold", "child": True}, {"reply": self.duty_answer("Recovered answer.")},
@@ -1886,6 +1960,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.extra_pids.update((st["pid"], st["codex_pid"], child))
         first_thread = st.get("thread")
         self.assertTrue(first_thread)
+        # A wedged adapter cannot handle stdin EOF. Exercise explicit orphan recovery.
+        os.kill(st["codex_pid"], signal.SIGSTOP)
         os.kill(st["pid"], signal.SIGKILL)
         output, errors = holding.communicate(timeout=30)
         self.assertEqual(holding.returncode, 1, output)
@@ -2350,6 +2426,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(len(waiting()), 1)
         st = self.state("duty")
         self.extra_pids.update((st["pid"], st["claude_pid"]))
+        # A wedged adapter cannot handle stdin EOF. Exercise explicit orphan recovery.
+        os.kill(st["claude_pid"], signal.SIGSTOP)
         os.kill(st["pid"], signal.SIGKILL)
         output, errors = second.communicate(timeout=30)
         self.assertEqual(second.returncode, 1, output)

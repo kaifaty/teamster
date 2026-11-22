@@ -191,11 +191,8 @@ def run_work_turn(account, worktree, task_dir, prompt, stopped, session_id=None,
         system_prompt.unlink(missing_ok=True)
 
 
-def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, effort=None,
-               max_turns=None, *, session_id=None, system_prompt=None, reviewing=False, started=None, progress=None,
-               task_dir=None, role="work", max_minutes=None):
-    """Execute and drain one stream; callers own role-specific lifecycle state."""
-    read_only = reviewing or role in ("scout", "reflect")
+def _prepare_turn(account, stopped, deadline, model, effort, reviewing, read_only, max_minutes):
+    """Resolve the native executable and isolated account before starting either transport."""
     response = {"outcome": "unavailable", "result": None, "reason": None, "deadline": deadline,
                 "telemetry": {"usage": {}, "cost_usd": None, "session_id": None,
                               "model": None, "reasoning_effort": None, "num_turns": None}}
@@ -203,58 +200,61 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         response["raw_message"] = ""
     if stopped():
         response["outcome"] = "stopped"
-        return response
+        return response, None
     if deadline is not None and clock.CLOCK.monotonic() >= deadline:
         response["outcome"] = "budget_exhausted"
-        return response
+        return response, None
     executable = config.claude_binary()
     if executable is None:
         response["reason"] = "Claude CLI was not found"
-        return response
+        return response, None
     # Read immediately before launch. Credential output never reaches artifacts.
     remaining = config.ACCOUNT_TIMEOUT if deadline is None else deadline - clock.CLOCK.monotonic()
     if remaining <= 0:
         response["outcome"] = "budget_exhausted"
-        return response
+        return response, None
     environment, token = account_environment(account, min(config.ACCOUNT_TIMEOUT, remaining))
     if stopped():
         response["outcome"] = "stopped"
-        return response
+        return response, None
     if deadline is not None and clock.CLOCK.monotonic() >= deadline:
         response["outcome"] = "budget_exhausted"
-        return response
+        return response, None
     if not token:
         response["reason"] = "token unavailable"
-        return response
+        return response, None
     claude_accounts.token_available(account["name"])
     if stopped():
         response["outcome"] = "stopped"
-        return response
+        return response, None
     if not read_only:
         environment.update(bash_timeouts(deadline, max_minutes))
     response["telemetry"].update(model=model, reasoning_effort=effort)
-    if role == "duty":
-        return _run_duty(executable, environment, response, account, worktree, prompt, stopped, deadline,
-                         model, effort, session_id, system_prompt, started, progress, task_dir, token, max_turns)
-    return _run_acp(executable, environment, response, account, worktree, prompt, stopped, deadline, model,
-                    effort, session_id, system_prompt, started, progress, task_dir, token, reviewing, role, max_turns)
+    return response, (executable, environment, token)
 
 
-def _run_duty(executable, environment, response, account, worktree, prompt, stopped, deadline,
-              model, effort, session_id, system_prompt, started, progress, task_dir, token, max_turns):
-    """Protected duty transport. Its room guard applies on every new and resumed turn."""
+def run_guarded_claude(account, room, prompt, stopped, deadline, model, effort, *, session_id, resume,
+                       system_prompt, progress, task_dir, max_minutes, on_text):
+    """Run the native, hook-guarded handler for the private duty ACP agent."""
+    response, launch = _prepare_turn(account, stopped, deadline, model, effort, False, False, max_minutes)
+    if launch is None:
+        return response
+    executable, environment, token = launch
     environment[config.STARTED_BY] = "duty"
-    args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose",
+    args = [executable, "-p", "--output-format", "stream-json", "--verbose",
             "--json-schema", json.dumps(result_schema.DUTY_SCHEMA), "--permission-mode", "dontAsk",
             "--allowedTools", DUTY_TOOLS, "--disallowedTools", "NotebookEdit", "--strict-mcp-config",
-            "--append-system-prompt-file", str(system_prompt), "--settings", duty_hook_settings(worktree)]
-    if max_turns is not None:
-        args += ["--max-turns", str(max_turns)]
-    for key, value in (("model", model), ("effort", effort), ("resume", session_id)):
+            "--append-system-prompt-file", str(system_prompt), "--settings", duty_hook_settings(room),
+            "--resume" if resume else "--session-id", session_id]
+    for key, value in (("model", model), ("effort", effort)):
         if value:
             args += ["--" + key, value]
+    if prompt.startswith("-"):
+        args.extend(["--", prompt])
+    else:
+        args.insert(2, prompt)
     try:
-        proc = subprocess.Popen(args, cwd=worktree, env=environment,
+        proc = subprocess.Popen(args, cwd=room, env=environment,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
@@ -263,8 +263,6 @@ def _run_duty(executable, environment, response, account, worktree, prompt, stop
     buffer, eof, termination = b"", False, None
     events_failed = False
     try:
-        if started is not None:
-            started(proc)
         with selectors.DefaultSelector() as selector:
             selector.register(proc.stdout, selectors.EVENT_READ)
             while True:
@@ -304,7 +302,7 @@ def _run_duty(executable, environment, response, account, worktree, prompt, stop
                             with (Path(system_prompt).parent / "stderr.log").open("a", encoding="utf-8") as errors:
                                 errors.write(line.decode("utf-8", errors="replace").replace(token, "[REDACTED]") + "\n")
                             continue
-                        _record_event(event, response, token, account, model, False, "duty")
+                        _record_event(event, response, token, account, model, False, "duty", on_text)
                         if progress:
                             progress(response["telemetry"])
                 if (response["reason"] and termination is None and response["reason"] not in
@@ -336,7 +334,7 @@ def _write_event(task_dir, line):
         return False
 
 
-def _record_event(event, response, token, account, model, reviewing, role):
+def _record_event(event, response, token, account, model, reviewing, role, on_text=None):
     if not reviewing and isinstance(event, dict):
         if event.get("type") == "assistant":
             message = event.get("message")
@@ -346,6 +344,8 @@ def _record_event(event, response, token, account, model, reviewing, role):
                          and item.get("type") == "text" and isinstance(item.get("text"), str)]
                 if texts:
                     response["raw_message"] = "\n".join(texts).replace(token, "[REDACTED]")
+                    if on_text:
+                        on_text(response["raw_message"])
         elif event.get("type") == "result" and isinstance(event.get("result"), str) and event["result"]:
             response["raw_message"] = event["result"].replace(token, "[REDACTED]")
     if (role == "work" and not reviewing and isinstance(event, dict)
@@ -362,9 +362,17 @@ def _record_event(event, response, token, account, model, reviewing, role):
         response["result"] = result
 
 
-def _run_acp(executable, environment, response, account, worktree, prompt, stopped, deadline, model,
-             effort, session_id, system_prompt, started, progress, task_dir, token, reviewing, role, max_turns):
+def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, effort=None,
+               max_turns=None, *, session_id=None, system_prompt=None, reviewing=False, started=None, progress=None,
+               task_dir=None, role="work", max_minutes=None):
+    """Run an ordinary Claude role through the stock ACP adapter."""
+    if role not in ("work", "scout", "reflect"):
+        raise ValueError("Unsupported ordinary Claude role")
     read_only = reviewing or role in ("scout", "reflect")
+    response, launch = _prepare_turn(account, stopped, deadline, model, effort, reviewing, read_only, max_minutes)
+    if launch is None:
+        return response
+    executable, environment, token = launch
     options = {"strictMcpConfig": True}
     meta = {"claudeCode": {"options": options, "emitRawSDKMessages": True}}
     if role != "scout":

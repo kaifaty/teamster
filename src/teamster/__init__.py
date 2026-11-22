@@ -28,6 +28,7 @@ Layer 4:
     task_state (implemented): task state fields, persistence, and locks.
     duty_chat (implemented): the duty conversation's account, room, system prompt, turns and held task notes.
 Layer 5:
+    duty_acp (implemented): private ACP stdio adapter and client for guarded duty turns.
     claude_review (implemented): isolated Claude Code review execution and limits.
     telemetry_log (implemented): journal rows and phase telemetry.
     publishing (implemented): completed turns and work or pull request publishing.
