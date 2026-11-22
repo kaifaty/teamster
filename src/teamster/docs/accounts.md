@@ -17,9 +17,16 @@ provider default, and the resource selected from the actual settings.
 
 | Executor | How Teamster identifies the resource |
 |---|---|
-| Codex | Configured account name, resolved Codex home and the ChatGPT account ID reported by the native app-server. |
+| Codex | Configured account name, resolved Codex home, ChatGPT workspace ID and a fingerprint of its member. The native user ID identifies the member when available, with the normalized account email as a fallback. A token refresh for the same member and workspace keeps the assignment. |
 | Claude | Account name, config directory, Keychain service and user, and a fingerprint of the setup token. Reissuing a token requires a new assignment. Pool selection uses cached limits. |
-| OpenCode | Qualified provider/model, data home and the single connection reported by `opencode auth list --format json`. Saved credentials use their native ID. Environment credentials use the variable name and a fingerprint of its value. An ambiguous or unidentified connection requires operator action. |
+| OpenCode | Qualified provider/model, data home and a fingerprint of the effective model route, including its endpoint. Saved credentials use their native connection ID. A key from the environment or provider settings uses a fingerprint. A loopback provider can also be explicitly local and keyless. |
+
+Before each OpenCode turn, Teamster runs `opencode api --standalone model.list` and
+`opencode auth list --standalone --format json` in the task worktree with its launch environment.
+This includes project settings and environment overrides. Changing the endpoint or key behind a
+provider name stops the turn before the saved conversation is sent. An ambiguous credential source
+also requires an operator decision. The task record stores fingerprints for private routing and key
+values. The same provider and model apply to background requests, including titles and compaction.
 
 `say`, automatic fixes, CI repairs and wrap-up continue on the work thread or session recorded before
 the first prompt. Codex and Claude wait for the assigned subscription when it reaches its limit.
@@ -34,6 +41,8 @@ require a separate task.
 
 Earlier work records and archives have no binding. Their saved version pin and pool policy still apply.
 Upgrading the supervisor of an old task does not establish who owned its previous connection.
+An earlier pilot assignment lacking the current identity or route fields remains readable. To move
+that work to this version, start a linked task with a verifiable assignment.
 The pool rotation, credit and automatic reset-credit rules below apply to unbound work and other
 pool-based roles. New work waits for its assigned subscription's quota.
 
@@ -281,7 +290,8 @@ defaulting to `1`. For example, weights `5` and `20` represent subscriptions wit
 times the base quota. Utilization percentages are always measured against each account's own limit.
 
 Each saved limit snapshot has an `updated_at` timestamp. Every probe attempt, successful or not, also
-records `probe_attempted_at`. Before choosing an account for work, a review or an angle, the supervisor probes
+records `probe_attempted_at`. Assigned work and its reviews use the cache and live usage events.
+For unbound pool selection, the supervisor probes
 every unblocked account whose snapshot has no timestamp or is older than
 `claude.limits_max_age_minutes` (a finite nonnegative number, default `30`), unless its last probe
 attempt is younger than that interval. This prevents repeated failed probes while the old snapshot

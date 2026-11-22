@@ -70,6 +70,8 @@ def wait_turn_lines(st, slug):
         yield f"== retried: model at capacity ×{st['capacity_retries']}"
     if st.get("turn_stop"):
         yield "== turn stopped: " + turn_monitor.turn_stop_message(st["turn_stop"])
+    if (st.get("wrapup") or {}).get("error"):
+        yield "== wrap-up: " + st["wrapup"]["error"]
     cut = task_state.interruption(st)
     if st.get("outcome") == "interrupted" or cut is not None:
         yield "== " + task_state.interruption_message(st, cut)

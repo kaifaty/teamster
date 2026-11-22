@@ -542,6 +542,7 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
     floor_rotation = False
     capacity_pauses = 0
     capacity_resumed_at = None
+    capacity_retry = False
     resume_thread = (st.get("cycle") or {}).get("waiting_review_thread") if reviewing else None
     if new_turn:
         st.update(auth_excluded=[], auth_excluded_ids=[], auth_transitions=0, auth_failures={})
@@ -689,15 +690,17 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
         st.pop("reset_reconciled", None)
         visited.add(account["name"])
         review_start = len(st.get("reviews", []))
-        capacity_retry = resume_thread and resume_thread != (st.get("cycle") or {}).get("waiting_review_thread")
         attempt_prompt = prompts.capacity_resume_prompt(cfg) if capacity_retry else prompt
-        if resume_thread and st.get("work_binding") and current_message and not reviewing:
+        if capacity_retry and st.get("work_binding") and current_message and not reviewing:
             attempt_prompt += "\n\n" + original_prompt
         result, decision = turn_monitor.monitor(st, cfg, account, attempt_prompt, effort, stopped, on_limit, control=control,
                                    quota_snapshot=quota_snapshot, resume_thread=resume_thread)
         quota_snapshot = None
         # A resumed exec can fail before thread.started; keep the known thread for the next retry.
         previous_thread, resume_thread = resume_thread, None
+        capacity_retry = False
+        review_entry = st["reviews"][-1] if len(st.get("reviews", [])) > review_start else None
+        attempt_thread = ((review_entry or {}).get("thread") if reviewing else st.get("thread")) or previous_thread
         phase = telemetry_log.telemetry_phase(st)
         weekly_exhausted = (result in ("auth", "limit", "capacity", "failed", "completed")
                             and control.weekly_exhausted(st.get("weekly_used_percent", 0)))
@@ -721,12 +724,11 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
             break
         if result in ("budget_exhausted", "stuck"):
             reason = dict(control.reason, active_seconds=round(control.elapsed, 3))
-            reviews = st.get("reviews", [])[review_start:]
             phase = telemetry_log.telemetry_phase(st)
             if phase is not None:
                 phase.finish(outcome=result)
             wrapup_turn(st, cfg, account, effort, stopped, reason,
-                        review_entry=reviews[-1] if reviews else None,
+                        review_entry=review_entry,
                         quota_probe_cancelled=bool(decision and decision.get("quota_probe_cancelled")))
             break
         if result == "capacity":
@@ -756,13 +758,13 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
             if stopped():
                 st["outcome"] = task_state.stop_outcome(st, stopped)
                 break
-            reviews = st.get("reviews", [])[review_start:]
-            thread = ((reviews[-1]["thread"] if reviews else None) if reviewing
-                      else st.get("thread")) or previous_thread
-            if thread:
-                resume_thread = thread
+            resume_thread = attempt_thread
+            capacity_retry = bool(resume_thread)
             capacity_resumed_at = control.elapsed
             if st.get("work_binding"):
+                st["cycle"]["waiting_active_seconds"] = control.elapsed
+                if reviewing:
+                    st["cycle"]["waiting_review_thread"] = resume_thread
                 ready = account_rotation.bound_codex_ready(st, cfg, original_prompt, stopped, sleep)
                 if not ready:
                     break
@@ -781,7 +783,9 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
             capped = st["auth_transitions"] >= 2 * len(cfg["accounts"])
             if not capped and failures[account["name"]] == 1 and current.get("logged_in") and not accounts.exhausted(current, cfg):
                 quota_snapshot = current.get("limits")
-                if not reviewing and st.get("thread"):
+                if reviewing and st.get("work_binding"):
+                    resume_thread = attempt_thread
+                elif not reviewing and st.get("thread"):
                     prompt = prompts.auth_resume_prompt(cfg)
                     if st.get("work_binding") and current_message:
                         prompt += "\n\n" + original_prompt
@@ -810,8 +814,8 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
                 retry_prompt += "\n\n" + original_prompt
             if st.get("work_binding"):
                 st["cycle"]["waiting_active_seconds"] = control.elapsed
-                if reviewing and len(st["reviews"]) > review_start:
-                    resume_thread = st["reviews"][-1]["thread"]
+                if reviewing:
+                    resume_thread = attempt_thread
                     st["cycle"]["waiting_review_thread"] = resume_thread
             chosen = account_rotation.wait_for_account(st, decision["infos"], cfg, decision["reason"], stopped, sleep,
                                                        prompt=retry_prompt if st.get("thread") and not reviewing else prompt)
@@ -891,16 +895,27 @@ def codex_wrapup_turn(st, cfg, account, prompt, effort, stopped, thread):
 
 
 def claude_wrapup_turn(st, cfg, account, prompt, effort, stopped, thread):
-    if st.get("work_binding"):
-        account = account_rotation.claude_choice(st, cfg, stopped)
-        if account is None and not stopped():
-            account = account_rotation.wait_for_claude_account(st, cfg, "assigned Claude account unavailable", stopped,
-                                                              prompt=prompt)
-        if account is None:
-            return st["outcome"]
+    if not st.get("work_binding"):
+        result, _ = claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=True)
+        return result
+    account = account_rotation.claude_choice(st, cfg, stopped)
+    while not stopped():
+        if account is None or account_rotation.restoring_wait(st):
+            account = account_rotation.wait_for_claude_account(st, cfg, "assigned Claude account unavailable",
+                                                              stopped, prompt=prompt)
+            if account is None:
+                return st["outcome"]
         account = bind_claude_account(st, cfg, account)
-    result, _ = claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=True)
-    return result
+        st.pop("error", None)
+        started = clock.CLOCK.monotonic()
+        elapsed = st["wrapup"].get("active_seconds", 0)
+        deadline = started + 10 * config.MINUTE_SECONDS - elapsed
+        result, reason = claude_work_turn(st, cfg, prompt, effort, stopped, account, wrapup=True, deadline=deadline)
+        if result != "unavailable" or reason != "usage limit":
+            return result
+        st["wrapup"]["active_seconds"] = elapsed + clock.CLOCK.monotonic() - started
+        account = None
+    return task_state.stop_outcome(st, stopped)
 
 
 executors.get("codex").bind(sys.modules[__name__], turn="_run_turn", scout="_run_turn", wrapup="codex_wrapup_turn")

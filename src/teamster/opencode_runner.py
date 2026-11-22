@@ -99,7 +99,7 @@ def orphan_groups(st):
             yield group
 
 
-def _set_title(worktree, env, acp_pid, session_id, title, check_active):
+def _set_title(worktree, env, acp_pid, session_id, title, check_active, bound):
     # ACP v1 has no rename command. Set the title before OpenCode can generate one.
     argv = ["opencode", "api", "--standalone", "session.update", "--param",
             f"sessionID={session_id}", "--data", json.dumps({"title": title})]
@@ -107,7 +107,8 @@ def _set_title(worktree, env, acp_pid, session_id, title, check_active):
     with tempfile.TemporaryFile() as errors:
         title_env = {**env, PROCESS_MARKER: f"{env[PROCESS_MARKER]}:title:{acp_pid}"}
         proc = subprocess.Popen(argv, cwd=worktree, env=title_env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=errors, start_new_session=True)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL if bound else errors,
+                                start_new_session=True)
         try:
             while proc.poll() is None:
                 check_active()
@@ -116,9 +117,11 @@ def _set_title(worktree, env, acp_pid, session_id, title, check_active):
                 except subprocess.TimeoutExpired:
                     pass
             if proc.returncode:
-                errors.seek(0)
-                detail = errors.read(4096).decode(errors="replace").strip()
-                raise ValueError(f"OpenCode session title update failed ({proc.returncode}): {detail}")
+                message = f"OpenCode session title update failed ({proc.returncode})"
+                if not bound:
+                    errors.seek(0)
+                    message += ": " + errors.read(4096).decode(errors="replace").strip()
+                raise ValueError(message)
         finally:
             procs.terminate(proc)
 
@@ -136,6 +139,7 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
 
     parts = []
     message_id = None
+    bound = env is not None
     env = dict(os.environ if env is None else env, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
     env[PROCESS_MARKER] = str(os.getpid())
 
@@ -154,7 +158,7 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
         check_active()
         # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
         with acp.AcpClient(["opencode", "acp"], worktree, lambda event: None, allow_once,
-                           check_active=check_active, env=env) as client:
+                           check_active=check_active, env=env, stderr=subprocess.DEVNULL if bound else None) as client:
             if started:
                 started(client.process)
             opened = client.open_session(session_id, model=model)
@@ -162,7 +166,7 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
                 session_id = opened
                 created(session_id)
             if title is not None:
-                _set_title(worktree, env, client.process.pid, session_id, title, check_active)
+                _set_title(worktree, env, client.process.pid, session_id, title, check_active, bound)
             check_active()
             client.on_update = update
             reason = client.prompt(prompt)
@@ -183,6 +187,9 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
             data = error.data if isinstance(error.data, dict) else {}
             detail = str(error).lower()
             if (error.code == 429 or data.get("errorKind") in ("rate_limit", "quota_exceeded")
-                    or any(marker in detail for marker in ("rate limit", "usage limit", "quota exceeded", "exceeded your current quota", "http 429"))):
+                    or any(marker in detail for marker in ("rate limit", "usage limit", "quota exceeded",
+                                                           "exceeded your current quota", "http 429"))):
                 return "exhausted", f"OpenCode quota exhausted for {model}. Check the connection's reset time and retry."
+            if bound:
+                return "failed", f"OpenCode rejected the session request ({error.code}). Check the assigned connection for {model}."
         return "failed", str(error)

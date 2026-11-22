@@ -120,8 +120,10 @@ review. For a specific risk, pass a comma-separated list instead:
 
 On `start` and `say`, `--review-angles` implies `--review`.
 
-Angles run one after another in fresh Codex threads, with ordinary account rotation and reset waiting,
-or in separate Claude CLI processes with `--reviewer claude`. Each angle gets its own review record.
+Angles run one after another, each in its own review session. A review of assigned work uses the
+same provider, model and connection as the work. If quota runs out during an angle, the supervisor
+waits and resumes that review session. A different reviewer or model requires a separate linked
+task. Unbound reviews follow their pool's selection and rotation rules.
 The supervisor combines the findings, merges duplicate locations and
 titles, and labels each finding with its angles. A refused angle is marked `refused` without stopping
 the others, and the verdict uses the other results.
@@ -130,8 +132,8 @@ the others, and the verdict uses the other results.
 
 `--fix-rounds N` (0–5, default 0) needs `--review`.
 
-Each round sends the review's findings straight to the implementation thread, with the same account
-rotation and reset waiting as `say`. Codex must verify each finding against the code, fix real defects
+Each round sends the review's findings straight to the implementation thread, using the same
+connection policy as `say`. Codex must verify each finding against the code, fix real defects
 (with tests where useful), reject incorrect findings with a one-line reason, then commit and push.
 
 When the review ran more than one angle, the fix prompt asks the worker to group findings from

@@ -144,8 +144,10 @@ to bound the OpenCode work turn. Keep the same OpenCode data home across turns s
 can restore its transcript. Teamster saves the session ID after OpenCode creates it. If setup
 stops before then, the next `say` includes the original brief. If a saved session is deleted,
 the continuation fails and reports its ID.
-OpenCode's own agent configuration applies, including any model
-explicitly configured for a subagent or compaction.
+Teamster restricts OpenCode's model requests to the assigned provider and model, including title,
+summary and compaction requests. A loopback provider with `settings.baseURL` and `settings.apiKey`
+can run directly from the effective OpenCode configuration. Changing either value requires restoring
+the previous assignment or opening a separate task. [Assigned work connections](accounts.md#assigned-work-connection)
 
 ## Account JSON
 

@@ -500,16 +500,31 @@ class ReviewFixTests(RotationTestCase):
 
     def test_claude_executor_time_budget_wrapup_resumes_the_work_session(self):
         self.fixture_timeout = 90
+        clock = self.enable_fake_clock(auto_advance=False)
         self.env["CODEX_TASK_MINUTE_SECONDS"] = "1"
         checkpoint = self.work_result("partial", remaining=["Complete the remaining work."])
-        self.claude_pool_fixture(runs=[{"mode": "hold"}, {"reply": checkpoint}])
+        self.claude_pool_fixture(runs=[{"mode": "hold"},
+                                      {"limits": {"status": "rejected", "resetsAt": clock.time() + 3600}},
+                                      {"reply": checkpoint}])
         self.start("claude-executor-wrapup", "--executor", "claude", "--max-minutes", "3")
-        self.wait("claude-executor-wrapup")
+        self.until(lambda: any(event["command"] == "holding" for event in self.claude_trace()))
+        self.advance_fake_clock(3.1)
+        self.until(lambda: self.state("claude-executor-wrapup")["outcome"] == "sleeping")
+        asleep = self.state("claude-executor-wrapup")
+        os.kill(asleep["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(asleep["pid"]))
+        self.assertIn("from wrapup", self.cli("resume", "claude-executor-wrapup"))
+        self.until(lambda: self.state("claude-executor-wrapup")["outcome"] == "sleeping")
+        self.advance_fake_clock(asleep["sleeping"]["until"] + 1 - clock.time())
+        self.wait("claude-executor-wrapup", through_sleep=True)
         state = self.state("claude-executor-wrapup")
         self.assertEqual(state["outcome"], "budget_exhausted")
-        self.assertEqual(state["wrapup"], {"outcome": "completed", "result": checkpoint})
+        self.assertEqual(state["wrapup"]["outcome"], "completed")
+        self.assertEqual(state["wrapup"]["result"], checkpoint)
         self.assertEqual(state["result"], checkpoint)
-        work, wrapup = self.claude_invocations()
+        work, rejected, wrapup = self.claude_invocations()
+        self.assertEqual((rejected["resume"], rejected["config_dir"], rejected["prompt"]),
+                         (work["session_id"], work["config_dir"], wrapup["prompt"]))
         # Three one-second minutes cap the Bash timeouts below their usual ten-minute floor.
         self.assertEqual([work["bash_timeouts"], wrapup["bash_timeouts"]], [["3000", "3000"]] * 2)
         self.assertEqual(wrapup["resume"], work["session_id"])
@@ -773,6 +788,8 @@ class ReviewFixTests(RotationTestCase):
         accounts = self.claude_pool_fixture(runs=[
             {"reply": partial},
             {"limits": {"status": "rejected", "resetsAt": clock.time() + 7200}},
+            {"reply": self.work_result()},
+            {"limits": {"status": "rejected", "resetsAt": clock.time() + 14400}},
             {"reply": self.work_result()}])
         self.claude_settings(limits_max_age_minutes=100000)
         fixture = json.loads(self.claude_fixture_path.read_text())
@@ -797,6 +814,22 @@ class ReviewFixTests(RotationTestCase):
         for text in (self.brief.read_text().rstrip(), "Continue after the token returns.",
                      "First account summary.", "Finish after the token returns."):
             self.assertIn(text, resumed["prompt"])
+
+        pool = self.worker().claude_accounts
+        other_reset = clock.time() + 86400
+        pool.save_limits(accounts[0]["name"], {"status": "rejected", "resetsAt": other_reset})
+        self.assertEqual(pool.mark_limited(accounts[0]["name"], reason="usage limit"), other_reset)
+        order = "Keep the legacy follow-up after this session's own quota reset."
+        slug = state["slug"]
+        self.cli("say", slug, order, "--upgrade")
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        self.advance_fake_clock(self.state(slug)["sleeping"]["until"] + 1 - clock.time())
+        self.wait(slug, through_sleep=True)
+        rejected, retried = self.claude_invocations()[3:]
+        self.assertEqual([item["resume"] for item in (rejected, retried)], [state["session_id"]] * 2)
+        self.assertIn(order, rejected["prompt"])
+        self.assertEqual(retried["prompt"], self.worker().prompts.reset_resume_prompt({"language": "en"})
+                         + "\n\n" + rejected["prompt"])
 
     def test_claude_executor_rotation_probe_time_is_outside_the_time_budget(self):
         self.fixture_timeout = 90

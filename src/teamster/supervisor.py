@@ -276,7 +276,7 @@ def apply_say(st, options, cfg):
     reflecting = st.get("kind") in ("reflect", "duty")
     scouting = st.get("kind") in ("scout", "reflect")
     try:
-        executor = executors.from_state(st)
+        executor = executors.from_state(st, verify_binding=True)
         binding = st.get("work_binding")
         if binding and options.get("model") not in (None, binding["model"], binding.get("native_model")):
             procs.die("This task has an assigned work model. Start a separate linked task to change it.")

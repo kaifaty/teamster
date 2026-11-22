@@ -104,7 +104,9 @@ separately from the implementation `result.status`, saved checks, CI and reset-c
 After `budget_exhausted` or `stuck` the supervisor stops the agent's process group and asks for a wrap-up
 in the same thread, in the configured language. Time or weekly exhaustion asks for working changes to be
 committed and pushed, a `partial` result and the remaining work; repeated failure asks for a `blocked`
-result with numbers and attempts. The wrap-up has a 10-minute cap and is stopped when it reaches it.
+result with numbers and attempts. The wrap-up has a 10-minute active-time cap. When its assigned
+Codex or Claude subscription is exhausted, that single wrap-up waits for the same connection and
+session. The final outcome retains the original stop reason.
 `wait` prints the stop reason, then the wrap-up result. For a weekly stop it prints, for example,
 `== turn stopped: weekly budget 10% exhausted (spent 10.4%)`. Saved-check behavior is described in
 [checks.md](checks.md#when-the-saved-check-runs).
@@ -134,7 +136,8 @@ The cycle continues from the step it stopped at, in the same turn and with the t
 
 | Cut short during | Resume |
 |---|---|
-| waiting for the assigned work connection | restores the outstanding order and waits for the same connection before continuing its native session |
+| waiting for the assigned work connection | restores the outstanding order and the original reset-wait deadline, including time spent asleep before the restart |
+| waiting for quota during a wrap-up | resumes the pending wrap-up in the same session with its original stop reason |
 | a work turn or a fix round (review or CI) | continues the same thread with a message that names the signal and its time, says the turn was not the worker's fault, and gives the uncommitted file count, the unpushed commit count and the PR; then the usual check, review, fix rounds and CI |
 | a review | runs the review again, then the fix rounds |
 | after a saved review, before its fix round | starts that fix round from the saved review |

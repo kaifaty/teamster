@@ -41,7 +41,7 @@ turns now use Agent Client Protocol (ACP) v1 over stdio.
 |---|---|---|
 | Codex | The selected Codex CLI, signed in with `codex login`, and `codex-acp` on `PATH` (`npm install -g @openai/codex @agentclientprotocol/codex-acp`). [Codex adapter](https://github.com/agentclientprotocol/codex-acp) | Work, review, scout, reflect |
 | Claude | Claude Code, a Teamster account configured with `teamster claude-login`, and `claude-agent-acp` on `PATH` (`npm install -g @agentclientprotocol/claude-agent-acp`). [Claude adapter](https://github.com/agentclientprotocol/claude-agent-acp) | Work, review, scout, reflect |
-| OpenCode | `opencode` on `PATH` with the `acp` and standalone `session.update` commands, and a configured provider/model. | Work |
+| OpenCode | `opencode` on `PATH` with ACP, standalone `model.list`, `auth list` and `session.update`, and a configured provider/model. | Work |
 
 Work includes follow-ups, fixes, CI repairs and wrap-up. For protected duty chat, Teamster ships a
 private ACP agent that invokes the selected Codex or Claude CLI with the duty's native guards.
@@ -371,8 +371,8 @@ A minimal configuration is:
 | `notify` | Absent | `"macos"` for desktop notifications, or an argv list that receives the event JSON as its final argument. |
 | `notify_events` | All events | Optional list of event types to send. |
 
-A settings file containing only language or other preferences does **not** enable automatic account
-monitoring or rotation. The `accounts` command remains available to inspect the current login.
+With only language or other preferences configured, new Codex work uses the current login and
+checks its identity and quota on each turn. Use `accounts` to inspect it.
 
 English standing rules are in `src/teamster/rules.md`; Russian rules are in `src/teamster/rules.ru.md`.
 If `~/.teamster/rules.md` exists, it replaces both. Use this file for other languages or your
@@ -478,24 +478,26 @@ An explicit multi-account configuration looks like this:
 }
 ```
 
-`start` chooses an available account whose longest usage window resets first; follow-ups keep the
-current account while it is available. At the threshold or a usage-limit error, the supervisor opens a
-new thread on another configured account in the same worktree. It supplies the brief, follow-ups, and
-progress so implementation can continue from existing commits and uncommitted changes.
+`start` chooses an available account whose longest usage window resets first. Follow-ups, fixes
+and wrap-up keep its workspace, member and thread. If the assigned account reaches its threshold
+or rejects a turn for quota, the supervisor saves the outstanding order and waits for that account.
 
-If every configured account is exhausted, the task can sleep until a reset and continue automatically
-(up to eight days of reset waiting). `wait` normally returns the scheduled local time;
+The task can spend up to eight days waiting for a reset. Restarting the supervisor during a wait
+keeps the original deadline. `wait` normally returns the scheduled local time;
 `wait --through-sleep` keeps waiting. Set `wait_for_reset` to `false` to stop instead. Two homes signed
 into the same ChatGPT account share limits and are not separate subscriptions.
 
-`use_reset_credits` defaults to `false`; enable it to spend one free reset before sleeping when the natural reset is more than `reset_credit_min_hours` (default `12`) away.
+Unbound tasks can use `use_reset_credits` (default `false`) to spend one free reset before sleeping
+when the natural reset is more than `reset_credit_min_hours` (default `12`) away.
 `reset-credit <account> [--credit ID]` previews the earliest-expiring reset; add `--yes` to consume it and show the RPC response and refreshed limits.
-Authentication errors get one retry, then rotation; `needs login` means run `login <account>` to restore that account.
+When assigned work reports `needs login`, run `login <account>` to restore the same member and workspace.
+Earlier unbound tasks can retry authentication and rotate.
 
 ### Claude account pool
 
-Use `--reviewer claude` on `start`, `say`, or `review` to review through a pool of isolated Claude
-Code CLI accounts; implementation and fixes remain in Codex. The human adds each subscription with
+Use `--reviewer claude` for an embedded review of Claude work on its assigned account.
+To review Codex or OpenCode work on a Claude subscription, start a separate linked task.
+The human adds each subscription with
 `teamster claude-login first`, which runs isolated `claude setup-token`, prompts for the token
 through macOS Keychain, and appends to `claude.accounts` in `~/.teamster/config.json`. Defaults are
 `~/.claude-accounts/first` and the `codex-worker-claude-first` Keychain service. Override them with
@@ -520,7 +522,7 @@ review is its first consumer. Legacy `claude.config_dir` / `claude.token_keychai
 original defaults still form one account named `default`. `model`, `effort` and `max_turns` remain
 shared settings under `claude`.
 
-Before each review or angle, accounts below `soft_switch_at` in both the five-hour and seven-day
+For unbound reviews, accounts below `soft_switch_at` in both the five-hour and seven-day
 windows come first, then those below `switch_at`; each group prefers the earliest seven-day reset.
 Unknown limits count as available. Angles in one review prefer different available accounts. A
 rejected rate limit or 401/403 marks the account unavailable until reset and retries on the next

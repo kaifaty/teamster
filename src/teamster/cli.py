@@ -1,4 +1,4 @@
-"""Delegate coding to Codex in a git worktree, with autonomous subscription rotation.
+"""Delegate coding in a git worktree on an assigned connection.
 
       teamster start <slug> --brief FILE|- [--repo DIR] [--base origin/<branch>] [--branch NAME] [--no-push] [--executor codex|claude|opencode] [--effort E] [--model M] [--review-model M] [--task-type LABEL] [--parallel] [--sandbox off|workspace] [--max-minutes M] [--task-timeout SEC] [--max-weekly P] [--review] [--reviewer codex|claude] [--review-angles LIST] [--fix-rounds N] [--ci] [--ci-command CMD] [--ci-rounds N] [--check CMD] [--check-loaded CMD] [--check-timeout SEC] [--guard GLOB] [--base-check]
       teamster scout <slug> "question" | --file FILE [--repo DIR] [--executor codex|claude] [--effort E] [--model M]  read-only research
@@ -47,7 +47,7 @@ State/logs: ~/.teamster/tasks/<slug>/; worktree: ~/.teamster/worktrees/claude-<s
 TEAMSTER_HOME selects the data home; TEAMSTER_CODEX_HOME overrides its Codex home; TEAMSTER_CODEX selects the CLI binary.
 A legacy data home in ~/.codex keeps codex-worker.json (fallback claude-accounts.json), claude-tasks/ and
 codex-worker-log.jsonl; migrate-home [--apply] prints or applies the move (docs settings).
-The internal _run <slug> supervisor survives the caller and opens a new thread on rotation.
+The internal _run <slug> supervisor survives the caller and resumes assigned work on its native session.
 """
 import argparse
 import datetime
@@ -198,8 +198,7 @@ OPTION_REGISTRY = (
      "argparse": {"type": model_name, "metavar": "M", "help": "work model; default clears the saved override"},
      "synopsis": "[--model M]",
      "commands": {"start": {"type": str, "help": "work model; OpenCode requires provider/model"},
-                  "say": {"type": work_model_name, "help": "replace the work model; OpenCode requires provider/model, "
-                                                           "other workers accept default to clear the override"},
+                  "say": {"type": work_model_name, "help": "confirm the assigned model, or change the model on unbound work"},
                   "scout": {}, "reflect": {}}},
     {"names": ("--review-model",),
      "argparse": {"type": model_name, "metavar": "M", "help": "Codex review model; default clears the saved override"},

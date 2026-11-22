@@ -81,11 +81,13 @@ def local_opencode_provider(env, binary):
         root.mkdir(parents=True)
         (root / "opencode.json").write_text(json.dumps({
             "update": "disable", "model": "offline/model",
+            "agents": {"title": {"model": "offline/other"}, "summary": {"model": "offline/other"},
+                       "compaction": {"model": "offline/other"}},
             "policies": [{"action": "provider.use", "resource": "*", "effect": "deny"},
                          {"action": "provider.use", "resource": "offline", "effect": "allow"}],
             "providers": {"offline": {"package": "@opencode/ai/providers/openai-compatible", "env": ["OFFLINE_KEY"],
                                       "settings": {"baseURL": f"http://127.0.0.1:{server.server_port}/v1"},
-                                      "models": {"model": {"name": "Test model"}}}},
+                                      "models": {"model": {"name": "Test model"}, "other": {"name": "Auxiliary model"}}}},
         }))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -148,12 +150,14 @@ def install_fake_opencode(root):
         if sys.argv[1:] == ["api", "--standalone", "model.list"]:
             route = cwd / "fixture-route"
             settings = {"baseURL": route.read_text() if route.exists() else "http://127.0.0.1:9001/private?v=fixture-private"}
+            if "claude-opencode-stop" in cwd.parts:
+                settings["apiKey"] = (cwd / "fixture-key").read_text() if (cwd / "fixture-key").exists() else "fixture-local-key"
             model = {"providerID": "offline", "id": "model", "modelID": "model", "enabled": True,
                      "package": "@opencode/ai/providers/openai-compatible", "settings": settings}
             print(json.dumps({"data": [model, dict(model, id="other")]}))
             sys.exit(0)
         if sys.argv[1:] == ["auth", "list", "--standalone", "--format", "json"]:
-            if "claude-opencode-parallel" in cwd.parts:
+            if {"claude-opencode-parallel", "claude-opencode-stop"} & set(cwd.parts):
                 print("[]")
                 sys.exit(0)
             source = home / "connection-id"
@@ -175,6 +179,13 @@ def install_fake_opencode(root):
 
         assert sys.argv[1:] == ["acp"]
         assert os.environ.get("COPYFILE_DISABLE") == "1"
+        if "OPENCODE_CONFIG_CONTENT" in os.environ:
+            overlay = json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
+            assert overlay["model"] == "offline/model"
+            assert all(overlay["agents"][agent]["model"] == "offline/model" for agent in ("title", "summary", "compaction"))
+            assert overlay["providers"]["offline"]["models"]["other"]["disabled"]
+            assert overlay["policies"][-2:] == [{"action": "provider.use", "resource": "*", "effect": "deny"},
+                                                {"action": "provider.use", "resource": "offline", "effect": "allow"}]
         for line in sys.stdin:
             request = json.loads(line)
             method, params = request["method"], request["params"]
@@ -425,13 +436,22 @@ class ExecutorTests(RotationTestCase):
         failure = self.root / "fail-title"
         failure.touch()
         self.cli("say", slug, "Retry the interrupted request.")
-        self.assertIn("fixture title failure", self.cli("wait", slug, "--timeout", "30"))
+        self.assertIn("OpenCode session title update failed (1)", self.cli("wait", slug, "--timeout", "30"))
         session = self.state(slug)["session_id"]
         self.assertNotIn("session/prompt", (self.root / "opencode-calls").read_text())
         failure.unlink()
         self.cli("say", slug, "Retry the interrupted request.")
         self.assertIn("Initial edit alpha (retried)", self.wait(slug))
         self.assertEqual(self.state(slug)["session_id"], session)
+        binding = self.state(slug)["work_binding"]
+        self.assertEqual(binding["source"], "settings")
+        self.assertNotIn("fixture-local-key", json.dumps(binding))
+        key = Path(self.state(slug)["worktree"]) / "fixture-key"
+        key.write_text("fixture-replacement-key")
+        self.cli("say", slug, "Continue on the assigned local connection.")
+        self.assertIn("assigned work connection", self.cli("wait", slug))
+        self.assertEqual(self.state(slug)["work_binding"], binding)
+        key.unlink()
         stop_at("session/resume", self.cli, "say", slug, "Make the second change to tracked.txt.")
 
         calls = (self.root / "opencode-calls").read_text().splitlines()

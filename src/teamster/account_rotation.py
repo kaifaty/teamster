@@ -426,8 +426,7 @@ def role_can_start(cfg, provider, role, model=None, task_type=None):
         if role == "work":
             return claude_choice({"work_binding": None, "task_type": task_type, "task_model": model},
                                  cfg, lambda: False) is not None
-        pool_role = "work" if role == "work" else "review"
-        return claude_review.select_account(cfg, pool_role, task_type=task_type,
+        return claude_review.select_account(cfg, "review", task_type=task_type,
                                             model=model or cfg["claude"].get("model")) is not None
     if provider != "codex":
         return True

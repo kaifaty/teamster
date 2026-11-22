@@ -921,15 +921,15 @@ class WeeklyBudgetTests(RotationTestCase):
         self.assertEqual(output.count(warning), 1)
         self.assertEqual(self.cli("status", "weekly-reserve").count(warning), 1)
         reads = [event for event in self.trace() if event.get("command") == "quota-snapshot"]
-        self.assertEqual(len(reads), 2, "the warning reuses the account-selection snapshots")
+        self.assertCountEqual([event["home"] for event in reads], [str(self.home), str(self.other)])
         self.assertEqual(self.state("weekly-reserve")["weekly_used_percent"], 4)
         self.cli("say", "weekly-reserve", "Five percentage points remain", "--max-weekly", "9")
         output = self.wait("weekly-reserve")
         self.assertFalse(self.state("weekly-reserve").get("weekly_budget_warning"))
         self.assertNotIn("запас до switch_at", output)
         self.assertNotIn("запас до switch_at", self.cli("status", "weekly-reserve"))
-        self.assertEqual(len([event for event in self.trace()
-                              if event.get("command") == "quota-snapshot"]), 3)
+        self.assertCountEqual([event["home"] for event in self.trace() if event.get("command") == "quota-snapshot"],
+                              [str(self.home), str(self.home), str(self.other)])
 
     def test_weekly_budget_uses_config_default_and_flag_overrides_persist_for_the_task(self):
         self.configure(language="en", max_task_weekly_percent=5)

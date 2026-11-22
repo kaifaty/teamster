@@ -234,9 +234,10 @@ reviewers.CODEX_REVIEWER.bind(sys.modules[__name__], run="codex_review_turn")
 
 
 def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=None):
+    executor = executors.from_state(st, verify_binding=True)
     if "work_binding" in st:
         binding = st["work_binding"]
-        if (not binding or st["reviewer"] != executors.from_state(st).name
+        if (not binding or st["reviewer"] != executor.name
                 or st.get("review_model") not in (None, binding["model"], binding.get("native_model"))):
             st.update(outcome="unavailable", error="This review requires a separate linked task with its own work connection.")
             task_state.save(st)
@@ -245,7 +246,6 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
     cycle = st.get("cycle") or {}
     records = (st.get("review_result") or {}).get("angles", []) if cycle.get("waiting_prompt") else []
     records = [entry for entry in records if entry["outcome"] in ("completed", "refused")]
-    executor = executors.from_state(st)
     codex_effort = executor.review_effort(effort)
     configured = bool(config.role_routes(cfg, "review"))
     standalone = (st.get("cycle") or {}).get("kind") == "review"

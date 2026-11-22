@@ -113,6 +113,19 @@ class LifecycleTests(RotationTestCase):
         self.assertEqual(self.invocations()[-1]["model"], "fixture-codex-scout")
         self.assertEqual(json.loads(self.cli("accounts", "--json"))["claude"], [])
 
+        self.claude_pool_fixture(runs=[{"reply": self.work_result()}], credits=True, wait_for_reset=False,
+                                role_profiles={"work": [{"provider": "codex"}, {"provider": "claude"}]})
+        self.env["TEAMSTER_CLAUDE"] = str(self.claude)
+        self.account(self.home, "A", self.reset, used=99)
+        self.account(self.other, "B", self.reset, used=99)
+        before = self.invocations()
+        self.start("claude-subscription-work")
+        self.wait("claude-subscription-work")
+        state = self.state("claude-subscription-work")
+        self.assertEqual((state["outcome"], state["work_binding"]["executor"]), ("completed", "claude"))
+        self.assertEqual(self.invocations(), before)
+        self.assertEqual(len(self.claude_invocations()), 1)
+
         self.assertEqual(self.worker().cli.task_type("a" * 32), "a" * 32)
         for label in ("Feature", "a" * 33):
             with self.subTest(label=label):
