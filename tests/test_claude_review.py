@@ -3085,12 +3085,12 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(report["summary"]["reviewers"]["claude"]["cost_usd"], 0.125)
 
     def test_claude_missing_binary_is_a_clear_start_and_review_error(self):
-        self.claude_fixture()
-        self.start("claude-missing-review")
+        self.claude_fixture(runs=[{"reply": self.work_result()}])
+        self.start("claude-missing-review", "--executor", "claude")
         self.wait("claude-missing-review")
         self.env["CODEX_TASK_CLAUDE"] = str(self.root / "missing-claude")
         commands = (("start", "claude-missing-start", "--brief", str(self.brief), "--repo", str(self.repo),
-                     "--reviewer", "claude"),
+                     "--executor", "claude", "--reviewer", "claude"),
                     ("review", "claude-missing-review", "--reviewer", "claude"))
         for args in commands:
             with self.subTest(command=args[0]):
