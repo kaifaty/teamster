@@ -11,11 +11,11 @@ import teamster
 from . import procs
 
 
-def _model_config(result):
+def _select_config(result, config_id):
     options = result.get("configOptions")
     if isinstance(options, list):
         for item in options:
-            if isinstance(item, dict) and item.get("id") == "model" and item.get("type") == "select":
+            if isinstance(item, dict) and item.get("id") == config_id and item.get("type") == "select":
                 return item
     return {}
 
@@ -169,7 +169,7 @@ class AcpClient:
                 self._send(method="session/cancel", params={"sessionId": self.session_id})
                 deadline = time.monotonic() + 3
 
-    def open_session(self, session_id=None, auth_method=None, model=None):
+    def open_session(self, session_id=None, auth_method=None, model=None, *, config_options=None):
         """Negotiate v1 and open a new session or load an existing session."""
         self.session_id = None
         info = self._call("initialize", {"protocolVersion": 1, "clientCapabilities": {},
@@ -199,19 +199,18 @@ class AcpClient:
             session_id = result.get("sessionId")
             if not isinstance(session_id, str) or not session_id:
                 raise ValueError("ACP agent returned no session ID")
-        if model is not None:
-            choices = _model_config(result).get("options")
-            if not isinstance(choices, list) or not any(
-                isinstance(choice, dict) and choice.get("value") == model for choice in choices
-            ):
-                raise ValueError(f"ACP agent does not offer model {model!r} in this session")
-            selection = {"sessionId": session_id, "configId": "model", "value": model}
-            try:
-                confirmed = self._call("session/set_config_option", selection, pending)
-            except ValueError:
-                raise ValueError(f"ACP agent could not select model {model!r}") from None
-            if _model_config(confirmed).get("currentValue") != model:
-                raise ValueError(f"ACP agent did not confirm model {model!r}")
+        selections = {"model": model} if model is not None else {}
+        selections.update(config_options or {})
+        for key, value in selections.items():
+            choices = _select_config(result, key).get("options") or []
+            offered = [option.get("value") for group in choices if isinstance(group, dict)
+                       for option in group.get("options", [group]) if isinstance(option, dict)]
+            if value not in offered:
+                raise ValueError(f"ACP agent does not offer {key} {value!r} in this session")
+            selection = {"sessionId": session_id, "configId": key, "value": value}
+            result = self._call("session/set_config_option", selection, pending)
+            if _select_config(result, key).get("currentValue") != value:
+                raise ValueError(f"ACP agent did not confirm {key} {value!r}")
         self.session_id = session_id
         for update in pending:
             if update.get("sessionId") == session_id:

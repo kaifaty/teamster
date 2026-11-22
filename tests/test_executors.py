@@ -423,9 +423,19 @@ class ExecutorTests(RotationTestCase):
                 auth = receive("authenticate")
                 assert auth["params"]["methodId"] == "fixture"
                 reply(auth)
-            session = receive("session/" + mode)
+            session = receive("session/" + ("new" if mode == "configured" else mode))
             assert session["params"]["cwd"] == str(Path.cwd())
-            if mode == "new":
+            if mode == "configured":
+                option = {"id": "reasoning_effort", "type": "select", "currentValue": "low",
+                          "options": [{"group": "efforts", "name": "Efforts",
+                                       "options": [{"value": "high", "name": "High"}]}]}
+                reply(session, sessionId="session-1", configOptions=[option])
+                selected = receive("session/set_config_option")
+                assert selected["params"] == {"sessionId": "session-1",
+                    "configId": "reasoning_effort", "value": "high"}
+                reply(selected, configOptions=[dict(option, currentValue="high")])
+                sys.exit(0)
+            elif mode == "new":
                 reply(session, sessionId="session-1")
             else:
                 assert session["params"]["sessionId"] == "session-1"
@@ -459,6 +469,11 @@ class ExecutorTests(RotationTestCase):
                                      capture_output=True, timeout=15)
                 self.assertEqual(run.returncode, 0, run.stderr)
                 self.assertEqual(run.stdout, "Reply to first turn\nReply to 1\n")
+
+        acp = self.worker().commands.acp
+        with acp.AcpClient([sys.executable, "-I", str(agent), "configured", "--literal=two words; *"],
+                           repo, lambda update: None, lambda params: None, env=self.env) as client:
+            self.assertEqual(client.open_session(config_options={"reasoning_effort": "high"}), "session-1")
 
     def test_executor_selection_stays_in_contract(self):
         violations = []
