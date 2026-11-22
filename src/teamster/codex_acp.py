@@ -34,8 +34,10 @@ def backend():
     proc = subprocess.Popen([binary, *sys.argv[1:], "-c", terminal_marker], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env)
     terminal_list_requests = set()
     incoming = os.fdopen(os.dup(sys.stdin.fileno()), "rb")
+    admitted_request = None
 
     def forward():
+        nonlocal admitted_request
         try:
             for line in incoming:
                 request = json.loads(line)
@@ -65,6 +67,7 @@ def backend():
                         raise ValueError("Unexpected Codex turn outside the admitted ACP session")
                     # A second turn/start for this thread needs another supervisor admission.
                     (directory / "sent").touch(exist_ok=False)
+                    admitted_request = request["id"]
                     params["approvalPolicy"] = "never"
                     params.pop("approvalsReviewer", None)
                     params.pop("permissions", None)
@@ -87,9 +90,7 @@ def backend():
             proc.stdin.close()
 
     threading.Thread(target=forward, daemon=True).start()
-    # The adapter drops the command and exit code for classified reads and searches.
-    # Request the ordinary terminal representation for every native command so that
-    # Teamster can apply its existing repeated-failure guard to the actual exit status.
+    turn_id = None
     for line in proc.stdout:
         message = json.loads(line)
         if message.get("id") in terminal_list_requests and "method" not in message:
@@ -98,6 +99,17 @@ def backend():
             if error.get("code") == -32601 and isinstance(error.get("message"), str):
                 # Correlate the stock adapter's wrapped close error with this native request.
                 close_error.write_text(error["message"], encoding="utf-8")
+        if admitted_request is not None and message.get("id") == admitted_request and "result" in message:
+            turn_id = message["result"]["turn"]["id"]
+            admitted_request = None
+        if message.get("method") == "turn/completed":
+            params = message["params"]
+            turn = params["turn"]
+            if (turn_id and turn["id"] == turn_id and params["threadId"] == target.read_text()
+                    and turn["status"] == "completed" and turn.get("error") is None):
+                # Publish before forwarding: the ACP prompt can return as soon as this line arrives.
+                (directory / "completed").touch(exist_ok=False)
+        # The adapter drops command/exit details for classified reads and searches.
         if message.get("method") in ("item/started", "item/completed"):
             item = message["params"]["item"]
             if item["type"] == "commandExecution" and item.get("commandActions"):
@@ -213,8 +225,8 @@ def codex_acp_turn():
             reason = reply["stopReason"]
             if reason != "end_turn":
                 raise ValueError(f"Codex ACP stopped with {reason}")
-            if not (directory / "sent").exists():
-                raise ValueError("Codex ACP did not start the admitted native turn")
+            if not (directory / "completed").is_file():
+                raise ValueError("Codex ACP did not complete the admitted native turn")
             emit({"type": "turn.completed"})
             close_error = directory / "close-error"
             close_error.touch()

@@ -2,7 +2,6 @@
 import json
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -577,8 +576,15 @@ class WeeklyBudgetTests(RotationTestCase):
         wrap.wait.return_value = 0
         selector = mock.MagicMock()
         selector.__enter__.return_value = selector
-        selector.select.side_effect = lambda timeout: (
-            [(SimpleNamespace(fileobj=proc.stdout), worker.turn_monitor.selectors.EVENT_READ)] if exec_chunks else [])
+        elapsed = [0.0]
+
+        def select(timeout):
+            if exec_chunks:
+                return [(SimpleNamespace(fileobj=proc.stdout), worker.turn_monitor.selectors.EVENT_READ)]
+            elapsed[0] += timeout
+            return []
+
+        selector.select.side_effect = select
         wrap_selector = mock.MagicMock()
         wrap_selector.__enter__.return_value = wrap_selector
         wrap_selector.select.side_effect = lambda timeout: (
@@ -608,7 +614,11 @@ class WeeklyBudgetTests(RotationTestCase):
 
         targets = []
         def start(argv, **kwargs):
-            targets.append(json.loads((Path(argv[-1]) / "options").read_text())["thread"])
+            directory = Path(argv[-1])
+            targets.append(json.loads((directory / "options").read_text())["thread"])
+            if len(targets) == 1:
+                # The native turn finished, but its ACP prompt never acknowledges it.
+                (directory / "completed").touch()
             return (proc, wrap)[len(targets) - 1]
 
         with mock.patch.dict(os.environ, self.env), \
@@ -616,14 +626,16 @@ class WeeklyBudgetTests(RotationTestCase):
                 mock.patch.object(worker.procs, "terminate", side_effect=terminate), \
                 mock.patch.object(worker.turn_monitor.subprocess, "Popen", side_effect=start) as popen, \
                 mock.patch.object(worker.turn_monitor.selectors, "DefaultSelector", side_effect=[selector, wrap_selector]), \
+                mock.patch.object(worker.turn_monitor, "time", SimpleNamespace(monotonic=lambda: elapsed[0])), \
                 mock.patch.object(worker.os, "read", side_effect=read), \
-                mock.patch.object(worker.turn_monitor.fcntl, "ioctl", return_value=bytes(4)), \
                 mock.patch.object(worker.threads, "rollout_path", return_value=rollout):
             worker.turns.run_turn(st, {"enabled": False, "accounts": [account]}, "work", None,
                             False, lambda: False, lambda seconds: None)
         self.assertEqual(observed, ["exec quota 16, no completion", "late quota 17 after exec stopped",
                                     "wrap-up quotas 16, 18"])
         self.assertEqual(popen.call_count, 2)
+        self.assertGreaterEqual(elapsed[0], 2)
+        self.assertLess(elapsed[0], 2.5)
         self.assertEqual(targets, ["same-thread", "same-thread"])
         self.assertEqual(st["outcome"], "budget_exhausted")
         self.assertEqual(st["result"], result)
@@ -663,66 +675,40 @@ class WeeklyBudgetTests(RotationTestCase):
             phase.finish(outcome="completed")
         self.assertEqual(st["weekly_used_percent"], 2)
         st.update(kind="work", rounds=[{}])
-        rollout = self.root / "fix-rollout.jsonl"
-        rollout.write_text(quota(12))
         result = self.work_result()
-        message = (json.dumps({"type": "item.completed", "item": {
-            "type": "agent_message", "text": json.dumps(result)}}) + "\n").encode()
-        chunks = [message]
-        observed = []
-        exited = [False]
-        proc = mock.Mock(pid=IMPOSSIBLE_PID)
-        proc.stdout.fileno.return_value = 99
-        proc.poll.side_effect = lambda: 0 if exited[0] else None
-        proc.wait.return_value = 0
-        selector = mock.MagicMock()
-        selector.__enter__.return_value = selector
-        selector.select.side_effect = lambda timeout: (
-            [(SimpleNamespace(fileobj=proc.stdout), worker.turn_monitor.selectors.EVENT_READ)] if chunks else [])
+        gate = self.root / "deliver-native-completion"
+        (self.home / "fixture-thread-same-thread").touch()
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "reply": result, "weekly_used_before": 12,
+             "weekly_samples_after_initial": [16], "weekly_used_after": 16, "delay_gate": str(gate)}])
 
-        def read(fd, size):
-            chunk = chunks.pop(0)
-            self.assertLessEqual(len(chunk), size)
-            if chunk == message:
-                observed.append("agent_message")
-                with rollout.open("a") as stream:
-                    stream.write(quota(12))
-            elif chunk:
-                observed.append("completion fragment")
-                self.assertEqual(st["weekly_used_percent"], 6, "live samples update the task total immediately")
-            else:
-                exited[0] = True
-            return chunk
+        poll = worker.turn_monitor.poll_monitor_rollout
+        read = os.read
 
-        read_rollout_limits = worker.turn_monitor.read_monitor_rollout
+        def fragmented_read(fd, size):
+            # Split the eventual ACP completion across supervisor reads as well.
+            return read(fd, min(size, 11) if gate.is_file() else size)
 
-        def read_limits(usage, record_limits):
-            self.assertIs(usage.path, rollout)
-            if observed == ["agent_message"]:
-                # Completion precedes the final quota, but remains unread.
-                # Splitting it across reads requires the full stdout drain.
-                chunks.extend([b'{"type":"turn.', b'completed"}\n', b""])
-                with rollout.open("a") as stream:
-                    stream.write(quota(16))
-                observed.append("final quota")
-            return read_rollout_limits(usage, record_limits)
+        def poll_quota(*args):
+            decision = poll(*args)
+            if st["weekly_used_percent"] == 6 and not gate.exists():
+                # The supervisor has observed the quota. The native completion has yet
+                # to reach the shim, and the adapter has yet to send any response text.
+                self.assertFalse(list((worker.config.TASKS / slug).glob("codex-acp-*/completed")))
+                gate.touch()
+            return decision
 
         with mock.patch.dict(os.environ, self.env), \
-                mock.patch.object(worker.accounts, "prepare_home"), \
-                mock.patch.object(worker.procs, "terminate"), \
-                mock.patch.object(worker.turn_monitor.subprocess, "Popen", return_value=proc) as popen, \
-                mock.patch.object(worker.turn_monitor.selectors, "DefaultSelector", return_value=selector), \
-                mock.patch.object(worker.os, "read", side_effect=read), \
-                mock.patch.object(worker.turn_monitor.fcntl, "ioctl", return_value=(
-                    len(b'{"type":"turn.completed"}\n').to_bytes(4, sys.byteorder))), \
-                mock.patch.object(worker.threads, "rollout_path", return_value=rollout), \
-                mock.patch.object(worker.turn_monitor, "read_monitor_rollout", side_effect=read_limits), \
+                mock.patch.object(worker.config, "ROLLOUT_SEARCH_SECONDS", 0.05), \
+                mock.patch.object(worker.config, "RATE_POLL_SECONDS", 0.05), \
+                mock.patch.object(worker.turn_monitor, "poll_monitor_rollout", side_effect=poll_quota), \
+                mock.patch.object(worker.os, "read", side_effect=fragmented_read), \
                 mock.patch.object(worker.publishing, "publish_pr") as publish_pr, \
                 mock.patch.object(worker.turns, "wrapup_turn", side_effect=AssertionError("unexpected wrap-up")) as wrapup:
             worker.turns.run_turn(st, {"enabled": False, "accounts": [account]}, "finish the fix", None,
-                            False, lambda: False, lambda seconds: None, new_turn=False)
-        self.assertEqual(observed, ["agent_message", "final quota", "completion fragment", "completion fragment"])
-        popen.assert_called_once()
+                                  False, lambda: False, lambda seconds: None, new_turn=False)
+        self.assertTrue(gate.is_file())
+        self.assertEqual(len(self.invocations()), 1)
         publish_pr.assert_called_once_with(st, mock.ANY)
         wrapup.assert_not_called()
         self.assertEqual(st["weekly_used_percent"], 6)

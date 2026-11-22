@@ -657,7 +657,6 @@ def _run_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn
         weekly_exhausted = (result in ("auth", "limit", "capacity", "failed", "completed")
                             and control.weekly_exhausted(st.get("weekly_used_percent", 0)))
         if weekly_exhausted and result != "completed":
-            st.pop("error", None)
             result = "budget_exhausted"
         if result in ("auth", "limit", "capacity") and control.expired(clock.CLOCK.monotonic()):
             result = "budget_exhausted"
