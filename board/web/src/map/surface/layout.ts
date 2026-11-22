@@ -1,17 +1,11 @@
-import { hashName, type Point } from "../layout/geometry";
-import type { BankPlacement } from "./placement";
-import type { SurfaceTask } from "./types";
+import { hashName, type Point, type Rect, type Size } from "../layout/geometry";
+import { placeTerritories } from "./placement";
+import { isCurrent, type CurrentTask, type SurfaceTask } from "./types";
 
 export type Biome = "forest" | "volcanic";
-type CurrentTask = SurfaceTask & { status: Exclude<SurfaceTask["status"], "done" | "cancelled"> };
-
-// The two terrain tiles meet at the river. A project grows down its bank in rows of three clearings.
-export const BANK_WIDTH = 672;
-const CLEARINGS = [{ x: 336, y: 200 }, { x: 133, y: 271 }, { x: 539, y: 310 }];
 
 export interface Site extends Point {
   task: CurrentTask;
-  slot: number;
   accepted: number;
   children: number;
   dependents: string[];
@@ -19,15 +13,19 @@ export interface Site extends Point {
 
 export interface Region {
   project: string;
-  bank: number;
   biome: Biome;
+  outline: string;
+  label: Point;
+  labelWidth: number;
+  bounds: Rect;
   sites: Site[];
 }
 
 export interface SurfaceLayout {
   regions: Map<string, Region>;
   sites: Map<string, Site>;
-  placement: BankPlacement[];
+  world: Size;
+  coastline: string;
 }
 
 function biomeOf(project: string, overrides: Map<string, string>): Biome {
@@ -45,94 +43,54 @@ function append(groups: Map<string, CurrentTask[]>, key: string, task: CurrentTa
   else groups.set(key, [task]);
 }
 
-// Keep a new relative in the same row if possible, then look in the rows beside it.
-function nearSlot(slot: number, occupied: Set<number>): number {
-  const width = CLEARINGS.length;
-  const row = Math.floor(slot / width);
-  const x = CLEARINGS[slot % width]!.x;
-  const columns = CLEARINGS.map((_, i) => i).sort((a, b) =>
-    Math.abs(CLEARINGS[a]!.x - x) - Math.abs(CLEARINGS[b]!.x - x));
-  for (let distance = 0; ; distance++) {
-    for (const r of distance ? [row + distance, row - distance] : [row]) {
-      if (r < 0) continue;
-      for (const col of columns) {
-        const candidate = r * width + col;
-        if (!occupied.has(candidate)) return candidate;
-      }
-    }
-  }
-}
-
-function placeRegion(region: Region, tasks: CurrentTask[], savedSlots: Record<string, number>) {
+function placeSites(tasks: CurrentTask[], clearings: Point[]) {
   const members = new Set(tasks.map(task => task.id));
-  const slots = new Map<string, number>();
-  const occupied = new Set<number>();
   const children = new Map<string, CurrentTask[]>();
-  const familySlot = new Map<string, number>();
-  for (const [id, slot] of Object.entries(savedSlots)) {
-    if (!members.has(id)) continue;
-    slots.set(id, slot);
-    occupied.add(slot);
-  }
   for (const task of tasks) {
-    if (task.parent_id === null) continue;
-    append(children, task.parent_id, task);
-    const kept = slots.get(task.id);
-    if (kept !== undefined) familySlot.set(task.parent_id, kept);
+    if (task.parent_id !== null) append(children, task.parent_id, task);
   }
-
   const roots = tasks.filter(task => task.parent_id === null || !members.has(task.parent_id));
-  // Visit families together. The second pass also places cards whose parent chain has no root.
   const stack = [...roots, ...tasks].reverse();
-  const visited = new Set<string>();
-  let next = 0;
+  const placed = new Map<string, Site>();
   while (stack.length) {
     const task = stack.pop()!;
-    if (visited.has(task.id)) continue;
-    visited.add(task.id);
-    let slot = slots.get(task.id);
-    if (slot === undefined) {
-      const parent = task.parent_id;
-      const parentSlot = parent === null ? undefined : slots.get(parent) ?? familySlot.get(parent);
-      const relative = parentSlot ?? familySlot.get(task.id);
-      while (occupied.has(next)) next++;
-      slot = relative === undefined ? next : nearSlot(relative, occupied);
-      slots.set(task.id, slot);
-      occupied.add(slot);
+    if (placed.has(task.id)) continue;
+    const parent = task.parent_id === null ? undefined : placed.get(task.parent_id);
+    let nearest = 0;
+    if (parent) {
+      const distance = (p: Point) => Math.hypot(p.x - parent.x, p.y - parent.y);
+      for (let i = 1; i < clearings.length; i++) {
+        if (distance(clearings[i]!) < distance(clearings[nearest]!)) nearest = i;
+      }
     }
-    if (task.parent_id !== null) familySlot.set(task.parent_id, slot);
-    const clearing = CLEARINGS[slot % CLEARINGS.length]!;
-    region.sites.push({
-      task, slot, x: region.bank * BANK_WIDTH + clearing.x,
-      y: Math.floor(slot / CLEARINGS.length) * 160 + (region.bank % 2 ? 500 - clearing.y : clearing.y),
-      accepted: 0, children: 0, dependents: [],
-    });
+    const point = clearings.splice(nearest, 1)[0]!;
+    placed.set(task.id, { task, ...point, accepted: 0, children: 0, dependents: [] });
     const descendants = children.get(task.id) ?? [];
     for (let i = descendants.length - 1; i >= 0; i--) stack.push(descendants[i]!);
   }
-  region.sites.sort((a, b) => a.slot - b.slot);
+  return [...placed.values()];
 }
 
-export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<string, string> = {}, previous?: Pick<SurfaceLayout, "placement">): SurfaceLayout {
+export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<string, string> = {}): SurfaceLayout {
   const groups = new Map<string, CurrentTask[]>();
   for (const task of tasks) {
-    if (task.status !== "done" && task.status !== "cancelled") append(groups, task.project, task as CurrentTask);
+    if (isCurrent(task)) append(groups, task.project, task);
   }
+  const projects = [...groups.keys()].sort();
+  const { world, coastline, territories } = placeTerritories(projects.map(project => groups.get(project)!.length));
   const overrides = new Map(Object.entries(biomes).map(([project, biome]) => [project.toLowerCase(), biome]));
   const regions = new Map<string, Region>();
   const sites = new Map<string, Site>();
-  const saved = previous?.placement ?? [];
-  const banks = new Map(saved.map(({ project }, bank) => [project, bank]));
-  const placement: BankPlacement[] = saved.map(({ project }) => ({ project, slots: {} }));
-
-  for (const project of [...groups.keys()].sort((a, b) => a.localeCompare(b, "ru"))) {
-    const bank = banks.get(project) ?? placement.length;
-    const region: Region = { project, biome: biomeOf(project, overrides), bank, sites: [] };
-    placeRegion(region, groups.get(project)!.sort((a, b) => a.id.localeCompare(b.id)), saved[bank]?.slots ?? {});
-    placement[bank] = { project, slots: Object.fromEntries(region.sites.map(site => [site.task.id, site.slot])) };
-    regions.set(project, region);
-    for (const site of region.sites) sites.set(site.task.id, site);
-  }
+  projects.forEach((project, index) => {
+    const { clearings, ...territory } = territories[index]!;
+    const group = groups.get(project)!.sort((a, b) => {
+      if (a.id === b.id) return 0;
+      return a.id < b.id ? -1 : 1;
+    });
+    const members = placeSites(group, clearings);
+    regions.set(project, { project, biome: biomeOf(project, overrides), ...territory, sites: members });
+    for (const site of members) sites.set(site.task.id, site);
+  });
   for (const task of tasks) {
     const parent = task.parent_id === null ? undefined : sites.get(task.parent_id);
     if (parent && task.status !== "cancelled") {
@@ -145,5 +103,5 @@ export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<stri
       if (id !== task.id) sites.get(id)?.dependents.push(task.id);
     }
   }
-  return { regions, sites, placement };
+  return { regions, sites, world, coastline };
 }

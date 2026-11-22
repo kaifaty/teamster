@@ -18,9 +18,9 @@ export function fitCamera(world: Size, view: View): Camera {
 /** How far the camera may zoom in, as a multiple of the fitted zoom. */
 export const MAX_ZOOM = 3;
 
-/** `camera` zoomed by `factor` around the screen point `at`, within the fitted zoom and MAX_ZOOM. */
-export function zoomCamera(camera: Camera, factor: number, at: Point, fit: Camera): Camera {
-  const zoom = Math.min(fit.zoom * MAX_ZOOM, Math.max(fit.zoom, camera.zoom * factor));
+/** Zoom around a screen point, from the fitted view up to the closest view. */
+export function zoomCamera(camera: Camera, factor: number, at: Point, fit: Camera, closest = fit.zoom * MAX_ZOOM): Camera {
+  const zoom = Math.min(closest, Math.max(fit.zoom, camera.zoom * factor));
   const scale = zoom / camera.zoom;
   return { zoom, tx: at.x - (at.x - camera.tx) * scale, ty: at.y - (at.y - camera.ty) * scale };
 }

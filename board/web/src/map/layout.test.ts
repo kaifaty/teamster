@@ -478,30 +478,64 @@ describe("constellations in the galaxy", () => {
   });
 });
 
-it("keeps occupied clearings and banks when neighbouring task cards change", () => {
-  const root: SurfaceTask = { id: "parent", project: "Gothic", title: "Trail", status: "active", parent_id: null, depends_on: [], pull_requests: [] };
-  const child: SurfaceTask = { ...root, id: "child", status: "needs_input", parent_id: root.id, depends_on: [root.id] };
-  const neighbour: SurfaceTask = { ...child, id: "neighbour", status: "blocked" };
-  const other: SurfaceTask = { ...root, id: "other", project: "TEAMSTER", status: "ready" };
-  const cards: SurfaceTask[] = [other, child, neighbour, root, { ...child, id: "dropped", status: "cancelled" }];
+const trail: SurfaceTask = {
+  id: "parent", project: "Gothic", title: "Trail", status: "active", parent_id: null, depends_on: [], pull_requests: [],
+};
+
+it("keeps country borders and buildings in place across status changes and reordered snapshots", () => {
+  const child: SurfaceTask = { ...trail, id: "child", status: "needs_input", parent_id: trail.id, depends_on: [trail.id] };
+  const other: SurfaceTask = { ...trail, id: "other", project: "TEAMSTER", status: "ready" };
+  const cards: SurfaceTask[] = [other, child, trail, { ...child, id: "accepted", status: "done" }, { ...child, id: "dropped", status: "cancelled" }];
   const before = layoutSurface(cards);
-  expect(layoutSurface([...cards].reverse()).sites).toEqual(before.sites);
+  const after = layoutSurface([...cards].reverse().map(task => task === child ? { ...task, status: "blocked" } : task));
+  expect([...after.sites.keys()]).toEqual([...before.sites.keys()]);
+  expect(after.sites.size).toBe(3);
+  expect(after.sites.get(trail.id)).toMatchObject({ accepted: 1, children: 2, dependents: [child.id] });
+  for (const [id, { x, y }] of before.sites) expect(after.sites.get(id)).toMatchObject({ x, y });
+  for (const [name, { outline, label }] of before.regions) expect(after.regions.get(name)).toMatchObject({ outline, label });
+  expect(after.regions.get(trail.project)?.biome).toBe("forest");
+  expect(after.regions.get(other.project)?.biome).toBe("volcanic");
+});
 
-  const updated: SurfaceTask[] = [
-    { ...root, id: "a", project: "A" }, { ...root, id: "b" },
-    ...cards.map(task => task === neighbour ? { ...task, status: "done" as const } : task),
-  ];
-  const after = layoutSurface(updated, {}, before);
-  for (const { id } of [root, child, other]) {
-    const { x, y } = before.sites.get(id)!;
-    expect(after.sites.get(id)).toMatchObject({ x, y });
+it("grows and reclaims adjoining land with the current workload, including the last project", () => {
+  function area(outline: string) {
+    let sum = 0, x = 0, y = 0;
+    for (const [, op, coords] of outline.matchAll(/([MLQ])([^MLQZ]+)/g)) {
+      const [a, b, c, d] = coords!.split(" ").map(Number) as [number, number, number, number];
+      if (op === "Q") {
+        // Signed area under a quadratic Bézier from (x,y) to (c,d) through control point (a,b).
+        sum += (2 * (x * b - y * a + a * d - b * c) + x * d - y * c) / 3;
+        x = c; y = d;
+      } else {
+        if (op === "L") sum += x * b - y * a;
+        x = a; y = b;
+      }
+    }
+    return sum / 2;
   }
-  expect(after.sites.size).toBe(5);
-  expect(after.sites.get(root.id)).toMatchObject({ accepted: 1, children: 2, dependents: [child.id] });
+  const tasks = [1, 4, 16].flatMap((count, project) => Array.from({ length: count }, (_, i) =>
+    ({ ...trail, id: `${project}-${i}`, project: String(project) })));
+  const overrides = { "0": "forest", "1": "forest", "2": "forest" };
+  const full = layoutSurface(tasks, overrides);
+  const regions = [...full.regions.values()];
+  expect(regions.map(r => r.sites.length)).toEqual([1, 4, 16]);
+  expect(new Set(regions.flatMap(r => r.sites.map(s => `${s.x},${s.y}`))).size).toBe(21);
+  for (const r of regions) {
+    expect(r.biome).toBe("forest");
+    expect(r.outline.match(/M/g)).toHaveLength(1);
+  }
+  const [small, medium, large] = regions.map(r => area(r.outline)) as [number, number, number];
+  expect(medium).toBeGreaterThan(2 * small);
+  expect(large).toBeGreaterThan(2 * medium);
+  expect(full.coastline.match(/M/g)).toHaveLength(1);
+  expect(small + medium + large).toBeCloseTo(area(full.coastline), 6);
 
-  // The browser has only the saved banks and slots when it opens the map again.
-  const reloaded = layoutSurface([...updated].reverse(), {}, { placement: JSON.parse(JSON.stringify(after.placement)) });
-  expect(reloaded.sites).toEqual(after.sites);
-  const quiet = layoutSurface(updated.filter(task => task.project !== other.project), {}, reloaded);
-  expect(quiet.placement[before.regions.get(other.project)!.bank]).toEqual({ project: other.project, slots: {} });
+  const less = tasks.map(task => task.id === "2-0" ? { ...task, status: "done" as const } : task);
+  const closed = layoutSurface(less);
+  expect(area(closed.regions.get("2")!.outline)).toBeLessThan(large);
+  expect(area(closed.coastline)).toBeLessThan(area(full.coastline));
+  const last = layoutSurface(tasks.map(t => t.project === "0" ? t : { ...t, status: "cancelled" }));
+  expect([...last.regions.keys()]).toEqual(["0"]);
+  expect(last.world.width * last.world.height).toBeLessThan(full.world.width * full.world.height);
+  expect(layoutSurface([{ ...trail, status: "done" }])).toMatchObject({ world: { width: 0, height: 0 }, coastline: "", regions: new Map(), sites: new Map() });
 });

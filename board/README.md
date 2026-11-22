@@ -126,8 +126,9 @@ npm --prefix board/web ci && npm --prefix board/web run build
 
 Until that directory exists, `/` returns a short build instruction. The API is available independently.
 
-**Доска** shows managed runs and desktop sessions in columns. **Карта** opens a continuous
-planetary surface. Each building represents one **Задание** in its project. Drag to pan and use the
+**Доска** shows managed runs and desktop sessions in columns. **Карта** opens an atlas of adjoining
+project territories. A territory grows or shrinks with its current tasks and disappears when the last one closes.
+Each building represents one **Задание** in its project. Drag to pan and use the
 wheel or pinch to zoom. Select a building to see its title, status, parent, prerequisites,
 linked runs and sessions, and PRs in a small card. Closing the card keeps the camera in place.
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { clampCamera, type Camera } from "./layout/camera";
+import type { Point } from "./layout/geometry";
 import { ZOOM_NOTCH, wheelAction, wheelDevice, type WheelInput } from "./navigation";
+import { layoutSurface } from "./surface/layout";
+import type { SurfaceTask } from "./surface/types";
+import { containSurfaceCamera } from "./surface/useSurfaceCamera";
 
 const wheel = (fields: Partial<WheelInput>): WheelInput => ({
   deltaMode: 0,
@@ -63,5 +68,34 @@ describe("wheel action", () => {
     expect(jump.kind === "zoom" && jump.factor).toBeCloseTo(Math.exp(0.25));
     expect(wheelAction(wheel({ deltaY: -4.000244140625, ctrlKey: true }), "mouse")).toEqual({ kind: "zoom", factor: ZOOM_NOTCH, notch: true });
     expect(wheelAction(wheel({ deltaMode: 1, deltaY: 3, metaKey: true }), "mouse")).toMatchObject({ factor: ZOOM_NOTCH ** -1.2 });
+  });
+});
+
+it("keeps land visible after a long pan and every edge building reachable at detail zoom", () => {
+  const tasks: SurfaceTask[] = Array.from({ length: 240 }, (_, i) => ({
+    id: String(i), project: i < 160 ? "core" : String(i % 19), title: "Task", status: "active", parent_id: null, depends_on: [], pull_requests: [],
+  }));
+  const atlas = layoutSurface(tasks);
+  const zoom = 1.5;
+  for (const view of [{ width: 1280, height: 720 }, { width: 360, height: 560 }]) {
+    const visible = (site: Point, cam: Camera) => {
+      const x = site.x * cam.zoom + cam.tx, y = site.y * cam.zoom + cam.ty;
+      return x >= 0 && y >= 0 && x <= view.width && y <= view.height;
+    };
+    for (const tx of [-1e8, 1e8]) {
+      for (const ty of [-1e8, 1e8]) {
+        const cam = containSurfaceCamera({ zoom, tx, ty }, atlas, view);
+        expect([...atlas.sites.values()].some(site => visible(site, cam))).toBe(true);
+        expect(clampCamera(cam, atlas.world, view)).toEqual(cam);
+      }
+    }
+    for (const site of atlas.sites.values()) {
+      const cam = containSurfaceCamera({ zoom, tx: view.width / 2 - site.x * zoom, ty: view.height / 2 - site.y * zoom }, atlas, view);
+      expect(visible(site, cam)).toBe(true);
+    }
+  }
+  const one = layoutSurface(tasks.slice(0, 1)), view = { width: 1200, height: 800 };
+  expect(containSurfaceCamera({ zoom: 1, tx: -9000, ty: 7000 }, one, view)).toEqual({
+    zoom: 1, tx: (view.width - one.world.width) / 2, ty: (view.height - one.world.height) / 2,
   });
 });

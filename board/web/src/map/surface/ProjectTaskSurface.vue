@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, useId, watch } from "vue";
+import { computed, ref, useId } from "vue";
 import { ZOOM_NOTCH } from "../navigation";
 import { at } from "../overlay/style";
 import forest from "./art/forest.webp";
 import volcanic from "./art/volcanic.webp";
-import { BANK_WIDTH, layoutSurface, type Site, type SurfaceLayout } from "./layout";
-import { loadPlacement, savePlacement } from "./placement";
+import { layoutSurface, type Site } from "./layout";
 import SurfaceSite from "./SurfaceSite.vue";
 import type { SurfaceTask } from "./types";
 import { useSurfaceCamera } from "./useSurfaceCamera";
@@ -13,20 +12,13 @@ import { useSurfaceCamera } from "./useSurfaceCamera";
 const props = defineProps<{ tasks: readonly SurfaceTask[]; selectedId?: string | null; biomes?: Record<string, string> }>();
 const emit = defineEmits<{ select: [id: string] }>();
 const field = ref<HTMLElement | null>(null);
-const initial: SurfaceLayout = { regions: new Map(), sites: new Map(), placement: loadPlacement() };
-const layout = computed<SurfaceLayout>((previous = initial) => {
-  // The first board snapshot can arrive after the map mounts with an empty task list.
-  if (previous === initial && !props.tasks.length) return initial;
-  return layoutSurface(props.tasks, props.biomes, previous);
-});
-watch(() => JSON.stringify(layout.value.placement), () => {
-  if (layout.value !== initial) savePlacement(layout.value.placement);
-}, { immediate: true });
+const layout = computed(() => layoutSurface(props.tasks, props.biomes));
 const picked = ref<string | null>(null);
 const selected = computed(() => props.selectedId === undefined ? picked.value : props.selectedId);
 const selectedSite = computed(() => selected.value === null ? undefined : layout.value.sites.get(selected.value));
 function select(id: string) {
   if (!layout.value.sites.has(id)) return;
+  if (compact.value) focusTask(id);
   picked.value = id;
   emit("select", id);
 }
@@ -34,20 +26,11 @@ const { camera, bounds, compact, focusTask, focusProject, zoomBy, home } = useSu
 defineExpose({ focusTask, focusProject });
 
 const id = useId();
-const regions = computed(() => [...layout.value.regions.values()]);
-const visibleRegions = computed(() => regions.value.filter(region =>
-  (region.bank + 1) * BANK_WIDTH >= bounds.value.x && region.bank * BANK_WIDTH <= bounds.value.x + bounds.value.width));
-const regionNames = computed(() => visibleRegions.value.flatMap(region => {
-  const box = bounds.value;
-  const left = Math.max(region.bank * BANK_WIDTH, box.x);
-  const right = Math.min((region.bank + 1) * BANK_WIDTH, box.x + box.width);
-  const width = (right - left) * camera.value.zoom - 12;
-  return width < 110 ? [] : [{ region, style: { ...at((left + right) / 2, 102), maxWidth: width + "px" } }];
-}));
+const regions = computed(() => [...layout.value.regions.values()].sort((a, b) => a.project.localeCompare(b.project, "ru")));
 const visibleSites = computed(() => {
   const box = bounds.value;
   const pad = 125 / camera.value.zoom;
-  return visibleRegions.value.flatMap(region => region.sites.filter(site =>
+  return regions.value.flatMap(region => region.sites.filter(site =>
     site.x >= box.x - pad && site.x <= box.x + box.width + pad &&
     site.y >= box.y - pad && site.y <= box.y + box.height + pad).map(site => ({
       site, biome: region.biome,
@@ -112,20 +95,24 @@ function chooseProject(event: Event) {
         :viewBox="`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`"
       >
         <defs>
-          <pattern :id="id + '-forest'" patternUnits="userSpaceOnUse" :width="BANK_WIDTH" height="480">
-            <image :href="forest" :width="BANK_WIDTH" height="480" />
-          </pattern>
-          <pattern :id="id + '-volcanic'" patternUnits="userSpaceOnUse" :width="BANK_WIDTH" height="480">
-            <image :href="volcanic" :width="BANK_WIDTH" height="480" />
+          <pattern v-for="(region, i) in regions" :id="id + '-land-' + i" :key="region.project"
+            patternUnits="userSpaceOnUse" :x="region.bounds.x0" :y="region.bounds.y0"
+            :width="Math.min(1344, region.bounds.x1 - region.bounds.x0)" :height="Math.min(960, region.bounds.y1 - region.bounds.y0)"
+            viewBox="0 0 1344 960" preserveAspectRatio="xMidYMid slice">
+            <image :href="region.biome === 'forest' ? forest : volcanic" width="1344" height="960" />
           </pattern>
           <marker :id="id + '-arrow'" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="15" markerHeight="15" orient="auto">
             <path d="m1 1 10 5-10 5 2-5Z" fill="#ffdf89" stroke="#433b34" stroke-linejoin="round" />
           </marker>
         </defs>
-        <rect v-bind="bounds" :fill="`url(#${id}-forest)`" />
-        <template v-for="region in visibleRegions" :key="region.project">
-          <rect v-if="region.biome === 'volcanic'" :x="region.bank * BANK_WIDTH" :y="bounds.y" :width="BANK_WIDTH" :height="bounds.height" :fill="`url(#${id}-volcanic)`" />
-        </template>
+        <g v-if="layout.coastline" stroke-linejoin="round">
+          <path :d="layout.coastline" fill="#e8dfb4" stroke="#a7c9b9" stroke-width="10" vector-effect="non-scaling-stroke" />
+          <path :d="layout.coastline" fill="none" stroke="#e2dfb7" stroke-width="5" vector-effect="non-scaling-stroke" />
+          <path v-for="(region, i) in regions" :key="region.project" :d="region.outline" :fill="`url(#${id}-land-${i})`"
+            stroke="#454b3e" stroke-width="2.8" vector-effect="non-scaling-stroke" />
+          <path v-for="region in regions" :key="'border-' + region.project" :d="region.outline" fill="none"
+            stroke="#ece0ae" stroke-width="0.9" vector-effect="non-scaling-stroke" />
+        </g>
         <g v-if="families" fill="none" stroke-linecap="round">
           <path :d="families" stroke="#665742" stroke-width="5" />
           <path :d="families" stroke="#eeddb6" stroke-width="2.7" stroke-dasharray="4 5" />
@@ -136,7 +123,8 @@ function chooseProject(event: Event) {
         </g>
       </svg>
       <div
-        v-for="{ region, style } in regionNames" :key="region.project" class="region" :class="{ compact }" :style="style"
+        v-for="region in regions" :key="region.project" class="region" :class="{ compact }"
+        :style="{ ...at(region.label.x, region.label.y), '--label-width': region.labelWidth + 'px' }" :title="region.project"
       >
         <b>{{ region.project }}</b>
         <small v-if="!compact">{{ region.biome === "forest" ? "Хвойное пограничье" : "Вулканическое плато" }}</small>
@@ -170,10 +158,11 @@ function chooseProject(event: Event) {
 .surface {
   display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: min(320px, 70dvh);
   isolation: isolate; container-type: inline-size; overflow: hidden; color-scheme: light;
-  background: #a2ae89; color: #2e352c; font-family: var(--sans, system-ui, sans-serif);
+  background: #7eaaa4; color: #2e352c; font-family: var(--sans, system-ui, sans-serif);
 }
 .field {
   position: relative; flex: 1 1 0; overflow: clip;
+  background: radial-gradient(ellipse at center, #9dbeb0, #719d9a);
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .field:focus-visible { outline: 2px solid #283d33; outline-offset: -2px; }
@@ -181,11 +170,14 @@ function chooseProject(event: Event) {
 .region {
   position: absolute; left: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
   top: calc(var(--ty) + var(--y) * var(--zoom) * 1px); transform: translate(-50%, -50%);
-  width: max-content; text-align: center; pointer-events: none;
+  width: max-content; max-width: clamp(32px, calc(var(--label-width) * var(--zoom)), 340px); text-align: center; pointer-events: none;
   color: #fff8df; text-shadow: 0 1px 3px #213b2b, 0 0 7px #253a29, 0 0 13px #35422e;
 }
 .region b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 27px/1.1 "Iowan Old Style", Georgia, serif; }
-.region.compact b { font-size: 20px; }
+.region.compact b {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  white-space: normal; overflow-wrap: anywhere; text-wrap: balance; hyphens: auto; font-size: clamp(10px, calc(52px * var(--zoom)), 21px);
+}
 .region small { font-size: 10px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
 .empty {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0;

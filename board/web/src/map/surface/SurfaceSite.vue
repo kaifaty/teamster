@@ -85,6 +85,10 @@ const description = computed(() => [
   background: var(--sign); color: #fff9e9; font: bold 13px/1 system-ui, sans-serif;
   box-shadow: 0 1px 3px #30291d80;
 }
+.compact .marker {
+  width: clamp(5px, calc(22px * var(--zoom)), 17px); height: clamp(5px, calc(22px * var(--zoom)), 17px);
+  border-width: 1px; font-size: clamp(5px, calc(17px * var(--zoom)), 13px);
+}
 [data-status="needs_input"] .marker { border-radius: 3px; transform: rotate(45deg); }
 [data-status="needs_input"] .marker b { transform: rotate(-45deg); }
 [data-status="blocked"] .marker { border-radius: 0; clip-path: polygon(28% 0,72% 0,100% 28%,100% 72%,72% 100%,28% 100%,0 72%,0 28%); }
@@ -106,13 +110,13 @@ const description = computed(() => [
 .parent { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #efe9cf; font-size: 10.5px; }
 .counts { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 6px; color: #efe9cf; font-size: 10.5px; }
 .counts > span { white-space: nowrap; }
-.site.above { flex-direction: column-reverse; transform: translate(-50%, -100%); }
+.site.above:is(:focus-visible, [aria-pressed="true"]) { flex-direction: column-reverse; transform: translate(-50%, -100%); }
 .outside .plate, .compact:not([aria-pressed="true"], :hover, :focus-visible) .plate { display: none; }
 .site:hover, .site:focus-visible { z-index: 2; }
 .site[aria-pressed="true"] { z-index: 3; }
 .site[aria-pressed="true"] .plate, .site:focus-visible .plate { outline: 2px solid #fffae0; outline-offset: 1px; }
 .site[aria-pressed="true"] .plate strong { -webkit-line-clamp: 3; }
 @media (pointer: coarse) {
-  .site { min-width: 44px; min-height: 44px; }
+  .site { min-width: min(44px, calc(160px * var(--zoom))); min-height: min(44px, calc(130px * var(--zoom))); }
 }
 </style>

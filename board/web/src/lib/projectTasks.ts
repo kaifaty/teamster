@@ -26,7 +26,7 @@ export const statusLabels: Record<ProjectTask["status"], string> = {
   cancelled: "Отменено",
 };
 
-export const isCurrent = (task: ProjectTask) => task.status !== "done" && task.status !== "cancelled";
+export { isCurrent } from "../map/surface/types";
 
 export function recordLabel(record: TaskSummary) {
   return `${record.kind === "session" ? "Сессия" : "Запуск"} · ${taskTitle(record)} · ${record.repo}`;
