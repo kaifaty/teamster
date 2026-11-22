@@ -20,6 +20,14 @@ def _model_config(result):
     return {}
 
 
+class AcpRequestError(ValueError):
+    """An agent's JSON-RPC error, including optional structured error data."""
+
+    def __init__(self, detail, error):
+        super().__init__(detail)
+        self.error = error
+
+
 class AcpClient:
     """Run one agent, delivering session updates and permission requests to the caller.
 
@@ -158,11 +166,22 @@ class AcpClient:
                         detail += ". Sign in using the agent CLI"
                         if self.auth_methods:
                             detail += " or choose --auth-method from: " + ", ".join(self.auth_methods)
-                    raise ValueError(detail)
+                    raise AcpRequestError(detail, error)
                 result = message.get("result")
                 if not isinstance(result, dict):
                     raise ValueError(f"Invalid ACP {method} result")
                 return result
+            except (TimeoutError, InterruptedError):
+                if method == "session/prompt" and self.check_active:
+                    # The full prompt was sent. Make one nonblocking cancellation
+                    # attempt before the caller closes stdin and reaps the agent.
+                    cancel = {"jsonrpc": "2.0", "method": "session/cancel",
+                              "params": {"sessionId": self.session_id}}
+                    try:
+                        os.write(self.process.stdin.fileno(), (json.dumps(cancel) + "\n").encode())
+                    except OSError:
+                        pass
+                raise
             except KeyboardInterrupt:
                 if method != "session/prompt" or deadline is not None:
                     raise
@@ -218,8 +237,8 @@ class AcpClient:
                 self.on_update(update["update"])
         return self.session_id
 
-    def prompt(self, text):
-        """Run one text turn and return its stop reason, including cancellation."""
+    def prompt_result(self, text):
+        """Run one text turn and return its full ACP result, including extension metadata."""
         if self.session_id is None:
             raise ValueError("Open an ACP session before sending a prompt")
         result = self._call("session/prompt", {"sessionId": self.session_id,
@@ -227,4 +246,8 @@ class AcpClient:
         reason = result.get("stopReason")
         if not isinstance(reason, str) or not reason:
             raise ValueError("ACP agent returned no stop reason")
-        return reason
+        return result
+
+    def prompt(self, text):
+        """Run one text turn and return its stop reason, including cancellation."""
+        return self.prompt_result(text)["stopReason"]
