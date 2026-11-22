@@ -1,5 +1,6 @@
 """A repository's own map art, kept in the data home so that it stays out of the public repository."""
 
+import re
 from urllib.parse import quote
 
 from .store import Store
@@ -8,11 +9,32 @@ from .store import Store
 MEDIA_TYPES = {"sky.jpg": "image/jpeg", "planet.png": "image/png", "emblem.png": "image/png"}
 
 
-def art_file(root, repo, name):
-    """The path of one picture, or None. Only known names, and no symbolic link on the way."""
-    if name not in MEDIA_TYPES or root.is_symlink() or not Store._safe_slug(repo):
+def _asset(root, repo, name):
+    if root.is_symlink() or not Store._safe_slug(repo):
         return None
     return Store._file(root / repo, name)
+
+
+def art_file(root, repo, name):
+    """The path of one picture, or None. Only known names, and no symbolic link on the way."""
+    return _asset(root, repo, name) if name in MEDIA_TYPES else None
+
+
+def project_biomes(root):
+    biomes = {}
+    for directory in Store._directories(root):
+        path = _asset(root, directory.name, "biome.txt")
+        if path is None:
+            continue
+        try:
+            with path.open("rb") as stream:
+                raw = stream.read(129)
+        except OSError:
+            continue
+        name = raw.strip()
+        if len(raw) <= 128 and re.fullmatch(rb"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", name):
+            biomes[directory.name] = name.decode("ascii")
+    return biomes
 
 
 def art_index(root):
