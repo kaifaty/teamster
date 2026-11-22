@@ -1,6 +1,6 @@
 import { sendBoardAction, type ActionSender } from "./actions";
 import { projectTaskErrors, type ProjectTask, type ProjectTaskChange, type ProjectTasks } from "./projectTasks";
-import type { ArtIndex, Constellations, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
+import type { ArtIndex, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import type { DutyChatView } from "../dutyChatTypes";
 import { connectSocket, type ConnectionState } from "./socket";
 
@@ -29,8 +29,6 @@ export interface BoardSource {
   fetchFeed(slug: string, after: string | null): Promise<TaskFeed | null>;
   /** Which repositories have their own map art. */
   fetchArt(): Promise<ArtIndex>;
-  /** Which repositories the galaxy draws together; none when the server has no such route yet (404). */
-  fetchConstellations(): Promise<Constellations>;
   /** What the reflection learned; null when the server has no such route yet (404). */
   fetchResearch(): Promise<ResearchView | null>;
   /** The conversation with the duty; null when the server has no such route yet (404). Absent from sources without it. */
@@ -94,10 +92,6 @@ export function serverSource(): BoardSource {
     async fetchArt() {
       const response = await get("/api/art");
       return response ? ((await response.json()) as ArtIndex) : {};
-    },
-    async fetchConstellations() {
-      const response = await get("/api/constellations");
-      return response ? ((await response.json()) as Constellations) : { constellations: [], error: null };
     },
     async fetchResearch() {
       const response = await get("/api/research");

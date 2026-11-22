@@ -48,7 +48,7 @@ describe("the ship's screen after «Принять»", () => {
     const source = {
       ...fixtureProjectTasks(),
       label: null, act, connect: () => () => {}, fetchDetail: async () => shipDetail, fetchFile: async () => null, fetchFeed: async () => null,
-      fetchArt: async () => ({}), fetchConstellations: async () => ({ constellations: [], error: null }), fetchResearch: async () => null,
+      fetchArt: async () => ({}), fetchResearch: async () => null,
       fetchEvents: async () => ({ since: 0, until: 0, events: [] }), fetchReport: async () => ({}) as never,
     } as BoardSource;
     // The map puts the task the answer carries on the board, and the screen shows the board's task.

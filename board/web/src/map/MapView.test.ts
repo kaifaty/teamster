@@ -26,7 +26,6 @@ function source(): BoardSource {
     fetchFile: async () => null,
     fetchFeed: async () => null,
     fetchArt: async () => ({}),
-    fetchConstellations: async () => ({ constellations: [], error: null }),
     fetchResearch: async () => null,
     fetchEvents: async (since, until) => ({ since, until, events: [] }),
     fetchReport: async () => ({}) as never,

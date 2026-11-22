@@ -10,11 +10,6 @@ export interface Size {
   height: number;
 }
 
-/** The galaxy is laid out for the shape of the window: wide on a desktop, tall on a phone. */
-export function worldSize(viewport: Size): Size {
-  return viewport.width >= viewport.height ? { width: 1600, height: 1000 } : { width: 1000, height: 1500 };
-}
-
 /** Screen pixels at each edge of the window that the map's own panels cover. */
 export interface Insets {
   top: number;
