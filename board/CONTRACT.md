@@ -380,6 +380,25 @@ interface Snapshot {
   accounts: Accounts;
   machines: Machines;
   logins: Login[];            // active sign-ins and those finished within the last 10 minutes
+  operator?: OperatorActivity;
+}
+
+interface OperatorTask {
+  task_id: string;            // stable identity of the run (slug and creation time)
+  slug: string;               // Board address, which includes the archive suffix for archived runs
+  title: string;
+}
+
+interface OperatorActivity {
+  available: boolean;         // the Mini pilot's SQLite journal could be read
+  current: OperatorTask | null;
+  history: (OperatorTask & {
+    event_id: string;
+    turn: number;
+    started_at: number;
+    source: "mini" | "handoff";
+    recommendation: string;
+  })[];
 }
 
 type LessonStatus = "proposed" | "accepted" | "applied" | "declined" | "other";
@@ -1521,6 +1540,9 @@ Server → client only; the server ignores client messages. Every message is one
 - `{"type": "accounts", "accounts": Accounts}` — new account data, including `last_logins`.
 - `{"type": "machines", "machines": Machines}` — at the end of a machine polling cycle when data
   changed, comparing without `checked_at`. Metric and history changes count as changes.
+- `{"type": "operator", "operator": OperatorActivity}` — sent when the Mini pilot's current review
+  or recommendation history changes. The optional snapshot field uses the same shape and is
+  enabled by `BOARD_OPERATOR_STATE` and `BOARD_EXTERNAL_DUTY_CONFIG`.
 - `{"type": "ping", "at": number}` — every 20 s.
 
 The server polls file mtimes and sizes once per `BOARD_POLL_SECONDS` (default 1.0) and sends only changes.

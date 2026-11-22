@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { Column, TaskSummary } from "./types";
+import type { OperatorTask } from "./operatorActivity";
 import type { Board } from "./store/board";
 import { useNow } from "./store/board";
 import { COLUMNS, EXECUTOR_OPTIONS, KIND_FILTERS, isKindFilter, matchesKind, type KindFilter } from "./lib/labels";
@@ -10,6 +11,7 @@ import AccountsPanel from "./components/AccountsPanel.vue";
 import BoardColumn from "./components/BoardColumn.vue";
 import MachinePanel from "./components/MachinePanel.vue";
 import MachinesStrip from "./components/MachinesStrip.vue";
+import OperatorPanel from "./components/OperatorPanel.vue";
 import TaskPanel from "./components/TaskPanel.vue";
 
 const props = defineProps<{ board: Board }>();
@@ -55,6 +57,7 @@ const view = ref<View>(loadJson(VIEW_KEY, "board", (v): v is View => v === "boar
 watch(view, (value) => saveJson(VIEW_KEY, value));
 // Load the map on first use and retain its camera when changing tabs.
 const MapView = shallowRef<(typeof import("./map/MapView.vue"))["default"] | null>(null);
+const mapPanel = ref<InstanceType<typeof import("./map/MapView.vue")["default"]> | null>(null);
 const mapError = ref(false);
 async function loadMap() {
   if (MapView.value) return;
@@ -100,9 +103,21 @@ const columns = computed(() =>
 
 const selected = ref<string | null>(null);
 const selectedTask = computed(() => (selected.value ? (board.state.value.tasks[selected.value] ?? null) : null));
+const operator = computed(() => board.state.value.operator);
+const operatorOpen = ref(false);
+const operatorConnected = computed(() => board.connection.value === "open");
+const operatorTask = computed(() => operatorConnected.value ? operator.value?.current ?? null : null);
 
 function open(slug: string) {
+  operatorOpen.value = false;
   selected.value = slug;
+}
+
+function openOperatorTask(task: OperatorTask) {
+  operatorOpen.value = false;
+  if (view.value === "map" && mapPanel.value?.openOperatorTask(task.task_id)) return;
+  view.value = "board";
+  open(task.slug);
 }
 
 // The machine card works on both tabs; it and the task card replace each other on the board, and on the map it and the
@@ -113,6 +128,7 @@ const selectedMachine = computed(
 );
 let machineOpener: HTMLElement | null = null;
 function openMachine(id: string, opener: HTMLElement | null) {
+  operatorOpen.value = false;
   machineId.value = id;
   machineOpener = opener;
   selected.value = null;
@@ -189,6 +205,8 @@ onBeforeUnmount(() => {
         <span v-if="retryText" class="faint">{{ retryText }}</span>
       </span>
       <span v-if="board.source.label" class="chip warn">{{ board.source.label }}</span>
+      <OperatorPanel v-if="operator" v-model:open="operatorOpen" :activity="operator" :current="operatorTask"
+        :connected="operatorConnected" @task="openOperatorTask" />
       <span v-if="view === 'board' && board.state.value.loaded" class="faint num">{{ live }} в работе и ожидании</span>
 
       <div v-show="view === 'board'" class="filters" role="group" aria-label="Фильтры">
@@ -258,6 +276,7 @@ onBeforeUnmount(() => {
           :now="now"
           :changed-at="board.state.value.changedAt"
           :selected="selected"
+          :operator-slug="operatorTask?.slug"
           :collapsible="column.id === 'closed'"
           :collapsed="column.id === 'closed' && prefs.closedCollapsed"
           @open="open"
@@ -281,11 +300,13 @@ onBeforeUnmount(() => {
         :is="MapView"
         v-if="MapView"
         v-show="view === 'map'"
+        ref="mapPanel"
         :board="board"
         :active="view === 'map'"
         :machine="machineId"
+        :operator-task-id="operatorTask?.task_id"
         @machine="openMachine"
-        @panel="machineId = null"
+        @panel="machineId = null; operatorOpen = false"
       />
       <p v-else-if="mapError" class="map-note">
         Не удалось загрузить карту. <a href="#" @click.prevent="loadMap">Повторить</a> ·
@@ -307,6 +328,7 @@ onBeforeUnmount(() => {
 }
 
 .topbar {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;

@@ -9,6 +9,7 @@ const props = defineProps<{
   now: number;
   changedAt: number | undefined;
   selected: boolean;
+  operator?: boolean;
 }>();
 
 const emit = defineEmits<{ open: [slug: string] }>();
@@ -45,6 +46,7 @@ const showSummary = computed(() => !t.value.alive && !!t.value.summary);
         <span class="glyph" aria-hidden="true">{{ EXECUTOR_GLYPHS[t.executor] }}</span>{{ EXECUTORS[t.executor] }}
       </span>
     </div>
+    <div v-if="operator" class="row"><span class="chip ok">Mini разбирает</span></div>
 
     <div class="row muted">
       <span class="ellipsis" :title="t.branch ? `${where}\n${t.branch}` : where">{{ where }}</span>
