@@ -1337,7 +1337,8 @@ class RotationTestCase(unittest.TestCase):
             "esac\n")
         fake_git.chmod(0o700)
         self.env = dict(os.environ, HOME=str(self.root), CODEX_TASK_HOME=str(self.home),
-                        CODEX_TASK_CODEX=str(self.fake), CODEX_FAKE_TRACE=str(self.trace_path),
+                        CODEX_TASK_CODEX=str(self.fake), CODEX_TASK_CLAUDE=str(self.root / "claude"),
+                        CODEX_FAKE_TRACE=str(self.trace_path),
                         CODEX_FAKE_GH_TRACE=str(self.gh_trace_path),
                         CODEX_FAKE_GH_STATE=str(self.root / "fake-gh-state.json"),
                         PATH=str(self.root) + os.pathsep + str(git_bin) + os.pathsep + os.environ.get("PATH", ""),

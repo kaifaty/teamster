@@ -239,18 +239,18 @@ class ReviewFixTests(RotationTestCase):
                 self.start(slug, "--executor", "claude", "--check", "true", "--review")
                 self.cli("wait", slug, "--timeout", "30", timeout=45)
                 state = self.state(slug)
-                self.assertEqual(state["outcome"], "completed" if expected else "failed")
+                self.assertEqual(state["outcome"], "failed" if code else "completed")
                 self.assertEqual(state["result"], expected)
                 self.assertEqual((self.home / "claude-tasks" / slug / "last.md").read_text(), text)
                 (self.home / "claude-tasks" / slug / "last.md").unlink()
-                status_message = (text if not expected else
+                status_message = (text if code else
                                   (self.home / "claude-tasks" / slug / "review.md").read_text().strip())
                 self.assertIn(status_message, self.cli("status", slug).split("last message:\n", 1)[1])
-                self.assertEqual([check["outcome"] for check in state["checks"]], ["passed"] if expected else [])
-                self.assertEqual(len(state["reviews"]), 1 if expected else 0)
-                if expected:
+                self.assertEqual([check["outcome"] for check in state["checks"]], [] if code else ["passed"])
+                self.assertEqual(len(state["reviews"]), 0 if code else 1)
+                if not code:
                     self.assertFalse(state.get("error"))
-        self.assertEqual([event["review"] for event in self.invocations()], [True])
+        self.assertEqual([event["review"] for event in self.invocations()], [True, True])
 
     def test_claude_stats_include_both_work_turns_totals_and_codex_review(self):
         self.fixture_timeout = 90

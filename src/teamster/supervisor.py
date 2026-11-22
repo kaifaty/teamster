@@ -272,8 +272,9 @@ def apply_say(st, options, cfg):
             executor = executors.get(account["family"])
         if "model" in options:
             config.validate_work_model(executor.name, options["model"])
-        if st.get("kind") == duty_chat.CHAT_KIND and executor.name == "codex":
-            config.codex_binary()
+        if st.get("kind") == duty_chat.CHAT_KIND:
+            duty_chat.prepare_chat_backend(executor.name, options.get("effort") or st.get("effort")
+                                          or cfg["claude"].get("effort"))
         elif scouting:
             executor.prepare_scout(options.get("effort") or st.get("effort"), cfg, st["worktree"])
         else:

@@ -203,8 +203,8 @@ For example:
 The legacy `claude.config_dir` and `claude.token_keychain` settings still form a one-account pool
 named `default`. With neither configured, that account retains `~/.claude-accounts/reviewer` and
 `codex-worker-claude-reviewer`. Model and effort are shared settings under `claude`;
-see [settings.md](settings.md#claude-accounts). `claude.max_turns` limits reviews only,
-while task work has no tool-round cap. For work, task `--model` and `--effort` take
+see [settings.md](settings.md#claude-accounts). `claude.max_turns` caps review, scout and reflect
+turns. Task work has no tool-round cap. For work, task `--model` and `--effort` take
 precedence over `claude.model` and `claude.effort`; supported work efforts are `low`, `medium`,
 `high`, `xhigh` and `max`. Claude work supports only `--sandbox off`; `workspace` is rejected
 before launch. A task effort of `max` leaves Codex reviews at their configured effort, since

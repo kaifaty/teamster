@@ -1645,6 +1645,8 @@ class ClaudeReviewTests(RotationTestCase):
                                     {"provider": "codex", "model": "gpt-6-sol", "effort": "high"}]})
         self.codex_duty_runs([{"reply": self.duty_answer("Codex understood option 1.")},
                               {"reply": self.duty_answer("Codex is ready to hand off.")}])
+        for adapter in ("codex-acp", "claude-agent-acp"):
+            (self.root / adapter).unlink()
         self.put_duty("main")
         self.cli("duty", "chat", "Fix the parser.", timeout=60)
         old_session = self.state("duty")["session_id"]

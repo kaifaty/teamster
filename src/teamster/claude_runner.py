@@ -450,7 +450,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
             if response["reason"] not in account_errors:
                 response["reason"] = failure
         elif response["result"] is None and not response["reason"]:
-            response["reason"] = "invalid structured output"
+            # A clean transport exit alone cannot establish that the native turn completed.
+            response["reason"] = failure
     except (InterruptedError, TimeoutError) as error:
         response.update(outcome="stopped" if isinstance(error, InterruptedError) else "budget_exhausted", result=None)
         return response

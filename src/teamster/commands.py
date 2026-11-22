@@ -1182,10 +1182,7 @@ def send_to_duty(text, options, queue):
     account, refusal = duty_chat.chat_account(cfg)
     if account is None:
         procs.die(refusal)
-    if account["family"] == "claude":
-        config.require_claude()
-    else:
-        config.codex_binary()
+    duty_chat.prepare_chat_backend(account["family"])
     order = {"at": clock.CLOCK.time(), "text": text, "options": options, "source": "user"}
     if not task_state.state_path(duty_chat.CHAT_SLUG).exists():
         opened = open_duty_chat(cfg, account, order)
