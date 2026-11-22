@@ -38,7 +38,9 @@ const renderView = computed<typeof bounds.value & { zoom: number; compact: boole
   const box = bounds.value;
   const zoom = camera.value.zoom;
   if (previous && previous.compact === compact.value) {
-    const closeScale = zoom === previous.zoom || (zoom !== settledZoom.value && Math.abs(zoom / previous.zoom - 1) < 0.1);
+    // Keep a tighter raster scale for the detailed view, where every building has a label.
+    const tolerance = compact.value ? 0.25 : 0.1;
+    const closeScale = zoom === previous.zoom || (zoom !== settledZoom.value && Math.abs(zoom / previous.zoom - 1) < tolerance);
     const coversView = box.x >= previous.x && box.y >= previous.y &&
       box.x + box.width <= previous.x + previous.width && box.y + box.height <= previous.y + previous.height;
     if (closeScale && coversView && previous.width <= 2 * box.width && previous.height <= 2 * box.height) return previous;
@@ -51,34 +53,66 @@ const renderView = computed<typeof bounds.value & { zoom: number; compact: boole
     zoom, compact: compact.value,
   };
 });
+const labels = computed(() => {
+  const counts = new Map<string, number>();
+  const names = [...regions.value].sort((a, b) => b.sites.length - a.sites.length).map(region => {
+    const stems = [...region.project.matchAll(/[-._/ ](?=.)/g)].map(m => region.project.slice(0, m.index));
+    for (const stem of [...stems, region.project]) counts.set(stem, (counts.get(stem) ?? 0) + 1);
+    return { region, stems };
+  });
+  return names.map(({ region, stems }) => {
+    // Keep the part that distinguishes projects, even when they share several leading words.
+    const common = stems.filter(stem => counts.get(stem)! > 1).pop();
+    const stem = common ?? stems[0];
+    const split = stem === undefined ? 0 : stem.length + 1;
+    return { region, prefix: region.project.slice(0, split), suffix: region.project.slice(split), shared: common !== undefined };
+  });
+});
+watch([field, labels, renderView], ([el, , view]) => {
+  if (!el) return;
+  const elements = Array.from(el.querySelectorAll<HTMLElement>(".region"));
+  // A transform of the whole layer cannot change which labels intersect.
+  const boxes = view.compact ? elements.map(label => label.getBoundingClientRect()) : [];
+  const taken: DOMRect[] = [];
+  elements.forEach((label, i) => {
+    const box = boxes[i];
+    const covered = box && taken.some(r => box.left < r.right && box.right > r.left && box.top < r.bottom && box.bottom > r.top);
+    const visibility = covered ? "hidden" : "";
+    if (label.style.visibility !== visibility) label.style.visibility = visibility;
+    if (box && !covered) taken.push(box);
+  });
+}, { flush: "post" });
 const cameraStyle = computed(() => {
   const { tx, ty, zoom } = camera.value;
   const view = renderView.value;
   return {
     transform: `translate(${tx + view.x * zoom}px, ${ty + view.y * zoom}px) scale(${zoom / view.zoom})`,
     width: view.width * view.zoom + "px", height: view.height * view.zoom + "px",
-    "--zoom": view.zoom, "--tx": -view.x * view.zoom + "px", "--ty": -view.y * view.zoom + "px",
   };
 });
-const visibleSites = computed(() => {
-  const box = bounds.value;
-  const pad = 125 / camera.value.zoom;
-  const drawnZoom = renderView.value.zoom;
-  const inset = 3 * drawnZoom / camera.value.zoom;
+const SITE_PADDING = 125;
+const renderedSites = computed(() => {
+  const view = renderView.value;
+  const pad = SITE_PADDING / view.zoom;
   return regions.value.flatMap(region => region.sites.filter(site =>
-    site.x >= box.x - pad && site.x <= box.x + box.width + pad &&
-    site.y >= box.y - pad && site.y <= box.y + box.height + pad).map(site => {
-      const outside = site.x < box.x || site.x > box.x + box.width || site.y < box.y || site.y > box.y + box.height;
-      const nearSide = site.x < box.x + pad || site.x > box.x + box.width - pad;
-      return {
-        site, biome: region.biome, outside, above: site.y + pad > box.y + box.height,
-        edges: !outside && nearSide ? {
-          "--left-room": (site.x - box.x) * drawnZoom - inset + "px",
-          "--right-room": (box.x + box.width - site.x) * drawnZoom - inset + "px",
-        } : undefined,
-      };
-    }));
+    site.x >= view.x - pad && site.x <= view.x + view.width + pad &&
+    site.y >= view.y - pad && site.y <= view.y + view.height + pad).map(site => ({ site, biome: region.biome })));
 });
+function inView(site: Site) {
+  const box = bounds.value;
+  return site.x >= box.x && site.x <= box.x + box.width && site.y >= box.y && site.y <= box.y + box.height;
+}
+function placePlate(site: Site) {
+  const box = bounds.value;
+  const pad = SITE_PADDING / camera.value.zoom;
+  const above = site.y + pad > box.y + box.height;
+  if (site.x >= box.x + pad && site.x <= box.x + box.width - pad) return { above };
+  const drawnZoom = renderView.value.zoom;
+  const inset = 3 / camera.value.zoom;
+  const left = (site.x - box.x - inset) * drawnZoom;
+  const right = (box.x + box.width - site.x - inset) * drawnZoom;
+  return { above, shift: `translateX(clamp(calc(50% - ${left}px), 0px, calc(${right}px - 50%)))` };
+}
 function parentOf(site: Site) {
   return site.task.parent_id === null ? undefined : layout.value.sites.get(site.task.parent_id);
 }
@@ -163,18 +197,20 @@ function chooseProject(event: Event) {
             <path :d="path" stroke="#ffdf89" stroke-width="2.8" :marker-end="`url(#${id}-arrow)`" />
           </g>
         </svg>
-        <div class="sites">
+        <div v-memo="[renderView, layout, selected]" class="sites"
+          :style="{ '--zoom': renderView.zoom, '--tx': -renderView.x * renderView.zoom + 'px', '--ty': -renderView.y * renderView.zoom + 'px' }">
           <div
-            v-for="region in regions" :key="region.project" class="region" :class="{ compact }"
+            v-for="{ region, prefix, suffix, shared } in labels" :key="region.project" class="region" :class="{ compact }"
             :style="{ ...at(region.label.x, region.label.y), '--label-width': region.labelWidth + 'px' }" :title="region.project"
           >
-            <b>{{ region.project }}</b>
+            <b v-if="compact"><span v-if="prefix && (!shared || region.labelWidth * renderView.zoom >= 48)">{{ prefix }}</span><wbr><span>{{ suffix }}</span></b>
+            <b v-else>{{ region.project }}</b>
             <small v-if="!compact">{{ region.biome === "forest" ? "Хвойное пограничье" : "Вулканическое плато" }}</small>
           </div>
           <SurfaceSite
-            v-for="{ site, biome, outside, above, edges } in visibleSites" :key="site.task.id" :site="site" :biome="biome"
-            :style="edges" :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
-            :class="{ outside, above, relative: isDirectRelative(site) }" :tabindex="outside ? -1 : 0" @select="select"
+            v-for="{ site, biome } in renderedSites" :key="site.task.id" :site="site" :biome="biome"
+            :in-view="inView" :place-plate="placePlate" :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
+            :class="{ relative: isDirectRelative(site) }" @select="select"
           />
         </div>
       </div>
@@ -219,11 +255,9 @@ function chooseProject(event: Event) {
   width: max-content; max-width: clamp(32px, calc(var(--label-width) * var(--zoom)), 340px); text-align: center; pointer-events: none;
   color: #fff8df; text-shadow: 0 1px 3px #213b2b, 0 0 7px #253a29, 0 0 13px #35422e;
 }
-.region b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 27px/1.1 "Iowan Old Style", Georgia, serif; }
-.region.compact b {
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  white-space: normal; overflow-wrap: anywhere; text-wrap: balance; hyphens: auto; font-size: clamp(10px, calc(52px * var(--zoom)), 21px);
-}
+.region b { display: block; overflow-wrap: anywhere; font: 600 27px/1.1 "Iowan Old Style", Georgia, serif; }
+.region.compact b { font-size: clamp(10px, calc(52px * var(--zoom)), 21px); }
+.region.compact b span { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }
 .region small { font-size: 10px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
 .empty {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0;
