@@ -5,7 +5,7 @@ import cabin from "./art/cabin.svg";
 import foundry from "./art/foundry.svg";
 import type { Biome, Site } from "./layout";
 
-const props = defineProps<{ site: Site; biome: Biome; selected: boolean; compact: boolean }>();
+const props = defineProps<{ site: Site; biome: Biome; selected: boolean; compact: boolean; parentTitle?: string }>();
 const emit = defineEmits<{ select: [id: string] }>();
 const phases = {
   active: { name: "В работе", mark: "•" },
@@ -14,6 +14,8 @@ const phases = {
   ready: { name: "На приёмке", mark: "✓" },
 };
 const phase = computed(() => phases[props.site.task.status]);
+const parentLabel = computed(() => props.parentTitle && `Родитель · ${props.parentTitle}`);
+const impact = computed(() => props.site.dependents.length ? `Блокирует ${props.site.dependents.length}` : "");
 const prs = computed(() => {
   const hosts = { github: new Set<string>(), forgejo: new Set<string>() };
   for (const pr of props.site.task.pull_requests) hosts[pr.provider].add(pr.url);
@@ -23,9 +25,9 @@ const prs = computed(() => {
   return counts.length ? `PR · ${counts.join(" · ")}` : "";
 });
 const description = computed(() => [
-  props.site.task.title, props.site.task.project, phase.value.name,
-  `Принято прямых подзадач ${props.site.accepted} из ${props.site.children}`,
-  `Зависимых заданий ${props.site.dependents.length}`, prs.value,
+  props.site.task.title, props.site.task.project, phase.value.name, parentLabel.value,
+  props.site.children ? `Принято прямых подзадач ${props.site.accepted} из ${props.site.children}` : "",
+  impact.value, prs.value,
 ].filter(Boolean).join(" · "));
 </script>
 
@@ -43,9 +45,10 @@ const description = computed(() => [
     <span class="plate">
       <strong>{{ site.task.title }}</strong>
       <span class="phase">{{ phase.name }}</span>
-      <span v-if="site.children || site.dependents.length || selected" class="counts">
-        <span v-if="site.children || selected">Подзадачи {{ site.accepted }}/{{ site.children }}</span>
-        <span v-if="site.dependents.length || selected">Зависимых {{ site.dependents.length }}</span>
+      <span v-if="parentLabel" class="parent">{{ parentLabel }}</span>
+      <span v-if="site.children || impact" class="counts">
+        <span v-if="site.children">Подзадачи {{ site.accepted }}/{{ site.children }}</span>
+        <span v-if="impact">{{ impact }}</span>
       </span>
       <span v-if="prs" class="counts">{{ prs }}</span>
     </span>
@@ -75,6 +78,7 @@ const description = computed(() => [
   width: calc(76px * var(--zoom)); height: var(--art-height);
 }
 .building img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: bottom; }
+.site.relative .building { border-radius: 50%; outline: 2px dashed #fff0bf; background: #304238aa; }
 .marker {
   position: absolute; top: 1%; right: 1%; display: grid; place-items: center;
   width: 17px; height: 17px; border: 1.5px solid var(--tint); border-radius: 50%;
@@ -99,6 +103,7 @@ const description = computed(() => [
   max-width: 100%; overflow: hidden; overflow-wrap: anywhere; font-weight: 650;
 }
 .phase { color: var(--tint); font-size: 11px; }
+.parent { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #efe9cf; font-size: 10.5px; }
 .counts { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 6px; color: #efe9cf; font-size: 10.5px; }
 .counts > span { white-space: nowrap; }
 .site.above { flex-direction: column-reverse; transform: translate(-50%, -100%); }

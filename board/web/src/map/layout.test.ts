@@ -487,14 +487,21 @@ it("keeps occupied clearings and banks when neighbouring task cards change", () 
   const before = layoutSurface(cards);
   expect(layoutSurface([...cards].reverse()).sites).toEqual(before.sites);
 
-  const after = layoutSurface([
+  const updated: SurfaceTask[] = [
     { ...root, id: "a", project: "A" }, { ...root, id: "b" },
     ...cards.map(task => task === neighbour ? { ...task, status: "done" as const } : task),
-  ], {}, before);
+  ];
+  const after = layoutSurface(updated, {}, before);
   for (const { id } of [root, child, other]) {
     const { x, y } = before.sites.get(id)!;
     expect(after.sites.get(id)).toMatchObject({ x, y });
   }
   expect(after.sites.size).toBe(5);
   expect(after.sites.get(root.id)).toMatchObject({ accepted: 1, children: 2, dependents: [child.id] });
+
+  // The browser has only the saved banks and slots when it opens the map again.
+  const reloaded = layoutSurface([...updated].reverse(), {}, { placement: JSON.parse(JSON.stringify(after.placement)) });
+  expect(reloaded.sites).toEqual(after.sites);
+  const quiet = layoutSurface(updated.filter(task => task.project !== other.project), {}, reloaded);
+  expect(quiet.placement[before.regions.get(other.project)!.bank]).toEqual({ project: other.project, slots: {} });
 });

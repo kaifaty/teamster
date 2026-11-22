@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, useId } from "vue";
+import { computed, ref, useId, watch } from "vue";
 import { ZOOM_NOTCH } from "../navigation";
 import { at } from "../overlay/style";
 import forest from "./art/forest.webp";
 import volcanic from "./art/volcanic.webp";
 import { BANK_WIDTH, layoutSurface, type Site, type SurfaceLayout } from "./layout";
+import { loadPlacement, savePlacement } from "./placement";
 import SurfaceSite from "./SurfaceSite.vue";
 import type { SurfaceTask } from "./types";
 import { useSurfaceCamera } from "./useSurfaceCamera";
@@ -12,9 +13,18 @@ import { useSurfaceCamera } from "./useSurfaceCamera";
 const props = defineProps<{ tasks: readonly SurfaceTask[]; selectedId?: string | null; biomes?: Record<string, string> }>();
 const emit = defineEmits<{ select: [id: string] }>();
 const field = ref<HTMLElement | null>(null);
-const layout = computed<SurfaceLayout>(previous => layoutSurface(props.tasks, props.biomes, previous));
+const initial: SurfaceLayout = { regions: new Map(), sites: new Map(), placement: loadPlacement() };
+const layout = computed<SurfaceLayout>((previous = initial) => {
+  // The first board snapshot can arrive after the map mounts with an empty task list.
+  if (previous === initial && !props.tasks.length) return initial;
+  return layoutSurface(props.tasks, props.biomes, previous);
+});
+watch(() => JSON.stringify(layout.value.placement), () => {
+  if (layout.value !== initial) savePlacement(layout.value.placement);
+}, { immediate: true });
 const picked = ref<string | null>(null);
 const selected = computed(() => props.selectedId === undefined ? picked.value : props.selectedId);
+const selectedSite = computed(() => selected.value === null ? undefined : layout.value.sites.get(selected.value));
 function select(id: string) {
   if (!layout.value.sites.has(id)) return;
   picked.value = id;
@@ -45,10 +55,17 @@ const visibleSites = computed(() => {
       above: site.y + pad > box.y + box.height,
     })));
 });
+function parentOf(site: Site) {
+  return site.task.parent_id === null ? undefined : layout.value.sites.get(site.task.parent_id);
+}
+function isDirectRelative(site: Site) {
+  const current = selectedSite.value?.task;
+  return current && (site.task.parent_id === current.id || current.parent_id === site.task.id);
+}
 const families = computed(() => {
   const paths: string[] = [];
   for (const child of layout.value.sites.values()) {
-    const parent = child.task.parent_id === null ? undefined : layout.value.sites.get(child.task.parent_id);
+    const parent = parentOf(child);
     if (parent) paths.push(`M${parent.x} ${parent.y - 9} Q${(parent.x + child.x) / 2} ${child.y + 10} ${child.x} ${child.y - 9}`);
   }
   return paths.join(" ");
@@ -66,7 +83,7 @@ function dependencyPath(from: Site, to: Site) {
 }
 const arrows = computed(() => {
   const sites = layout.value.sites;
-  const site = selected.value === null ? undefined : sites.get(selected.value);
+  const site = selectedSite.value;
   if (!site) return [];
   const paths = [];
   for (const id of new Set(site.task.depends_on)) {
@@ -126,7 +143,8 @@ function chooseProject(event: Event) {
       </div>
       <SurfaceSite
         v-for="{ site, biome, outside, above } in visibleSites" :key="site.task.id" :site="site" :biome="biome"
-        :selected="site.task.id === selected" :compact="compact" :class="{ outside, above }" :tabindex="outside ? -1 : 0" @select="select"
+        :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
+        :class="{ outside, above, relative: isDirectRelative(site) }" :tabindex="outside ? -1 : 0" @select="select"
       />
       <p v-if="!layout.sites.size" class="empty" role="status">Нет текущих заданий</p>
     </div>

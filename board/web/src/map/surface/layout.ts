@@ -1,4 +1,5 @@
 import { hashName, type Point } from "../layout/geometry";
+import type { BankPlacement } from "./placement";
 import type { SurfaceTask } from "./types";
 
 export type Biome = "forest" | "volcanic";
@@ -26,6 +27,7 @@ export interface Region {
 export interface SurfaceLayout {
   regions: Map<string, Region>;
   sites: Map<string, Site>;
+  placement: BankPlacement[];
 }
 
 function biomeOf(project: string, overrides: Map<string, string>): Biome {
@@ -61,16 +63,16 @@ function nearSlot(slot: number, occupied: Set<number>): number {
   }
 }
 
-function placeRegion(region: Region, tasks: CurrentTask[], previous?: Region) {
+function placeRegion(region: Region, tasks: CurrentTask[], savedSlots: Record<string, number>) {
   const members = new Set(tasks.map(task => task.id));
   const slots = new Map<string, number>();
   const occupied = new Set<number>();
   const children = new Map<string, CurrentTask[]>();
   const familySlot = new Map<string, number>();
-  for (const site of previous?.sites ?? []) {
-    if (!members.has(site.task.id)) continue;
-    slots.set(site.task.id, site.slot);
-    occupied.add(site.slot);
+  for (const [id, slot] of Object.entries(savedSlots)) {
+    if (!members.has(id)) continue;
+    slots.set(id, slot);
+    occupied.add(slot);
   }
   for (const task of tasks) {
     if (task.parent_id === null) continue;
@@ -111,7 +113,7 @@ function placeRegion(region: Region, tasks: CurrentTask[], previous?: Region) {
   region.sites.sort((a, b) => a.slot - b.slot);
 }
 
-export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<string, string> = {}, previous?: SurfaceLayout): SurfaceLayout {
+export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<string, string> = {}, previous?: Pick<SurfaceLayout, "placement">): SurfaceLayout {
   const groups = new Map<string, CurrentTask[]>();
   for (const task of tasks) {
     if (task.status !== "done" && task.status !== "cancelled") append(groups, task.project, task as CurrentTask);
@@ -119,18 +121,15 @@ export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<stri
   const overrides = new Map(Object.entries(biomes).map(([project, biome]) => [project.toLowerCase(), biome]));
   const regions = new Map<string, Region>();
   const sites = new Map<string, Site>();
-  const banks = new Set<number>();
-  for (const old of previous?.regions.values() ?? []) {
-    if (groups.has(old.project)) banks.add(old.bank);
-  }
+  const saved = previous?.placement ?? [];
+  const banks = new Map(saved.map(({ project }, bank) => [project, bank]));
+  const placement: BankPlacement[] = saved.map(({ project }) => ({ project, slots: {} }));
 
-  let next = 0;
   for (const project of [...groups.keys()].sort((a, b) => a.localeCompare(b, "ru"))) {
-    const old = previous?.regions.get(project);
-    while (banks.has(next)) next++;
-    const region: Region = { project, biome: biomeOf(project, overrides), bank: old?.bank ?? next, sites: [] };
-    banks.add(region.bank);
-    placeRegion(region, groups.get(project)!.sort((a, b) => a.id.localeCompare(b.id)), old);
+    const bank = banks.get(project) ?? placement.length;
+    const region: Region = { project, biome: biomeOf(project, overrides), bank, sites: [] };
+    placeRegion(region, groups.get(project)!.sort((a, b) => a.id.localeCompare(b.id)), saved[bank]?.slots ?? {});
+    placement[bank] = { project, slots: Object.fromEntries(region.sites.map(site => [site.task.id, site.slot])) };
     regions.set(project, region);
     for (const site of region.sites) sites.set(site.task.id, site);
   }
@@ -146,5 +145,5 @@ export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<stri
       if (id !== task.id) sites.get(id)?.dependents.push(task.id);
     }
   }
-  return { regions, sites };
+  return { regions, sites, placement };
 }
