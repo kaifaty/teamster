@@ -3,12 +3,14 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { Point, Rect } from "../layout";
 import { ZOOM_NOTCH } from "../navigation";
 import { WHEEL_GAP_MS } from "../scene/input";
-import { layoutSurface, type Site } from "./layout";
+import { BUILDING_HEIGHT, layoutSurface, type Site } from "./layout";
 import type { SurfaceScene } from "./scene";
 import type { SurfaceTask } from "./types";
 import { useSurfaceCamera } from "./useSurfaceCamera";
 
-const props = defineProps<{ tasks: readonly SurfaceTask[]; selectedId: string | null; biomes?: Record<string, string> }>();
+const props = defineProps<{
+  tasks: readonly SurfaceTask[]; selectedId: string | null; biomes?: Record<string, string>; operatorSite?: string;
+}>();
 const emit = defineEmits<{ select: [id: string] }>();
 const field = ref<HTMLElement | null>(null);
 const layout = computed(() => layoutSurface(props.tasks, props.biomes));
@@ -31,6 +33,19 @@ const { camera, size, compact, focusTask, focusProject, zoomBy, home } = useSurf
   if (id) select(id);
 }, hover);
 defineExpose({ focusTask, focusProject });
+
+const operatorMarker = computed(() => {
+  const site = props.operatorSite && layout.value.sites.get(props.operatorSite);
+  if (!site) return null;
+  const at = compact.value ? layout.value.regions.get(site.task.project)?.label : site;
+  if (!at) return null;
+  const { zoom, tx, ty } = camera.value;
+  const offset = compact.value ? 20 : BUILDING_HEIGHT * zoom + 4;
+  return {
+    left: `${tx + at.x * zoom}px`,
+    top: `${ty + at.y * zoom - offset}px`,
+  };
+});
 
 const regions = computed(() => [...layout.value.regions.values()].sort((a, b) => a.project.localeCompare(b.project, "ru")));
 const families = computed(() => [...layout.value.sites.values()].some(({ task }) =>
@@ -137,6 +152,7 @@ function chooseProject(event: Event) {
     >
       <p v-if="!layout.sites.size" class="empty" role="status">Нет текущих заданий</p>
       <p v-else-if="unavailable" class="empty" role="status">Графическая карта недоступна. Выберите задание в списке.</p>
+      <span v-if="operatorMarker && !unavailable" class="operator-marker" :style="operatorMarker" aria-hidden="true">Mini</span>
     </div>
     <nav v-if="regions.length && !unavailable" class="controls" aria-label="Навигация по карте">
       <select aria-label="Перейти к проекту" @change="chooseProject">
@@ -168,6 +184,11 @@ function chooseProject(event: Event) {
 }
 .field:focus-visible { outline: 2px solid #283d33; outline-offset: -2px; }
 .field :deep(canvas) { position: absolute; inset: 0; display: block; }
+.operator-marker {
+  position: absolute; z-index: 1; transform: translate(-50%, -100%); pointer-events: none;
+  padding: 2px 7px; border: 1px solid #c9e9df; border-radius: 8px;
+  background: #163e37; color: #e1fff3; box-shadow: 0 1px 4px #172a24a0; font: 700 11px/1.2 var(--sans);
+}
 .empty {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0;
   width: max-content; max-width: 90%; padding: 12px 20px; border: 1px solid #cbbfa7; border-radius: 5px;

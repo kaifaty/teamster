@@ -28,6 +28,7 @@ from .duty import Duty
 from .duty_chat import DutyChat
 from .logins import Logins
 from .machines import Machines
+from .operator_activity import read_operator_activity
 from .project_tasks import ProjectTasks
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
@@ -95,6 +96,7 @@ class Settings:
     no_land: bool = False
     duty_seconds: float = 1800
     external_duty: ExternalDutyConfig | None = None
+    operator_state: Path | None = None
 
     def path(self, purpose):
         return self.task_home / LAYOUT_FILES[self.layout][purpose]
@@ -103,6 +105,7 @@ class Settings:
     def from_env(cls):
         task_home, layout = resolve_data_home()
         external_config = os.environ.get("BOARD_EXTERNAL_DUTY_CONFIG")
+        operator_state = os.environ.get("BOARD_OPERATOR_STATE")
         return cls(
             task_home=task_home, layout=layout,
             teamster=Path(os.environ.get("BOARD_TEAMSTER_COMMAND", os.environ.get(
@@ -124,6 +127,7 @@ class Settings:
             reflection_task=os.environ.get("BOARD_REFLECTION_TASK") or "codex-batch-reflection",
             duty_seconds=float(os.environ.get("BOARD_DUTY_SECONDS", "1800")),
             external_duty=ExternalDutyConfig.load(Path(external_config)) if external_config else None,
+            operator_state=Path(operator_state).expanduser() if operator_state else None,
         )
 
 
@@ -169,6 +173,7 @@ class Board:
             sessions_seconds=settings.sessions_seconds, session_stale_hours=settings.session_stale_hours,
             telemetry_path=settings.path("telemetry"),
         )
+        self.operator = None
         self.project_tasks = ProjectTasks(settings.task_home / "board-project-tasks.sqlite3", self.store)
         self.pr_lookups = asyncio.Semaphore(4)
         self.research = Research(settings.path("tasks"), settings.reflection_task,
@@ -229,6 +234,14 @@ class Board:
             messages = await asyncio.to_thread(self.store.poll)
             for message in messages:
                 self.publish(message)
+            if self.settings.operator_state is not None and self.settings.external_duty is not None:
+                operator = await asyncio.to_thread(
+                    read_operator_activity, self.settings.operator_state, self.store,
+                    self.settings.external_duty.repositories,
+                )
+                if operator != self.operator:
+                    self.operator = operator
+                    self.publish({"type": "operator", "operator": operator})
             if await asyncio.to_thread(self.duty_chat.changed):
                 self.publish({"type": "duty_chat", "at": time.time()})
             if self.store.take_logins():
@@ -418,7 +431,8 @@ class Board:
         async with self.lock:
             return {"generated_at": time.time(), "tasks": self.store.summaries(),
                     "accounts": self.account_value, "machines": self.machines.value,
-                    "logins": self.logins.snapshot()}
+                    "logins": self.logins.snapshot(),
+                    **({"operator": self.operator} if self.operator is not None else {})}
 
     async def poll_tasks(self):
         while True:

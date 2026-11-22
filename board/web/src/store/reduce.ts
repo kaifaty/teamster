@@ -1,3 +1,4 @@
+import type { OperatorActivity } from "../operatorActivity";
 import type { Accounts, Launch, Login, Machines, ServerMessage, TaskSummary } from "../types";
 
 export interface BoardState {
@@ -9,6 +10,7 @@ export interface BoardState {
   accounts: Accounts | null;
   /** null until a server that reports machines sends them. */
   machines: Machines | null;
+  operator: OperatorActivity | null;
   /** Server time of the last ping. */
   lastPing: number | null;
   /** Client time (ms) of the last live change of each task; drives the change highlight. */
@@ -25,6 +27,7 @@ export const emptyState: BoardState = {
   tasks: {},
   accounts: null,
   machines: null,
+  operator: null,
   lastPing: null,
   changedAt: {},
   launches: {},
@@ -55,6 +58,7 @@ export function reduce(state: BoardState, message: ServerMessage, now: number): 
         tasks,
         accounts: message.snapshot.accounts,
         machines: message.snapshot.machines ?? null,
+        operator: message.snapshot.operator ?? null,
         lastPing: state.lastPing,
         changedAt: {},
         launches: state.launches,
@@ -62,6 +66,8 @@ export function reduce(state: BoardState, message: ServerMessage, now: number): 
         logins: message.snapshot.logins ? Object.fromEntries(message.snapshot.logins.filter((login) => login?.id).map((login) => [login.id, login])) : state.logins,
       };
     }
+    case "operator":
+      return { ...state, operator: message.operator };
     case "task": {
       const task = message.task;
       if (!onBoard(task)) return state;

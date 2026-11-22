@@ -13,6 +13,7 @@ const props = defineProps<{
   sessions: ReadonlyMap<string, string>;
   records: Readonly<Record<string, TaskSummary>>;
   fetchDetails?: (id: string) => Promise<ProjectTaskDetails | null>;
+  operatorSite?: string;
   save: (change: ProjectTaskChange) => Promise<ProjectTask>;
 }>();
 const emit = defineEmits<{ record: [taskId: string, sessionId: string]; panel: []; retry: [] }>();
@@ -150,7 +151,8 @@ defineExpose({ select, focusProject });
     </div>
 
     <div class="terrain">
-      <ProjectTaskSurface v-if="data" ref="surface" :tasks="tasks" :selected-id="selectedId" :biomes="data.biomes" @select="select" />
+      <ProjectTaskSurface v-if="data" ref="surface" :tasks="tasks" :selected-id="selectedId" :biomes="data.biomes"
+        :operator-site="operatorSite" @select="select" />
       <p v-if="error" class="map-note" role="alert">
         Не удалось обновить задания. {{ error }} <button type="button" class="btn" @click="emit('retry')">Повторить</button>
       </p>
