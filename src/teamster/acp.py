@@ -74,6 +74,7 @@ class AcpClient:
         self.request_id = 0
         self.buffer = bytearray()
         self.auth_methods = []
+        self.session_capabilities = {}
 
     def __enter__(self):
         env = self.env if self.env is not None else {**os.environ, "PWD": self.cwd}
@@ -87,9 +88,15 @@ class AcpClient:
     def __exit__(self, exc_type, exc_value, traceback):
         try:
             try:
-                self.process.stdin.close()
-            except BrokenPipeError:
-                pass
+                if (exc_type is None and self.session_id is not None and self.process.poll() is None
+                        and self.session_capabilities.get("close") is not None):
+                    self._call("session/close", {"sessionId": self.session_id},
+                               deadline=time.monotonic() + procs.GROUP_STEPS[0][1])
+            finally:
+                try:
+                    self.process.stdin.close()
+                except BrokenPipeError:
+                    pass
             if self.check_active and exc_type is None:
                 # The worker needs the agent's own exit status, even if shutdown is slow.
                 while self.process.poll() is None:
@@ -125,12 +132,12 @@ class AcpClient:
             self.process.stdin.write(line)
             self.process.stdin.flush()
 
-    def _read(self, deadline):
+    def _read(self, deadline, method):
         while True:
             if self.check_active:
                 self.check_active()
             if deadline is not None and time.monotonic() >= deadline:
-                raise ValueError("ACP agent did not finish the cancelled turn")
+                raise ValueError(f"ACP agent did not finish {method} before the deadline")
             newline = self.buffer.find(b"\n")
             if newline >= 0:
                 line = self.buffer[:newline]
@@ -180,13 +187,12 @@ class AcpClient:
             if isinstance(params, dict) and params.get("sessionId") == session_id:
                 self.on_notification(method, params)
 
-    def _call(self, method, params, pending_updates=None):
+    def _call(self, method, params, pending_updates=None, *, deadline=None):
         self.request_id += 1
         self._send(id=self.request_id, method=method, params=params)
-        deadline = None
         while True:
             try:
-                message = self._read(deadline)
+                message = self._read(deadline, method)
                 if "method" in message:
                     active_turn = method == "session/prompt" and deadline is None
                     self._dispatch(message, params.get("sessionId"), active_turn, pending_updates)
@@ -227,6 +233,8 @@ class AcpClient:
                                          "clientInfo": {"name": "teamster", "version": teamster.__version__}})
         if info.get("protocolVersion") != 1:
             raise ValueError(f"Unsupported ACP protocol version: {info.get('protocolVersion')}")
+        agent_capabilities = info.get("agentCapabilities", {})
+        self.session_capabilities = agent_capabilities.get("sessionCapabilities", {})
         self.auth_methods = [method["id"] for method in info.get("authMethods", [])
                              if method.get("type", "agent") == "agent"]
         if auth_method is not None:
@@ -241,10 +249,9 @@ class AcpClient:
             params["configOptions"] = [{"configId": key, "value": value} for key, value in initial_config.items()]
         pending = []
         if session_id is not None:
-            capabilities = info.get("agentCapabilities", {})
-            if capabilities.get("sessionCapabilities", {}).get("resume") is not None:
+            if self.session_capabilities.get("resume") is not None:
                 method = "session/resume"
-            elif capabilities.get("loadSession"):
+            elif agent_capabilities.get("loadSession"):
                 method = "session/load"
             else:
                 raise ValueError("ACP agent does not support loading or resuming sessions")

@@ -474,7 +474,8 @@ class ExecutorTests(RotationTestCase):
             assert Path.cwd() == Path(__file__).parent / "work tree"
             init = receive("initialize")
             assert init["params"]["protocolVersion"] == 1
-            reply(init, protocolVersion=1, agentCapabilities={"loadSession": True},
+            reply(init, protocolVersion=1, agentCapabilities={"loadSession": True,
+                  "sessionCapabilities": {} if mode == "configured" else {"close": {}}},
                   authMethods=[{"id": "fixture", "name": "Fixture"}])
             if mode == "load":
                 auth = receive("authenticate")
@@ -520,6 +521,9 @@ class ExecutorTests(RotationTestCase):
                      "update": {"sessionUpdate": "agent_message_chunk",
                                 "content": {"type": "text", "text": "Reply to " + text}}})
                 reply(prompt, stopReason="end_turn")
+            closing = receive("session/close")
+            assert closing["params"]["sessionId"] == "session-1"
+            reply(closing)
             '''))
         for mode, options in (("new", []), ("load", ["--resume", "session-1", "--auth-method", "fixture"])):
             with self.subTest(mode=mode):

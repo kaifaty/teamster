@@ -169,7 +169,6 @@ class MonitorEvents:
     final_message: str = ""
     pending_item: Optional[dict] = None
     text_chunks: list = field(default_factory=list)
-    exit_code: Optional[int] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
 
@@ -390,7 +389,7 @@ def poll_monitor_rollout(st, cfg, account, proc, stream, usage, control, record_
 
 def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, stopped,
                          on_limit, record_limits, reviewing, wrapup, attempt_started, active_started):
-    """Supervise exec/stdout and return the original (outcome, quota payload) pair."""
+    """Supervise the Codex ACP turn and return its outcome and quota decision."""
     with selectors.DefaultSelector() as sel:
         sel.register(proc.stdout, selectors.EVENT_READ)
         while not stream.eof or proc.poll() is None:
@@ -434,8 +433,8 @@ def monitor_event_stream(st, cfg, account, proc, log, stream, usage, control, st
                     result = resolve_monitor_quota(st, request, stopped, control, active_started, on_limit)
                     if result is not None:
                         return result
-        stream.exit_code = proc.wait()
-    return ("completed" if stream.exit_code == 0 and not stream.failed else "failed"), None
+        completed = proc.wait() == 0 and stream.completed and not stream.failed
+    return ("completed" if completed else "failed"), None
 
 
 def finish_monitor(st, account, proc, stream, usage, last, reviewing, wrapup,
