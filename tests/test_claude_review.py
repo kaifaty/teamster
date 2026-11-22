@@ -1674,6 +1674,27 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual([entry["method"] for entry in threads], ["thread/start", "thread/start", "thread/resume"])
         self.assertEqual(threads[-1]["params"]["threadId"], migrated)
 
+    def test_codex_duty_waits_for_its_own_process_marker_before_login(self):
+        self.codex_duty_runs([{}])
+        worker = self.worker()
+        directory = self.root / "duty-task"
+        directory.mkdir()
+        marker = uuid.uuid4().hex
+        for visible in (marker, uuid.uuid4().hex):
+            # The first environ read during exec can be empty on Linux.
+            with self.subTest(matches=visible == marker), mock.patch.dict(os.environ, self.env, clear=True), \
+                    mock.patch.object(worker.procs, "process_marker", side_effect=[None, visible]) as probe:
+                session = worker.commands.codex_duty.codex_duty_session(
+                    {"home": str(self.home)}, self.repo, lambda: False, worker.clock.CLOCK.monotonic() + 60,
+                    None, None, None, "Guarded duty.", directory, marker)
+                if visible == marker:
+                    with session as (rpc, _):
+                        self.assertEqual(probe.call_args_list, [mock.call(rpc.process.pid)] * 2)
+                else:
+                    with self.assertRaisesRegex(ValueError, "cannot identify its command processes"), session:
+                        pass
+        self.assertEqual(len([entry for entry in self.trace() if entry["command"] == "duty-login"]), 1)
+
     def test_codex_duty_file_approvals_match_items_and_all_destinations(self):
         self.configure(language="en")
         worker = self.worker()
