@@ -123,6 +123,7 @@ const tasks: SurfaceTask[] = ["a", "b"].map(id => ({
   id, project: "A", title: id, status: "active", parent_id: null, depends_on: [], pull_requests: [],
 }));
 const extra = Array.from({ length: 24 }, (_, i) => ({ ...tasks[0]!, id: `extra-${i}`, project: "B" }));
+const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
 it("pans between clearings in small steps and reclamps when the focused project disappears", async () => {
   const { field, live, surface, view, wrapper } = observeSurface(tasks);
@@ -131,6 +132,7 @@ it("pans between clearings in small steps and reclamps when the focused project 
   surface.focusTask(left!.task.id);
   surface.zoomBy(1.5);
   for (let i = 0; i < 30; i++) field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+  await nextFrame();
   const rightX = right!.x * surface.camera.value.zoom + surface.camera.value.tx;
   expect(surface.camera.value.zoom).toBe(1.5);
   expect(rightX).toBeGreaterThanOrEqual(0);
@@ -141,6 +143,7 @@ it("pans between clearings in small steps and reclamps when the focused project 
   const edge = live.value.regions.get("B")!.sites.reduce((a, b) => a.x > b.x ? a : b);
   surface.focusTask(edge.task.id);
   surface.zoomBy(1.5);
+  await nextFrame();
   const before = surface.camera.value;
   live.value = pair;
   await nextTick();
@@ -168,6 +171,7 @@ it("refits a centred overview and keeps a visible selection in place during live
   surface.focusTask(id);
   // The selected building stays on screen while another building is closer to the centre.
   for (let i = 0; i < 3; i++) field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+  await nextFrame();
   const position = () => {
     const site = live.value.sites.get(id)!, cam = surface.camera.value;
     return [site.x * cam.zoom + cam.tx, site.y * cam.zoom + cam.ty, cam.zoom];

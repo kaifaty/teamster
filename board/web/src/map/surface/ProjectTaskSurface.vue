@@ -27,6 +27,32 @@ defineExpose({ focusTask, focusProject });
 
 const id = useId();
 const regions = computed(() => [...layout.value.regions.values()].sort((a, b) => a.project.localeCompare(b.project, "ru")));
+// During a gesture the compositor can move the same terrain, buildings and labels.
+// Once zoom stops, draw them at exactly the requested scale for sharp text and strokes.
+const settledZoom = ref(camera.value.zoom);
+watch(() => camera.value.zoom, (zoom, _, onCleanup) => {
+  const timer = window.setTimeout(() => { settledZoom.value = zoom; }, 100);
+  onCleanup(() => window.clearTimeout(timer));
+});
+const renderView = computed<typeof bounds.value & { zoom: number; compact: boolean }>((previous) => {
+  const box = bounds.value;
+  const zoom = camera.value.zoom;
+  if (previous && previous.compact === compact.value) {
+    // Keep a tighter raster scale for the detailed view, where every building has a label.
+    const tolerance = compact.value ? 0.25 : 0.1;
+    const closeScale = zoom === previous.zoom || (zoom !== settledZoom.value && Math.abs(zoom / previous.zoom - 1) < tolerance);
+    const coversView = box.x >= previous.x && box.y >= previous.y &&
+      box.x + box.width <= previous.x + previous.width && box.y + box.height <= previous.y + previous.height;
+    if (closeScale && coversView && previous.width <= 2 * box.width && previous.height <= 2 * box.height) return previous;
+  }
+  // The raster covers the viewport plus a margin, even on large maps. Start it on a whole pixel.
+  const padX = Math.ceil(box.width * zoom / 4) / zoom;
+  const padY = Math.ceil(box.height * zoom / 4) / zoom;
+  return {
+    x: box.x - padX, y: box.y - padY, width: box.width + 2 * padX, height: box.height + 2 * padY,
+    zoom, compact: compact.value,
+  };
+});
 const labels = computed(() => {
   const counts = new Map<string, number>();
   const names = [...regions.value].sort((a, b) => b.sites.length - a.sites.length).map(region => {
@@ -42,29 +68,51 @@ const labels = computed(() => {
     return { region, prefix: region.project.slice(0, split), suffix: region.project.slice(split), shared: common !== undefined };
   });
 });
-watch([field, labels, () => camera.value.zoom], ([el]) => {
+watch([field, labels, renderView], ([el, , view]) => {
   if (!el) return;
   const elements = Array.from(el.querySelectorAll<HTMLElement>(".region"));
-  const boxes = compact.value ? elements.map(label => label.getBoundingClientRect()) : [];
+  // A transform of the whole layer cannot change which labels intersect.
+  const boxes = view.compact ? elements.map(label => label.getBoundingClientRect()) : [];
   const taken: DOMRect[] = [];
   elements.forEach((label, i) => {
     const box = boxes[i];
     const covered = box && taken.some(r => box.left < r.right && box.right > r.left && box.top < r.bottom && box.bottom > r.top);
-    label.style.visibility = covered ? "hidden" : "";
+    const visibility = covered ? "hidden" : "";
+    if (label.style.visibility !== visibility) label.style.visibility = visibility;
     if (box && !covered) taken.push(box);
   });
 }, { flush: "post" });
-const visibleSites = computed(() => {
-  const box = bounds.value;
-  const pad = 125 / camera.value.zoom;
-  return regions.value.flatMap(region => region.sites.filter(site =>
-    site.x >= box.x - pad && site.x <= box.x + box.width + pad &&
-    site.y >= box.y - pad && site.y <= box.y + box.height + pad).map(site => ({
-      site, biome: region.biome,
-      outside: site.x < box.x || site.x > box.x + box.width || site.y < box.y || site.y > box.y + box.height,
-      above: site.y + pad > box.y + box.height,
-    })));
+const cameraStyle = computed(() => {
+  const { tx, ty, zoom } = camera.value;
+  const view = renderView.value;
+  return {
+    transform: `translate(${tx + view.x * zoom}px, ${ty + view.y * zoom}px) scale(${zoom / view.zoom})`,
+    width: view.width * view.zoom + "px", height: view.height * view.zoom + "px",
+  };
 });
+const SITE_PADDING = 125;
+const renderedSites = computed(() => {
+  const view = renderView.value;
+  const pad = SITE_PADDING / view.zoom;
+  return regions.value.flatMap(region => region.sites.filter(site =>
+    site.x >= view.x - pad && site.x <= view.x + view.width + pad &&
+    site.y >= view.y - pad && site.y <= view.y + view.height + pad).map(site => ({ site, biome: region.biome })));
+});
+function inView(site: Site) {
+  const box = bounds.value;
+  return site.x >= box.x && site.x <= box.x + box.width && site.y >= box.y && site.y <= box.y + box.height;
+}
+function placePlate(site: Site) {
+  const box = bounds.value;
+  const pad = SITE_PADDING / camera.value.zoom;
+  const above = site.y + pad > box.y + box.height;
+  if (site.x >= box.x + pad && site.x <= box.x + box.width - pad) return { above };
+  const drawnZoom = renderView.value.zoom;
+  const inset = 3 / camera.value.zoom;
+  const left = (site.x - box.x - inset) * drawnZoom;
+  const right = (box.x + box.width - site.x - inset) * drawnZoom;
+  return { above, shift: `translateX(clamp(calc(50% - ${left}px), 0px, calc(${right}px - 50%)))` };
+}
 function parentOf(site: Site) {
   return site.task.parent_id === null ? undefined : layout.value.sites.get(site.task.parent_id);
 }
@@ -115,53 +163,57 @@ function chooseProject(event: Event) {
     <div
       ref="field" class="field" role="group" tabindex="0"
       aria-label="Карта местности. Стрелки перемещают карту, плюс и минус меняют масштаб."
-      :style="{ '--tx': camera.tx + 'px', '--ty': camera.ty + 'px', '--zoom': camera.zoom }"
     >
-      <svg
-        v-if="bounds.width && bounds.height" class="terrain" aria-hidden="true"
-        :viewBox="`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`"
-      >
-        <defs>
-          <pattern v-for="(region, i) in regions" :id="id + '-land-' + i" :key="region.project"
-            patternUnits="userSpaceOnUse" :x="region.bounds.x0" :y="region.bounds.y0"
-            :width="Math.min(1344, region.bounds.x1 - region.bounds.x0)" :height="Math.min(960, region.bounds.y1 - region.bounds.y0)"
-            viewBox="0 0 1344 960" preserveAspectRatio="xMidYMid slice">
-            <image :href="region.biome === 'forest' ? forest : volcanic" width="1344" height="960" />
-          </pattern>
-          <marker :id="id + '-arrow'" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="15" markerHeight="15" orient="auto">
-            <path d="m1 1 10 5-10 5 2-5Z" fill="#ffdf89" stroke="#433b34" stroke-linejoin="round" />
-          </marker>
-        </defs>
-        <g v-if="layout.coastline" stroke-linejoin="round">
-          <path :d="layout.coastline" fill="#e8dfb4" stroke="#a7c9b9" stroke-width="10" vector-effect="non-scaling-stroke" />
-          <path :d="layout.coastline" fill="none" stroke="#e2dfb7" stroke-width="5" vector-effect="non-scaling-stroke" />
-          <path v-for="(region, i) in regions" :key="region.project" :d="region.outline" :fill="`url(#${id}-land-${i})`"
-            stroke="#454b3e" stroke-width="2.8" vector-effect="non-scaling-stroke" />
-          <path v-for="region in regions" :key="'border-' + region.project" :d="region.outline" fill="none"
-            stroke="#ece0ae" stroke-width="0.9" vector-effect="non-scaling-stroke" />
-        </g>
-        <g v-if="families" fill="none" stroke-linecap="round">
-          <path :d="families" stroke="#665742" stroke-width="5" />
-          <path :d="families" stroke="#eeddb6" stroke-width="2.7" stroke-dasharray="4 5" />
-        </g>
-        <g v-for="path in arrows" :key="path" fill="none">
-          <path :d="path" stroke="#423a33" stroke-width="5.5" />
-          <path :d="path" stroke="#ffdf89" stroke-width="2.8" :marker-end="`url(#${id}-arrow)`" />
-        </g>
-      </svg>
-      <div
-        v-for="{ region, prefix, suffix, shared } in labels" :key="region.project" class="region" :class="{ compact }"
-        :style="{ ...at(region.label.x, region.label.y), '--label-width': region.labelWidth + 'px' }" :title="region.project"
-      >
-        <b v-if="compact"><span v-if="prefix && (!shared || region.labelWidth * camera.zoom >= 48)">{{ prefix }}</span><wbr><span>{{ suffix }}</span></b>
-        <b v-else>{{ region.project }}</b>
-        <small v-if="!compact">{{ region.biome === "forest" ? "Хвойное пограничье" : "Вулканическое плато" }}</small>
+      <div v-if="bounds.width && bounds.height" class="camera" :style="cameraStyle">
+        <svg
+          v-memo="[renderView, layout, arrows]" class="terrain" aria-hidden="true"
+          :viewBox="`${renderView.x} ${renderView.y} ${renderView.width} ${renderView.height}`"
+        >
+          <defs>
+            <pattern v-for="(region, i) in regions" :id="id + '-land-' + i" :key="region.project"
+              patternUnits="userSpaceOnUse" :x="region.bounds.x0" :y="region.bounds.y0"
+              :width="Math.min(1344, region.bounds.x1 - region.bounds.x0)" :height="Math.min(960, region.bounds.y1 - region.bounds.y0)"
+              viewBox="0 0 1344 960" preserveAspectRatio="xMidYMid slice">
+              <image :href="region.biome === 'forest' ? forest : volcanic" width="1344" height="960" />
+            </pattern>
+            <marker :id="id + '-arrow'" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="15" markerHeight="15" orient="auto">
+              <path d="m1 1 10 5-10 5 2-5Z" fill="#ffdf89" stroke="#433b34" stroke-linejoin="round" />
+            </marker>
+          </defs>
+          <g v-if="layout.coastline" stroke-linejoin="round">
+            <path :d="layout.coastline" fill="#e8dfb4" stroke="#a7c9b9" stroke-width="10" vector-effect="non-scaling-stroke" />
+            <path :d="layout.coastline" fill="none" stroke="#e2dfb7" stroke-width="5" vector-effect="non-scaling-stroke" />
+            <path v-for="(region, i) in regions" :key="region.project" :d="region.outline" :fill="`url(#${id}-land-${i})`"
+              stroke="#454b3e" stroke-width="2.8" vector-effect="non-scaling-stroke" />
+            <path v-for="region in regions" :key="'border-' + region.project" :d="region.outline" fill="none"
+              stroke="#ece0ae" stroke-width="0.9" vector-effect="non-scaling-stroke" />
+          </g>
+          <g v-if="families" fill="none" stroke-linecap="round">
+            <path :d="families" stroke="#665742" stroke-width="5" />
+            <path :d="families" stroke="#eeddb6" stroke-width="2.7" stroke-dasharray="4 5" />
+          </g>
+          <g v-for="path in arrows" :key="path" fill="none">
+            <path :d="path" stroke="#423a33" stroke-width="5.5" />
+            <path :d="path" stroke="#ffdf89" stroke-width="2.8" :marker-end="`url(#${id}-arrow)`" />
+          </g>
+        </svg>
+        <div v-memo="[renderView, layout, selected]" class="sites"
+          :style="{ '--zoom': renderView.zoom, '--tx': -renderView.x * renderView.zoom + 'px', '--ty': -renderView.y * renderView.zoom + 'px' }">
+          <div
+            v-for="{ region, prefix, suffix, shared } in labels" :key="region.project" class="region" :class="{ compact }"
+            :style="{ ...at(region.label.x, region.label.y), '--label-width': region.labelWidth + 'px' }" :title="region.project"
+          >
+            <b v-if="compact"><span v-if="prefix && (!shared || region.labelWidth * renderView.zoom >= 48)">{{ prefix }}</span><wbr><span>{{ suffix }}</span></b>
+            <b v-else>{{ region.project }}</b>
+            <small v-if="!compact">{{ region.biome === "forest" ? "Хвойное пограничье" : "Вулканическое плато" }}</small>
+          </div>
+          <SurfaceSite
+            v-for="{ site, biome } in renderedSites" :key="site.task.id" :site="site" :biome="biome"
+            :in-view="inView" :place-plate="placePlate" :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
+            :class="{ relative: isDirectRelative(site) }" @select="select"
+          />
+        </div>
       </div>
-      <SurfaceSite
-        v-for="{ site, biome, outside, above } in visibleSites" :key="site.task.id" :site="site" :biome="biome"
-        :selected="site.task.id === selected" :parent-title="parentOf(site)?.task.title" :compact="compact"
-        :class="{ outside, above, relative: isDirectRelative(site) }" :tabindex="outside ? -1 : 0" @select="select"
-      />
       <p v-if="!layout.sites.size" class="empty" role="status">Нет текущих заданий</p>
     </div>
     <nav v-if="regions.length" class="controls" aria-label="Навигация по карте">
@@ -194,6 +246,8 @@ function chooseProject(event: Event) {
   cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .field:focus-visible { outline: 2px solid #283d33; outline-offset: -2px; }
+.camera { position: absolute; top: 0; left: 0; contain: strict; transform-origin: 0 0; will-change: transform; }
+.sites { position: absolute; inset: 0; contain: strict; transform: translateZ(0); }
 .terrain { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .region {
   position: absolute; left: calc(var(--tx) + var(--x) * var(--zoom) * 1px);
