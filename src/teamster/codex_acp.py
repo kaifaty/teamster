@@ -112,15 +112,20 @@ class Updates:
                                                  "text": update["content"]["text"]}})
         if kind == "tool_call":
             raw = update.get("rawInput")
-            command = raw.get("command") if isinstance(raw, dict) else None
+            raw = raw if isinstance(raw, dict) else {}
             tool_id = update["toolCallId"]
             if update.get("kind") == "edit":
+                # The stock adapter sends a diff per hunk and locations on permission requests.
+                paths = dict.fromkeys(part["path"] for part in (update.get("content") or [])
+                                      if part.get("type") == "diff" and isinstance(part.get("path"), str))
+                changes = update.get("locations") or [{"path": path} for path in paths]
                 emit({"type": "item.started", "item": {"type": "file_change", "id": tool_id,
-                                                     "changes": update.get("locations", [])}})
-            elif update.get("_meta", {}).get("jetbrains", {}).get("air", {}).get("subagent"):
-                emit({"type": "item.started", "item": {"type": "collab_tool_call", "id": tool_id, "tool": update["title"]}})
+                                                      "changes": changes}})
+            elif update.get("kind") == "other" and "senderThreadId" in raw:
+                emit({"type": "item.started", "item": {"type": "collab_tool_call", "id": tool_id,
+                                                      "tool": update["title"], "prompt": raw.get("prompt")}})
             elif update.get("kind") in ("execute", "read", "search"):
-                command = command or update["title"]
+                command = raw.get("command") or update["title"]
                 self.commands[tool_id] = (command, [])
                 emit({"type": "item.started", "item": {"type": "command_execution", "id": tool_id,
                                                       "command": command}})

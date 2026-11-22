@@ -518,6 +518,19 @@ class ExecutorTests(RotationTestCase):
             self.assertEqual(failure.exception.code, -32603)
             self.assertEqual(failure.exception.data, {"message": "Usage limit reached"})
 
+    def test_codex_tool_updates_keep_board_edit_paths_and_subagent_prompts(self):
+        transport = self.worker().turn_monitor.codex_acp
+        updates = transport.Updates()
+        diff = {"type": "diff", "path": "src/main.py", "oldText": "old", "newText": "new"}
+        with mock.patch.object(transport, "emit") as emit:
+            updates.update({"sessionUpdate": "tool_call", "toolCallId": "edit", "kind": "edit",
+                            "title": "Editing files", "content": [diff, diff]})
+            updates.update({"sessionUpdate": "tool_call", "toolCallId": "agent", "kind": "other",
+                            "title": "spawnAgent", "rawInput": {"senderThreadId": "one", "prompt": "Inspect tests"}})
+        self.assertEqual([call.args[0]["item"] for call in emit.call_args_list],
+                         [{"id": "edit", "type": "file_change", "changes": [{"path": "src/main.py"}]},
+                          {"id": "agent", "type": "collab_tool_call", "tool": "spawnAgent", "prompt": "Inspect tests"}])
+
     def test_executor_selection_stays_in_contract(self):
         violations = []
         for path in SCRIPT.parent.glob("*.py"):
