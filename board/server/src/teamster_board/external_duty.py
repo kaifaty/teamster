@@ -39,15 +39,20 @@ class ExternalDutyConfig:
     repositories: tuple[str, ...]
     max_parallel: int
     task_timeout_seconds: int
+    observer_token: str | None = field(default=None, repr=False)
 
     @classmethod
     def load(cls, path):
         data = json.loads(path.expanduser().read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or data.keys() != cls.__dataclass_fields__.keys():
+        if (not isinstance(data, dict)
+                or data.keys() - {"observer_token"} != cls.__dataclass_fields__.keys() - {"observer_token"}):
             raise ValueError("Invalid external duty config fields")
         repos = data["repositories"]
+        observer = data.get("observer_token")
         if (not valid_text(data["actor"], 100)
                 or not isinstance(data["token"], str) or not TOKEN.fullmatch(data["token"])
+                or (observer is not None and (not isinstance(observer, str) or not TOKEN.fullmatch(observer)
+                                              or hmac.compare_digest(observer, data["token"])))
                 or not isinstance(repos, list) or not repos
                 or any(not valid_text(repo, 4096) or not Path(repo).is_absolute()
                        or str(Path(repo).resolve()) != repo for repo in repos)
@@ -110,7 +115,7 @@ class ExternalDuty:
         else:
             self.environment["TEAMSTER_HOME"] = str(self.home)
 
-    def authorized(self, request):
+    def authorized(self, request, *, write=False):
         if request.client is None:
             return False
         try:
@@ -119,8 +124,14 @@ class ExternalDuty:
         except ValueError:
             return False
         values = request.headers.getlist("authorization")
-        wanted = ("Bearer " + self.config.token).encode("ascii")
-        return len(values) == 1 and hmac.compare_digest(values[0].encode("latin-1"), wanted)
+        if len(values) != 1:
+            return False
+        presented = values[0].encode("latin-1")
+        if hmac.compare_digest(presented, ("Bearer " + self.config.token).encode("ascii")):
+            return True
+        return not write and self.config.observer_token is not None and hmac.compare_digest(
+            presented, ("Bearer " + self.config.observer_token).encode("ascii"),
+        )
 
     def tasks(self):
         return duty_tasks.tasks(self.store, self.repos)
@@ -316,8 +327,8 @@ def register(app, board):
     except OSError:
         LOGGER.exception("External duty could not initialize the event journal")
 
-    async def call(request, handler, *args):
-        if not api.authorized(request):
+    async def call(request, handler, *args, write=False):
+        if not api.authorized(request, write=write):
             return response(*failure(403, "forbidden"))
         try:
             return response(*await asyncio.to_thread(handler, *args))
@@ -348,7 +359,7 @@ def register(app, board):
         return await call(request, read)
 
     async def mutate(request, route, task_id=None):
-        if not api.authorized(request):
+        if not api.authorized(request, write=True):
             return response(*failure(403, "forbidden"))
         content_types = request.headers.getlist("content-type")
         if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
@@ -356,7 +367,7 @@ def register(app, board):
         data = await json_body(request)
         if not isinstance(data, dict):
             return response(*failure(data.status_code, "invalid_request"))
-        return await call(request, api.operation, route, task_id, data)
+        return await call(request, api.operation, route, task_id, data, write=True)
 
     @router.post("/tasks")
     async def start(request: Request):

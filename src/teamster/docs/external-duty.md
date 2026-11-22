@@ -29,6 +29,9 @@ those waiting for capacity. `task_timeout_seconds` (1–86400) sets a wall-clock
 applies across follow-ups, executor waits and Board restarts. Every route requires a loopback
 connection and `Authorization: Bearer TOKEN`. Omit the configuration to leave the API disabled.
 `--read-only` allows reads and disables mutations.
+To give an observer access on a Board with actions enabled, add `observer_token` with a
+different random token of the same format. It authorizes only the three GET routes and
+uses the same repository allowlist.
 
 ## Requests and responses
 

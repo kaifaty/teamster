@@ -23,6 +23,9 @@ npm --silent --prefix operator start -- --once
 Only Board receives the bearer token. Use a separate `OPERATOR_STATE` file for each Board.
 The default file is `operator.sqlite` in the process working directory.
 
+On a Board with actions enabled, give the operator the separate `observer_token` from the
+[external duty configuration](../src/teamster/docs/external-duty.md#enable-the-api) as `BOARD_TOKEN`.
+
 Omit `-- --once` for continuous polling. Empty pages are polled every five seconds. Stop with
 Ctrl-C or SIGTERM. Reuse the same state file to resume.
 

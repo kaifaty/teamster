@@ -4525,11 +4525,16 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
     ])
     repository = str(worker.repo)
     token = "external-duty-test-token-with-enough-characters"
+    observer = "external-duty-observer-token-with-enough-characters"
+    config = worker.root / "external-duty.json"
+    config.write_text(json.dumps({"actor": "fixture", "token": token, "observer_token": observer,
+                                  "repositories": [repository], "max_parallel": 1, "task_timeout_seconds": 300}))
     settings = Settings(worker.home, accounts, action_teamster=str(command), duty_seconds=0,
                         no_land=True, poll_seconds=0.02, web_dist=worker.root / "dist",
-                        external_duty=ExternalDutyConfig("fixture", token, (repository,), 1, 300))
+                        external_duty=ExternalDutyConfig.load(config))
     base = "/api/external-duty/v1"
     headers = {"Authorization": f"Bearer {token}"}
+    read_headers = {"Authorization": f"Bearer {observer}"}
     start = {"request_id": "start-001", "repository": repository, "goal": "Add a label file.",
              "done_when": ["Verify the contents of the file."]}
 
@@ -4586,6 +4591,11 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         event, = event_page["events"]
         assert event["type"] == "needs_decision"
         assert event["question"] == question and event["task_id"] == task_id
+        for route in ("/tasks", f"/tasks/{task_id}", "/events"):
+            assert client.get(base + route, headers=read_headers).json() == client.get(base + route).json()
+        for route in ("/tasks", f"/tasks/{task_id}/say", f"/tasks/{task_id}/stop"):
+            denied = client.post(base + route, headers=read_headers, json=start)
+            assert denied.status_code == 403 and denied.json()["error"]["code"] == "forbidden"
 
     with server() as client:
         replay = client.post(f"{base}/tasks", json=start)
