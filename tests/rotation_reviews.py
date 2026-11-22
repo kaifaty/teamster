@@ -708,14 +708,20 @@ class ReviewFixTests(RotationTestCase):
         clock = self.enable_fake_clock(auto_advance=False)
         self.env["CODEX_TASK_MINUTE_SECONDS"] = "1"
         now = clock.time()
+        slug = "claude-executor-sleep"
+        fixture_sha = self.git("rev-parse", "HEAD")
         result = self.work_result()
+        handoff = self.work_result(
+            "needs_decision", questions=[f"Please assign an independent review of {slug} at {fixture_sha}."])
+        reviewed = self.work_result(summary=f"Reviewed {fixture_sha}. No defects found.", checks=[])
         accounts = self.claude_pool_fixture(runs=[
             {"reply": result},
             {"limits": {"status": "rejected", "resetsAt": now + 7200}},
-            {"reply": result},
+            {"reply": handoff},
+            {"reply": reviewed},
             {"limits": {"status": "rejected", "resetsAt": now + 13 * 86400}}])
         self.claude_settings(limits_max_age_minutes=0)
-        self.start("claude-executor-sleep", "--executor", "claude", "--max-minutes", "3")
+        self.start(slug, "--executor", "claude", "--base", fixture_sha, "--max-minutes", "3")
         self.wait("claude-executor-sleep")
         initial = self.state("claude-executor-sleep")
         self.assertEqual(initial["claude_account"], accounts[0]["name"])
@@ -735,7 +741,7 @@ class ReviewFixTests(RotationTestCase):
         self.advance_fake_clock(sleeping["sleeping"]["until"] + 1 - clock.time())
         self.wait("claude-executor-sleep", through_sleep=True)
         state = self.state("claude-executor-sleep")
-        self.assertEqual((state["outcome"], state["result"]), ("completed", result))
+        self.assertEqual((state["outcome"], state["result"]), ("completed", handoff))
         self.assertFalse(state.get("turn_stop"), "sleep must not count toward --max-minutes")
         first, limited, resumed = self.claude_invocations()
         for event in (limited, resumed):
@@ -745,6 +751,33 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual((state["claude_account"], state["session_id"]),
                          (accounts[0]["name"], initial["session_id"]))
         self.assertEqual([entry["event"] for entry in state["rotations"]], ["sleep", "sleep", "wake"])
+
+        tasks = self.worker().config.TASKS
+        events = map(json.loads, (tasks / slug / "claude-events.jsonl").read_text().splitlines())
+        # Inspect SDK requests themselves, including any call that never got a tool result.
+        calls = [(item["name"], item["input"]) for event in events if event["type"] == "assistant"
+                 for item in event["message"]["content"] if item["type"] == "tool_use"]
+        diff_call = ("Bash", {"command": "git diff --stat"})
+        self.assertEqual(calls[-2:], [diff_call, ("StructuredOutput", handoff)])
+        for name, inputs in calls:
+            if name != "StructuredOutput":
+                self.assertEqual((name, inputs), diff_call)
+        self.assertEqual({path.parent.name for path in tasks.glob("*/state.json")}, {slug})
+
+        review_slug = f"{slug}-review"
+        self.brief.write_text(handoff["questions"][0] + "\nReport findings without editing files.\n")
+        self.start(review_slug, "--executor", "claude", "--base", fixture_sha, "--no-push")
+        self.wait(review_slug)
+        review = self.state(review_slug)
+        self.assertEqual((review["outcome"], review["result"]), ("completed", reviewed))
+        self.assertEqual(review["base"], fixture_sha)
+        self.assertEqual(self.git("-C", review["worktree"], "rev-parse", "HEAD"), fixture_sha)
+        review_turn = self.claude_invocations()[3]
+        self.assertIn(handoff["questions"][0], review_turn["prompt"])
+        self.assertEqual((review_turn["method"], review_turn["resume"]), ("session/new", None))
+        self.assertEqual(review["session_id"], review_turn["session_id"])
+        self.assertNotEqual(review["session_id"], state["session_id"])
+        self.assertEqual({path.parent.name for path in tasks.glob("*/state.json")}, {slug, review_slug})
 
         self.cli("say", "claude-executor-sleep", "Hit the limit again.")
         self.until(lambda: self.state("claude-executor-sleep")["outcome"] == "sleeping")
@@ -758,10 +791,9 @@ class ReviewFixTests(RotationTestCase):
         self.advance_fake_clock(asleep["sleeping"]["deadline"] + 1 - clock.time())
         self.cli("wait", "claude-executor-sleep", "--through-sleep", "--timeout", "30")
         self.assertEqual(self.state("claude-executor-sleep")["outcome"], "exhausted")
-        self.assertEqual(len(self.claude_invocations()), 4)
+        self.assertEqual(len(self.claude_invocations()), 5)
         self.assertEqual(self.invocations(), [])
 
-        slug = "claude-executor-sleep"
         self.cli("review", slug, "--reviewer", "codex")
         self.assertIn("separate linked task", self.cli("wait", slug))
         self.assertEqual(self.invocations(), [])
@@ -778,7 +810,7 @@ class ReviewFixTests(RotationTestCase):
         self.assertIn("Saved Claude session was not found", self.cli("wait", slug))
         failed = self.state(slug)
         self.assertEqual((failed["work_binding"], failed["session_id"]), (initial["work_binding"], initial["session_id"]))
-        self.assertEqual(len(self.claude_invocations()), 4)
+        self.assertEqual(len(self.claude_invocations()), 5)
 
     def test_claude_executor_sleep_after_a_missing_token_repeats_the_handoff(self):
         self.fixture_timeout = 90
