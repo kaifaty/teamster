@@ -916,7 +916,7 @@ class WeeklyBudgetTests(RotationTestCase):
         self.account(self.other, "B", self.reset + 3600, used=98)
         self.start("weekly-reserve", "--max-weekly", "10")
         output = self.wait("weekly-reserve")
-        warning = "бюджет 10%, запас до switch_at по аккаунтам 6%: задача может уснуть до сброса"
+        warning = "бюджет 10%, запас до switch_at по аккаунтам 5%: задача может уснуть до сброса"
         self.assertEqual(self.state("weekly-reserve")["weekly_budget_warning"], warning)
         self.assertEqual(output.count(warning), 1)
         self.assertEqual(self.cli("status", "weekly-reserve").count(warning), 1)

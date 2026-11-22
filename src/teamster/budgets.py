@@ -1,7 +1,30 @@
 """Weekly quota accounting and active time budgets."""
 from typing import NamedTuple, Optional
 
-from . import accounts, clock, procs, result_schema
+from . import accounts, claude_accounts, clock, procs, result_schema
+
+
+class ClaudeWeeklyUsage:
+    """Charge a single native attempt against the same weekly window for work and review."""
+
+    def __init__(self, name):
+        window = (claude_accounts.read_limits().get(name, {}).get("unifiedWindows") or {}).get("seven_day") or {}
+        used, self.reset = window.get("utilization"), window.get("resetsAt")
+        self.before = (used * 100 if result_schema.is_finite_number(used) and 0 <= used <= 1
+                       and result_schema.is_finite_number(self.reset) and self.reset > clock.CLOCK.time() else None)
+        self.after = None
+        self.spent = 0
+
+    def observe(self, telemetry):
+        if self.before is None:
+            self.before, self.reset = telemetry.get("weekly_used_before"), telemetry.get("weekly_reset_before")
+        self.after = telemetry.get("weekly_used_after")
+        if self.before is not None and self.after is not None:
+            self.spent = self.after if telemetry["weekly_reset_after"] > self.reset else max(0, self.after - self.before)
+
+    def exhausted(self, st):
+        budget = st.get("max_task_weekly_percent")
+        return budget is not None and st.get("weekly_used_percent", 0) + self.spent >= budget
 
 
 def budget_stop(st):

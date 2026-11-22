@@ -230,12 +230,12 @@ def monitor_thread_started(st, account, stream, reviewing, wrapup, attempt_start
         st.setdefault("reviews", []).append(stream.review_entry)
     elif not reviewing:
         st["thread"] = thread
-        cycle = st.get("cycle") or {}
-        cycle.pop("waiting_prompt", None)
-        cycle.pop("waiting_active_seconds", None)
         binding = st.get("work_binding")
         if binding and binding["model"] == "default" and stream.model:
             binding.setdefault("native_model", stream.model)
+    cycle = st.get("cycle") or {}
+    for key in ("waiting_prompt", "waiting_active_seconds", "waiting_review_thread"):
+        cycle.pop(key, None)
     if not reviewing and not any(t["account"] == account["name"] and t["thread"] == thread for t in st["threads"]):
         st["threads"].append({"account": account["name"], "thread": thread, "started": clock.CLOCK.time()})
     if (st["rotations"] and not st["rotations"][-1].get("event")
@@ -347,7 +347,7 @@ def resolve_monitor_quota(st, request, stopped, control, active_started, on_limi
     if stopped():
         return task_state.stop_outcome(st, stopped), None
     if control.expired(active_started):
-        return "budget_exhausted", None
+        return "budget_exhausted", {"quota_probe_cancelled": True} if st.get("work_binding") else None
     return ("limit", decision) if decision is not None or not request.allow_credits else None
 
 
@@ -418,7 +418,8 @@ def monitor_event_stream(st, cfg, account, proc, receipt, log, stream, usage, co
             if result is not None:
                 return result
             if wrapup:
-                # A wrap-up gets one bounded attempt, without quota waits or retries.
+                if stream.reason and st.get("work_binding"):
+                    return "limit", None
                 if stream.authentication_failed or stream.reason or stream.capacity_failed:
                     return "failed", None
                 continue

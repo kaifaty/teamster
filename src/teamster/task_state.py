@@ -220,7 +220,7 @@ STATE_FIELDS = {
 
 def bind_work(st, model, **connection):
     """Record the actual admission once. A profile name alone cannot authorize a later turn."""
-    binding = dict(version=1, executor=executors.from_state(st).name, model=model or "default", **connection)
+    binding = dict(version=executors.WORK_BINDING_VERSION, executor=executors.from_state(st).name, model=model or "default", **connection)
     if st["work_binding"] is None:
         st["work_binding"] = binding
         save(st)

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from . import budgets, checking, ci_runs, clock, config, duty_chat, executors, installs, notifications, procs, prompts, reflection, review_cycle, sandboxing, task_state, telemetry_log, threads, turns, wait_view
+from . import budgets, checking, ci_runs, clock, config, duty_chat, executors, installs, notifications, procs, prompts, publishing, reflection, review_cycle, sandboxing, task_state, telemetry_log, threads, turns, wait_view
 
 
 def require_startable():
@@ -122,7 +122,7 @@ def start_process(st):
 
 
 # Steps resume can continue a cycle from. work and fix continue the executor's thread.
-RESUME_STEPS = ("work", "fix", "check", "review", "after_review", "ci")
+RESUME_STEPS = ("work", "fix", "check", "review", "after_review", "ci", "wrapup")
 # Fields of the interrupted run that the resumed one must not inherit; the rest of the cycle is kept.
 RESUME_CLEARED = ("sleeping", "turn_finished", "error", "turn_stop", "wrapup", "refusal", "review_angle",
                   "stop_request", "signal", "exec_event_start", "auto_fix_stop", "codex_pid", "claude_pid", "opencode_pid", "check_pid")
@@ -169,6 +169,8 @@ def review_recorded(st, cycle):
 def resume_step(st):
     """The cycle of st and the step resume continues it from."""
     cycle = st.get("cycle") or legacy_cycle(st)
+    if st.get("work_binding") and (st.get("wrapup") or {}).get("pending"):
+        return cycle, "wrapup"
     step = cycle["step"]
     if step == "review" and cycle["kind"] != "review" and review_recorded(st, cycle):
         step = "after_review"
@@ -246,7 +248,7 @@ def resume(slug, loaded):
             now = clock.CLOCK.time()
             st.setdefault("resumed", []).append({"at": now, "signal": cut["signal"], "signal_at": cut["at"],
                                                  "step": step, "turn": st.get("turns", 0)})
-            st["cycle"] = dict(cycle, step=step)
+            st["cycle"] = dict(cycle, step=cycle["step"] if step == "wrapup" else step)
             st["pending"] = {"prompt": prompt, "effort": cycle.get("effort"), "current_message": True,
                              "review_after": bool(st.get("review_after")), "resume": step}
             if step in ("work", "fix", "check", "ci"):
@@ -257,6 +259,8 @@ def resume(slug, loaded):
             if "work_binding" not in st:
                 st["reset_wait_seconds"] = 0
             for key in RESUME_CLEARED:
+                if step == "wrapup" and key in ("turn_stop", "wrapup", "review_angle"):
+                    continue
                 if key == "sleeping" and "work_binding" in st and "waiting_prompt" in cycle:
                     continue
                 st.pop(key, None)
@@ -274,7 +278,7 @@ def apply_say(st, options, cfg):
     try:
         executor = executors.from_state(st)
         binding = st.get("work_binding")
-        if binding and options.get("model", binding["model"]) != binding["model"]:
+        if binding and options.get("model") not in (None, binding["model"], binding.get("native_model")):
             procs.die("This task has an assigned work model. Start a separate linked task to change it.")
         if st.get("kind") == duty_chat.CHAT_KIND:
             account, refusal = duty_chat.chat_account(cfg)
@@ -630,7 +634,13 @@ def cmd__run(a):
         # So does the check of a fix round, so that its outcome lands in the round and a failure starts the next.
         round_check = step == "check" and not in_ci and bool(st.get("rounds"))
         turn = step in (None, "work") or (step == "fix" and in_ci)
-        if not turn and not review_fix:
+        if step == "wrapup":
+            # Complete only the already-authorized final report. Its original stop and cursor are still authoritative.
+            review_entry = st["reviews"][-1] if st.get("kind") == "review" else None
+            turns.wrapup_turn(st, cfg, None, effort, stopped, st["turn_stop"], review_entry=review_entry)
+            if review_entry is None:
+                publishing.publish_turn(st, stopped)
+        elif not turn and not review_fix:
             # The executor turn of the interrupted cycle had completed; the cycle goes on from its result.
             st["outcome"] = "completed"
             task_state.save(st)
@@ -656,7 +666,7 @@ def cmd__run(a):
                            and review_cycle.has_reviewable_commits(st, st["base"]))
             st["auto_fix_stop" if review_only else "review_skipped"] = "result " + work_result["status"]
             task_state.save(st)
-        if (working and (turn or (step == "check" and not round_check))
+        if (working and (turn or step == "wrapup" and st.get("kind") != "review" or (step == "check" and not round_check))
                 and st.get("outcome") in ("completed", "budget_exhausted", "stuck")
                 and st.get("check") and not stopped()):
             check = checking.run_check_step(st, cfg, stopped, sleep, review_after=review_after and not in_ci)

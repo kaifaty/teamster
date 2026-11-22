@@ -1,4 +1,5 @@
 """Account homes, app-server RPC and subscription limits."""
+import hashlib
 import json
 import os
 import selectors
@@ -128,6 +129,12 @@ def account_read(account, cancelled=lambda: False):
                 return info
             info.update(logged_in=True, account=result["account"],
                         account_id=(result.get("workspaceRouting") or {}).get("chatgptAccountId"))
+            identity = result["account"]
+            user = identity.get("userId") or (result.get("workspaceRouting") or {}).get("chatgptUserId")
+            if not user and isinstance(identity.get("email"), str):
+                user = identity["email"].strip().casefold()
+            if isinstance(user, str) and user:
+                info["member_id"] = hashlib.sha256(user.encode()).hexdigest()
             result = call("account/rateLimits/read", None)
             if not isinstance(result, dict):
                 raise RPCError("unexpected account/rateLimits/read response")

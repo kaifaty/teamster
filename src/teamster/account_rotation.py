@@ -168,7 +168,8 @@ def task_snapshots(st, cfg, stopped, new_turn=False):
     if binding and not stopped():
         if not infos or infos[0].get("logged_in") is False:
             raise ValueError(f"The assigned Codex account {binding['account']} is unavailable. Restore its login.")
-        if infos[0].get("logged_in") and infos[0].get("account_id") != binding["account_id"]:
+        if infos[0].get("logged_in") and (infos[0].get("account_id") != binding["account_id"]
+                                          or infos[0].get("member_id") != binding["member_id"]):
             raise ValueError(f"The owner of Codex account {binding['account']} changed. Restore it or start a separate linked task.")
     if cfg.get("use_reset_credits", False):
         for info in infos:
@@ -215,7 +216,17 @@ def no_logged_in_accounts(st, infos):
 
 
 def restoring_wait(st):
-    return "work_binding" in st and (st.get("sleeping") or {}).get("until", 0) > clock.CLOCK.time()
+    return "work_binding" in st and bool(st.get("sleeping"))
+
+
+def reset_wait_budget(st):
+    now = clock.CLOCK.time()
+    spent = st.get("reset_wait_seconds", 0)
+    deadline = now + config.MAX_RESET_WAIT_SECONDS - spent
+    if restoring_wait(st):
+        deadline = min(deadline, st["sleeping"].get("deadline", deadline))
+        spent = config.MAX_RESET_WAIT_SECONDS - (deadline - now)
+    return now, spent, deadline
 
 
 def wait_for_account(st, infos, cfg, reason, stopped, sleep=None, prompt=None):
@@ -227,9 +238,7 @@ def wait_for_account(st, infos, cfg, reason, stopped, sleep=None, prompt=None):
     if "work_binding" in st and prompt is not None:
         st["cycle"]["waiting_prompt"] = prompt
     probe_retries = 0
-    wait_started = clock.CLOCK.time()
-    already_waited = st.get("reset_wait_seconds", 0)
-    deadline = wait_started + config.MAX_RESET_WAIT_SECONDS - already_waited
+    wait_started, already_waited, deadline = reset_wait_budget(st)
 
     def cancelled():
         return stopped() or clock.CLOCK.time() >= deadline
@@ -313,6 +322,8 @@ def wait_for_account(st, infos, cfg, reason, stopped, sleep=None, prompt=None):
             until = st["sleeping"]["until"]
         until = min(until, deadline)
         sleeping = {"until": until, "account": name, "reason": reason}
+        if "work_binding" in st:
+            sleeping["deadline"] = deadline
         if probing:
             sleeping.update(probe=True, probe_attempt=probe_retries + 1, reason="account status unknown (RPC error)")
         st.update(outcome="sleeping", sleeping=sleeping, exhausted=None)
@@ -394,7 +405,8 @@ def claude_choice(st, cfg, stopped, exclude=()):
             model = st.get("task_model") or cfg["claude"].get("model")
             exclude = duty.claude_reserved(cfg, "work", exclude, st.get("task_type"), stopped, model)
         # Selection is read-only. A stale pool refresh would send paid prompts on other connections.
-        return claude_accounts.select(cfg, "work", exclude=exclude, model=model)
+        role = "review" if st.get("kind") == "review" else "work"
+        return claude_accounts.select(cfg, role, exclude=exclude, model=model)
     current = st.get("claude_account")
     model = st.get("task_model") or cfg["claude"].get("model")
     others = [account["name"] for account in claude_accounts.accounts(cfg) if account["name"] != current]
@@ -421,7 +433,8 @@ def role_can_start(cfg, provider, role, model=None, task_type=None):
         return True
     infos = accounts.snapshots(cfg)
     reserved = duty.codex_reserved(infos, cfg)
-    return bool(accounts.available(infos, cfg, reserved) or accounts.credit_account(infos, cfg, reserved))
+    return bool(accounts.available(infos, cfg, reserved)
+                or (role != "work" and accounts.credit_account(infos, cfg, reserved)))
 
 
 def wait_for_claude_account(st, cfg, reason, stopped, sleep=None, prompt=None):
@@ -429,9 +442,7 @@ def wait_for_claude_account(st, cfg, reason, stopped, sleep=None, prompt=None):
     sleep = sleep or clock.CLOCK.sleep
     if "work_binding" in st and prompt is not None:
         st["cycle"]["waiting_prompt"] = prompt
-    wait_started = clock.CLOCK.time()
-    already_waited = st.get("reset_wait_seconds", 0)
-    deadline = wait_started + config.MAX_RESET_WAIT_SECONDS - already_waited
+    wait_started, already_waited, deadline = reset_wait_budget(st)
 
     model = (st.get("work_binding") or {}).get("model") or st.get("task_model") or cfg["claude"].get("model")
 
@@ -471,6 +482,8 @@ def wait_for_claude_account(st, cfg, reason, stopped, sleep=None, prompt=None):
             until = st["sleeping"]["until"]
         until = min(until, deadline)
         sleeping = {"until": until, "account": name, "reason": reason}
+        if "work_binding" in st:
+            sleeping["deadline"] = deadline
         st.update(outcome="sleeping", sleeping=sleeping, exhausted=None)
         st["rotations"].append(dict(sleeping, at=started, event="sleep"))
         task_state.save(st)

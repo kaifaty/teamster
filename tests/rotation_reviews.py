@@ -551,6 +551,70 @@ class ReviewFixTests(RotationTestCase):
         self.assertAlmostEqual(rows[0]["weekly_used_after"], 56)
         self.assertAlmostEqual(rows[0]["weekly_spent"], 6)
 
+    def test_bound_claude_review_resumes_on_its_reserved_quota_and_charges_the_work_budget(self):
+        clock = self.enable_fake_clock(auto_advance=False)
+        now = clock.time()
+
+        def limits(used):
+            return {"status": "allowed", "unifiedWindows": {"seven_day": {"utilization": used, "resetsAt": now + 86400}}}
+
+        accounts = self.claude_pool_fixture(runs=[
+            {"limits": limits(.90), "reply": self.work_result()},
+            {"limits": dict(limits(.90), status="rejected", resetsAt=now + 3600)},
+            {"limits": limits(.96), "reply": self.review_result()}])
+        slug = "bound-claude-review"
+        self.start(slug, "--executor", "claude", "--reviewer", "claude", "--review", "--fix-rounds", "1",
+                   "--max-weekly", "5")
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        asleep = self.state(slug)
+        work, rejected = self.claude_invocations()
+        self.assertNotEqual(work["session_id"], rejected["session_id"])
+        os.kill(asleep["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(asleep["pid"]))
+        self.cli("resume", slug)
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        self.advance_fake_clock(asleep["sleeping"]["until"] + 1 - clock.time())
+        self.cli("wait", slug, "--through-sleep", "--timeout", "30")
+        state = self.state(slug)
+        self.assertEqual(state["outcome"], "budget_exhausted")
+        self.assertAlmostEqual(state["turn_stop"]["spent"], 6)
+        work, rejected, resumed = self.claude_invocations()
+        self.assertEqual(resumed["resume"], rejected["session_id"])
+        self.assertEqual(state["session_id"], work["session_id"])
+        self.assertEqual({row["config_dir"] for row in (work, rejected, resumed)}, {accounts[0]["config_dir"]})
+        self.assertEqual(self.invocations(), [])
+
+    def test_bound_codex_review_restores_its_thread_and_leaves_the_fix_its_time_budget(self):
+        clock = self.enable_fake_clock(auto_advance=False)
+        self.env["CODEX_TASK_MINUTE_SECONDS"] = "1"
+        self.configure(language="en", max_review_minutes=30)
+        reset = clock.time() + 3600
+        gate = self.root / "finish-first-review"
+        self.account(self.home, "A", reset, auto_reset=True, runs=[
+            {"mode": "complete", "reply": self.work_result()},
+            {"mode": "usage_error", "delay_gate": str(gate)},
+            {"mode": "complete", "reply": self.review_result()},
+            {"mode": "complete", "reply": self.work_result(findings=[
+                {"id": name, "decision": "fixed", "note": "Fixed."} for name in ("F1", "F2")])},
+            {"mode": "complete", "reply": self.review_result(False)}])
+        self.account(self.other, "B", reset + 3600)
+        slug = "bound-codex-review"
+        self.start(slug, "--review", "--fix-rounds", "1", "--max-minutes", "2")
+        self.until(lambda: len(self.review_invocations()) == 1)
+        self.advance_fake_clock(5)
+        gate.touch()
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        asleep = self.state(slug)
+        self.assertGreaterEqual(asleep["cycle"]["waiting_active_seconds"], 5)
+        self.advance_fake_clock(asleep["sleeping"]["until"] + 1 - clock.time())
+        self.wait(slug, through_sleep=True)
+        work, limited, review, fix, final = self.invocations()
+        self.assertEqual({row["home"] for row in (work, limited, review, fix, final)}, {str(self.home)})
+        self.assert_resumed_same_thread(limited, review, self.home)
+        self.assert_resumed_same_thread(work, fix, self.home)
+        self.assertIn("F2", fix["prompt"])
+        self.assertEqual(self.state(slug)["review_result"]["verdict"], "clean")
+
     def test_claude_executor_weekly_budget_counts_usage_in_a_new_window(self):
         self.fixture_timeout = 90
         before = {"status": "allowed", "unifiedWindows": {
@@ -634,7 +698,7 @@ class ReviewFixTests(RotationTestCase):
             {"reply": result},
             {"limits": {"status": "rejected", "resetsAt": now + 7200}},
             {"reply": result},
-            {"limits": {"status": "rejected", "resetsAt": now + 30000}}])
+            {"limits": {"status": "rejected", "resetsAt": now + 13 * 86400}}])
         self.claude_settings(limits_max_age_minutes=0)
         self.start("claude-executor-sleep", "--executor", "claude", "--max-minutes", "3")
         self.wait("claude-executor-sleep")
@@ -669,9 +733,16 @@ class ReviewFixTests(RotationTestCase):
 
         self.cli("say", "claude-executor-sleep", "Hit the limit again.")
         self.until(lambda: self.state("claude-executor-sleep")["outcome"] == "sleeping")
-        self.cli("stop", "claude-executor-sleep")
-        self.wait("claude-executor-sleep")
-        self.assertEqual(self.state("claude-executor-sleep")["outcome"], "stopped")
+        asleep = self.state("claude-executor-sleep")
+        self.advance_fake_clock(5 * 86400)
+        os.kill(asleep["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(asleep["pid"]))
+        self.cli("resume", "claude-executor-sleep")
+        self.until(lambda: self.state("claude-executor-sleep")["outcome"] == "sleeping")
+        self.assertGreaterEqual(self.state("claude-executor-sleep")["reset_wait_seconds"], 5 * 86400)
+        self.advance_fake_clock(asleep["sleeping"]["deadline"] + 1 - clock.time())
+        self.cli("wait", "claude-executor-sleep", "--through-sleep", "--timeout", "30")
+        self.assertEqual(self.state("claude-executor-sleep")["outcome"], "exhausted")
         self.assertEqual(len(self.claude_invocations()), 4)
         self.assertEqual(self.invocations(), [])
 

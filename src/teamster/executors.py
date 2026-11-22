@@ -25,6 +25,9 @@ writes; this module neither imports those owners nor changes the disk schema.
 """
 
 
+WORK_BINDING_VERSION = 2
+
+
 class Executor:
     """Codex-compatible state policies with late-bound work and I/O hooks."""
 
@@ -180,8 +183,8 @@ def configurable_names():
 def from_state(st):
     worker = get(st.get("executor", "codex"))
     binding = st.get("work_binding")
-    if binding and (binding.get("version") != 1 or binding["executor"] != worker.name):
-        raise ValueError("Cannot use the saved work binding with this executor or binding version.")
+    if binding and (binding.get("version") != WORK_BINDING_VERSION or binding["executor"] != worker.name):
+        raise ValueError("Cannot verify this work assignment with the current executor and binding version. Start a separate linked task.")
     return worker
 
 

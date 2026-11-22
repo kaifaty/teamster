@@ -635,9 +635,7 @@ def app_server():
             if trigger and not Path(trigger).exists():
                 gate = None
             if not gate and (home / "exec-count").exists():
-                gate = value.pop("rate_limits_gate_after_exec", None)
-                if gate:
-                    fixture_path.write_text(json.dumps(value))
+                gate = value.get("rate_limits_gate_after_exec")
             if gate and not Path(gate).exists():
                 trace({"command": "quota-waiting", "gate": gate, "source": "rpc"})
                 while not Path(gate).exists():

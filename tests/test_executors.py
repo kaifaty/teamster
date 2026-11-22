@@ -145,7 +145,17 @@ def install_fake_opencode(root):
                 if gate.exists():
                     sys.exit("Timed out in fake " + method)
 
-        if sys.argv[1:] == ["auth", "list", "--format", "json"]:
+        if sys.argv[1:] == ["api", "--standalone", "model.list"]:
+            route = cwd / "fixture-route"
+            settings = {"baseURL": route.read_text() if route.exists() else "http://127.0.0.1:9001/private?v=fixture-private"}
+            model = {"providerID": "offline", "id": "model", "modelID": "model", "enabled": True,
+                     "package": "@opencode/ai/providers/openai-compatible", "settings": settings}
+            print(json.dumps({"data": [model, dict(model, id="other")]}))
+            sys.exit(0)
+        if sys.argv[1:] == ["auth", "list", "--standalone", "--format", "json"]:
+            if "claude-opencode-parallel" in cwd.parts:
+                print("[]")
+                sys.exit(0)
             source = home / "connection-id"
             print(json.dumps([{"id": "offline", "connections": [
                 {"type": "credential", "id": source.read_text() if source.exists() else "cred_fixture"}]}]))
@@ -197,7 +207,7 @@ def install_fake_opencode(root):
                     assert method == "session/prompt" and config[0]["currentValue"] == "offline/model"
                     assert state["title"]
                     if (home / "quota-exhausted").exists():
-                        send(id=request["id"], error={"code": 429, "message": "Quota exceeded"})
+                        send(id=request["id"], error={"code": -32603, "message": "You exceeded your current quota"})
                         continue
                     prompt = params["prompt"][0]["text"]
                     answer = json.loads((home / "response.json").read_text())
@@ -337,6 +347,13 @@ class ExecutorTests(RotationTestCase):
                 binding = self.state(slug)["work_binding"]
                 self.assertEqual((binding["provider"], binding["model"], binding["credential_id"]),
                                  ("offline", "offline/model", "cred_fixture"))
+                self.assertEqual(self.state("opencode-parallel")["work_binding"]["source"], "local")
+                self.assertNotIn("fixture-private", json.dumps(binding))
+                (worktree / "fixture-route").write_text("http://127.0.0.1:9002/")
+                self.cli("say", slug, "Continue at the assigned endpoint.")
+                self.assertIn("assigned work connection", self.cli("wait", slug))
+                self.assertEqual(self.state(slug)["session_id"], session)
+                (worktree / "fixture-route").unlink()
                 (self.root / "connection-id").write_text("cred_replacement")
                 self.cli("say", slug, "Make a change on the original connection.")
                 self.assertIn("assigned work connection", self.cli("wait", slug))

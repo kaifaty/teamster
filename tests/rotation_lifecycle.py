@@ -1126,15 +1126,16 @@ worker.notifications.reap_notifications = reap
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": "Рабочий результат"},
             {"mode": "complete", "reply": "Ревью через обычный exec"}])
-        self.start("review-fallback", "--model", "fallback-model")
+        (self.home / "config.toml").write_text("")
+        self.start("review-fallback")
         self.wait("review-fallback")
         working = self.state("review-fallback")
-        self.cli("review", "review-fallback", "--review-model", "fallback-model")
+        self.cli("review", "review-fallback", "--review-model", "fake-model")
         output = self.wait("review-fallback")
         executions = self.invocations()
         self.assertEqual(len(executions), 2)
         review = executions[1]
-        self.assertEqual(review["model"], "fallback-model")
+        self.assertEqual(review["model"], "fake-model")
         self.assertTrue(review["review"])
         self.assertFalse(review["resume"])
         self.assertEqual(review["cwd"], working["worktree"])
@@ -1204,7 +1205,7 @@ worker.notifications.reap_notifications = reap
         for execution in executions:
             self.assert_output_schema(execution, "reset-resume")
         worker = self.worker()
-        self.assertIn(worker.prompts.reset_resume_prompt(worker.config.accounts_config()), executions[1]["prompt"])
+        self.assertEqual(worker.prompts.reset_resume_prompt(worker.config.accounts_config()), executions[1]["prompt"])
         self.assertIn("Продолжение после сброса завершено", second)
         self.assertNotIn("auto-continue at", second)
         state = self.state("reset-resume")
@@ -1223,7 +1224,7 @@ worker.notifications.reap_notifications = reap
                      runs=[{"mode": "complete", "reply": "Новое сообщение выполнено"}])
         self.account(self.other, "B", self.reset)
         message = "Выполни именно это сообщение после сброса"
-        self.cli("say", "reset-say", message)
+        self.cli("say", "reset-say", message, "--model", "fake-model")
         first = self.wait("reset-say")
         self.assert_sleeping("reset-say", first, reset)
         self.assertEqual(len(self.invocations()), 1, "no exec may run before a subscription resets")
@@ -1232,11 +1233,14 @@ worker.notifications.reap_notifications = reap
         sleeping = self.state("reset-say")
         self.assertEqual((sleeping["work_binding"]["home"], sleeping["work_binding"]["account_id"]),
                          (str(self.home), "A"))
-        os.kill(sleeping["pid"], signal.SIGTERM)
-        self.until(lambda: self.state("reset-say").get("pid") is None)
+        self.advance_fake_clock(600)
+        os.kill(sleeping["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(sleeping["pid"]))
         self.cli("resume", "reset-say")
         restarted = self.assert_sleeping("reset-say", self.wait("reset-say"), reset)
         self.assertEqual(restarted["work_binding"], sleeping["work_binding"])
+        self.assertEqual(restarted["sleeping"]["deadline"], sleeping["sleeping"]["deadline"])
+        self.assertGreaterEqual(restarted["reset_wait_seconds"], 600)
         self.assertEqual((restarted["max_turn_minutes"], restarted["max_task_weekly_percent"]), (7, 12))
         self.assertEqual(len(self.invocations()), 1)
         self.advance_fake_clock(reset + 1 - clock.time())
@@ -1525,6 +1529,13 @@ worker.notifications.reap_notifications = reap
         st = self.state("choose-reset")
         binding, thread = st["work_binding"], st["thread"]
         self.assertEqual((binding["account_id"], binding["home"], binding["model"]), ("B", str(self.other), "fake-model"))
+        original = json.loads((self.other / "fixture.json").read_text())
+        original["account"]["email"] = "different-member@example.test"
+        (self.other / "fixture.json").write_text(json.dumps(original))
+        self.cli("say", "choose-reset", "Continue with the same workspace member.")
+        self.assertIn("owner", self.cli("wait", "choose-reset"))
+        self.assertEqual(len(self.invocations()), 1)
+        self.assertNotIn("@", json.dumps(binding))
         self.account(self.other, "replacement", self.reset)
         for error in ("owner", "Missing thread", "absent"):
             if error == "Missing thread":

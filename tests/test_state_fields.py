@@ -121,7 +121,7 @@ st[dynamic_key] = 1
         st = {
             "account": "old-work", "account_ids": {"old-work": "old-identity"},
             "executor": "claude", "claude_account": "old-claude", "session_id": "old-session",
-            "work_binding": {"version": 1, "executor": "claude", "model": "work-model"},
+            "work_binding": {"version": 2, "executor": "claude", "model": "work-model"},
             "auth_excluded": ["old-work"], "auth_excluded_ids": ["old-identity"],
             "auth_failures": {"old-work": 2}, "auth_transitions": 2,
             "auto_fix_escalations": [{"id": "F1"}], "auto_fix_stop": "old-stop",

@@ -131,7 +131,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
             if isinstance(value, str) and token not in value:
                 telemetry[key] = value
     if kind != "result":
-        if not reviewing and kind == "rate_limit_event":
+        if kind == "rate_limit_event":
             info = event.get("rate_limit_info")
             windows = info.get("unifiedWindows") if isinstance(info, dict) else None
             window = windows.get("seven_day") if isinstance(windows, dict) else None

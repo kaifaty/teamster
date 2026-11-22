@@ -1,10 +1,12 @@
 """Run one OpenCode work turn on its own private server."""
 import hashlib
+import ipaddress
 import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import acp, clock, procs
 
@@ -13,25 +15,65 @@ PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
 
 
 def provider_connection(worktree, model):
-    """Resolve the single connection that can serve this provider in the ACP process's environment."""
-    provider = model.split("/", 1)[0]
+    """Read the native, merged model route in the same project and environment as ACP."""
+    provider, model_name = model.split("/", 1)
+    env = dict(os.environ, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
+
+    def listing(*args):
+        reply = subprocess.run(["opencode", *args], cwd=worktree, env=env, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=True)
+        return json.loads(reply.stdout)
+
     try:
-        listing = subprocess.run(["opencode", "auth", "list", "--format", "json"], cwd=worktree,
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                 timeout=15, check=True)
-        connections = [c for item in json.loads(listing.stdout) if item["id"] == provider for c in item["connections"]]
-        if len(connections) == 1:
-            connection = connections[0]
-            data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share").resolve()
-            resource = {"provider": provider, "data_home": str(data / "opencode"), "source": connection["type"]}
+        models = listing("api", "--standalone", "model.list")["data"]
+        selected, = (m for m in models if m["providerID"] == provider and m["id"] == model_name and m["enabled"])
+        route = {k: selected[k] for k in ("modelID", "package", "settings", "headers", "body") if k in selected}
+        settings = route["settings"]
+        url = urlsplit(settings["baseURL"])
+        if url.scheme not in ("http", "https") or not url.hostname:
+            raise ValueError
+        data = Path(env.get("XDG_DATA_HOME") or Path.home() / ".local/share").resolve()
+        resource = {"provider": provider, "data_home": str(data / "opencode"),
+                    "route_id": hashlib.sha256(json.dumps(route, sort_keys=True).encode()).hexdigest()}
+        auth = listing("auth", "list", "--standalone", "--format", "json")
+        connections = [c for item in auth if item["id"] == provider for c in item["connections"]]
+        key = settings.get("apiKey")
+        if key:
+            if connections or key == "***":
+                raise ValueError
+            resource.update(source="settings", credential_id=hashlib.sha256(key.encode()).hexdigest())
+        elif connections:
+            connection, = connections
             if connection["type"] == "credential" and connection.get("id"):
-                return dict(resource, credential_id=connection["id"])
-            if connection["type"] == "env" and os.environ.get(connection["name"]):
-                value = os.environ[connection["name"]].encode()
-                return dict(resource, variable=connection["name"], credential_id=hashlib.sha256(value).hexdigest())
-    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
-        pass
-    raise ValueError(f"Cannot identify a single OpenCode connection for {provider}. Check its provider settings.")
+                resource.update(source="credential", credential_id=connection["id"])
+            elif connection["type"] == "env" and env.get(connection["name"]):
+                key = env[connection["name"]]
+                resource.update(source="env", variable=connection["name"],
+                                credential_id=hashlib.sha256(key.encode()).hexdigest())
+            else:
+                raise ValueError
+        elif url.hostname == "localhost" or ipaddress.ip_address(url.hostname).is_loopback:
+            resource["source"] = "local"
+        else:
+            raise ValueError
+
+        # Restrict background agents as well as the selected ACP model. Keep the caller's inline settings.
+        overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
+        overlay["model"] = model
+        overlay.setdefault("policies", []).extend([{"action": "provider.use", "resource": "*", "effect": "deny"},
+                                                  {"action": "provider.use", "resource": provider, "effect": "allow"}])
+        overrides = overlay.setdefault("providers", {}).setdefault(provider, {}).setdefault("models", {})
+        for entry in models:
+            if entry["providerID"] == provider and entry["id"] != model_name:
+                overrides.setdefault(entry["id"], {})["disabled"] = True
+        overrides.setdefault(model_name, {}).update(route)
+        for agent in ("title", "summary", "compaction"):
+            overlay.setdefault("agents", {}).setdefault(agent, {})["model"] = model
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay)
+        return resource, env
+    except (OSError, ValueError, AttributeError, TypeError, KeyError, subprocess.SubprocessError):
+        raise ValueError(f"Cannot verify a single effective OpenCode route and credential for {model}. "
+                         "Check the provider settings before continuing.") from None
 
 
 def orphan_groups(st):
@@ -81,7 +123,7 @@ def _set_title(worktree, env, acp_pid, session_id, title, check_active):
             procs.terminate(proc)
 
 
-def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, title, created, started=None):
+def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, title, created, started=None, env=None):
     """Create a titled session if needed, then work only in that existing session."""
     def check_active():
         if stopped():
@@ -94,7 +136,7 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
 
     parts = []
     message_id = None
-    env = dict(os.environ, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
+    env = dict(os.environ if env is None else env, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
     env[PROCESS_MARKER] = str(os.getpid())
 
     def update(event):
@@ -141,6 +183,6 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
             data = error.data if isinstance(error.data, dict) else {}
             detail = str(error).lower()
             if (error.code == 429 or data.get("errorKind") in ("rate_limit", "quota_exceeded")
-                    or any(marker in detail for marker in ("rate limit", "usage limit", "quota exceeded", "http 429"))):
+                    or any(marker in detail for marker in ("rate limit", "usage limit", "quota exceeded", "exceeded your current quota", "http 429"))):
                 return "exhausted", f"OpenCode quota exhausted for {model}. Check the connection's reset time and retry."
         return "failed", str(error)
