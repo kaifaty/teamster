@@ -47,8 +47,8 @@ def account_environment(account, timeout):
 def bash_hook_settings():
     """Settings that run the Bash guard, with teamster's interpreter, before every Bash command."""
     command = shlex.join([sys.executable, "-I", str(config.BASH_GUARD)])
-    return json.dumps({"hooks": {"PreToolUse": [
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}})
+    return {"disableAllHooks": False, "hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}}
 
 
 # The tools of a duty chat turn; its hook narrows Bash and the file tools.
@@ -195,11 +195,7 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                max_turns=None, *, session_id=None, system_prompt=None, reviewing=False, started=None, progress=None,
                task_dir=None, role="work", max_minutes=None):
     """Execute and drain one stream; callers own role-specific lifecycle state."""
-    scouting = role == "scout"
-    reflecting = role == "reflect"
-    # A duty chat turn writes only in its room and runs only allowed commands (bash_guard.py --duty-room).
-    chatting = role == "duty"
-    read_only = reviewing or scouting or reflecting
+    read_only = reviewing or role in ("scout", "reflect")
     response = {"outcome": "unavailable", "result": None, "reason": None, "deadline": deadline,
                 "telemetry": {"usage": {}, "cost_usd": None, "session_id": None,
                               "model": None, "reasoning_effort": None, "num_turns": None}}
@@ -237,21 +233,23 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     if not read_only:
         environment.update(bash_timeouts(deadline, max_minutes))
     response["telemetry"].update(model=model, reasoning_effort=effort)
-    if chatting:
+    if role == "duty":
         return _run_duty(executable, environment, response, account, worktree, prompt, stopped, deadline,
-                         model, effort, session_id, system_prompt, started, progress, task_dir, token)
+                         model, effort, session_id, system_prompt, started, progress, task_dir, token, max_turns)
     return _run_acp(executable, environment, response, account, worktree, prompt, stopped, deadline, model,
                     effort, session_id, system_prompt, started, progress, task_dir, token, reviewing, role, max_turns)
 
 
 def _run_duty(executable, environment, response, account, worktree, prompt, stopped, deadline,
-              model, effort, session_id, system_prompt, started, progress, task_dir, token):
+              model, effort, session_id, system_prompt, started, progress, task_dir, token, max_turns):
     """Protected duty transport. Its room guard applies on every new and resumed turn."""
     environment[config.STARTED_BY] = "duty"
     args = [executable, "-p", prompt, "--output-format", "stream-json", "--verbose",
             "--json-schema", json.dumps(result_schema.DUTY_SCHEMA), "--permission-mode", "dontAsk",
             "--allowedTools", DUTY_TOOLS, "--disallowedTools", "NotebookEdit", "--strict-mcp-config",
             "--append-system-prompt-file", str(system_prompt), "--settings", duty_hook_settings(worktree)]
+    if max_turns is not None:
+        args += ["--max-turns", str(max_turns)]
     for key, value in (("model", model), ("effort", effort), ("resume", session_id)):
         if value:
             args += ["--" + key, value]
@@ -381,12 +379,17 @@ def _run_acp(executable, environment, response, account, worktree, prompt, stopp
                        allowDangerouslySkipPermissions=False)
     else:
         meta["systemPrompt"] = {"append": Path(system_prompt).read_text(encoding="utf-8")}
-        options["settings"] = {**json.loads(bash_hook_settings()), "disableAllHooks": False}
+        options["settings"] = bash_hook_settings()
     for key, value in (("model", model), ("effort", effort), ("maxTurns", max_turns)):
         if value is not None:
             options[key] = value
-    environment.update(CLAUDE_CODE_EXECUTABLE=str(Path(executable).resolve()), PWD=str(Path(worktree).resolve()))
-    failure = "review failed" if reviewing else role + " turn failed" if role == "work" else role + " failed"
+    environment.update(CLAUDE_CODE_EXECUTABLE=os.path.abspath(executable), PWD=str(Path(worktree).resolve()))
+    if model:
+        # The adapter consults ANTHROPIC_MODEL before account/project settings when restoring a model.
+        environment["ANTHROPIC_MODEL"] = model
+    role_name = "review" if reviewing else "work turn" if role == "work" else role
+    failure = role_name + " failed"
+    account_errors = ("usage limit", "authentication failed")
     drain_deadline = None
     events_failed = False
 
@@ -406,13 +409,16 @@ def _run_acp(executable, environment, response, account, worktree, prompt, stopp
         if task_dir is not None and not events_failed:
             line = json.dumps(event, ensure_ascii=False).encode().replace(token.encode(), b"[REDACTED]")
             events_failed = not _write_event(task_dir, line)
+        if (isinstance(event, dict) and event.get("type") == "result"
+                and (event.get("subtype") != "success" or event.get("is_error") is not False)):
+            event = dict(event, is_error=True)
         _record_event(event, response, token, account, model, reviewing, role)
         # The ACP session, not a backend event or a replay, owns the durable cursor.
         response["telemetry"]["session_id"] = client.session_id
         if progress:
             progress(response["telemetry"])
-        if response["reason"] in ("usage limit", "authentication failed") and drain_deadline is None:
-            drain_deadline = time.monotonic() + 3
+        if response["reason"] in account_errors and drain_deadline is None:
+            drain_deadline = time.monotonic() + procs.GROUP_STEPS[0][1]
             client.cancel()
 
     telemetry = response["telemetry"]
@@ -431,9 +437,9 @@ def _run_acp(executable, environment, response, account, worktree, prompt, stopp
                 progress(telemetry)
             check_active()
             stop_reason = client.prompt(prompt)
-            drain_deadline = time.monotonic() + 3
+            drain_deadline = time.monotonic() + procs.GROUP_STEPS[0][1]
         if stop_reason != "end_turn" or client.process.returncode:
-            if response["reason"] not in ("usage limit", "authentication failed"):
+            if response["reason"] not in account_errors:
                 response["reason"] = failure
         elif response["result"] is None and not response["reason"]:
             response["reason"] = "invalid structured output"
@@ -442,25 +448,27 @@ def _run_acp(executable, environment, response, account, worktree, prompt, stopp
         return response
     except acp.AcpRequestError as error:
         data = error.data if isinstance(error.data, dict) else {}
-        if error.code == -32000:
+        if error.code == -32000 or data.get("errorKind") == "authentication_failed":
             response["reason"] = "authentication failed"
+        elif error.code == -32002 and session_id and not client.session_id:
+            response["reason"] = "Saved Claude session was not found on the selected account"
         elif data.get("errorKind") == "rate_limit":
             response["reason"] = "usage limit"
             if isinstance(data.get("rateLimit"), dict) and "limited_until" not in response:
                 stream_unavailable({"type": "rate_limit_event", "rate_limit_info": data["rateLimit"]},
                                    account["name"], model=model, limit=response)
-        elif response["reason"] not in ("usage limit", "authentication failed"):
+        elif response["reason"] not in account_errors:
             response["reason"] = failure
     except FileNotFoundError:
         response["reason"] = "Claude ACP adapter was not found"
         return response
     except (ValueError, OSError):
-        if response["reason"] not in ("usage limit", "authentication failed"):
+        if response["reason"] not in account_errors:
             response["reason"] = failure
     if response["reason"] is None:
         response["outcome"] = "completed"
     else:
         response["result"] = None
-        if not reviewing and response["reason"] not in ("usage limit", "authentication failed"):
+        if not reviewing and response["reason"] not in account_errors:
             response["outcome"] = "failed" if read_only else "unknown"
     return response

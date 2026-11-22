@@ -104,10 +104,16 @@ if acp:
     meta = params["_meta"]
     assert meta["claudeCode"]["emitRawSDKMessages"]
     options = meta["claudeCode"]["options"]
+    assert os.environ.get("ANTHROPIC_MODEL") == options.get("model")
     mode, = params["configOptions"]
     reply(setup, {"sessionId": session_id, "configOptions": [{"id": "mode", "currentValue": mode["value"]}]})
     turn = read_request(["session/prompt"])
     assert turn["params"]["sessionId"] == session_id
+    if run.get("ask_write"):
+        send({"jsonrpc": "2.0", "id": "edit", "method": "session/request_permission",
+              "params": {"sessionId": session_id, "toolCall": {"title": "Write"},
+                         "options": [{"optionId": "write", "kind": "allow_once"}]}})
+        assert json.loads(sys.stdin.readline())["result"]["outcome"] == {"outcome": "cancelled"}
     system_prompt = meta.get("systemPrompt", {}).get("append")
     transport = {"method": setup["method"], "resume": params.get("sessionId"), "options": options,
                  "mode": mode["value"], "prompt": turn["params"]["prompt"][0]["text"]}
@@ -129,7 +135,7 @@ trace({"command": "review", "argv": sys.argv[1:], "cwd": os.getcwd(), **transpor
        "inherited_provider_keys": sorted(key for key in os.environ
            if (key.startswith("CLAUDE") or key.startswith("ANTHROPIC"))
            and key not in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR",
-                          "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "CLAUDE_CODE_EXECUTABLE"))})
+                          "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "CLAUDE_CODE_EXECUTABLE", "ANTHROPIC_MODEL"))})
 stopped = [False]
 
 def interrupted(signum, frame):
@@ -756,6 +762,7 @@ class ClaudeReviewTests(RotationTestCase):
              "assistant_text": "Last assistant answer."},
             {"omit_structured_output": True, "text": "Failed final answer.", "exit_code": 9},
             {"mode": "is_error", "text": "Reported work failure."},
+            {"reply": self.work_result(), "text": "Refused answer.", "stop_reason": "refusal"},
             {"limits": rejected, "reply": self.work_result()},
             {"mode": "auth_error", "status": 401}])
         worker = self.worker()
@@ -771,7 +778,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertIsNone(response["result"])
                 self.assertEqual(response["raw_message"], expected_raw)
                 self.assertIn(expected_raw, worker.result_schema.result_lines(None, response["raw_message"]))
-            for expected_raw in ("Failed final answer.", "Reported work failure."):
+            for expected_raw in ("Failed final answer.", "Reported work failure.", "Refused answer."):
                 response = worker.claude_review.claude_runner.run_work_turn(
                     account, self.repo, task_dir, "Work.", lambda: False)
                 self.assertEqual(response["outcome"], "unknown")
@@ -2382,7 +2389,7 @@ class ClaudeReviewTests(RotationTestCase):
 
     def test_claude_scout_read_only_session_output_telemetry_and_clean(self):
         answers = ["The entry point reads tracked.txt.", "Its caller passes the current directory."]
-        accounts = self.claude_pool_fixture(runs=[{"text": answer} for answer in answers])
+        accounts = self.claude_pool_fixture(runs=[{"text": answer, "ask_write": True} for answer in answers])
         self.env["TEAMSTER_CODEX"] = str(self.root / "missing-codex")
         inventory = json.loads(self.cli("accounts", "--json"))
         self.assertEqual(inventory["codex"], [])
@@ -3025,6 +3032,8 @@ class ClaudeReviewTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": work}])
         self.start("claude-timeout", "--review", "--reviewer", "claude")
         self.until(lambda: any(event["command"] == "holding" for event in self.claude_trace()))
+        self.assertEqual(self.state("claude-timeout")["reviews"][-1]["thread"],
+                         self.claude_invocations()[-1]["session_id"])
         self.advance_fake_clock(120.1)
         output = self.wait("claude-timeout")
         state = self.state("claude-timeout")
