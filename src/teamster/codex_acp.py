@@ -53,7 +53,9 @@ def backend():
                     params.pop("sandbox", None)
                     if contract["sandbox"]:
                         params["sandbox"] = contract["sandbox"]
-                if method == "turn/start" and target.is_file() and params.get("threadId") == target.read_text():
+                if method == "turn/start":
+                    if not target.is_file() or params.get("threadId") != target.read_text():
+                        raise ValueError("Unexpected Codex turn outside the admitted ACP session")
                     # A second turn/start for this thread needs another supervisor admission.
                     (directory / "sent").touch(exist_ok=False)
                     params["approvalPolicy"] = "never"
@@ -68,8 +70,6 @@ def backend():
                         params["sandboxPolicy"] = {"type": "readOnly", "networkAccess": False}
                     if contract["schema"] is not None:
                         params["outputSchema"] = contract["schema"]
-                elif method == "turn/start" and not params.get("outputSchema"):
-                    raise ValueError("Unexpected Codex turn outside the admitted ACP session")
                 proc.stdin.write(json.dumps(request).encode() + b"\n")
                 proc.stdin.flush()
         except (ValueError, OSError) as exc:

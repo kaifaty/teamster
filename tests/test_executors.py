@@ -391,6 +391,27 @@ class ExecutorTests(RotationTestCase):
         self.assertIn("Initial edit alpha (retried)", self.wait(slug))
         self.assertEqual(self.state(slug)["session_id"], session)
 
+    def test_codex_backend_rejects_schema_bearing_turn_outside_admitted_session(self):
+        bridge = self.worker().turn_monitor.codex_acp
+        # An echo backend makes any forwarded request visible on stdout.
+        echo = self.root / "echo-backend"
+        echo.write_text("#!/bin/sh\nexec /bin/cat\n")
+        echo.chmod(0o700)
+        (self.root / "options").write_text("{}")
+        env = dict(self.env, TEAMSTER_ACP_BACKEND=str(echo), TEAMSTER_ACP_TURN_DIR=str(self.root))
+        request = {"id": 1, "method": "turn/start", "params": {
+            "threadId": "title-thread", "outputSchema": {"type": "object", "properties": {"title": {"type": "string"}}}}}
+        for admitted in (False, True):
+            with self.subTest(admitted=admitted):
+                if admitted:
+                    (self.root / "target").write_text("worker-thread")
+                result = subprocess.run(bridge.command("backend", "app-server"), cwd=self.root, env=env,
+                                        input=json.dumps(request) + "\n", text=True, capture_output=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("outside the admitted ACP session", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertFalse((self.root / "sent").exists())
+
     def test_acp_stdio_conversation(self):
         self.env["HOME"] = str(self.root)
         repo = self.root / "work tree"
