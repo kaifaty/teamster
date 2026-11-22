@@ -484,13 +484,14 @@ const trail: SurfaceTask = {
 
 it("keeps country borders and buildings in place across status changes and reordered snapshots", () => {
   const child: SurfaceTask = { ...trail, id: "child", status: "needs_input", parent_id: trail.id, depends_on: [trail.id] };
+  const sibling: SurfaceTask = { ...trail, id: "sibling", parent_id: trail.id };
   const other: SurfaceTask = { ...trail, id: "other", project: "TEAMSTER", status: "ready" };
-  const cards: SurfaceTask[] = [other, child, trail, { ...child, id: "accepted", status: "done" }, { ...child, id: "dropped", status: "cancelled" }];
+  const cards: SurfaceTask[] = [other, child, trail, sibling, { ...child, id: "accepted", status: "done" }, { ...child, id: "dropped", status: "cancelled" }];
   const before = layoutSurface(cards);
   const after = layoutSurface([...cards].reverse().map(task => task === child ? { ...task, status: "blocked" } : task));
   expect([...after.sites.keys()]).toEqual([...before.sites.keys()]);
-  expect(after.sites.size).toBe(3);
-  expect(after.sites.get(trail.id)).toMatchObject({ accepted: 1, children: 2, dependents: [child.id] });
+  expect(after.sites.size).toBe(4);
+  expect(after.sites.get(trail.id)).toMatchObject({ accepted: 1, children: 3, dependents: [child.id] });
   for (const [id, { x, y }] of before.sites) expect(after.sites.get(id)).toMatchObject({ x, y });
   for (const [name, { outline, label }] of before.regions) expect(after.regions.get(name)).toMatchObject({ outline, label });
   expect(after.regions.get(trail.project)?.biome).toBe("forest");
@@ -498,10 +499,11 @@ it("keeps country borders and buildings in place across status changes and reord
 });
 
 it("grows and reclaims adjoining land with the current workload, including the last project", () => {
-  function area(outline: string) {
+  function area(outline: string, edges?: Set<string>) {
     let sum = 0, x = 0, y = 0;
     for (const [, op, coords] of outline.matchAll(/([MLQ])([^MLQZ]+)/g)) {
       const [a, b, c, d] = coords!.split(" ").map(Number) as [number, number, number, number];
+      const start = `${x} ${y}`;
       if (op === "Q") {
         // Signed area under a quadratic Bézier from (x,y) to (c,d) through control point (a,b).
         sum += (2 * (x * b - y * a + a * d - b * c) + x * d - y * c) / 3;
@@ -510,12 +512,18 @@ it("grows and reclaims adjoining land with the current workload, including the l
         if (op === "L") sum += x * b - y * a;
         x = a; y = b;
       }
+      if (edges && op !== "M") {
+        const end = `${x} ${y}`, segment = op === "Q" ? ` Q${a} ${b} ` : " L ";
+        // Remove each shared border when its neighbour traces the same curve backwards.
+        if (!edges.delete(end + segment + start)) edges.add(start + segment + end);
+      }
     }
     return sum / 2;
   }
   const tasks = [1, 4, 16].flatMap((count, project) => Array.from({ length: count }, (_, i) =>
     ({ ...trail, id: `${project}-${i}`, project: String(project) })));
   const overrides = { "0": "forest", "1": "forest", "2": "forest" };
+  const initialSize = layoutSurface(tasks.slice(0, 1)).world;
   const full = layoutSurface(tasks, overrides);
   const regions = [...full.regions.values()];
   expect(regions.map(r => r.sites.length)).toEqual([1, 4, 16]);
@@ -524,18 +532,23 @@ it("grows and reclaims adjoining land with the current workload, including the l
     expect(r.biome).toBe("forest");
     expect(r.outline.match(/M/g)).toHaveLength(1);
   }
-  const [small, medium, large] = regions.map(r => area(r.outline)) as [number, number, number];
+  const countryEdges = new Set<string>(), coastEdges = new Set<string>();
+  const [small, medium, large] = regions.map(r => area(r.outline, countryEdges)) as [number, number, number];
   expect(medium).toBeGreaterThan(2 * small);
   expect(large).toBeGreaterThan(2 * medium);
   expect(full.coastline.match(/M/g)).toHaveLength(1);
-  expect(small + medium + large).toBeCloseTo(area(full.coastline), 6);
+  expect(small + medium + large).toBeCloseTo(area(full.coastline, coastEdges), 6);
+  expect(countryEdges).toEqual(coastEdges);
 
   const less = tasks.map(task => task.id === "2-0" ? { ...task, status: "done" as const } : task);
   const closed = layoutSurface(less);
   expect(area(closed.regions.get("2")!.outline)).toBeLessThan(large);
   expect(area(closed.coastline)).toBeLessThan(area(full.coastline));
+  const cancelled = layoutSurface(tasks.map(t => t.id === "2-0" ? { ...t, status: "cancelled" } : t));
+  const removed = layoutSurface(tasks.filter(t => t.id !== "2-0"));
+  expect(cancelled.regions.get("2")!.outline).toBe(removed.regions.get("2")!.outline);
   const last = layoutSurface(tasks.map(t => t.project === "0" ? t : { ...t, status: "cancelled" }));
   expect([...last.regions.keys()]).toEqual(["0"]);
-  expect(last.world.width * last.world.height).toBeLessThan(full.world.width * full.world.height);
+  expect(last.world).toEqual(initialSize);
   expect(layoutSurface([{ ...trail, status: "done" }])).toMatchObject({ world: { width: 0, height: 0 }, coastline: "", regions: new Map(), sites: new Map() });
 });

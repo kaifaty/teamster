@@ -1,10 +1,13 @@
+// @vitest-environment happy-dom
+import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
+import { nextTick, shallowRef } from "vue";
 import { clampCamera, type Camera } from "./layout/camera";
 import type { Point } from "./layout/geometry";
 import { ZOOM_NOTCH, wheelAction, wheelDevice, type WheelInput } from "./navigation";
 import { layoutSurface } from "./surface/layout";
 import type { SurfaceTask } from "./surface/types";
-import { containSurfaceCamera } from "./surface/useSurfaceCamera";
+import { containSurfaceCamera, useSurfaceCamera } from "./surface/useSurfaceCamera";
 
 const wheel = (fields: Partial<WheelInput>): WheelInput => ({
   deltaMode: 0,
@@ -85,12 +88,14 @@ it("keeps land visible after a long pan and every edge building reachable at det
     for (const tx of [-1e8, 1e8]) {
       for (const ty of [-1e8, 1e8]) {
         const cam = containSurfaceCamera({ zoom, tx, ty }, atlas, view);
+        expect(cam.zoom).toBe(zoom);
         expect([...atlas.sites.values()].some(site => visible(site, cam))).toBe(true);
         expect(clampCamera(cam, atlas.world, view)).toEqual(cam);
       }
     }
     for (const site of atlas.sites.values()) {
       const cam = containSurfaceCamera({ zoom, tx: view.width / 2 - site.x * zoom, ty: view.height / 2 - site.y * zoom }, atlas, view);
+      expect(cam.zoom).toBe(zoom);
       expect(visible(site, cam)).toBe(true);
     }
   }
@@ -98,4 +103,41 @@ it("keeps land visible after a long pan and every edge building reachable at det
   expect(containSurfaceCamera({ zoom: 1, tx: -9000, ty: 7000 }, one, view)).toEqual({
     zoom: 1, tx: (view.width - one.world.width) / 2, ty: (view.height - one.world.height) / 2,
   });
+});
+
+it("pans between clearings in small steps and reclamps when the focused project disappears", async () => {
+  const tasks: SurfaceTask[] = ["a", "b"].map(id => ({
+    id, project: "A", title: id, status: "active", parent_id: null, depends_on: [], pull_requests: [],
+  }));
+  const pair = layoutSurface(tasks), live = shallowRef(pair);
+  const view = { width: 360, height: 560 }, field = document.createElement("div");
+  field.getBoundingClientRect = () => DOMRect.fromRect(view);
+  let surface!: ReturnType<typeof useSurfaceCamera>;
+  const wrapper = mount({
+    setup() {
+      surface = useSurfaceCamera(shallowRef(field), live, shallowRef(null), () => {});
+      return () => null;
+    },
+  });
+  const [left, right] = [...pair.sites.values()].sort((a, b) => a.x - b.x);
+  surface.focusTask(left!.task.id);
+  surface.zoomBy(1.5);
+  for (let i = 0; i < 30; i++) field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+  const rightX = right!.x * surface.camera.value.zoom + surface.camera.value.tx;
+  expect(surface.camera.value.zoom).toBe(1.5);
+  expect(rightX).toBeGreaterThanOrEqual(0);
+  expect(rightX).toBeLessThan(view.width);
+
+  const extra = Array.from({ length: 24 }, (_, i) => ({ ...tasks[0]!, id: `extra-${i}`, project: "B" }));
+  live.value = layoutSurface([...tasks, ...extra]);
+  await nextTick();
+  const edge = live.value.regions.get("B")!.sites.reduce((a, b) => a.x > b.x ? a : b);
+  surface.focusTask(edge.task.id);
+  surface.zoomBy(1.5);
+  const expected = containSurfaceCamera(surface.camera.value, pair, view);
+  expect(surface.camera.value).not.toEqual(expected);
+  live.value = pair;
+  await nextTick();
+  expect(surface.camera.value).toEqual(expected);
+  wrapper.unmount();
 });

@@ -25,6 +25,7 @@ export interface SurfaceLayout {
   regions: Map<string, Region>;
   sites: Map<string, Site>;
   world: Size;
+  landRows: Rect[];
   coastline: string;
 }
 
@@ -77,7 +78,7 @@ export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<stri
     if (isCurrent(task)) append(groups, task.project, task);
   }
   const projects = [...groups.keys()].sort();
-  const { world, coastline, territories } = placeTerritories(projects.map(project => groups.get(project)!.length));
+  const { world, landRows, coastline, territories } = placeTerritories(projects.map(project => groups.get(project)!.length));
   const overrides = new Map(Object.entries(biomes).map(([project, biome]) => [project.toLowerCase(), biome]));
   const regions = new Map<string, Region>();
   const sites = new Map<string, Site>();
@@ -103,5 +104,5 @@ export function layoutSurface(tasks: readonly SurfaceTask[], biomes: Record<stri
       if (id !== task.id) sites.get(id)?.dependents.push(task.id);
     }
   }
-  return { regions, sites, world, coastline };
+  return { regions, sites, world, landRows, coastline };
 }

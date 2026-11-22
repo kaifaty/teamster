@@ -49,7 +49,12 @@ function select(id: string, focus = false) {
   project.value = task.project;
   emit("panel");
   void nextTick(() => {
-    if (focus) surface.value?.focusTask(id);
+    const panel = closeButton.value?.closest(".task-panel");
+    const card = panel?.getBoundingClientRect();
+    const art = panel?.parentElement?.querySelector('.site[aria-pressed="true"] .building')?.getBoundingClientRect();
+    if (focus || (art && card && art.right > card.left && art.left < card.right && art.bottom > card.top && art.top < card.bottom)) {
+      surface.value?.focusTask(id);
+    }
     closeButton.value?.focus({ preventScroll: true });
   });
 }
@@ -71,7 +76,7 @@ function focusProject(name: string) {
   project.value = name;
   editor.value = null;
   selectedId.value = null;
-  surface.value?.focusProject(name);
+  void nextTick(() => surface.value?.focusProject(name));
 }
 function saved(task: ProjectTask) {
   select(task.id, !editor.value?.task);
@@ -171,5 +176,6 @@ dd { margin: 3px 0 0; }
   .tools { padding: 5px 8px; gap: 4px; }
   .tools select { max-width: 44vw; }
   .task-panel { top: auto; bottom: 6px; right: 6px; width: min(360px, calc(100% - 12px)); max-height: calc(100% - 12px); }
+  .task-panel[aria-labelledby] { max-height: 60%; }
 }
 </style>

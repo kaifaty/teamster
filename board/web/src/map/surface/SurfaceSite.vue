@@ -110,13 +110,21 @@ const description = computed(() => [
 .parent { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #efe9cf; font-size: 10.5px; }
 .counts { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 6px; color: #efe9cf; font-size: 10.5px; }
 .counts > span { white-space: nowrap; }
-.site.above:is(:focus-visible, [aria-pressed="true"]) { flex-direction: column-reverse; transform: translate(-50%, -100%); }
-.outside .plate, .compact:not([aria-pressed="true"], :hover, :focus-visible) .plate { display: none; }
-.site:hover, .site:focus-visible { z-index: 2; }
+.site.above:is(:hover, :focus-visible, [aria-pressed="true"]) .plate { translate: 0 calc(-100% - var(--art-height)); }
+.outside .plate, .compact:not([aria-pressed="true"], :focus-visible) .plate { display: none; }
+.site:focus-visible { z-index: 2; }
+@media (hover: hover) {
+  .site.compact:hover:not(.outside) .plate { display: grid; }
+  .site:hover { z-index: 2; }
+}
 .site[aria-pressed="true"] { z-index: 3; }
 .site[aria-pressed="true"] .plate, .site:focus-visible .plate { outline: 2px solid #fffae0; outline-offset: 1px; }
 .site[aria-pressed="true"] .plate strong { -webkit-line-clamp: 3; }
 @media (pointer: coarse) {
-  .site { min-width: min(44px, calc(160px * var(--zoom))); min-height: min(44px, calc(130px * var(--zoom))); }
+  .site {
+    --hit-pad: max(0px, calc((44px - var(--art-height)) / 2));
+    min-width: 44px; min-height: 44px; padding-block: var(--hit-pad);
+    transform: translate(-50%, calc(0px - var(--art-height) - var(--hit-pad)));
+  }
 }
 </style>

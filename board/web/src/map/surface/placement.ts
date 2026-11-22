@@ -29,7 +29,7 @@ function growCountries(counts: number[]) {
     return best!;
   }
 
-  return counts.map(count => {
+  const countries = counts.map(count => {
     const seed = nearest(coast, origin);
     const frontier = new Map([[key(seed), seed]]);
     const cells: Point[] = [];
@@ -51,6 +51,7 @@ function growCountries(counts: number[]) {
     }
     return cells;
   });
+  return { countries, rows };
 }
 
 function contours(cells: Point[]) {
@@ -80,12 +81,17 @@ function contours(cells: Point[]) {
 }
 
 export function placeTerritories(counts: number[]) {
-  const countries = growCountries(counts);
+  const { countries, rows } = growCountries(counts);
   const cells = countries.flat();
-  if (!cells.length) return { world: { width: 0, height: 0 }, coastline: "", territories: [] };
+  if (!cells.length) return { world: { width: 0, height: 0 }, landRows: [], coastline: "", territories: [] };
   const xs = cells.map(p => p.x), ys = cells.map(p => p.y);
   const left = Math.min(...xs) - 1, top = Math.min(...ys) - 2;
   const world = { width: (Math.max(...xs) + 1 - left) * DX + 2 * SHORE, height: (Math.max(...ys) + 2 - top) * DY + 2 * SHORE };
+  // Each occupied row is solid land. These strips meet even where two hexes touch diagonally.
+  const landRows = [...rows].map(([y, span]) => ({
+    x0: (span.left - left - 0.5) * DX + SHORE, x1: (span.right - left + 0.5) * DX + SHORE,
+    y0: (y - top - 1.5) * DY + SHORE, y1: (y - top + 1.5) * DY + SHORE,
+  }));
   function shifted(p: Point, spread: number) {
     const noise = hashName(key(p)), range = 2 * spread + 1;
     return {
@@ -133,5 +139,5 @@ export function placeTerritories(counts: number[]) {
     const label = { x: anchor.x + (rightRoom - leftRoom) / 2, y: anchor.y };
     return { outline: outline(borders[i]!), label, labelWidth: leftRoom + rightRoom, clearings, bounds: { x0, y0, x1, y1 } };
   });
-  return { world, coastline: outline(coast), territories };
+  return { world, landRows, coastline: outline(coast), territories };
 }
