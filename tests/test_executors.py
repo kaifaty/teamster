@@ -352,13 +352,17 @@ class ExecutorTests(RotationTestCase):
         nested = "teamster scout nested-review 'Review tracked.txt'"
         queued = shlex.join([sys.executable, "-I", str(SCRIPT), "say", slug, "Unexpected order", "--queue"])
         start = shlex.join(["teamster", "start", "nested-work", "--brief", str(self.brief), "--no-push"])
-        denied = [nested, queued, start, f"teamster review {slug}", "teamster _run missing", "teamster wait missing"]
+        denied = [nested, queued, start, f"teamster review {slug}", "teamster _run missing", "teamster wait missing", "teamster duty clear"]
         reads = [f"teamster status {slug}", f"teamster stats {slug}", "teamster report --json"]
         # Stand in for an older installation later on PATH. The executor must reach this checkout's CLI.
         old = self.root / "teamster"
         old.write_text("#!/bin/sh\nexit 91\n")
         old.chmod(0o700)
         self.configure(language="en")
+        pilot = self.worker()
+        pilot.duty.pin_duty("claude", "fixture-operator", None)
+        duty_record = pilot.duty.duty_path()
+        saved_duty = duty_record.read_bytes()
         fixture = self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "shell": denied + reads, "reply": self.work_result(checks=[])}])
         # The native shell starts with only core variables. Keep any regression inside the fake installation.
@@ -372,10 +376,17 @@ class ExecutorTests(RotationTestCase):
         calls = [item for item in items if item["type"] in ("function_call", "custom_tool_call")]
         self.assertEqual([json.loads(call["arguments"])["cmd"] for call in calls], denied + reads)
         outputs = {item["call_id"]: item["output"] for item in items if item["type"] == "function_call_output"}
-        for call, verb in zip(calls, ("scout", "say", "start", "review", "_run", "wait")):
+        for call, verb in zip(calls, ("scout", "say", "start", "review", "_run", "wait", "duty")):
             self.assertIn(f"Exit code: 1\nteamster: '{verb}' is reserved for the operator", outputs[call["call_id"]])
-        for call in calls[len(denied):]:
-            self.assertIn("Exit code: 0", outputs[call["call_id"]])
+        replies = [outputs[call["call_id"]] for call in calls[len(denied):]]
+        for reply in replies:
+            self.assertIn("Exit code: 0", reply)
+        self.assertEqual(duty_record.read_bytes(), saved_duty)
+        self.assertIn(slug, replies[0])
+        self.assertIn("total:", replies[1])
+        report = json.loads(replies[2].split("\n", 1)[1])
+        self.assertIn("tasks", report)
+        self.assertIn("accounts", report)
         self.assertEqual(list(self.home.glob("fixture-thread-*")), [self.home / ("fixture-thread-" + state["thread"])])
         self.assertFalse((self.home / "claude-tasks" / "nested-review").exists())
         self.assertFalse((self.home / "claude-tasks" / "nested-work").exists())

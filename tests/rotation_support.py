@@ -1100,7 +1100,7 @@ def acp_agent():
             result = {}
             if method == "initialize":
                 assert params["protocolVersion"] == 1
-                assert params["clientInfo"]["name"] == "teamster"
+                assert params["clientInfo"] == {"name": "teamster", "version": fixture()["expected_client_version"]}
                 rpc("initialize")
                 result = {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}, "close": {}}}}
             elif method in ("session/new", "session/resume"):
@@ -1493,6 +1493,7 @@ class RotationTestCase(unittest.TestCase):
 
     def account(self, home, account_id, reset, used=10, runs=None, auto_reset=False, release_at=None):
         value = {"account": {"type": "chatgpt", "email": account_id.lower() + "@example.test", "planType": "pro"},
+                 "expected_client_version": self.worker().config.plugin_version(),
                  "accountId": account_id, "ordinaryUsageAllowed": True,
                  "primary": {"usedPercent": used, "windowDurationMins": 10080, "resetsAt": reset},
                  "secondary": {"usedPercent": 2, "windowDurationMins": 300, "resetsAt": reset - 1800},

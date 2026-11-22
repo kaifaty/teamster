@@ -317,6 +317,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.assertEqual(sdk["outputFormat"], {"type": "json_schema", "schema": worker.result_schema.RESULT_SCHEMA})
                 self.assertEqual(entry["mode"], "bypassPermissions")
                 self.assertTrue(sdk["strictMcpConfig"])
+                self.assertNotIn("tools", sdk)
                 self.assertNotIn("allowedTools", sdk)
                 self.assertNotIn("disallowedTools", sdk)
                 self.assertEqual(sdk["settings"]["enabledPlugins"], {"teamster@kaifaty": False})
