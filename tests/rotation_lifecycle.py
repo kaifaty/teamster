@@ -1057,7 +1057,7 @@ worker.notifications.reap_notifications = reap
             {"mode": "limit", "rollout_used": 99, "messages": ["Частичная находка"]}])
         self.account(self.other, "B", self.reset + 3600,
                      runs=[{"mode": "complete", "reply": "Полное ревью на другой подписке"}])
-        self.start("review-limit")
+        self.legacy_work("review-limit")
         self.wait("review-limit")
         working = self.state("review-limit")
         self.cli("review", "review-limit")
@@ -1183,7 +1183,7 @@ worker.notifications.reap_notifications = reap
         self.account(self.home, "A", reset, auto_reset=True, runs=[
             {"mode": "usage_error", "messages": ["Работа до лимита"]},
             {"mode": "complete", "reply": "Продолжение после сброса завершено"}])
-        self.account(self.other, "B", self.reset, used=99)
+        self.account(self.other, "B", self.reset)
         reset = self.reset_after_ready(lambda: self.start("reset-resume"), reset, 4, after_exec=True)
         first = self.wait("reset-resume")
         # A loaded CI worker can wake before wait or the assertions run.
@@ -1203,7 +1203,7 @@ worker.notifications.reap_notifications = reap
         for execution in executions:
             self.assert_output_schema(execution, "reset-resume")
         worker = self.worker()
-        self.assertEqual(executions[1]["prompt"], worker.prompts.reset_resume_prompt(worker.config.accounts_config()))
+        self.assertIn(worker.prompts.reset_resume_prompt(worker.config.accounts_config()), executions[1]["prompt"])
         self.assertIn("Продолжение после сброса завершено", second)
         self.assertNotIn("auto-continue at", second)
         state = self.state("reset-resume")
@@ -1212,27 +1212,40 @@ worker.notifications.reap_notifications = reap
         self.assertEqual([entry["event"] for entry in state["rotations"]], ["sleep", "wake"])
 
     def test_exhausted_say_sleeps_and_sends_its_original_message(self):
+        clock = self.enable_fake_clock(auto_advance=False)
         self.configure()
-        self.start("reset-say")
+        self.start("reset-say", "--max-minutes", "7", "--max-weekly", "12")
         self.wait("reset-say")
         original_thread = self.state("reset-say")["thread"]
-        reset = time.time() + 4
+        reset = clock.time() + 3600
         self.account(self.home, "A", reset, used=99, auto_reset=True,
                      runs=[{"mode": "complete", "reply": "Новое сообщение выполнено"}])
-        self.account(self.other, "B", self.reset, used=99)
+        self.account(self.other, "B", self.reset)
         message = "Выполни именно это сообщение после сброса"
-        reset = self.reset_after_ready(lambda: self.cli("say", "reset-say", message), reset, 4)
+        self.cli("say", "reset-say", message)
         first = self.wait("reset-say")
         self.assert_sleeping("reset-say", first, reset)
         self.assertEqual(len(self.invocations()), 1, "no exec may run before a subscription resets")
         self.assertIn("(Codex did not run this turn)", first)
 
+        sleeping = self.state("reset-say")
+        self.assertEqual((sleeping["work_binding"]["home"], sleeping["work_binding"]["account_id"]),
+                         (str(self.home), "A"))
+        os.kill(sleeping["pid"], signal.SIGTERM)
+        self.until(lambda: self.state("reset-say").get("pid") is None)
+        self.cli("resume", "reset-say")
+        restarted = self.assert_sleeping("reset-say", self.wait("reset-say"), reset)
+        self.assertEqual(restarted["work_binding"], sleeping["work_binding"])
+        self.assertEqual((restarted["max_turn_minutes"], restarted["max_task_weekly_percent"]), (7, 12))
+        self.assertEqual(len(self.invocations()), 1)
+        self.advance_fake_clock(reset + 1 - clock.time())
         self.until(lambda: len(self.invocations()) == 2, timeout=10)
         second = self.wait("reset-say")
         execution = self.invocations()[-1]
         self.assertTrue(execution["resume"])
         self.assertEqual(execution["thread"], original_thread)
         self.assertEqual(execution["prompt"], message)
+        self.assertEqual([call["home"] for call in self.invocations()], [str(self.home)] * 2)
         self.assertIn("Новое сообщение выполнено", second)
         self.assertEqual(self.state("reset-say")["outcome"], "completed")
 
@@ -1242,7 +1255,7 @@ worker.notifications.reap_notifications = reap
         self.account(self.home, "A", reset + 20, auto_reset=True,
                      runs=[{"mode": "usage_error", "messages": ["Незавершённая работа A"]}])
         self.account(self.other, "B", reset, used=99, auto_reset=True)
-        reset = self.reset_after_ready(lambda: self.start("reset-switch"), reset, 4, after_exec=True)
+        reset = self.reset_after_ready(lambda: self.legacy_work("reset-switch"), reset, 4, after_exec=True)
         first = self.wait("reset-switch")
         self.assert_sleeping("reset-switch", first, reset, account="second")
         self.assertEqual(len(self.invocations()), 1)
@@ -1400,7 +1413,7 @@ worker.notifications.reap_notifications = reap
             {"mode": "complete", "reply": "First follow-up completed"},
             {"mode": "limit", "modify": True,
              "messages": ["Последняя мысль один", "Последняя мысль два", "Последняя мысль три"]}])
-        self.start("mid-turn")
+        self.legacy_work("mid-turn")
         self.wait("mid-turn")
         self.cli("say", "mid-turn", "Первое сообщение Claude")
         self.wait("mid-turn")
@@ -1433,7 +1446,7 @@ worker.notifications.reap_notifications = reap
     def test_usage_limit_failure_rotates_to_fresh_thread(self):
         self.configure()
         self.account(self.home, "A", self.reset, runs=[{"mode": "usage_error"}])
-        self.start("usage-error")
+        self.legacy_work("usage-error")
         output = self.wait("usage-error")
         self.assert_rotation("usage-error", output)
         self.assertEqual(len(self.invocations()), 2)
@@ -1508,6 +1521,22 @@ worker.notifications.reap_notifications = reap
             self.assertTrue((self.other / name).is_symlink(), name)
             self.assertEqual((self.other / name).resolve(), (self.home / name).resolve())
 
+        st = self.state("choose-reset")
+        binding, thread = st["work_binding"], st["thread"]
+        self.assertEqual((binding["account_id"], binding["home"], binding["model"]), ("B", str(self.other), "fake-model"))
+        self.account(self.other, "replacement", self.reset)
+        for error in ("owner", "Missing thread", "absent"):
+            if error == "Missing thread":
+                self.account(self.other, "B", self.reset)
+                (self.other / ("fixture-thread-" + thread)).unlink()
+            if error == "absent":
+                self.cli("account-remove", "second")
+            self.cli("say", "choose-reset", "Continue on the assigned connection.")
+            self.assertIn(error, self.cli("wait", "choose-reset"))
+            failed = self.state("choose-reset")
+            self.assertEqual((failed["outcome"], failed["thread"], failed["work_binding"]), ("failed", thread, binding))
+            self.assertEqual(len(self.invocations()), 1)
+
     def test_soft_threshold_selection_and_say_preserve_reserves(self):
         for label, settings, expected in (("default", {}, "main"),
                                           ("equal", {"soft_switch_at": 99}, "main"),
@@ -1537,12 +1566,11 @@ worker.notifications.reap_notifications = reap
         self.assertFalse(self.state("choose-soft")["rotations"])
 
         self.account(self.home, "A", self.reset)
-        self.cli("say", "choose-soft", "Use the account below the soft threshold")
-        output = self.wait("choose-soft")
-        self.assertEqual(self.state("choose-soft")["account"], "main")
-        self.assertIn("soft_switch_at 80%", output)
-        self.assertIn("soft_switch_at 80%", self.notification("choose-soft", "rotated")["message"])
-        self.assertFalse(self.invocations()[-1]["resume"])
+        self.cli("say", "choose-soft", "Continue on the assigned account")
+        self.wait("choose-soft")
+        self.assertEqual(self.state("choose-soft")["account"], "second")
+        self.assertFalse(self.state("choose-soft")["rotations"])
+        self.assert_resumed_same_thread(*self.invocations()[-2:], self.other)
 
     def test_soft_rotation_keeps_reserve_available_after_a_hard_limit(self):
         self.configure(soft_switch_at=80, wait_for_reset=False)
@@ -1551,7 +1579,7 @@ worker.notifications.reap_notifications = reap
             {"mode": "limit", "limit_used": 80},
             {"mode": "complete", "reply": "Completed using the reserve"}])
         self.account(self.other, "B", self.reset + 3600, runs=[{"mode": "limit"}])
-        self.start("soft-reserve")
+        self.legacy_work("soft-reserve")
         output = self.wait("soft-reserve")
         state = self.state("soft-reserve")
         self.assertEqual(state["outcome"], "completed")
@@ -1577,7 +1605,7 @@ worker.notifications.reap_notifications = reap
                 self.account(self.other, "B", self.reset + 3600, used=used, runs=[second_run])
                 before = len(self.invocations())
                 probes = len([event for event in self.trace() if event.get("command") == "quota-snapshot"])
-                self.start(slug)
+                self.legacy_work(slug)
                 if reset:
                     self.until(lambda: len(self.invocations()) == before + 2)
                     self.account(self.home, "A", self.reset + 10080 * 60, used=0)
@@ -1667,7 +1695,7 @@ worker.notifications.reap_notifications = reap
 
     def test_say_rotates_when_current_account_is_exhausted(self):
         self.configure()
-        self.start("say-switch")
+        self.legacy_work("say-switch")
         self.wait("say-switch")
         self.cli("say", "say-switch", "Предыдущее сообщение Claude")
         self.wait("say-switch")
@@ -1698,7 +1726,7 @@ worker.notifications.reap_notifications = reap
         self.assertFalse(Path(state["worktree"]).exists())
 
     def test_without_accounts_file_resumes_legacy_thread(self):
-        self.start("legacy")
+        self.legacy_work("legacy")
         self.wait("legacy")
         state_path = self.home / "claude-tasks" / "legacy" / "state.json"
         state = json.loads(state_path.read_text())
@@ -1736,7 +1764,7 @@ worker.notifications.reap_notifications = reap
         self.account(self.home, "A", self.reset,
                      runs=[{"mode": "hold", "rollout_used": 99}])
         self.account(self.other, "B", self.reset + 3600, used=99)
-        self.start("use-credits")
+        self.legacy_work("use-credits")
         # Two probes before exec, and two more when the local rollout reaches 99.
         self.until(lambda: len([event for event in self.trace()
                                if event.get("command") == "app-server"]) >= 4)
@@ -1763,7 +1791,7 @@ worker.notifications.reap_notifications = reap
                      runs=[{"mode": "hold", "rollout_used": 99}])
         self.account(self.other, "B", self.reset + 3600, used=99)
         self.set_credit_balance(self.other, "500")
-        self.start("credit-floor")
+        self.legacy_work("credit-floor")
         output = self.wait("credit-floor")
         state = self.state("credit-floor")
         self.assertEqual(state["outcome"], "completed")
@@ -1778,7 +1806,7 @@ worker.notifications.reap_notifications = reap
         self.account(self.home, "A", self.reset,
                      runs=[{"mode": "hold", "rollout_used": 99}])
         self.account(self.other, "B", self.reset + 3600, used=99)
-        self.start("credit-floor-pause")
+        self.legacy_work("credit-floor-pause")
         output = self.wait("credit-floor-pause")
         state = self.state("credit-floor-pause")
         self.assertEqual(state["exhausted"]["reason"], "credits of main at the floor 200")

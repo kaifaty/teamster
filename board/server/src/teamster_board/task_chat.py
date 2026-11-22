@@ -56,6 +56,8 @@ def _resolve_target(board, slug, selection):
     state = record.state
     if state.get("slug") != slug or state.get("kind", "work") not in ("work", "review"):
         raise ValueError("Open a local Teamster work or review task with an available worktree.")
+    if "work_binding" in state:
+        raise ValueError("This task has an assigned work connection. Use say or start a separate linked task for chat.")
     cwd = _worktree(state, board.actions.worktrees_path, slug)
     executor = text(state.get("executor", "codex")) or "unknown"
     path = os.pathsep.join(entry for entry in os.get_exec_path() if os.path.isabs(entry))

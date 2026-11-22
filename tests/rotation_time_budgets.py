@@ -238,7 +238,7 @@ class TimeBudgetTests(RotationTestCase):
             {"mode": "complete", "delay": 2.2, "delay_gate": str(gate),
              "reply": "This would finish if the budget restarted"},
             {"mode": "complete", "reply": self.work_result("partial")}])
-        self.start("cap-rotation", "--max-minutes", "1.7")
+        self.legacy_work("cap-rotation", "--max-minutes", "1.7")
         self.until(lambda: len(self.invocations()) == 2 and
                    self.state("cap-rotation")["thread"] == self.invocations()[1]["thread"])
         gate.touch()
@@ -468,7 +468,7 @@ class TimeBudgetTests(RotationTestCase):
             # Longer than the default 18-minute budget, shorter than the override.
             {"mode": "complete", "delay": 4.8, "reply": "Say override completed"},
             {"mode": "hold"}, {"mode": "complete", "reply": self.work_result("partial")}])
-        self.start("cap-config")
+        self.legacy_work("cap-config")
         self.until(lambda: len(self.invocations()) == 1 and
                    self.state("cap-config")["thread"] == self.invocations()[0]["thread"])
         clock.sleep(3.7)
@@ -493,7 +493,7 @@ class TimeBudgetTests(RotationTestCase):
             {"mode": "hold"}, {"mode": "complete", "reply": self.work_result("partial")},
             # The unbounded follow-up must outlast the initial 12-minute cap.
             {"mode": "complete", "delay": 4.8, "reply": "The later turn has no budget"}])
-        self.start("cap-no-default", "--max-minutes", "12")
+        self.legacy_work("cap-no-default", "--max-minutes", "12")
         self.wait("cap-no-default", timeout=12)
         self.cli("say", "cap-no-default", "Continue without a time limit")
         output = self.wait("cap-no-default", timeout=12)
@@ -534,7 +534,7 @@ class TimeBudgetTests(RotationTestCase):
             {"mode": "complete", "reply": work},
             {"mode": "hold"}, {"mode": "complete", "reply": checkpoint},
             {"mode": "hold"}, {"mode": "complete", "reply": "Scouting checkpoint"}])
-        self.start("cap-review-default", "--review", "--model", "work-model", "--review-model", "checkpoint-review")
+        self.legacy_work("cap-review-default", "--review", "--model", "work-model", "--review-model", "checkpoint-review")
         review_output = self.wait("cap-review-default", timeout=12)
         state = self.state("cap-review-default")
         self.assertEqual(state["outcome"], "budget_exhausted")

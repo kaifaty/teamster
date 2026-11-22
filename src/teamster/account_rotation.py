@@ -146,8 +146,30 @@ def exclude_auth_account(st, account, info):
     task_state.save(st)
 
 
+def codex_work_config(st, cfg):
+    """New work spends its assigned subscription. The pool is only for initial selection."""
+    if "work_binding" not in st:
+        return cfg
+    cfg = dict(cfg, enabled=True, credits=False, use_reset_credits=False)
+    binding = st["work_binding"]
+    if binding:
+        account = accounts.account_named(config.task_config(st), binding["account"])
+        if account["home"] != binding["home"]:
+            raise ValueError(f"The Codex home for {account['name']} changed. Restore it or start a separate linked task.")
+        cfg.update(accounts=[account], soft_switch_at=cfg["switch_at"])
+    return cfg
+
+
 def task_snapshots(st, cfg, stopped, new_turn=False):
+    binding = st.get("work_binding")
+    if binding:
+        cfg = codex_work_config(st, cfg)
     infos = accounts.snapshots(cfg, stopped, prepare=True)
+    if binding and not stopped():
+        if not infos or infos[0].get("logged_in") is False:
+            raise ValueError(f"The assigned Codex account {binding['account']} is unavailable. Restore its login.")
+        if infos[0].get("logged_in") and infos[0].get("account_id") != binding["account_id"]:
+            raise ValueError(f"The owner of Codex account {binding['account']} changed. Restore it or start a separate linked task.")
     if cfg.get("use_reset_credits", False):
         for info in infos:
             if (stopped() or not info.get("logged_in") or info.get("duplicate")
@@ -171,6 +193,16 @@ def task_snapshots(st, cfg, stopped, new_turn=False):
     return refresh_login_state(st, infos, new_turn)
 
 
+def bound_codex_ready(st, cfg, prompt, stopped, sleep=None):
+    infos = task_snapshots(st, cfg, stopped)
+    if stopped():
+        return None
+    if infos[0].get("logged_in") and not accounts.exhausted(infos[0], cfg) and not restoring_wait(st):
+        return infos[0]
+    return wait_for_account(st, infos, cfg, f"assigned Codex account {st['account']} unavailable",
+                            stopped, sleep, prompt=prompt)
+
+
 def no_logged_in_accounts(st, infos):
     if any(i.get("logged_in") is not False for i in infos):
         return False
@@ -182,12 +214,18 @@ def no_logged_in_accounts(st, infos):
     return True
 
 
-def wait_for_account(st, infos, cfg, reason, stopped, sleep=None):
+def restoring_wait(st):
+    return "work_binding" in st and (st.get("sleeping") or {}).get("until", 0) > clock.CLOCK.time()
+
+
+def wait_for_account(st, infos, cfg, reason, stopped, sleep=None, prompt=None):
     """Wait without an exec, re-reading quotas after each wall-clock deadline."""
     infos = refresh_login_state(st, infos)
     if no_logged_in_accounts(st, infos):
         return None
     sleep = sleep or clock.CLOCK.sleep
+    if "work_binding" in st and prompt is not None:
+        st["cycle"]["waiting_prompt"] = prompt
     probe_retries = 0
     wait_started = clock.CLOCK.time()
     already_waited = st.get("reset_wait_seconds", 0)
@@ -201,6 +239,8 @@ def wait_for_account(st, infos, cfg, reason, stopped, sleep=None):
 
     def choose(infos):
         current = next((i for i in infos if i["name"] == st["account"]), {})
+        if st.get("work_binding"):
+            return current if current.get("logged_in") and not accounts.exhausted(current, cfg) else None
         own = st.get("kind") != "review" and st.get("thread")
         if own and current.get("logged_in") and not accounts.exhausted(current, cfg):
             return current
@@ -253,7 +293,7 @@ def wait_for_account(st, infos, cfg, reason, stopped, sleep=None):
         started = clock.CLOCK.time()
         # Do not wake for a duty account that this task may not take.
         own = st.get("kind") != "review" and st.get("thread")
-        skipped = duty.codex_reserved(infos, cfg, {st["account"]} if own else ())
+        skipped = set() if st.get("work_binding") else duty.codex_reserved(infos, cfg, {st["account"]} if own else ())
         stamp, name = earliest_reset([i for i in infos if i["name"] not in skipped], cfg)
         # A delayed reset may still have its old timestamp. Avoid a tight RPC loop.
         until = stamp + config.RESET_MARGIN if stamp is not None else started + config.RESET_RETRY_SECONDS
@@ -269,6 +309,8 @@ def wait_for_account(st, infos, cfg, reason, stopped, sleep=None):
                     until, name = floor_end, floor_account["name"]
         if probing:
             until = min(until, started + config.ACCOUNT_RETRY_SECONDS) if stamp is not None else started + config.ACCOUNT_RETRY_SECONDS
+        if restoring_wait(st):
+            until = st["sleeping"]["until"]
         until = min(until, deadline)
         sleeping = {"until": until, "account": name, "reason": reason}
         if probing:
@@ -338,6 +380,21 @@ def claude_reset(cfg, skip=(), model=None):
 
 def claude_choice(st, cfg, stopped, exclude=()):
     """Prefer the task's account and session, then any other pool account."""
+    if "work_binding" in st:
+        binding = st["work_binding"]
+        if binding:
+            cfg = config.task_config(st)
+            account = next((a for a in claude_accounts.accounts(cfg) if a["name"] == binding["account"]), None)
+            if (not account or account["config_dir"] != binding["config_dir"]
+                    or account["token_keychain"] != binding["token_keychain"]):
+                raise ValueError("The assigned Claude profile changed or was removed. Restore it or start a separate linked task.")
+            cfg = dict(cfg, claude=dict(cfg["claude"], accounts=[account]))
+            model = binding["model"]
+        else:
+            model = st.get("task_model") or cfg["claude"].get("model")
+            exclude = duty.claude_reserved(cfg, "work", exclude, st.get("task_type"), stopped, model)
+        # Selection is read-only. A stale pool refresh would send paid prompts on other connections.
+        return claude_accounts.select(cfg, "work", exclude=exclude, model=model)
     current = st.get("claude_account")
     model = st.get("task_model") or cfg["claude"].get("model")
     others = [account["name"] for account in claude_accounts.accounts(cfg) if account["name"] != current]
@@ -354,6 +411,9 @@ def claude_choice(st, cfg, stopped, exclude=()):
 def role_can_start(cfg, provider, role, model=None, task_type=None):
     """Check the existing pool's admission rules before choosing a configured route."""
     if provider == "claude":
+        if role == "work":
+            return claude_choice({"work_binding": None, "task_type": task_type, "task_model": model},
+                                 cfg, lambda: False) is not None
         pool_role = "work" if role == "work" else "review"
         return claude_review.select_account(cfg, pool_role, task_type=task_type,
                                             model=model or cfg["claude"].get("model")) is not None
@@ -364,14 +424,16 @@ def role_can_start(cfg, provider, role, model=None, task_type=None):
     return bool(accounts.available(infos, cfg, reserved) or accounts.credit_account(infos, cfg, reserved))
 
 
-def wait_for_claude_account(st, cfg, reason, stopped, sleep=None):
+def wait_for_claude_account(st, cfg, reason, stopped, sleep=None, prompt=None):
     """Sleep until the Claude pool's earliest reset, without credits or reset credits."""
     sleep = sleep or clock.CLOCK.sleep
+    if "work_binding" in st and prompt is not None:
+        st["cycle"]["waiting_prompt"] = prompt
     wait_started = clock.CLOCK.time()
     already_waited = st.get("reset_wait_seconds", 0)
     deadline = wait_started + config.MAX_RESET_WAIT_SECONDS - already_waited
 
-    model = st.get("task_model") or cfg["claude"].get("model")
+    model = (st.get("work_binding") or {}).get("model") or st.get("task_model") or cfg["claude"].get("model")
 
     def update_waited():
         st["reset_wait_seconds"] = already_waited + max(0, clock.CLOCK.time() - wait_started)
@@ -379,6 +441,8 @@ def wait_for_claude_account(st, cfg, reason, stopped, sleep=None):
     def reserved():
         # Do not wake for a duty account that this task may not take.
         current = st.get("claude_account")
+        if st.get("work_binding"):
+            return {a["name"] for a in claude_accounts.accounts(cfg) if a["name"] != current}
         return duty.claude_reserved(cfg, "work", {current} if current else (), st.get("task_type"), stopped, model)
 
     def exhausted(why):
@@ -403,6 +467,8 @@ def wait_for_claude_account(st, cfg, reason, stopped, sleep=None):
         until = stamp + config.RESET_MARGIN if stamp is not None else started + config.RESET_RETRY_SECONDS
         if until <= started:
             until = started + config.SLEEP_STEP
+        if restoring_wait(st):
+            until = st["sleeping"]["until"]
         until = min(until, deadline)
         sleeping = {"until": until, "account": name, "reason": reason}
         st.update(outcome="sleeping", sleeping=sleeping, exhausted=None)

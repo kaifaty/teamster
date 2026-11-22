@@ -103,7 +103,7 @@ provider's defaults for the role. Each standby uses its own model and effort def
   Teamster checks provider compatibility, including sandbox and directory requirements, and can use
   a configured standby with an available account. If no compatible pool can start immediately, the
   first compatible provider applies its usual limit and waiting rules. The saved executor stays
-  with the task for later turns and account rotation.
+  with its assigned connection for later work turns.
 - `review` uses the first installed provider in the list and can use a later provider if the
   reviewer is unavailable. With a review role profile, `--reviewer` pins the provider.
   `review --effort E` overrides the preferred reviewer's effort for that standalone review.
@@ -121,13 +121,14 @@ when eligible.
 ## Task models
 
 `start --model M` saves a work model for the task's implementation, fixes, and wrap-up turns.
-`say` inherits it. `say --model M` replaces it, and `say --model default` uses the executor's
+New work keeps that model and connection. A different assignment requires a separate linked task.
+For unbound tasks, `say --model M` replaces the model and `say --model default` uses the executor's
 configured model again. `status` and `wait` show a saved task model beside the latest observed
 reasoning effort, falling back to the task's effort override or `default` when not yet known.
 `--effort E` continues to control reasoning separately.
 
 `start`, `say`, and `review` accept `--review-model M` for Codex reviews, including each review angle.
-It is saved separately from the work model; follow-ups and later reviews inherit it. Passing
+Bound tasks require a compatible reviewer and the assigned work model. Unbound tasks save the review model separately. Passing
 `--review-model default` clears it. Reviews take model defaults from their matching
 [role profile](#role-profiles) when configured. Otherwise Codex uses its configured review defaults
 and Claude uses `claude.model`.
@@ -136,9 +137,9 @@ Codex and Claude model names must match `[A-Za-z0-9._-]{1,64}`. The worker check
 model exists or is available to an account. `default` is reserved for clearing an override.
 
 OpenCode work requires both `start --executor opencode` and an explicit `--model provider/model`.
-`say` retains the selection, or accepts a replacement provider/model for the same session. The work
+`say` verifies the saved provider connection and retains the selected model. The work
 executor has no Teamster reasoning-effort setting, account pool, weekly quota collection or rotation.
-A weekly budget can still count usage from a separate Codex or Claude review. Use `--max-minutes`
+A Codex or Claude review of bound OpenCode work requires a separate linked task. Use `--max-minutes`
 to bound the OpenCode work turn. Keep the same OpenCode data home across turns so the session
 can restore its transcript. Teamster saves the session ID after OpenCode creates it. If setup
 stops before then, the next `say` includes the original brief. If a saved session is deleted,
@@ -388,7 +389,7 @@ while tasks run.
 A task stays on the version it started on. Each spawn records `runtime` in its state: `version` (the
 `__version__` that spawned the turn) and `script` (the resolved `__main__.py` its `_run` supervisor
 runs). The task's pinned version is `runtime.version`, else `plugin_version` for records from before
-`runtime`. Before `say` or `review` changes the state, it compares that version with its own; when they
+`runtime`. Before `say`, `review` or `resume` changes the state, it compares that version with its own; when they
 differ, `versions/<pinned>/src/teamster/__main__.py` exists, and that version's `DATA_LAYOUT` equals
 the one of `current`, the command re-runs itself there with `os.execv`: the same Python and arguments,
 with `TEAMSTER_PINNED=<pinned>` in the environment. From the check until the re-run exits it holds

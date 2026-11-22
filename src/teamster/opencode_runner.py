@@ -1,13 +1,37 @@
 """Run one OpenCode work turn on its own private server."""
+import hashlib
 import json
 import os
 import subprocess
 import tempfile
+from pathlib import Path
 
 from . import acp, clock, procs
 
 
 PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
+
+
+def work_connection(worktree, model):
+    """Resolve the single connection that can serve this provider in the ACP process's environment."""
+    provider = model.split("/", 1)[0]
+    try:
+        listing = subprocess.run(["opencode", "auth", "list", "--format", "json"], cwd=worktree,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 timeout=15, check=True)
+        connections = [c for item in json.loads(listing.stdout) if item["id"] == provider for c in item["connections"]]
+        if len(connections) == 1:
+            connection = connections[0]
+            data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share").resolve()
+            resource = {"provider": provider, "data_home": str(data / "opencode"), "source": connection["type"]}
+            if connection["type"] == "credential" and connection.get("id"):
+                return dict(resource, credential_id=connection["id"])
+            if connection["type"] == "env" and os.environ.get(connection["name"]):
+                value = os.environ[connection["name"]].encode()
+                return dict(resource, variable=connection["name"], credential_id=hashlib.sha256(value).hexdigest())
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        pass
+    raise ValueError(f"Cannot identify a single OpenCode connection for {provider}. Check its provider settings.")
 
 
 def orphan_groups(st):
@@ -113,4 +137,8 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
     except (ValueError, OSError) as error:
         if session_id and f"session not found: {session_id}" in str(error):
             return "failed", f"Saved OpenCode session {session_id} was not found"
+        if isinstance(error, acp.AcpRequestError):
+            detail = str(error).lower()
+            if any(marker in detail for marker in ("429", "rate_limit", "rate limit", "usage limit", "quota exceeded")):
+                return "exhausted", f"OpenCode quota exhausted for {model}. Check the connection's reset time and retry."
         return "failed", str(error)

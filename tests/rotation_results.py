@@ -259,7 +259,7 @@ class ResultScoutConfigTests(RotationTestCase):
                                   remaining=["Document the output contract."])
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": first},
             {"mode": "complete", "reply": second}])
-        self.start("typed-handoff")
+        self.legacy_work("typed-handoff")
         self.wait("typed-handoff")
         self.cli("say", "typed-handoff", "Continue with the input case.")
         self.wait("typed-handoff")
@@ -1022,7 +1022,7 @@ class ResultScoutConfigTests(RotationTestCase):
         self.configure_notify()
         self.account(self.home, "A", self.reset, used=99)
         self.brief.write_text("Implement a portable task.\nDone when the brief is preserved.\n")
-        self.start("single-account", "--review")
+        self.legacy_work("single-account", "--review")
         self.wait("single-account")
         self.assertEqual(len(self.invocations()), 2)
         self.assertFalse(any(event.get("command") == "app-server" for event in self.trace()))

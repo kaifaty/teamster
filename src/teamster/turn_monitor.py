@@ -517,6 +517,9 @@ def monitor(st, cfg, account, prompt, effort, stopped, on_limit,
     review_model = (st.get("review_model") or config.role_route(cfg, "review", "codex").get("model")
                     or defaults["review_model"]) if reviewing else None
     model = review_model if reviewing else st.get("task_model")
+    binding = st.get("work_binding")
+    if binding:
+        model = None if binding["model"] == "default" else binding["model"]
     schema = (None if kind == "scout" else result_schema.REFLECT_SCHEMA if kind == "reflect" else
               result_schema.REVIEW_SCHEMA if reviewing else result_schema.RESULT_SCHEMA)
     # A resume may report the previous turn's override. Reapply the configured

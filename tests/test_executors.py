@@ -145,6 +145,12 @@ def install_fake_opencode(root):
                 if gate.exists():
                     sys.exit("Timed out in fake " + method)
 
+        if sys.argv[1:] == ["auth", "list", "--format", "json"]:
+            source = home / "connection-id"
+            print(json.dumps([{"id": "offline", "connections": [
+                {"type": "credential", "id": source.read_text() if source.exists() else "cred_fixture"}]}]))
+            sys.exit(0)
+
         if sys.argv[1] == "api":
             assert sys.argv[2:5] == ["--standalone", "session.update", "--param"]
             stored = home / sys.argv[5].split("=", 1)[1]
@@ -325,6 +331,14 @@ class ExecutorTests(RotationTestCase):
                                env=dict(self.env, PWD=str(worktree)), stdin=subprocess.DEVNULL,
                                capture_output=True, check=True, timeout=30)
             else:
+                binding = self.state(slug)["work_binding"]
+                self.assertEqual((binding["provider"], binding["model"], binding["credential_id"]),
+                                 ("offline", "offline/model", "cred_fixture"))
+                (self.root / "connection-id").write_text("cred_replacement")
+                self.cli("say", slug, "Make a change on the original connection.")
+                self.assertIn("assigned work connection", self.cli("wait", slug))
+                self.assertEqual(self.state(slug)["work_binding"], binding)
+                (self.root / "connection-id").unlink()
                 (self.root / session).unlink()
             self.cli("say", slug, "Make a third change to tracked.txt.")
             output = self.cli("wait", slug, "--timeout", "30", timeout=45)
@@ -704,13 +718,10 @@ class ExecutorTests(RotationTestCase):
 
             cli("review", "registered-task")
             reviewed = self.state("registered-task")
-            self.assertEqual(reviewed["outcome"], "completed", reviewed.get("error"))
-            self.assertEqual(reviewed["review_result"]["verdict"], "clean")
-            self.assertEqual(len(self.review_invocations()), 1)
+            self.assertEqual(reviewed["outcome"], "unavailable")
+            self.assertIn("separate linked task", reviewed["error"])
+            self.assertEqual(len(self.review_invocations()), 0)
             turn.assert_called_once()
-            self.assertIn("review by main", cli("wait", "registered-task"))
-            self.assertIn("account main  thread", cli("status", "registered-task"))
-            self.assertEqual(self.notification("registered-task", "review_done")["account"], "main")
 
             cli("scout", "registered-scout", "Read the fixture", "--repo", str(self.repo), "--executor", name)
             scout.assert_called_once()

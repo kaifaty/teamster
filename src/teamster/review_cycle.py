@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import budgets, checking, claude_accounts, claude_review, clock, config, executors, notifications, procs, prompts, reviewers, task_state, telemetry_log, threads, turns
+from . import account_rotation, budgets, checking, claude_accounts, claude_review, clock, config, executors, notifications, procs, prompts, reviewers, task_state, telemetry_log, threads, turns
 
 
 def reviewer_available(name):
@@ -35,6 +35,8 @@ def configure_reviewer(st, cfg, explicit=None, *, required=False):
 
 
 def fallback_reviewer(st, cfg, reviewer):
+    if "work_binding" in st:
+        return None
     routes = config.role_routes(cfg, "review")
     if routes:
         if st.get("reviewer_explicit"):
@@ -128,8 +130,19 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
     attempted = set()
     deadline = None
     model = config.role_route(cfg, "review", "claude").get("model") or cfg["claude"].get("model") or None
-    account = claude_review.select_account(cfg, "review", prefer_unused=used_accounts, stopped=stopped,
-                                           task_type=st.get("task_type"), model=model)
+    if st.get("work_binding"):
+        model = st["work_binding"]["model"]
+        model = None if model == "default" else model
+        account = account_rotation.claude_choice(st, cfg, stopped)
+        if account is None and not stopped():
+            account = account_rotation.wait_for_claude_account(st, cfg, "assigned Claude account at limit", stopped, sleep)
+            if account is None:
+                return st["outcome"]
+        if account is not None:
+            account = turns.bind_claude_account(st, cfg, account)
+    else:
+        account = claude_review.select_account(cfg, "review", prefer_unused=used_accounts, stopped=stopped,
+                                               task_type=st.get("task_type"), model=model)
     while account is not None:
         name = account["name"]
         retry = False
@@ -167,9 +180,13 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
                     entry["limited_until"] = until
                     if limited_model:
                         entry["limited_model"] = limited_model
-                    account = claude_review.select_account(cfg, "review", exclude=attempted,
-                                                           prefer_unused=used_accounts, stopped=stopped,
-                                                           task_type=st.get("task_type"), model=model)
+                    if st.get("work_binding"):
+                        account = None
+                        st["error"] = f"Assigned Claude review account {name}: {response['reason']}. Retry this review on the same connection."
+                    else:
+                        account = claude_review.select_account(cfg, "review", exclude=attempted,
+                                                               prefer_unused=used_accounts, stopped=stopped,
+                                                               task_type=st.get("task_type"), model=model)
                     retry = account is not None
                     if retry:
                         entry["retry_account"] = account["name"]
@@ -199,6 +216,13 @@ reviewers.CODEX_REVIEWER.bind(sys.modules[__name__], run="codex_review_turn")
 
 
 def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=None):
+    if "work_binding" in st:
+        binding = st["work_binding"]
+        if (not binding or st["reviewer"] != executors.from_state(st).name
+                or st.get("review_model") not in (None, binding["model"])):
+            st.update(outcome="unavailable", error="This review requires a separate linked task with its own work connection.")
+            task_state.save(st)
+            return None
     st["review_account"] = None
     records = []
     executor = executors.from_state(st)

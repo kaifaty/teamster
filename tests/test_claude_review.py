@@ -2830,7 +2830,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.work_result(findings=decisions)}])
-        start_output = self.start("claude-fix", "--review", "--reviewer", "claude", "--fix-rounds", "1",
+        start_output = self.legacy_work("claude-fix", "--review", "--reviewer", "claude", "--fix-rounds", "1",
                                   "--model", "work-model", "--review-model", "codex-review-model")
         output = self.wait("claude-fix")
         state = self.state("claude-fix")
@@ -2893,7 +2893,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.work_result(findings=decisions)}])
-        self.start("claude-angles", "--reviewer", "claude", "--review-angles", "correctness,concurrency",
+        self.legacy_work("claude-angles", "--reviewer", "claude", "--review-angles", "correctness,concurrency",
                    "--fix-rounds", "1")
         output = self.wait("claude-angles")
         state = self.state("claude-angles")
@@ -2936,7 +2936,7 @@ class ClaudeReviewTests(RotationTestCase):
                     {"mode": "complete", "reply": self.work_result()},
                     {"mode": "complete", "reply": self.review_result(False)}])
                 slug = "claude-fallback-" + label
-                self.start(slug, "--review", *flags)
+                self.legacy_work(slug, "--review", *flags)
                 output = self.wait(slug)
                 self.assertEqual(self.state(slug)["review_result"]["verdict"], "clean")
                 self.assertTrue(self.invocations()[-1]["review"])
@@ -3005,7 +3005,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.trace_path.unlink(missing_ok=True)
                 self.env.update(CODEX_FAKE_RPC_FAILURE="null", CODEX_TASK_ACCOUNT_RETRY_SECONDS="0.01")
                 slug = "codex-status-required-" + executor
-                self.start(slug, "--executor", executor, "--reviewer", reviewer, "--review", "--no-push")
+                self.legacy_work(slug, "--executor", executor, "--reviewer", reviewer, "--review", "--no-push")
                 self.cli("wait", slug, "--through-sleep", "--timeout", "30", timeout=45)
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "failed")
@@ -3025,7 +3025,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.trace_path.unlink(missing_ok=True)
                 self.env.update(CODEX_FAKE_RPC_FAILURE=output, CODEX_TASK_ACCOUNT_RETRY_SECONDS="0.01")
                 slug = "claude-broken-codex-fallback-" + label
-                self.start(slug, "--executor", "claude", "--reviewer", "claude", "--review", "--no-push")
+                self.legacy_work(slug, "--executor", "claude", "--reviewer", "claude", "--review", "--no-push")
                 self.cli("wait", slug, "--through-sleep", "--timeout", "30", timeout=45)
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "failed")
@@ -3046,7 +3046,7 @@ class ClaudeReviewTests(RotationTestCase):
             {"mode": "complete", "reply": self.review_result(False)}])
         remove = "from pathlib import Path; Path(" + repr(str(self.claude)) + ").unlink()"
         check = shlex.quote(PYTHON) + " -I -c " + shlex.quote(remove)
-        self.start("claude-vanished", "--review", "--reviewer", "claude", "--check", check)
+        self.legacy_work("claude-vanished", "--review", "--reviewer", "claude", "--check", check)
         output = self.wait("claude-vanished")
         self.assertFalse(self.claude.exists())
         self.assertEqual(len(self.review_invocations()), 1)
@@ -3067,7 +3067,7 @@ class ClaudeReviewTests(RotationTestCase):
                     {"mode": "complete", "reply": self.work_result()},
                     {"mode": "complete", "reply": self.review_result(False)}])
                 slug = "claude-" + mode.replace("_", "-")
-                self.start(slug, "--review", "--reviewer", "claude")
+                self.legacy_work(slug, "--review", "--reviewer", "claude")
                 output = self.wait(slug)
                 self.assertRegex(output, r"== claude account default limited until [^\n]+; review by codex")
                 rows = [row for row in self.phase_telemetry_journal()
@@ -3115,7 +3115,7 @@ class ClaudeReviewTests(RotationTestCase):
                 self.claude_fixture(runs=[{"mode": mode, "reply": self.review_result(False)}])
                 self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
                 slug = "claude-modified-" + mode.replace("_", "-")
-                self.start(slug, "--review", "--reviewer", "claude")
+                self.legacy_work(slug, "--review", "--reviewer", "claude")
                 output = self.cli("wait", slug, "--timeout", "10")
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "failed")
@@ -3136,7 +3136,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[{
             "mode": "complete", "write_files": {"tracked.txt": "worker change\n", "clean.sh": script},
             "reply": self.work_result(commit_message="Do not run a worker-written filter")}])
-        self.start("claude-filter-guard", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-filter-guard", "--review", "--reviewer", "claude")
         output = self.wait("claude-filter-guard")
         state = self.state("claude-filter-guard")
         self.assertEqual(state["outcome"], "completed")
@@ -3157,7 +3157,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.git("push", "--quiet", "origin", "main")
         self.claude_fixture()
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-submodule", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-submodule", "--review", "--reviewer", "claude")
         output = self.wait("claude-submodule")
         state = self.state("claude-submodule")
         worktree = Path(state["worktree"])
@@ -3186,7 +3186,7 @@ class ClaudeReviewTests(RotationTestCase):
                     "mode": "complete", "write_files": {path: "Codex work must be preserved.\n"},
                     "reply": self.work_result()}])
                 slug = "claude-dirty-" + path.replace("/", "-").replace(".txt", "")
-                self.start(slug)
+                self.legacy_work(slug)
                 self.wait(slug)
                 worktree = self.state(slug)["worktree"]
                 before = self.git("-C", worktree, "status", "--porcelain")
@@ -3203,7 +3203,7 @@ class ClaudeReviewTests(RotationTestCase):
     def test_stop_interrupts_claude_review_process_group_without_fallback(self):
         self.claude_fixture(runs=[{"mode": "hold"}])
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-stop", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-stop", "--review", "--reviewer", "claude")
         self.until(lambda: any(event["command"] == "holding" for event in self.claude_trace()))
         child = self.claude_invocations()[0]
         self.assertTrue(self.process_is_live(child["pid"]))
@@ -3224,7 +3224,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.claude_fixture(runs=[{"mode": "hold"}], max_review_minutes=2)
         work = self.work_result()
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": work}])
-        self.start("claude-timeout", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-timeout", "--review", "--reviewer", "claude")
         self.until(lambda: any(event["command"] == "holding" for event in self.claude_trace()))
         self.assertEqual(self.state("claude-timeout")["reviews"][-1]["thread"],
                          self.claude_invocations()[-1]["session_id"])
@@ -3255,7 +3255,7 @@ class ClaudeReviewTests(RotationTestCase):
                 (self.home / "exec-count").unlink(missing_ok=True)
                 self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
                 slug = "claude-pool-timeout-" + failure
-                self.start(slug)
+                self.legacy_work(slug)
                 self.wait(slug)
                 self.env["CODEX_TASK_MINUTE_SECONDS"] = "1"
                 self.enable_fake_clock()
@@ -3294,7 +3294,7 @@ class ClaudeReviewTests(RotationTestCase):
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result(False)}])
-        self.start("claude-say", "--reviewer", "claude")
+        self.legacy_work("claude-say", "--reviewer", "claude")
         self.wait("claude-say")
         self.cli("say", "claude-say", "Continue and review", "--review")
         output = self.wait("claude-say")
@@ -3616,7 +3616,7 @@ class ClaudeReviewTests(RotationTestCase):
                 (self.home / "exec-count").unlink(missing_ok=True)
                 self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
                 slug = "claude-pool-" + label
-                self.start(slug, "--review", "--reviewer", "claude")
+                self.legacy_work(slug, "--review", "--reviewer", "claude")
                 output = self.wait(slug)
                 self.assertEqual([entry["config_dir"] for entry in self.claude_invocations()],
                                  [account["config_dir"] for account in accounts])
@@ -3651,7 +3651,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(hour, 3600)
         worker.claude_accounts.save_limits("default", self.claude_limits)
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-pool-token", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-pool-token", "--review", "--reviewer", "claude")
         output = self.wait("claude-pool-token")
         self.assertEqual([entry["config_dir"] for entry in self.claude_invocations()], [accounts[1]["config_dir"]])
         state = self.state("claude-pool-token")
@@ -3710,7 +3710,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(until, worker.claude_accounts.read_limits()["default"]["limited_at"] + 3600)
         clock.sleep(until - clock.time() + 1)
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-pool-token-back", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-pool-token-back", "--review", "--reviewer", "claude")
         output = self.wait("claude-pool-token-back")
         self.assertEqual([entry["config_dir"] for entry in self.claude_invocations()], [accounts[0]["config_dir"]])
         state = self.state("claude-pool-token-back")
@@ -3823,7 +3823,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result(False)}])
-        self.start("claude-pool-empty", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-pool-empty", "--review", "--reviewer", "claude")
         output = self.wait("claude-pool-empty")
         self.assertEqual(len(self.claude_invocations()), 2)
         self.assertEqual(len(self.review_invocations()), 1)
@@ -3847,7 +3847,7 @@ class ClaudeReviewTests(RotationTestCase):
         settings["claude"]["model"] = "model-a"
         (self.home / "claude-accounts.json").write_text(json.dumps(settings))
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-model-limit", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-model-limit", "--review", "--reviewer", "claude")
         output = self.wait("claude-model-limit")
         worker = self.worker()
         until = worker.config.local_time(self.reset)
@@ -3880,7 +3880,7 @@ class ClaudeReviewTests(RotationTestCase):
         (self.home / "claude-accounts.json").write_text(json.dumps(settings))
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
         worker = self.worker()
-        self.start("claude-model-lift", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-model-lift", "--review", "--reviewer", "claude")
         deadline = time.monotonic() + 30
         while "model-a" not in worker.claude_accounts.model_limits(worker.claude_accounts.read_limits().get(
                 "first", {})):
@@ -3900,7 +3900,7 @@ class ClaudeReviewTests(RotationTestCase):
     def test_claude_work_rotates_past_an_account_limited_for_its_model(self):
         self.claude_pool_fixture(runs=[{"limits": self.model_rejection(.35), "limit_events": 2},
                                        {"reply": self.work_result()}])
-        self.start("claude-model-work", "--executor", "claude", "--model", "model-a")
+        self.legacy_work("claude-model-work", "--executor", "claude", "--model", "model-a")
         self.wait("claude-model-work")
         state = self.state("claude-model-work")
         self.assertEqual((state["outcome"], state["claude_account"]), ("completed", "second"))
@@ -3933,7 +3933,7 @@ class ClaudeReviewTests(RotationTestCase):
         worker.claude_accounts.save_limits("first", self.model_rejection(.35))
         worker.claude_accounts.mark_limited("first", reason="usage limit", model="model-a")
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-model-review", "--model", "model-a", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-model-review", "--model", "model-a", "--review", "--reviewer", "claude")
         self.wait("claude-model-review")
         state = self.state("claude-model-review")
         self.assertEqual(state["task_model"], "model-a")
@@ -4043,7 +4043,7 @@ class ClaudeReviewTests(RotationTestCase):
     def test_claude_pool_spreads_angles_and_lists_per_account_limits(self):
         accounts = self.claude_pool_fixture()
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-pool-angles", "--reviewer", "claude", "--review-angles", "correctness,concurrency")
+        self.legacy_work("claude-pool-angles", "--reviewer", "claude", "--review-angles", "correctness,concurrency")
         output = self.wait("claude-pool-angles")
         self.assertEqual([entry["config_dir"] for entry in self.claude_invocations()],
                          [account["config_dir"] for account in accounts])
@@ -4062,7 +4062,7 @@ class ClaudeReviewTests(RotationTestCase):
     def test_report_splits_reviewer_cost_and_treats_historical_reviews_as_codex(self):
         self.claude_fixture()
         self.account(self.home, "A", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.start("claude-report", "--review", "--reviewer", "claude")
+        self.legacy_work("claude-report", "--review", "--reviewer", "claude")
         self.wait("claude-report")
         self.assert_claude_review_telemetry(1)
         rows = self.telemetry_journal()
@@ -4407,7 +4407,7 @@ class ClaudeReviewTests(RotationTestCase):
         self.assertEqual(self.state("duty-new")["account"], "second")
         # The former duty account takes new work again; a limit rotates past the new duty account.
         self.write_duty("codex", "second", codex=rooms)
-        self.start("duty-rotate")
+        self.legacy_work("duty-rotate")
         self.wait("duty-rotate")
         state = self.state("duty-rotate")
         self.assertEqual(state["account"], "third")

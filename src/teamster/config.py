@@ -264,7 +264,7 @@ def validate_work_model(provider, model):
 
 
 def task_config(st):
-    return accounts_config(allow_empty_pools=executors.from_state(st).account_field is None)
+    return accounts_config(allow_empty_pools=bool(st.get("work_binding")) or executors.from_state(st).account_field is None)
 
 
 def task_profiles(cfg):

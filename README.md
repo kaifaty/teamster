@@ -47,11 +47,11 @@ Work includes follow-ups, fixes, CI repairs and wrap-up. For protected duty chat
 private ACP agent that invokes the selected Codex or Claude CLI with the duty's native guards.
 Account login, quota probes and saved workspace checks also use their native tools.
 
-Choose a model per task with `start --model M`, and a separate Codex review model with
-`--review-model M` on `start`, `say`, or `review`. Follow-ups inherit both choices; `say --model default`
-or `--review-model default` restores the corresponding Codex configuration default. Before choosing,
-use `accounts --json` to read account limits as structured data. See
-[task models and account JSON](src/teamster/docs/settings.md#task-models).
+New work keeps the executor, model and connection chosen at startup. If its quota runs out,
+the supervisor waits for that connection and resumes the same native session. To change the
+resource or request an independent review, start a separate task and reference the original
+slug and commit. Older work retains its saved version and pool behavior.
+[Assigned work connections](src/teamster/docs/accounts.md#assigned-work-connection)
 
 The worker finds Codex in this order:
 
@@ -283,7 +283,7 @@ lines of `check.log` to the worker;
 without a remaining round, it stops without another review. Reviews are told the command and result
 of a passing saved check and may run only focused checks for a specific finding, not repeat the suite.
 
-`--max-minutes M` on `start` and `say` caps active implementation time across account rotations;
+`--max-minutes M` on `start` and `say` caps active implementation time across attempts;
 reviews and scouts use a separate cap. `--max-weekly P` on `start`, `say`, or `review` caps total task
 usage across phases, follow-ups and accounts. Repeated identical command failures also stop a turn.
 See [budgets](src/teamster/docs/budgets.md),
@@ -353,7 +353,7 @@ A minimal configuration is:
 | `language` | `"en"` | `"en"` or `"ru"`; selects standing rules and worker-generated scout, handoff, review, fix, and reset-continuation prompts. The lead writes the brief in the user's configured language. |
 | `sandbox` | `"off"` | `"off"` or `"workspace"`; limit worker, review, and check writes to the worktree and `writable_dirs`. `start --sandbox` overrides it for the task; `say` inherits it. |
 | `writable_dirs` | `[]` | Additional writable directories, such as build caches; `~` is expanded and paths are made absolute. |
-| `accounts` | Absent | Explicit account list; its presence enables automatic limit monitoring and rotation. Without it, tasks use the existing `~/.codex` login. |
+| `accounts` | Absent | Pool used for initial selection and for roles that support rotation. Without it, tasks use the existing `~/.codex` login. |
 | `switch_at` | `99` | Used-percentage threshold for configured accounts, greater than 0 and at most 100. |
 | `credits` | `false` | Allow continuing on credits if no configured account has ordinary usage available. |
 | `credits_floor` | `0` | Credit reserve: an account runs on credits only while its own balance stays above this number. |

@@ -134,6 +134,7 @@ The cycle continues from the step it stopped at, in the same turn and with the t
 
 | Cut short during | Resume |
 |---|---|
+| waiting for the assigned work connection | restores the outstanding order and waits for the same connection before continuing its native session |
 | a work turn or a fix round (review or CI) | continues the same thread with a message that names the signal and its time, says the turn was not the worker's fault, and gives the uncommitted file count, the unpushed commit count and the PR; then the usual check, review, fix rounds and CI |
 | a review | runs the review again, then the fix rounds |
 | after a saved review, before its fix round | starts that fix round from the saved review |

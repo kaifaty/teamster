@@ -1,6 +1,8 @@
 """Shared fixtures and helpers for the rotation CLI tests."""
 import datetime
+import contextlib
 import fcntl
+import io
 import json
 import os
 import shlex
@@ -15,6 +17,7 @@ import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 
 # Isolated Python omits the script directory from its import path.
@@ -1580,6 +1583,30 @@ class RotationTestCase(unittest.TestCase):
 
     def start(self, slug, *args):
         return self.cli("start", slug, "--brief", str(self.brief), "--repo", str(self.repo), *args)
+
+    def legacy_work(self, slug, *args):
+        """Exercise the supervisor on a released, unassigned work record in this fixture's checkout."""
+        worker = load_worker(self.env, clear=True)
+        spawn = worker.supervisor.spawn
+        fixture = ROOT / "tests/fixtures/state-1.101.1/sleeping/state.json"
+
+        def launch_record(settings, prompt, *turn, **options):
+            # Reuse CLI setup for the temporary worktree, brief and command options.
+            # Restore the release record before handing it to the normal disk loader and supervisor.
+            record = json.loads(fixture.read_text())
+            record.update({k: settings[k] for k in record.keys() & settings.keys() if k != "plugin_version"})
+            worker.task_state.save(record)
+            proc = spawn(worker.task_state.load(slug), prompt, *turn, **options)
+            self.extra_pids.add(proc.pid)
+            self.addCleanup(proc.wait, timeout=10)
+            return proc
+
+        argv = [str(SCRIPT), "start", slug, "--brief", str(self.brief), "--repo", str(self.repo), *args]
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(worker.supervisor, "spawn", side_effect=launch_record), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            worker.cli.main()
+        return output.getvalue()
 
     def state(self, slug):
         tasks = Path(self.env["TEAMSTER_HOME"]) / "tasks" if self.env.get("TEAMSTER_HOME") else self.home / "claude-tasks"

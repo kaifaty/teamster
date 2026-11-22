@@ -239,8 +239,10 @@ def resume(slug, loaded):
             cfg = config.task_config(st)
             prompt = None
             if step in ("work", "fix"):
-                prompt = threads.followup_prompt(st, prompts.interrupted_prompt(cut, worktree_state(st), cfg),
-                                                 cfg, source="resume")
+                prompt = cycle.get("waiting_prompt")
+                if prompt is None:
+                    prompt = threads.followup_prompt(st, prompts.interrupted_prompt(cut, worktree_state(st), cfg),
+                                                     cfg, source="resume")
             now = clock.CLOCK.time()
             st.setdefault("resumed", []).append({"at": now, "signal": cut["signal"], "signal_at": cut["at"],
                                                  "step": step, "turn": st.get("turns", 0)})
@@ -250,9 +252,13 @@ def resume(slug, loaded):
             if step in ("work", "fix", "check", "ci"):
                 st["kind"] = "work"
             # A resumed cycle keeps its turn number, rounds, results and phase windows; it runs in this version.
-            st.update(outcome="running", turn_started=now, exhausted=None, reset_wait_seconds=0,
+            st.update(outcome="running", turn_started=now, exhausted=None,
                       runtime=task_state.STATE_FIELDS["runtime"].spawn_reset(st, None))
+            if "work_binding" not in st:
+                st["reset_wait_seconds"] = 0
             for key in RESUME_CLEARED:
+                if key == "sleeping" and "work_binding" in st and "waiting_prompt" in cycle:
+                    continue
                 st.pop(key, None)
             start_process(st)
             return st, step
@@ -267,6 +273,9 @@ def apply_say(st, options, cfg):
     scouting = st.get("kind") in ("scout", "reflect")
     try:
         executor = executors.from_state(st)
+        binding = st.get("work_binding")
+        if binding and options.get("model", binding["model"]) != binding["model"]:
+            procs.die("This task has an assigned work model. Start a separate linked task to change it.")
         if st.get("kind") == duty_chat.CHAT_KIND:
             account, refusal = duty_chat.chat_account(cfg)
             if account is None:
@@ -295,7 +304,7 @@ def apply_say(st, options, cfg):
     if options.get("task_type") is not None:
         st["task_type"] = options["task_type"]
     minutes = options.get("max_minutes")
-    if minutes is not None or not reflecting:
+    if minutes is not None or (not reflecting and "work_binding" not in st):
         st["max_turn_minutes"] = minutes if minutes is not None else cfg.get("max_turn_minutes")
     if options.get("no_ci_command"):
         st["ci_command"] = None
@@ -504,7 +513,9 @@ def finalize_cycle(st, cfg, check, stopped):
                                "review refused" if st["outcome"] == "refused" and st.get("kind") == "review"
                                else st["outcome"] if st["outcome"] != "completed"
                                else st.get("review_skipped", "review unknown"))
-    st.pop("sleeping", None)
+    if st["outcome"] != "interrupted" or "work_binding" not in st:
+        st.pop("sleeping", None)
+        (st.get("cycle") or {}).pop("waiting_prompt", None)
     st.pop("pending", None)
     st["turn_finished"] = clock.CLOCK.time()
     telemetry_log.record_turn_result(st, stopped)

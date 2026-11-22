@@ -178,7 +178,11 @@ def configurable_names():
 
 
 def from_state(st):
-    return get(st.get("executor", "codex"))
+    worker = get(st.get("executor", "codex"))
+    binding = st.get("work_binding")
+    if binding and (binding.get("version") != 1 or binding["executor"] != worker.name):
+        raise ValueError("Cannot use the saved work binding with this executor or binding version.")
+    return worker
 
 
 def for_start(name, profile, cfg):

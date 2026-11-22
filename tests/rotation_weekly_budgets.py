@@ -89,7 +89,7 @@ class WeeklyBudgetTests(RotationTestCase):
         self.account(self.other, "B", self.reset + 3600, used=95, runs=[
             {"mode": "complete", "reply": self.review_result(False),
              "weekly_used_before": 95, "weekly_used_after": 2}])
-        self.start("weekly-accounts", "--max-weekly", "50")
+        self.legacy_work("weekly-accounts", "--max-weekly", "50")
         self.wait("weekly-accounts")
         self.assertEqual(self.state("weekly-accounts")["weekly_used_percent"], 2)
         path = self.home / "fixture.json"
@@ -121,7 +121,7 @@ class WeeklyBudgetTests(RotationTestCase):
              "weekly_update_after": 0.35},
             {"mode": "complete", "reply": self.work_result("partial"),
              "weekly_used_before": 23.5, "weekly_used_after": 24}])
-        self.start("weekly-rotation", "--max-weekly", "5", "--review")
+        self.legacy_work("weekly-rotation", "--max-weekly", "5", "--review")
         output = self.wait("weekly-rotation", timeout=15)
         state = self.state("weekly-rotation")
         self.assertEqual(state["outcome"], "budget_exhausted")
@@ -148,7 +148,7 @@ class WeeklyBudgetTests(RotationTestCase):
             {"mode": "complete", "reply": self.work_result("partial"),
              "weekly_used_before": 16, "weekly_used_after": 16}])
         self.account(self.other, "B", self.reset + 3600, used=99)
-        self.start("weekly-before-sleep", "--max-weekly", "5", "--review")
+        self.legacy_work("weekly-before-sleep", "--max-weekly", "5", "--review")
         output = self.wait("weekly-before-sleep", timeout=12)
         state = self.state("weekly-before-sleep")
         self.assertEqual(state["outcome"], "budget_exhausted")
@@ -172,7 +172,7 @@ class WeeklyBudgetTests(RotationTestCase):
             {"mode": "usage_error", "weekly_used_before": 10, "weekly_used_after": 16},
             {"mode": "complete", "reply": result,
              "weekly_used_before": 16, "weekly_used_after": 16}])
-        self.start("weekly-failed-exec", "--max-weekly", "5", "--review", "--check", "true")
+        self.legacy_work("weekly-failed-exec", "--max-weekly", "5", "--review", "--check", "true")
         output = self.wait("weekly-failed-exec", timeout=12)
         state = self.state("weekly-failed-exec")
         self.assertEqual(state["outcome"], "budget_exhausted")
@@ -875,7 +875,7 @@ class WeeklyBudgetTests(RotationTestCase):
             {"mode": "hold", "weekly_used_before": 30, "weekly_used_after": 32.5,
              "weekly_update_after": 0.35},
             {"mode": "complete", "reply": self.work_result("partial")}])
-        self.start("weekly-no-rotation", "--max-weekly", "2")
+        self.legacy_work("weekly-no-rotation", "--max-weekly", "2")
         output = self.wait("weekly-no-rotation", timeout=12)
         state = self.state("weekly-no-rotation")
         self.assertEqual(state["outcome"], "budget_exhausted")

@@ -119,6 +119,17 @@ def acp_terminal_session(client, a):
 
 def cmd_acp(a):
     """Run a user-driven conversation in one ACP session."""
+    cwd = Path(a.repo).resolve()
+    root = config.WORKTREES.resolve()
+    if cwd.is_relative_to(root):
+        parts = cwd.relative_to(root).parts
+        slug = parts[0].removeprefix("claude-") if parts else ""
+        path = task_state.state_path(slug)
+        if path.is_file() and "work_binding" in task_state.load(slug):
+            message = "This worktree has an assigned work connection. Use say or start a separate linked task for chat."
+            if a.events:
+                acp_event("error", message=message)
+            procs.die(message)
     active = False
     stopped = None
 
@@ -301,7 +312,7 @@ def cmd_start(a):
             'report that with the numbers instead of fixing it.'))
     (d / "brief.md").write_text(prompt)
     st = {"slug": a.slug, "repo": str(repo), "worktree": str(wt), "branch": branch, "base": a.base,
-          "executor": executor.name, "effort": effort, "task_type": a.task_type,
+          "executor": executor.name, "work_binding": None, "effort": effort, "task_type": a.task_type,
           "task_model": None if model == "default" else model,
           "review_model": None if getattr(a, "review_model", None) == "default" else getattr(a, "review_model", None),
           "account": cfg["accounts"][0]["name"] if executor.account_field is not None else None,
@@ -546,7 +557,10 @@ def cmd_resume(a):
             procs.die("cannot resume: " + "; ".join(refusals))
     # Tasks one restart cut short were running together then; they all continue together.
     for st in candidates:
-        move = installs.follow_pin(st, upgrade=True)
+        if (a.all or len(a.slugs) > 1) and installs.task_version(st) != config.plugin_version():
+            subprocess.run([sys.executable, "-I", str(config.SCRIPT_RESOLVED), "resume", st["slug"]], check=True)
+            continue
+        move = installs.follow_pin(st)
         cut = task_state.interruption(st)
         resumed, step = supervisor.resume(st["slug"], st)
         if move:

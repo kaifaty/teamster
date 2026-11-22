@@ -301,7 +301,8 @@ def run(st, cfg, prompt, stopped, account, deadline=None, *, model=None, effort=
     try:
         response = claude_runner.run_claude(
             account, st["worktree"], prompt, stopped, deadline,
-            model or settings.get("model"), effort or settings.get("effort"), settings["max_turns"],
+            model if st.get("work_binding") else model or settings.get("model"),
+            effort or settings.get("effort"), settings["max_turns"],
             reviewing=True, started=started, progress=progress,
             task_dir=config.TASKS / st["slug"] if st.get("slug") else None)
         if response["outcome"] == "stopped":

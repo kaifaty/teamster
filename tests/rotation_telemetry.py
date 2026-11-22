@@ -90,7 +90,7 @@ class TelemetryReportTests(RotationTestCase):
             {"mode": "complete", "reply": self.review_result(False) if review else self.work_result()}
             for review in (False, True, False, True, False, True, True, False, True, True, True)])
         count = len(self.invocations())
-        self.start("model-choice", "--model", "Task.1_a", "--review-model", "Review.2_b",
+        self.legacy_work("model-choice", "--model", "Task.1_a", "--review-model", "Review.2_b",
                    "--effort", "high", "--review")
         output = self.wait("model-choice")
         for text in (output, self.cli("status", "model-choice")):
@@ -1176,7 +1176,7 @@ worker['telemetry_log'].PhaseTelemetry(state, 'work').finish(outcome='completed'
     def test_stats_and_clean_include_review_threads_and_account_homes(self):
         self.configure()
         self.account(self.home, "A", self.reset, runs=[{"mode": "usage_error"}])
-        self.start("all-threads")
+        self.legacy_work("all-threads")
         self.wait("all-threads")
         self.account(self.home, "A", self.reset)
         self.cli("review", "all-threads")

@@ -1,4 +1,5 @@
 """Isolated Claude Code transport shared by reviews and writable work turns."""
+import hashlib
 import json
 import os
 import selectors
@@ -39,9 +40,20 @@ def account_environment(account, timeout):
     except (OSError, subprocess.TimeoutExpired):
         return environment, ""
     token = credential.stdout.strip() if credential.returncode == 0 else ""
+    if account.get("credential_id") and hashlib.sha256(token.encode()).hexdigest() != account["credential_id"]:
+        raise ValueError("The assigned Claude credential changed or was revoked. Restore it or start a separate linked task.")
     if token:
         environment["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return environment, token
+
+
+def work_connection(account):
+    """The Keychain slot is reusable. Identify the opaque setup token without saving it."""
+    _, token = account_environment(account, config.ACCOUNT_TIMEOUT)
+    if not token:
+        raise ValueError(f"The credential for Claude account {account['name']} is unavailable. Restore its login.")
+    return {"config_dir": account["config_dir"], "token_keychain": account["token_keychain"],
+            "keychain_user": os.environ.get("USER", ""), "credential_id": hashlib.sha256(token.encode()).hexdigest()}
 
 
 def bash_hook_settings():

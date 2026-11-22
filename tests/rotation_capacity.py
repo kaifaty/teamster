@@ -198,7 +198,7 @@ class CapacityRetryTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "capacity_error"},
             {"mode": "complete", "reply": self.work_result()}])
-        self.start("capacity-no-accounts", "--check", "true")
+        self.legacy_work("capacity-no-accounts", "--check", "true")
         output = self.wait("capacity-no-accounts")
         executions = self.invocations()
         self.assertEqual(len(executions), 2)

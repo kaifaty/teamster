@@ -1,7 +1,8 @@
 # Time and weekly budgets
 
-`--max-minutes M` counts active exec time across account rotations, excluding reset sleeps, account
-waits and CI waits. Reviews and scouts use the separate `max_review_minutes` cap. Defaults are in
+`--max-minutes M` counts active exec time across attempts, excluding reset sleeps, account
+waits and CI waits. New work keeps its saved time cap on follow-ups unless the caller supplies
+a new one. Reviews and scouts use the separate `max_review_minutes` cap. Defaults are in
 [settings.md](settings.md).
 
 `teamster start --task-timeout SEC` sets the task's lifetime in wall-clock seconds from task
