@@ -141,6 +141,8 @@ const resolutionLabels: Record<string, string> = {
   clarification_requested: "Ждёт ответа пользователя",
   waiting_followup: "Поручение передано исполнителю",
   followup_finished: "Исполнитель ответил",
+  repair_conflict: "Оператор вернул исполнителю конфликт PR",
+  conflict_detected: "PR конфликтует с базовой веткой",
 };
 const managed = computed(() => sessions.value.filter((row) => row.slug && row.record
   && ["work", "review"].includes(row.record.kind) && !row.slug.match(/-\d{8}T\d{6}Z$/)));

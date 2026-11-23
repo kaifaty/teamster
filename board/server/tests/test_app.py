@@ -271,9 +271,22 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
             monkeypatch.setattr(operator_activity_module, "pull_request_evidence", lambda prs: merged)
             monkeypatch.setattr(operator_resolution_module, "pull_request_evidence", lambda prs: merged)
             task_state = directory / "state.json"
-            checkout = directory / "checkout"
-            checkout.mkdir()
+            repository = Path(state["repo"])
+            repository.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main", str(repository)], check=True)
+            git = ["git", "-C", str(repository)]
+            subprocess.run([*git, "-c", "user.name=Test", "-c", "user.email=test@example.test",
+                            "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+            merge_sha = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+            subprocess.run([*git, "remote", "add", "origin", "https://github.com/owner/repository.git"], check=True)
+            subprocess.run([*git, "update-ref", "refs/remotes/origin/main", merge_sha], check=True)
+            checkout = settings.path("worktrees") / "claude-demo" / repository.name
+            subprocess.run([*git, "worktree", "add", "-q", "-b", state["branch"], str(checkout)], check=True)
+            forge = {"state": "OPEN", "isDraft": False, "isCrossRepository": False, "mergeable": "CONFLICTING",
+                     "headRefName": state["branch"], "headRefOid": merge_sha, "baseRefName": "main"}
+            monkeypatch.setattr(project_tasks_module, "_forge_json", lambda *args: forge)
             idle = {**state, "pid": None, "turn_finished": 20.0, "outcome": "completed", "worktree": str(checkout),
+                    "base": "origin/main",
                     "result": {"status": "partial", "remaining": ["Verify the result."]}}
             task_state.write_text(json.dumps(idle))
             local = writable.state.board
@@ -308,22 +321,35 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
             assert len(orders) == 1 and orders[0][0] == "say" and orders[0][1]["slug"] == "demo"
             assert orders[0][1]["text"].endswith("Which checks passed?")
             assert local.project_tasks.card(current_id)[0]["status"] == "active"
-            task_state.write_text(json.dumps({**idle, "turns": 2, "result": {"status": "done", "summary": "MSVC passed."}}))
+            done = {**idle, "turns": 2, "publish": {"pr": linked_pr}, "result": {"status": "done", "summary": "MSVC passed."}}
+            task_state.write_text(json.dumps(done))
             local.store.poll()
             assert client.post(poll, headers=observer).json() == {"card": current_id}
-            assert local.project_tasks.card(current_id)[0]["status"] == "needs_input"
+            assert len(orders) == 2 and orders[-1][0] == "say" and orders[-1][1]["slug"] == "demo"
+            assert f"existing pull request {linked_pr} against origin/main" in orders[-1][1]["text"]
+            assert local.project_tasks.card(current_id)[0]["status"] == "active"
+            repair, = [event for event in client.get(read).json()["events"] if event["kind"] == "repair_conflict"]
+            assert repair["actor"] == "operator" and repair["detail"]["turn"] == 2
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            task_state.write_text(json.dumps(dict(done, turns=3)))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": current_id}
+            assert len(orders) == 2 and local.project_tasks.card(current_id)[0]["status"] == "blocked"
 
-            repository = Path(state["repo"])
-            repository.mkdir()
-            subprocess.run(["git", "init", "-q", "-b", "main", str(repository)], check=True)
-            subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.test",
-                            "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"], check=True)
-            merge_sha = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
-            subprocess.run(["git", "-C", str(repository), "update-ref", "refs/remotes/origin/main", merge_sha], check=True)
+            continuation = propose("continue", "Review the remaining integration choice.")
+            assert client.post(resolution, json=continuation).is_success
+            task_state.write_text(json.dumps(dict(done, turns=4, result={
+                "status": "needs_decision", "questions": ["Which compatibility mode should we keep?"],
+            })))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": current_id}
+            assert len(orders) == 3 and local.project_tasks.card(current_id)[0]["status"] == "needs_input"
+
+            forge["state"] = "MERGED"
             merged[0].update(merge_sha=merge_sha, base="main")
-            checkout.rmdir()
-            task_state.write_text(json.dumps({**idle, "turns": 2, "publish": {"pr": linked_pr},
-                                              "result": {"status": "done", "summary": "MSVC passed."}}))
+            subprocess.run([*git, "worktree", "remove", str(checkout)], check=True)
+            subprocess.run([*git, "branch", "-D", state["branch"]], check=True, capture_output=True)
+            task_state.write_text(json.dumps(dict(done, turns=4)))
             local.store.poll()
             commands = []
 

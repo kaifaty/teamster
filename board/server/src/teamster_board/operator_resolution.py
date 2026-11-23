@@ -11,12 +11,14 @@ import sys
 import time
 from contextlib import closing, contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from . import duty_tasks
 from .external_duty import valid_text
-from .project_tasks import pull_request_evidence
-from .store import ARCHIVED, Store, alive, ready_for_review
+from .project_tasks import pull_request_conflict, pull_request_evidence
+from .store import ARCHIVED, Store, alive, cargo, ready_for_review
+from .task_files import task_queue
 
 
 TERMINAL = ("archived", "cleanup_blocked", "revoked", "followup_finished", "clarification_requested")
@@ -325,19 +327,99 @@ class OperatorResolution:
                 self._event(db, row, "choice", {"action": action, "note": option["text"], "run": run,
                                                 "proposal": proposal}, actor="user")
             if status == "dispatch_started":
-                request = ("Answer this question using existing evidence. Do not change files.\n\n"
-                           if action == "ask_executor" else "Continue this task with the following assignment.\n\n")
-                reply = self.board.actions._task("say", {"slug": operation["slug"], "text": request + option["text"]})
-                if not isinstance(reply, dict) or not reply.get("ok"):
-                    reason = "Teamster could not confirm delivery"
-                    if hasattr(reply, "body"):
-                        reason = json.loads(reply.body).get("error", reason)
-                    self._status(db, row, "cleanup_blocked", {"reason": reason})
-                    return
-                self._status(db, row, "waiting_followup", {"action": action, "run": run, "note": option["text"]})
-                self._transition(db, row, operation["from"], "active")
+                self._dispatch(db, row, operation)
             else:
                 self._step(db, row, lock_fd)
+
+    def _dispatch(self, db, row, operation):
+        action = operation["action"]
+        request = ("Answer this question using existing evidence. Do not change files.\n\n"
+                   if action == "ask_executor" else "Continue this task with the following assignment.\n\n")
+        reply = self.board.actions._task("say", {"slug": operation["slug"], "text": request + operation["text"]})
+        if not isinstance(reply, dict) or not reply.get("ok"):
+            reason = "Teamster could not confirm delivery"
+            if hasattr(reply, "body"):
+                reason = json.loads(reply.body).get("error", reason)
+            self._status(db, row, "cleanup_blocked", {"reason": reason})
+            if operation.get("automatic_conflict"):
+                self._transition(db, row, operation["from"], "blocked")
+            return
+        self._status(db, row, "waiting_followup", {"action": action, "run": row["run"], "note": operation["text"]})
+        self._transition(db, row, operation["from"], "active")
+
+    def _work_conflict(self, card, record, state):
+        result = state.get("result") or {}
+        if (state.get("kind", "work") != "work" or result.get("status") == "needs_decision" or cargo(state)["questions"]
+                or not ready_for_review(result.get("status"), state.get("outcome")) or self._verdict(record, state)):
+            return None
+        pr = next((pr for pr in card["pull_requests"] if pr["url"] == record.summary["pr"]), None)
+        return pull_request_conflict(pr) if pr else None
+
+    def _conflict_checkout(self, record, state, conflict):
+        worktree = state.get("worktree")
+        if (self.board.actions.reason or not worktree or state.get("branch") != conflict["branch"]
+                or state.get("base") not in (f"origin/{conflict['base']}", f"refs/remotes/origin/{conflict['base']}")
+                or state.get("no_push") or task_queue(self.store._file(record.path, "queue.json"))["waiting"]):
+            return False
+        tree = Path(worktree).resolve()
+        if not tree.is_dir() or not tree.is_relative_to(self.board.settings.path("worktrees").resolve()):
+            return False
+        git = ["git", "-c", "core.fsmonitor=false", "-C", str(tree)]
+        env = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+        try:
+            def read(*args):
+                return subprocess.check_output([*git, *args], env=env, text=True, timeout=5,
+                                               stderr=subprocess.DEVNULL).strip()
+
+            origin = read("remote", "get-url", "origin").removesuffix(".git")
+            match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", origin)
+            repository = urlsplit(conflict["url"]).path.split("/pull/", 1)[0].lstrip("/")
+            return (match is not None and match[1].casefold() == repository.casefold()
+                    and read("rev-parse", "--show-toplevel") == str(tree)
+                    and Path(read("rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+                    == (Path(state["repo"]) / ".git").resolve()
+                    and read("symbolic-ref", "--short", "HEAD") == conflict["branch"]
+                    and read("rev-parse", "HEAD") == conflict["head"]
+                    and not read("status", "--porcelain"))
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def _finish_followup(self, db, row, operation, card, current):
+        record, _, state = current
+        result = state.get("result") or {}
+        question = result.get("status") == "needs_decision" or bool(cargo(state)["questions"])
+        conflict = self._work_conflict(card, record, state)
+        detail = {"run": row["run"], "turn": state["turns"], "report": str(result.get("summary") or "")[:1000]}
+        if (conflict and not operation.get("automatic_conflict") and card["status"] == "active"
+                and self._conflict_checkout(record, state, conflict)):
+            latest = self._run(row["run"])
+            if latest and latest[2] == state:
+                note = (f"Resolve the merge conflict in the existing pull request {conflict['url']} "
+                        f"against origin/{conflict['base']} on the assigned branch. Preserve the original task scope "
+                        "and upstream changes, then rerun the saved checks. Update only this PR's source branch "
+                        "using a normal push. Do not force-push, merge the PR, or open another PR. "
+                        "If resolving the conflict needs a product decision, describe it and stop.")
+                next_turn = {"from": "active", "action": "continue", "text": note, "slug": state["slug"],
+                             "created": state["created"], "turn": state["turns"],
+                             "id": _key(row["generation"], "pr_conflict", state["turns"]), "automatic_conflict": True}
+                with db:
+                    self._event(db, row, "followup_finished", detail)
+                started = self._status(db, row, "dispatch_started", {**detail, "reason": "The linked PR conflicts with its base"},
+                                       payload=next_turn)
+                with db:
+                    self._event(db, row, "repair_conflict", {"run": row["run"], "turn": state["turns"],
+                                                            "reason": conflict["url"], "note": note})
+                self._dispatch(db, started, next_turn)
+                return
+        status = ("needs_input" if question else "blocked" if conflict else
+                  "ready" if ready_for_review(result.get("status"), state.get("outcome")) else "blocked")
+        if conflict:
+            detail["reason"] = "The linked PR still conflicts with its base"
+            with db:
+                self._event(db, row, "conflict_detected", {"run": row["run"], "turn": state["turns"],
+                                                          "reason": conflict["url"]})
+        self._transition(db, row, card["status"], status)
+        self._status(db, row, "followup_finished", detail)
 
     @staticmethod
     def _version(state):
@@ -428,26 +510,25 @@ class OperatorResolution:
                 return True
             if row["status"] == "dispatch_started":
                 self._status(db, row, "cleanup_blocked", {"reason": "Delivery is unconfirmed. Inspect the executor before retrying."})
+                if operation.get("automatic_conflict"):
+                    self._transition(db, row, operation["from"], "blocked")
                 return True
             if row["status"] == "waiting_followup":
-                card, _ = self.board.project_tasks.card(row["card"])
+                card, linked = self.board.project_tasks.card(row["card"])
                 if card["status"] in ("done", "cancelled"):
                     self._status(db, row, "cleanup_blocked", {"reason": "The card was closed while the executor was working"})
                     return True
                 current = self._run(row["run"])
-                if not current:
+                if not current or row["run"] not in linked:
                     self._status(db, row, "cleanup_blocked", {"reason": "Executor is no longer available"})
                     return True
                 state = current[2]
                 if (state.get("turns", 0) <= operation["turn"] or not state.get("turn_finished")
                         or alive(state.get("pid")) or state.get("pending")):
                     return self._transition(db, row, operation["from"], "active")
-                result = state.get("result") or {}
-                status = ("needs_input" if operation["action"] == "ask_executor" or result.get("status") == "needs_decision"
-                          else "ready" if ready_for_review(result.get("status"), state.get("outcome")) else "blocked")
-                self._transition(db, row, "active", status)
-                self._status(db, row, "followup_finished", {"run": row["run"], "turn": state["turns"],
-                                                            "report": str(result.get("summary") or "")[:1000]})
+                if current[0].summary["alive"] or current[0].summary["turn"] != state["turns"]:
+                    return False
+                self._finish_followup(db, row, operation, card, current)
                 return True
         if row["status"] == "verdict_started" and row["rule"] == "negative":
             operation = json.loads(row["payload"])

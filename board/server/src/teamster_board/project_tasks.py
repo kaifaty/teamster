@@ -119,6 +119,21 @@ def pull_request_status(pr, logins):
     return _status_of_pull_request(_pull_request_data(pr, logins, "state,isDraft"))
 
 
+def pull_request_conflict(pr):
+    if pr["provider"] != "github":
+        return None
+    data = _pull_request_data(pr, {}, "state,isDraft,isCrossRepository,mergeable,headRefName,headRefOid,baseRefName")
+    if (_status_of_pull_request(data) != "open" or data.get("isDraft") is not False
+            or data.get("isCrossRepository") is not False or data.get("mergeable") != "CONFLICTING"):
+        return None
+    head, base, branch = (data.get(key) for key in ("headRefOid", "baseRefName", "headRefName"))
+    if (not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head)
+            or not isinstance(base, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", base)
+            or not isinstance(branch, str)):
+        return None
+    return {"url": pr["url"], "head": head, "base": base, "branch": branch}
+
+
 def pull_request_evidence(prs):
     logins = forgejo_logins() if any(pr["provider"] == "forgejo" for pr in prs) else {}
     rows = []

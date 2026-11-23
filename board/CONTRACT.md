@@ -1521,6 +1521,11 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   `POST /api/external-duty/v1/resolutions/poll` processes at most one queued action
   under the existing command lock. It accepts no target from the caller. Both routes require the
   Board operator configuration and bearer authorization.
+  When an operator-directed turn finishes without a question, an open non-draft GitHub PR with
+  a verified merge conflict can be sent back once to the linked work session. The Board matches
+  the published head, base, repository and clean managed checkout before delivery. This records
+  a `repair_conflict` event and adds no new session. An unresolved conflict after the attempt is
+  blocked. Actual decision questions still wait for the user.
 - `GET /api/operator-chat/{id}` returns `{answer: null}` while waiting and `{answer: string}` when
   ready. An unanswered request expires after 120 seconds. Both routes require an actions-enabled
   Board configured with the operator's SQLite state and external duty configuration.
