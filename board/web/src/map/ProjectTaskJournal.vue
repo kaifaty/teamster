@@ -227,6 +227,7 @@ const entries = computed(() => {
       data.verdict === "accepted" ? "Результат принят" : data.verdict === "dropped" ? "Работа отклонена" : undefined,
       data.report ?? (typeof data.evidence === "object" ? data.evidence?.report : undefined),
       data.note ?? data.phrase, data.sha && `SHA ${data.sha}`, data.archive && `Архив ${data.archive}`,
+      data.record_only && "В архив перенесён журнал задачи. Рабочих ресурсов не было.",
       data.files !== undefined ? `Файлов и ссылок вне Git: ${data.files}` : undefined,
       data.worktree && `Рабочая копия ${data.worktree}`,
       (data.operation ?? data.id) && `Операция ${data.operation ?? data.id}`].filter(Boolean).join("\n");

@@ -77,6 +77,9 @@ async function chooseOption(action: OperatorOption) {
           <strong>{{ optionLabels[option.action] }}</strong>
           <small v-if="proposal.recommended === option.action" class="muted">Рекомендация оператора</small>
           <p>{{ option.text }}</p>
+          <p v-if="option.action === 'accept' && proposal.record_only" class="muted">
+            Архивируется журнал задачи. Рабочая копия и локальная ветка уже отсутствуют.
+          </p>
           <p v-if="chosen === option.action" role="status">Вы выбрали этот вариант</p>
           <button v-if="!chosen && !inHistory && resolution?.writable && source.setOperatorResolution" type="button"
             class="btn" :class="{ 'journal-primary': proposal.recommended === option.action }"

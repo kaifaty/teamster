@@ -134,6 +134,16 @@ def _check_tree(repo, path, branch, head):
         raise ValueError("Worktree has changes to tracked files")
 
 
+def _check_record_only(repo, worktree, branch, head, base):
+    ref = f"refs/heads/{branch}"
+    if (worktree.exists() or worktree.is_symlink()
+            or ref.encode() in _git(repo, "for-each-ref", "--format=%(refname)", ref).splitlines()
+            or f"branch {ref}".encode() in _git(repo, "worktree", "list", "--porcelain").splitlines()):
+        raise ValueError("The original worktree or branch still exists")
+    target = _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{base}^{{commit}}").decode().strip()
+    _git(repo, "merge-base", "--is-ancestor", head, target)
+
+
 def _recover_complete(path, receipt, target):
     manifest = target / "operator-artifact-manifest.json"
     if (receipt["phase"] not in ("verified", "archived") or target.is_symlink()
@@ -161,6 +171,7 @@ def idle_chat(record):
 
 def _archive(args, receipt_file, receipt):
     slug, head = args.slug, args.expect_head
+    base = args.archive_record_from
     record = config.TASKS / slug
     if config.TASKS.is_symlink() or record.is_symlink():
         raise ValueError("Task record path is a symbolic link")
@@ -193,7 +204,11 @@ def _archive(args, receipt_file, receipt):
             raise ValueError("Worktree is outside the managed repository")
         worktree = managed
         branch = st["branch"]
-        if not branch.startswith("codex/") or _git(repo, "rev-parse", "--verify", f"refs/heads/{branch}").decode().strip() != head:
+        if not branch.startswith("codex/"):
+            raise ValueError("Invalid managed branch")
+        if base:
+            _check_record_only(repo, worktree, branch, head, base)
+        elif _git(repo, "rev-parse", "--verify", f"refs/heads/{branch}").decode().strip() != head:
             raise ValueError("Expected commit is not on the retained branch")
         staging = worktree.with_name(f".operator-{args.operation_id}")
         if staging.is_symlink():
@@ -205,22 +220,34 @@ def _archive(args, receipt_file, receipt):
             target = config.TASKS / ".archive" / f"{slug}-{stamp}"
             if target.exists() or target.is_symlink():
                 raise ValueError("Task archive already exists")
-            _check_tree(repo, worktree, branch, head)
+            if not base:
+                _check_tree(repo, worktree, branch, head)
             receipt = {"slug": slug, "created": args.expect_created, "sha": head, "branch": branch,
                        "operation_id": args.operation_id, "turn": args.expect_turn, "verdict": args.expect_verdict,
                        "archive": str(target), "phase": "started"}
+            if base:
+                receipt["record_from"] = base
             _write(receipt_file, receipt)
         target = Path(receipt["archive"])
         if target.exists() or target.is_symlink():
             raise ValueError("Task archive already exists")
         bundle = record / "operator-artifacts.tar.gz"
         manifest_file = record / "operator-artifact-manifest.json"
-        if worktree.exists():
+        if base:
+            if staging.exists() or staging.is_symlink():
+                raise ValueError("Archive staging path is already occupied")
+            _bundle(worktree, bundle, {})
+            _write(manifest_file, {})
+            receipt.update(phase="verified", files=0)
+            _write(receipt_file, receipt)
+        elif worktree.exists():
             if staging.exists():
                 raise ValueError("Original and staged worktrees both exist")
             _check_tree(repo, worktree, branch, head)
             _git(repo, "worktree", "move", "--", str(worktree), str(staging))
-        if staging.exists():
+        if base:
+            _check_record_only(repo, worktree, branch, head, base)
+        elif staging.exists():
             # Stage first so the original checkout cannot receive new task writes during verification.
             try:
                 _check_tree(repo, staging, branch, head)
@@ -241,10 +268,11 @@ def _archive(args, receipt_file, receipt):
             raise ValueError("Worktree disappeared before the archive was verified")
         else:
             _verify_bundle(bundle, json.loads(manifest_file.read_text()))
-        try:
-            worktree.parent.rmdir()
-        except OSError:
-            pass
+        if not base:
+            try:
+                worktree.parent.rmdir()
+            except OSError:
+                pass
         record.rename(target)
         _sync_dir(target.parent)
         _sync_dir(record.parent)
@@ -258,6 +286,8 @@ def clean(args):
             or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", args.expect_head or "")
             or not re.fullmatch(r"[0-9a-f]{32}", args.operation_id or "")
             or args.expect_created is None or not (args.expect_turn or 0) > 0
+            or (args.archive_record_from is not None and (args.expect_verdict != "accepted"
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", args.archive_record_from)))
             or args.expect_verdict not in telemetry_log.LEAD_VERDICTS):
         procs.die("safe archive requires an expected run identity, HEAD and operation ID")
     ledger = config.TASKS / ".archive" / ".operator-receipts"
@@ -272,6 +302,8 @@ def clean(args):
         if receipt and (receipt["slug"], receipt["created"], receipt["turn"], receipt["sha"], receipt["verdict"]) != (
                 args.slug, args.expect_created, args.expect_turn, args.expect_head, args.expect_verdict):
             raise ValueError("Operation ID belongs to a different archive")
+        if receipt and receipt.get("record_from") != args.archive_record_from:
+            raise ValueError("Operation ID belongs to a different archive scope")
         result = _archive(args, path, receipt)
     except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as exc:
         procs.die(f"safe archive: {exc}")

@@ -247,7 +247,9 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
             monkeypatch.setattr(operator_activity_module, "pull_request_evidence", lambda prs: merged)
             monkeypatch.setattr(operator_resolution_module, "pull_request_evidence", lambda prs: merged)
             task_state = directory / "state.json"
-            idle = {**state, "pid": None, "turn_finished": 20.0, "outcome": "completed",
+            checkout = directory / "checkout"
+            checkout.mkdir()
+            idle = {**state, "pid": None, "turn_finished": 20.0, "outcome": "completed", "worktree": str(checkout),
                     "result": {"status": "partial", "remaining": ["Verify the result."]}}
             task_state.write_text(json.dumps(idle))
             local = writable.state.board
@@ -289,9 +291,16 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
 
             repository = Path(state["repo"])
             repository.mkdir()
-            subprocess.run(["git", "init", "-q", "-b", state["branch"], str(repository)], check=True)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(repository)], check=True)
             subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.test",
                             "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+            merge_sha = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+            subprocess.run(["git", "-C", str(repository), "update-ref", "refs/remotes/origin/main", merge_sha], check=True)
+            merged[0].update(merge_sha=merge_sha, base="main")
+            checkout.rmdir()
+            task_state.write_text(json.dumps({**idle, "turns": 2, "publish": {"pr": linked_pr},
+                                              "result": {"status": "done", "summary": "MSVC passed."}}))
+            local.store.poll()
             commands = []
 
             def execute(self, lock, command, operation, args):
@@ -302,6 +311,7 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
             monkeypatch.setattr(cls, "_command", execute)
             monkeypatch.setattr(cls, "_verdict", lambda *args: "accepted" if commands else None)
             accept = propose("accept", "Accept the merged result.")
+            assert client.get(read).json()["proposals"][-1]["record_only"]
             assert client.post(resolution, json=accept).is_success
             assert local.project_tasks.card(current_id)[0]["status"] == "needs_input"
             assert client.post(poll, headers=observer).json() == {"card": current_id}
@@ -310,9 +320,11 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
             assert [(command, args[0]) for command, args in commands] == [
                 ("verdict", "accepted"), ("clean", "--archive-safe"),
             ]
+            assert commands[-1][1][-2:] == ["--archive-record-from", "main"]
             events = client.get(read).json()["events"]
             assert [event["kind"] for event in events[-4:]] == ["verdict_recorded", "archive_started", "status_changed", "archived"]
             assert events[-2]["detail"] == {"from": "needs_input", "to": "done"}
+            assert events[-1]["detail"]["record_only"]
 
 
 

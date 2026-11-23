@@ -237,6 +237,33 @@ class LifecycleTests(RotationTestCase):
         self.assertEqual(json.loads(self.cli(*args)), archived)
         self.assertEqual(self.state(slug)["created"], state["created"] + 1)
 
+        clock.sleep(1)
+        slug = "clean-journal-only"
+        self.start(slug)
+        self.wait(slug)
+        state = self.state(slug)
+        record = self.home / "claude-tasks" / slug
+        raw_events = (record / "events.jsonl").read_bytes()
+        created = str(state["created"])
+        clock.sleep(1)
+        self.cli("verdict", slug, "accepted", "--note", "Merged result verified",
+                 "--expect-created", created, "--expect-turn", "1", "--operation-id", "c" * 32)
+        merged = self.git("rev-parse", "HEAD").strip()
+        self.git("update-ref", "refs/remotes/origin/main", merged)
+        args = ("clean", slug, "--archive-safe", "--archive-record-from", "main",
+                "--expect-created", created, "--expect-turn", "1", "--expect-head", merged,
+                "--expect-verdict", "accepted", "--operation-id", "d" * 32)
+        rejected = subprocess.run([PYTHON, "-I", str(SCRIPT), *args], cwd=self.repo, env=self.env,
+                                  text=True, capture_output=True, timeout=15)
+        self.assertIn("original worktree or branch still exists", rejected.stderr)
+        self.assertTrue(record.is_dir())
+        self.git("worktree", "remove", "--force", state["worktree"])
+        self.git("branch", "-D", state["branch"])
+        archived = json.loads(self.cli(*args))
+        self.assertEqual(json.loads(self.cli(*args)), archived)
+        self.assertEqual((archived["sha"], archived["record_from"], archived["files"]), (merged, "main", 0))
+        self.assertEqual((Path(archived["archive"]) / "events.jsonl").read_bytes(), raw_events)
+
 
     def test_clean_archive_failures_keep_record_without_overwriting_destination(self):
         self.configure()

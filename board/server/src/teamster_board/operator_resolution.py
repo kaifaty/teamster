@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -38,6 +39,30 @@ def _key(*values):
 
 def _normalize(value):
     return " ".join(value.casefold().split())
+
+
+def _record_anchor(record, state, pulls):
+    pr = next((pr for pr in pulls if pr["url"] == record.summary["pr"] and pr["status"] == "merged"), None)
+    if pr is None:
+        return None
+    sha, base = pr.get("merge_sha"), pr.get("base")
+    if (not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", sha or "")
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", base or "")):
+        return None
+    try:
+        git = ["git", "-C", state["repo"]]
+        branch = f"refs/heads/{state['branch']}"
+        listed = subprocess.check_output([*git, "for-each-ref", "--format=%(refname)", branch],
+                                         text=True, stderr=subprocess.DEVNULL, timeout=5)
+        registered = subprocess.check_output([*git, "worktree", "list", "--porcelain"],
+                                             text=True, stderr=subprocess.DEVNULL, timeout=5)
+        if branch in listed.splitlines() or f"branch {branch}" in registered.splitlines():
+            return None
+        subprocess.check_call([*git, "merge-base", "--is-ancestor", sha, f"refs/remotes/origin/{base}"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"sha": sha, "base": base}
 
 
 class OperatorResolution:
@@ -208,14 +233,20 @@ class OperatorResolution:
             return target
         record, _, state = current
         target["turn"] = state.get("turns", 0)
-        target["actions"].extend(("continue", "ask_executor"))
+        worktree = state.get("worktree")
+        has_tree = bool(worktree and Path(worktree).is_dir())
+        if has_tree:
+            target["actions"].extend(("continue", "ask_executor"))
         if (len(runs) == 1 and target["turn"] > 0 and state.get("turn_finished")
                 and not (alive(state.get("pid")) or state.get("pending") or self._verdict(record, state))):
-            if not any(pr["status"] == "merged" for pr in pulls):
+            anchor = _record_anchor(record, state, pulls) if worktree and not (has_tree or Path(worktree).is_symlink()) else None
+            if has_tree and not any(pr["status"] == "merged" for pr in pulls):
                 target["actions"].append("cancel")
-            if (len(pulls) == len(card["pull_requests"]) and pulls and all(pr["status"] == "merged" for pr in pulls)
-                    or not card["pull_requests"] and card["status"] == "ready"):
+            merged = len(pulls) == len(card["pull_requests"]) and pulls and all(pr["status"] == "merged" for pr in pulls)
+            if (has_tree or anchor) and (merged or not card["pull_requests"] and card["status"] == "ready"):
                 target["actions"].append("accept")
+                if anchor:
+                    target["record_only"] = anchor
         return target
 
     def _transition(self, db, row, previous, status):
@@ -257,6 +288,9 @@ class OperatorResolution:
                 status = "dispatch_started"
                 if action in ("continue", "ask_executor") and self.board.actions.reason:
                     raise ValueError("Board cannot send an order to the executor")
+                worktree = state.get("worktree")
+                if action != "accept" and (not worktree or not Path(worktree).is_dir()):
+                    raise ValueError("The linked worktree is unavailable")
                 if action in ("accept", "cancel"):
                     other_runs = [ref for ref in linked if ref != run and linked[ref]["kind"] in ("work", "review")]
                     if (other_runs or self._verdict(record, state) or not state.get("turn_finished")
@@ -266,6 +300,14 @@ class OperatorResolution:
                         pulls = pull_request_evidence(card["pull_requests"][:3])
                         if len(pulls) != len(card["pull_requests"]) or any(pr["status"] != "merged" for pr in pulls):
                             raise ValueError("Linked pull requests are not all confirmed merged")
+                        archive = target.get("record_only")
+                        if archive:
+                            if (not worktree or Path(worktree).exists() or Path(worktree).is_symlink()
+                                    or _record_anchor(record, state, pulls) != archive):
+                                raise ValueError("Archive evidence changed. Ask for a new proposal")
+                            operation["record_only"] = archive
+                    if "record_only" not in operation and (not worktree or not Path(worktree).is_dir()):
+                        raise ValueError("The linked worktree is unavailable")
                     operation.update(verdict="accepted" if action == "accept" else "dropped",
                                      note=f"User selected the operator's proposal. {option['text']}")
                     status = "verdict_started"
@@ -340,6 +382,7 @@ class OperatorResolution:
         if (not isinstance(receipt, dict) or receipt.get("operation_id") != operation["id"]
                 or (subcommand == "clean" and (receipt.get("phase") != "archived"
                     or receipt.get("sha") != operation["sha"] or not receipt.get("archive")
+                    or receipt.get("record_from") != (operation.get("record_only") or {}).get("base")
                     or not isinstance(receipt.get("files"), int)))):
             return None, "Teamster returned no verified receipt"
         return True, receipt
@@ -350,6 +393,8 @@ class OperatorResolution:
         args = [operation.get("verdict", "dropped"), f"--note={operation['note']}"] if is_verdict else [
             "--archive-safe", "--expect-head", operation["sha"], "--expect-verdict", operation["verdict"],
         ]
+        if not is_verdict and operation.get("record_only"):
+            args.extend(("--archive-record-from", operation["record_only"]["base"]))
         ok, receipt = self._command(lock_fd, "verdict" if is_verdict else "clean", operation, args)
         if ok is None:
             attempts = operation.get("unconfirmed", 0) + 1
@@ -370,7 +415,8 @@ class OperatorResolution:
                 self._transition(db, row, operation["from"],
                                  "done" if operation["verdict"] == "accepted" else "cancelled")
             self._status(db, row, "archived", {"operation": operation["id"], "sha": receipt["sha"],
-                                              "archive": receipt["archive"], "files": receipt["files"]})
+                                              "archive": receipt["archive"], "files": receipt["files"],
+                                              **({"record_only": True} if operation.get("record_only") else {})})
         return
 
     def _step(self, db, row, lock_fd):
@@ -470,17 +516,23 @@ class OperatorResolution:
         terminal = "done" if verdict in ("accepted", "revised") else "cancelled"
         if row["rule"] != "choice" and card["status"] != terminal:
             self.board.project_tasks.save({"id": row["card"], "status": terminal})
-        ref = f"refs/heads/{state['branch']}"
-        try:
-            head = subprocess.check_output(["git", "-C", state["repo"], "rev-parse", "--verify", ref],
-                                           text=True, stderr=subprocess.DEVNULL, timeout=10).strip()
-        except (OSError, subprocess.SubprocessError):
-            self._status(db, row, "cleanup_blocked", {"reason": "Retained branch is unavailable", "branch": ref})
-            return True
+        selection = json.loads(row["payload"]) if row["rule"] == "choice" else {}
+        anchor = selection.get("record_only")
+        if anchor:
+            head = anchor["sha"]
+            operation["record_only"] = anchor
+        else:
+            ref = f"refs/heads/{state['branch']}"
+            try:
+                head = subprocess.check_output(["git", "-C", state["repo"], "rev-parse", "--verify", ref],
+                                               text=True, stderr=subprocess.DEVNULL, timeout=10).strip()
+            except (OSError, subprocess.SubprocessError):
+                self._status(db, row, "cleanup_blocked", {"reason": "Retained branch is unavailable", "branch": ref})
+                return True
         operation.update(id=_key(row["generation"], "archive", version, head), sha=head, verdict=verdict,
                          worktree=state.get("worktree"))
         if row["rule"] == "choice":
-            operation["from"] = json.loads(row["payload"])["from"]
+            operation["from"] = selection["from"]
         started = self._status(db, row, "archive_started", operation, payload=operation)
         self._execute(db, started, lock_fd)
         return True

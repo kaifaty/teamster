@@ -78,7 +78,9 @@ reason explains the blocker and current evidence in Russian. recommend is one al
 options is an array of one to five objects with action (allowed ID) and text (Russian, actionable).
 Include the recommended option, and add only alternatives that make sense for this task. For continue
 and ask_executor the text is exactly the instruction or question that would go to the executor.
-For accept and cancel the text describes the evidence and what happens to the task. Never promise cleanup succeeded.`;
+For accept and cancel describe the evidence and what happens to the task. If archive_scope is
+record_only, the archive will contain the task journal, since its original branch and checkout
+are already absent. Never promise cleanup succeeded.`;
 
 export async function answerQuestion(board: Board, baseUrl: string, questionId: string, prompt: string, signal: AbortSignal) {
   const model = miniModel(baseUrl);

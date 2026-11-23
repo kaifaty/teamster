@@ -34,7 +34,8 @@ def _proposal(row):
         value = json.loads(answer)
     except ValueError:
         value = None
-    allowed = json.loads(row["reference"][len(PROPOSAL):])["actions"]
+    target = json.loads(row["reference"][len(PROPOSAL):])
+    allowed = target["actions"]
     if (not isinstance(value, dict) or not valid_text(value.get("reason"), 1000)
             or not isinstance(value.get("options"), list) or len(value["options"]) > 5):
         return dict(result, status="failed")
@@ -46,7 +47,8 @@ def _proposal(row):
     recommended = value.get("recommend")
     if not isinstance(recommended, str) or recommended not in options:
         return dict(result, status="failed")
-    return dict(result, reason=value["reason"].strip(), recommended=recommended, options=list(options.values()))
+    return dict(result, reason=value["reason"].strip(), recommended=recommended, options=list(options.values()),
+                record_only=bool(target.get("record_only")))
 
 
 def _connect(path, mode):
@@ -338,6 +340,8 @@ class OperatorChat:
                         selected = linked[target["run"]]
                         context["linked_run"] = self._run(db, selected["slug"], created=selected["created"])
                     payload.update(lifecycle=target["actions"], pull_request_evidence=evidence)
+                    if target.get("record_only"):
+                        payload["archive_scope"] = "record_only: the original local branch and working tree are absent"
                     reference = PROPOSAL + json.dumps(target)
                 elif reference is not None:
                     payload["event"] = self._reference(db, project, reference)

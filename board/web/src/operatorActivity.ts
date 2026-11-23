@@ -48,6 +48,7 @@ export interface OperatorProposal {
   status: "pending" | "answered" | "failed";
   reason?: string;
   recommended?: OperatorOption;
+  record_only?: boolean;
   options?: { action: OperatorOption; text: string }[];
 }
 
@@ -80,6 +81,7 @@ export interface OperatorResolution {
       from?: import("./map/surface/types").SurfaceTask["status"];
       to?: import("./map/surface/types").SurfaceTask["status"];
       action?: OperatorOption; proposal?: string; verdict?: string;
+      record_only?: boolean;
       evidence?: string | { slug: string; turn: number; report?: string } | null;
     };
   }[];

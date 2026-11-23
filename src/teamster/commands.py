@@ -809,7 +809,7 @@ def cmd_clean(a):
     if getattr(a, "archive_safe", False):
         return safe_archive.clean(a)
     if any(getattr(a, key, None) is not None for key in (
-            "expect_created", "expect_turn", "expect_head", "expect_verdict", "operation_id")):
+            "archive_record_from", "expect_created", "expect_turn", "expect_head", "expect_verdict", "operation_id")):
         procs.die("archive expectations require --archive-safe")
     with task_state.state_lock(a.slug):
         st = task_state.load(a.slug)

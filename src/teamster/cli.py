@@ -447,6 +447,7 @@ def main():
     s.add_argument("slug")
     s.add_argument("--keep-branch", action="store_true")
     s.add_argument("--archive-safe", action="store_true")
+    s.add_argument("--archive-record-from", metavar="BASE")
     s.add_argument("--expect-created", type=float)
     s.add_argument("--expect-turn", type=int)
     s.add_argument("--expect-head")
