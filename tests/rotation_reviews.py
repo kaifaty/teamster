@@ -51,6 +51,9 @@ class ReviewFixTests(RotationTestCase):
         original_spawn = worker.supervisor.spawn
 
         def inline_supervisor(st, *args, **kwargs):
+            # This extension reviewer predates work bindings and runs on released work records.
+            if "work_binding" in st:
+                st = self.released_work_record(worker, st)
             # Preserve the supervisor cycle while retaining the test-only registry.
             proc = SimpleNamespace(pid=os.getpid(), poll=lambda: 0)
             with mock.patch.object(worker.supervisor.subprocess, "Popen", return_value=proc):
@@ -79,7 +82,7 @@ class ReviewFixTests(RotationTestCase):
             self.assertEqual(state["outcome"], "completed", state.get("error"))
             self.assertEqual(state["review_result"]["verdict"], "clean")
             run.assert_called_once()
-            self.assertEqual(prepare.call_count, 2)
+            self.assertEqual(prepare.call_count, 1)
             entry, = state["reviews"]
             self.assertEqual(entry["reviewer"], name)
             self.assertIn("Fixture review complete.", cli("wait", "registered-review"))
@@ -237,7 +240,7 @@ class ReviewFixTests(RotationTestCase):
         for number, (text, code, expected) in enumerate(cases):
             with self.subTest(exit_code=code, text=text):
                 slug = "claude-executor-text-" + str(number)
-                self.start(slug, "--executor", "claude", "--check", "true", "--review")
+                self.legacy_work(slug, "--executor", "claude", "--check", "true", "--review")
                 self.cli("wait", slug, "--timeout", "30", timeout=45)
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "failed" if code else "completed")
@@ -259,7 +262,7 @@ class ReviewFixTests(RotationTestCase):
         self.account(self.home, "A", self.reset, runs=[
             {"mode": "complete", "reply": self.review_result(False)}])
         slug = "claude-stats"
-        self.start(slug, "--executor", "claude", "--effort", "high")
+        self.legacy_work(slug, "--executor", "claude", "--effort", "high")
         self.wait(slug)
         self.cli("say", slug, "Complete the follow-up.")
         self.wait(slug)
@@ -321,7 +324,7 @@ class ReviewFixTests(RotationTestCase):
             {"mode": "complete", "reply": self.review_result(False)}])
         self.configure_ci([[self.ci_check("fail")], [self.ci_check()]],
                           jobs={"123": "AssertionError: repair this Claude CI fixture\n"})
-        self.start("claude-executor-fixes", "--effort", "max", "--review", "--fix-rounds", "1", "--ci", "--check", "true")
+        self.legacy_work("claude-executor-fixes", "--effort", "max", "--review", "--fix-rounds", "1", "--ci", "--check", "true")
         self.wait("claude-executor-fixes")
         state = self.state("claude-executor-fixes")
         self.assertEqual(state["reviewer"], "codex", "Claude work defaults to Codex even when config says Claude")
@@ -393,7 +396,7 @@ class ReviewFixTests(RotationTestCase):
         worker.claude_accounts.save_limits(accounts[1]["name"], {
             "unifiedWindows": {"seven_day": {"utilization": 0.9, "resetsAt": self.reset}}})
         slug = "claude-executor-review"
-        self.start(slug, "--executor", "claude", "--review", "--no-push")
+        self.legacy_work(slug, "--executor", "claude", "--review", "--no-push")
         self.wait(slug)
         state = self.state(slug)
         work, review = self.claude_invocations()
@@ -447,7 +450,7 @@ class ReviewFixTests(RotationTestCase):
         worker = self.worker()
         for account in accounts:
             worker.claude_accounts.save_limits(account["name"], {"status": "rejected", "resetsAt": self.reset})
-        self.start("claude-executor-unavailable", "--executor", "claude")
+        self.legacy_work("claude-executor-unavailable", "--executor", "claude")
         output = self.cli("wait", "claude-executor-unavailable", "--timeout", "60", timeout=75)
         self.assertIn("all accounts at limit; auto-continue at", output)
         self.assertEqual(self.state("claude-executor-unavailable")["outcome"], "sleeping")
@@ -460,7 +463,7 @@ class ReviewFixTests(RotationTestCase):
         for account in accounts:
             worker.claude_accounts.clear_limits(account["name"])
             worker.claude_accounts.save_limits(account["name"], {"unifiedWindows": {}})
-        self.start("claude-executor-pinned", "--executor", "claude")
+        self.legacy_work("claude-executor-pinned", "--executor", "claude")
         self.wait("claude-executor-pinned")
         initial = self.state("claude-executor-pinned")
         worker.claude_accounts.save_limits(initial["claude_account"], {"status": "rejected", "resetsAt": self.reset})
@@ -497,23 +500,39 @@ class ReviewFixTests(RotationTestCase):
 
     def test_claude_executor_time_budget_wrapup_resumes_the_work_session(self):
         self.fixture_timeout = 90
+        clock = self.enable_fake_clock(auto_advance=False)
         self.env["CODEX_TASK_MINUTE_SECONDS"] = "1"
         checkpoint = self.work_result("partial", remaining=["Complete the remaining work."])
-        self.claude_pool_fixture(runs=[{"mode": "hold"}, {"reply": checkpoint}])
+        self.claude_pool_fixture(runs=[{"mode": "hold"},
+                                      {"limits": {"status": "rejected", "resetsAt": clock.time() + 3600}},
+                                      {"reply": checkpoint}])
         self.start("claude-executor-wrapup", "--executor", "claude", "--max-minutes", "3")
-        self.wait("claude-executor-wrapup")
+        self.until(lambda: any(event["command"] == "holding" for event in self.claude_trace()))
+        self.advance_fake_clock(3.1)
+        self.until(lambda: self.state("claude-executor-wrapup")["outcome"] == "sleeping")
+        asleep = self.state("claude-executor-wrapup")
+        os.kill(asleep["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(asleep["pid"]))
+        self.assertIn("from wrapup", self.cli("resume", "claude-executor-wrapup"))
+        self.until(lambda: self.state("claude-executor-wrapup")["outcome"] == "sleeping")
+        self.advance_fake_clock(asleep["sleeping"]["until"] + 1 - clock.time())
+        self.wait("claude-executor-wrapup", through_sleep=True)
         state = self.state("claude-executor-wrapup")
         self.assertEqual(state["outcome"], "budget_exhausted")
-        self.assertEqual(state["wrapup"], {"outcome": "completed", "result": checkpoint})
+        self.assertEqual(state["wrapup"]["outcome"], "completed")
+        self.assertEqual(state["wrapup"]["result"], checkpoint)
         self.assertEqual(state["result"], checkpoint)
-        work, wrapup = self.claude_invocations()
+        work, rejected, wrapup = self.claude_invocations()
+        self.assertEqual((rejected["resume"], rejected["config_dir"], rejected["prompt"]),
+                         (work["session_id"], work["config_dir"], wrapup["prompt"]))
         # Three one-second minutes cap the Bash timeouts below their usual ten-minute floor.
         self.assertEqual([work["bash_timeouts"], wrapup["bash_timeouts"]], [["3000", "3000"]] * 2)
         self.assertEqual(wrapup["resume"], work["session_id"])
         self.assertEqual(wrapup["config_dir"], work["config_dir"])
         self.assertNotIn("maxTurns", wrapup["options"])
-        self.assertEqual(wrapup["prompt"],
-                         self.worker().prompts.wrapup_prompt(state, state["turn_stop"], {"language": "en"}))
+        worker = self.worker()
+        self.assertEqual(wrapup["prompt"], worker.config.EXECUTOR_INSTRUCTIONS + "\n\n"
+                         + worker.prompts.wrapup_prompt(state, state["turn_stop"], {"language": "en"}))
         self.assertEqual(self.invocations(), [])
 
     def test_claude_executor_weekly_budget_counts_seven_day_growth_across_work_turns(self):
@@ -547,6 +566,70 @@ class ReviewFixTests(RotationTestCase):
         self.assertAlmostEqual(rows[0]["weekly_used_before"], 50)
         self.assertAlmostEqual(rows[0]["weekly_used_after"], 56)
         self.assertAlmostEqual(rows[0]["weekly_spent"], 6)
+
+    def test_bound_claude_review_resumes_on_its_reserved_quota_and_charges_the_work_budget(self):
+        clock = self.enable_fake_clock(auto_advance=False)
+        now = clock.time()
+
+        def limits(used):
+            return {"status": "allowed", "unifiedWindows": {"seven_day": {"utilization": used, "resetsAt": now + 86400}}}
+
+        accounts = self.claude_pool_fixture(runs=[
+            {"limits": limits(.90), "reply": self.work_result()},
+            {"limits": dict(limits(.90), status="rejected", resetsAt=now + 3600)},
+            {"limits": limits(.96), "reply": self.review_result()}])
+        slug = "bound-claude-review"
+        self.start(slug, "--executor", "claude", "--reviewer", "claude", "--review", "--fix-rounds", "1",
+                   "--max-weekly", "5")
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        asleep = self.state(slug)
+        work, rejected = self.claude_invocations()
+        self.assertNotEqual(work["session_id"], rejected["session_id"])
+        os.kill(asleep["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(asleep["pid"]))
+        self.cli("resume", slug)
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        self.advance_fake_clock(asleep["sleeping"]["until"] + 1 - clock.time())
+        self.cli("wait", slug, "--through-sleep", "--timeout", "30")
+        state = self.state(slug)
+        self.assertEqual(state["outcome"], "budget_exhausted")
+        self.assertAlmostEqual(state["turn_stop"]["spent"], 6)
+        work, rejected, resumed = self.claude_invocations()
+        self.assertEqual(resumed["resume"], rejected["session_id"])
+        self.assertEqual(state["session_id"], work["session_id"])
+        self.assertEqual({row["config_dir"] for row in (work, rejected, resumed)}, {accounts[0]["config_dir"]})
+        self.assertEqual(self.invocations(), [])
+
+    def test_bound_codex_review_restores_its_thread_and_leaves_the_fix_its_time_budget(self):
+        clock = self.enable_fake_clock(auto_advance=False)
+        self.env["CODEX_TASK_MINUTE_SECONDS"] = "1"
+        self.configure(language="en", max_review_minutes=30)
+        reset = clock.time() + 3600
+        gate = self.root / "finish-first-review"
+        self.account(self.home, "A", reset, auto_reset=True, runs=[
+            {"mode": "complete", "reply": self.work_result()},
+            {"mode": "usage_error", "delay_gate": str(gate)},
+            {"mode": "complete", "reply": self.review_result()},
+            {"mode": "complete", "reply": self.work_result(findings=[
+                {"id": name, "decision": "fixed", "note": "Fixed."} for name in ("F1", "F2")])},
+            {"mode": "complete", "reply": self.review_result(False)}])
+        self.account(self.other, "B", reset + 3600)
+        slug = "bound-codex-review"
+        self.start(slug, "--review", "--fix-rounds", "1", "--max-minutes", "2")
+        self.until(lambda: len(self.review_invocations()) == 1)
+        self.advance_fake_clock(5)
+        gate.touch()
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        asleep = self.state(slug)
+        self.assertGreaterEqual(asleep["cycle"]["waiting_active_seconds"], 5)
+        self.advance_fake_clock(asleep["sleeping"]["until"] + 1 - clock.time())
+        self.wait(slug, through_sleep=True)
+        work, limited, review, fix, final = self.invocations()
+        self.assertEqual({row["home"] for row in (work, limited, review, fix, final)}, {str(self.home)})
+        self.assert_resumed_same_thread(limited, review, self.home)
+        self.assert_resumed_same_thread(work, fix, self.home)
+        self.assertIn("F2", fix["prompt"])
+        self.assertEqual(self.state(slug)["review_result"]["verdict"], "clean")
 
     def test_claude_executor_weekly_budget_counts_usage_in_a_new_window(self):
         self.fixture_timeout = 90
@@ -593,7 +676,7 @@ class ReviewFixTests(RotationTestCase):
         fixture = json.loads(self.claude_fixture_path.read_text())
         fixture["security"] = {accounts[1]["token_keychain"]: {"unavailable": True}}
         self.claude_fixture_path.write_text(json.dumps(fixture))
-        self.start("claude-executor-rotation", "--executor", "claude")
+        self.legacy_work("claude-executor-rotation", "--executor", "claude")
         self.wait("claude-executor-rotation")
         initial = self.state("claude-executor-rotation")
         self.assertEqual(initial["claude_account"], accounts[0]["name"])
@@ -626,29 +709,40 @@ class ReviewFixTests(RotationTestCase):
         clock = self.enable_fake_clock(auto_advance=False)
         self.env["CODEX_TASK_MINUTE_SECONDS"] = "1"
         now = clock.time()
+        slug = "claude-executor-sleep"
+        fixture_sha = self.git("rev-parse", "HEAD")
         result = self.work_result()
+        handoff = self.work_result(
+            "needs_decision", questions=[f"Please assign an independent review of {slug} at {fixture_sha}."])
+        reviewed = self.work_result(summary=f"Reviewed {fixture_sha}. No defects found.", checks=[])
         accounts = self.claude_pool_fixture(runs=[
             {"reply": result},
             {"limits": {"status": "rejected", "resetsAt": now + 7200}},
-            {"reply": result},
-            {"limits": {"status": "rejected", "resetsAt": now + 30000}}])
-        self.claude_settings(limits_max_age_minutes=100000)
-        self.start("claude-executor-sleep", "--executor", "claude", "--max-minutes", "3")
+            {"reply": handoff},
+            {"reply": reviewed},
+            {"limits": {"status": "rejected", "resetsAt": now + 13 * 86400}}])
+        self.claude_settings(limits_max_age_minutes=0)
+        self.start(slug, "--executor", "claude", "--base", fixture_sha, "--max-minutes", "3")
         self.wait("claude-executor-sleep")
         initial = self.state("claude-executor-sleep")
         self.assertEqual(initial["claude_account"], accounts[0]["name"])
-        self.worker().claude_accounts.save_limits(accounts[1]["name"], {"status": "rejected", "resetsAt": now + 50000})
 
         self.cli("say", "claude-executor-sleep", "Continue after the limit.")
         output = self.wait("claude-executor-sleep")
         sleeping = self.state("claude-executor-sleep")
         self.assertEqual(sleeping["outcome"], "sleeping")
         self.assertEqual(sleeping["sleeping"]["account"], accounts[0]["name"])
-        self.assertIn("all accounts at limit; auto-continue at", output)
+        self.assertIn("assigned account at limit; auto-continue at", output)
+        os.kill(sleeping["pid"], signal.SIGTERM)
+        self.until(lambda: self.state("claude-executor-sleep").get("pid") is None)
+        self.cli("resume", "claude-executor-sleep")
+        self.wait("claude-executor-sleep")
+        self.assertEqual(self.state("claude-executor-sleep")["outcome"], "sleeping")
+        self.assertEqual([entry["config_dir"] for entry in self.claude_invocations()], [accounts[0]["config_dir"]] * 2)
         self.advance_fake_clock(sleeping["sleeping"]["until"] + 1 - clock.time())
         self.wait("claude-executor-sleep", through_sleep=True)
         state = self.state("claude-executor-sleep")
-        self.assertEqual((state["outcome"], state["result"]), ("completed", result))
+        self.assertEqual((state["outcome"], state["result"]), ("completed", handoff))
         self.assertFalse(state.get("turn_stop"), "sleep must not count toward --max-minutes")
         first, limited, resumed = self.claude_invocations()
         for event in (limited, resumed):
@@ -657,15 +751,67 @@ class ReviewFixTests(RotationTestCase):
         self.assertIn("Continue after the limit.", resumed["prompt"])
         self.assertEqual((state["claude_account"], state["session_id"]),
                          (accounts[0]["name"], initial["session_id"]))
-        self.assertEqual([entry["event"] for entry in state["rotations"]], ["sleep", "wake"])
+        self.assertEqual([entry["event"] for entry in state["rotations"]], ["sleep", "sleep", "wake"])
+
+        tasks = self.worker().config.TASKS
+        events = map(json.loads, (tasks / slug / "claude-events.jsonl").read_text().splitlines())
+        # Inspect SDK requests themselves, including any call that never got a tool result.
+        calls = [(item["name"], item["input"]) for event in events if event["type"] == "assistant"
+                 for item in event["message"]["content"] if item["type"] == "tool_use"]
+        diff_call = ("Bash", {"command": "git diff --stat"})
+        self.assertEqual(calls[-2:], [diff_call, ("StructuredOutput", handoff)])
+        for name, inputs in calls:
+            if name != "StructuredOutput":
+                self.assertEqual((name, inputs), diff_call)
+        self.assertEqual({path.parent.name for path in tasks.glob("*/state.json")}, {slug})
+
+        review_slug = f"{slug}-review"
+        self.brief.write_text(handoff["questions"][0] + "\nReport findings without editing files.\n")
+        self.start(review_slug, "--executor", "claude", "--base", fixture_sha, "--no-push")
+        self.wait(review_slug)
+        review = self.state(review_slug)
+        self.assertEqual((review["outcome"], review["result"]), ("completed", reviewed))
+        self.assertEqual(review["base"], fixture_sha)
+        self.assertEqual(self.git("-C", review["worktree"], "rev-parse", "HEAD"), fixture_sha)
+        review_turn = self.claude_invocations()[3]
+        self.assertIn(handoff["questions"][0], review_turn["prompt"])
+        self.assertEqual((review_turn["method"], review_turn["resume"]), ("session/new", None))
+        self.assertEqual(review["session_id"], review_turn["session_id"])
+        self.assertNotEqual(review["session_id"], state["session_id"])
+        self.assertEqual({path.parent.name for path in tasks.glob("*/state.json")}, {slug, review_slug})
 
         self.cli("say", "claude-executor-sleep", "Hit the limit again.")
         self.until(lambda: self.state("claude-executor-sleep")["outcome"] == "sleeping")
-        self.cli("stop", "claude-executor-sleep")
-        self.wait("claude-executor-sleep")
-        self.assertEqual(self.state("claude-executor-sleep")["outcome"], "stopped")
-        self.assertEqual(len(self.claude_invocations()), 4)
+        asleep = self.state("claude-executor-sleep")
+        self.advance_fake_clock(5 * 86400)
+        os.kill(asleep["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(asleep["pid"]))
+        self.cli("resume", "claude-executor-sleep")
+        self.until(lambda: self.state("claude-executor-sleep")["outcome"] == "sleeping")
+        self.assertGreaterEqual(self.state("claude-executor-sleep")["reset_wait_seconds"], 5 * 86400)
+        self.advance_fake_clock(asleep["sleeping"]["deadline"] + 1 - clock.time())
+        self.cli("wait", "claude-executor-sleep", "--through-sleep", "--timeout", "30")
+        self.assertEqual(self.state("claude-executor-sleep")["outcome"], "exhausted")
+        self.assertEqual(len(self.claude_invocations()), 5)
         self.assertEqual(self.invocations(), [])
+
+        self.cli("review", slug, "--reviewer", "codex")
+        self.assertIn("separate linked task", self.cli("wait", slug))
+        self.assertEqual(self.invocations(), [])
+        (self.home / "claude-tasks" / "claude-limits.json").unlink()
+        source = json.loads(self.claude_fixture_path.read_text())
+        service = accounts[0]["token_keychain"]
+        source["security"] = {service: {"token": "replacement-fixture-token"}}
+        self.claude_fixture_path.write_text(json.dumps(source))
+        self.cli("say", slug, "Continue with the original credential.")
+        self.assertIn("assigned work connection", self.cli("wait", slug))
+        source.update(security={}, missing_session=initial["session_id"])
+        self.claude_fixture_path.write_text(json.dumps(source))
+        self.cli("say", slug, "Continue in the original session.")
+        self.assertIn("Saved Claude session was not found", self.cli("wait", slug))
+        failed = self.state(slug)
+        self.assertEqual((failed["work_binding"], failed["session_id"]), (initial["work_binding"], initial["session_id"]))
+        self.assertEqual(len(self.claude_invocations()), 5)
 
     def test_claude_executor_sleep_after_a_missing_token_repeats_the_handoff(self):
         self.fixture_timeout = 90
@@ -675,12 +821,14 @@ class ReviewFixTests(RotationTestCase):
         accounts = self.claude_pool_fixture(runs=[
             {"reply": partial},
             {"limits": {"status": "rejected", "resetsAt": clock.time() + 7200}},
+            {"reply": self.work_result()},
+            {"limits": {"status": "rejected", "resetsAt": clock.time() + 14400}},
             {"reply": self.work_result()}])
         self.claude_settings(limits_max_age_minutes=100000)
         fixture = json.loads(self.claude_fixture_path.read_text())
         fixture["security"] = {accounts[1]["token_keychain"]: {"unavailable": True}}
         self.claude_fixture_path.write_text(json.dumps(fixture))
-        self.start("claude-executor-token-sleep", "--executor", "claude")
+        self.legacy_work("claude-executor-token-sleep", "--executor", "claude")
         self.wait("claude-executor-token-sleep")
         self.cli("say", "claude-executor-token-sleep", "Continue after the token returns.")
         self.wait("claude-executor-token-sleep")
@@ -700,6 +848,25 @@ class ReviewFixTests(RotationTestCase):
                      "First account summary.", "Finish after the token returns."):
             self.assertIn(text, resumed["prompt"])
 
+        pool = self.worker().claude_accounts
+        other_reset = clock.time() + 86400
+        pool.save_limits(accounts[0]["name"], {"status": "rejected", "resetsAt": other_reset})
+        self.assertEqual(pool.mark_limited(accounts[0]["name"], reason="usage limit"), other_reset)
+        order = "Keep the legacy follow-up after this session's own quota reset."
+        slug = state["slug"]
+        self.cli("say", slug, order, "--upgrade")
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        self.advance_fake_clock(self.state(slug)["sleeping"]["until"] + 1 - clock.time())
+        self.wait(slug, through_sleep=True)
+        rejected, retried = self.claude_invocations()[3:]
+        self.assertEqual([item["resume"] for item in (rejected, retried)], [state["session_id"]] * 2)
+        self.assertIn(order, rejected["prompt"])
+        worker = self.worker()
+        prefix = worker.config.EXECUTOR_INSTRUCTIONS + "\n\n"
+        self.assertTrue(rejected["prompt"].startswith(prefix))
+        self.assertEqual(retried["prompt"], prefix + worker.prompts.reset_resume_prompt({"language": "en"})
+                         + "\n\n" + rejected["prompt"][len(prefix):])
+
     def test_claude_executor_rotation_probe_time_is_outside_the_time_budget(self):
         self.fixture_timeout = 90
         self.enable_fake_clock()
@@ -709,7 +876,7 @@ class ReviewFixTests(RotationTestCase):
             {"delay": 10, "limits": {"status": "rejected", "resetsAt": self.reset}},
             {"delay": 55}, {"reply": result}])
         self.claude_settings(limits_max_age_minutes=0)
-        self.start("claude-executor-probe-time", "--executor", "claude", "--max-minutes", "1")
+        self.legacy_work("claude-executor-probe-time", "--executor", "claude", "--max-minutes", "1")
         self.wait("claude-executor-probe-time")
         state = self.state("claude-executor-probe-time")
         self.assertEqual((state["outcome"], state["result"]), ("completed", result))
@@ -1294,7 +1461,7 @@ class ReviewFixTests(RotationTestCase):
             {"mode": "complete", "reply": clean}])
 
         self.start("angles-fix", "--review-angles", "correctness,concurrency,tests", "--fix-rounds", "1",
-                   "--model", "work-model", "--review-model", "angle-model")
+                   "--model", "work-model")
         self.wait("angles-fix")
         state = self.state("angles-fix")
         self.assertEqual([entry["angle"] for entry in state["reviews"]],
@@ -1306,9 +1473,8 @@ class ReviewFixTests(RotationTestCase):
         self.assertEqual(state["review_result"]["verdict"], "clean")
         executions = self.invocations()
         self.assertEqual(len(executions), 7)
-        for index, execution in enumerate(executions):
-            self.assertEqual(execution["model"],
-                             "work-model" if index in (0, 4) else "angle-model")
+        for execution in executions:
+            self.assertEqual(execution["model"], "work-model")
             if execution["review"]:
                 self.assertEqual(execution["thread_config"]["web_search"], "disabled")
         self.assertTrue(executions[4]["resume"])
@@ -1497,7 +1663,7 @@ class ReviewFixTests(RotationTestCase):
              "token_usage_after": self.telemetry_usage(5200, 1100, 550, 115),
              "weekly_used_before": 20, "weekly_used_after": 23}])
 
-        self.start("angles-rotate")
+        self.legacy_work("angles-rotate")
         self.wait("angles-rotate")
         working = self.state("angles-rotate")["thread"]
         self.cli("review", "angles-rotate", "--review-angles", "correctness,concurrency")
@@ -1611,7 +1777,7 @@ class ReviewFixTests(RotationTestCase):
 
     def test_review_selects_available_account_and_preserves_working_thread(self):
         self.configure()
-        self.start("review-alone")
+        self.legacy_work("review-alone")
         self.wait("review-alone")
         working = self.state("review-alone")
         self.account(self.home, "A", self.reset + 7200)
@@ -1647,7 +1813,7 @@ class ReviewFixTests(RotationTestCase):
     def test_unstarted_review_does_not_reuse_previous_review_account(self):
         self.configure(wait_for_reset=False)
         self.configure_notify(events=["turn_finished"])
-        self.start("review-unstarted-account")
+        self.legacy_work("review-unstarted-account")
         self.wait("review-unstarted-account")
         self.notification("review-unstarted-account", "turn_finished")
         self.account(self.home, "A", self.reset, used=99)
@@ -1685,7 +1851,7 @@ class ReviewFixTests(RotationTestCase):
         self.configure()
         self.configure_notify(events=["turn_finished"])
         slug = "review-angle-selection-signal"
-        self.start(slug)
+        self.legacy_work(slug)
         self.wait(slug)
         self.notification(slug, "turn_finished")
         self.account(self.home, "A", self.reset, used=99)
@@ -2435,7 +2601,7 @@ class ReviewFixTests(RotationTestCase):
                 {"id": "F1", "decision": "fixed", "note": "Fixed after account rotation"},
                 {"id": "F2", "decision": "fixed", "note": "Also fixed after account rotation"}])},
             {"mode": "complete", "reply": self.review_result(False)}])
-        self.start("fix-rotation", "--review", "--fix-rounds", "1")
+        self.legacy_work("fix-rotation", "--review", "--fix-rounds", "1")
         output = self.wait("fix-rotation")
         executions = self.invocations()
         self.assertEqual([event["review"] for event in executions], [False, True, False, False, True])

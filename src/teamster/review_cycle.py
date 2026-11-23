@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import budgets, checking, claude_accounts, claude_review, clock, config, executors, notifications, procs, prompts, reviewers, task_state, telemetry_log, threads, turns
+from . import account_rotation, budgets, checking, claude_accounts, claude_review, clock, config, executors, notifications, procs, prompts, reviewers, task_state, telemetry_log, threads, turns
 
 
 def reviewer_available(name):
@@ -27,6 +27,8 @@ def configure_reviewer(st, cfg, explicit=None, *, required=False):
                 providers.append("claude" if preferred == "codex" else "codex")
         st["reviewer"] = next((name for name in providers if reviewer_available(name)), providers[0])
     reviewer = reviewers.from_entry(st)
+    if "work_binding" in st and reviewer.name != executors.from_state(st).name:
+        return  # The review entry reports that this provider needs a separate task.
     available = reviewer_available(reviewer.name)
     if required or explicit is not None or available:
         reviewer.prepare(cfg)
@@ -35,6 +37,8 @@ def configure_reviewer(st, cfg, explicit=None, *, required=False):
 
 
 def fallback_reviewer(st, cfg, reviewer):
+    if "work_binding" in st:
+        return None
     routes = config.role_routes(cfg, "review")
     if routes:
         if st.get("reviewer_explicit"):
@@ -128,9 +132,25 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
     attempted = set()
     deadline = None
     model = config.role_route(cfg, "review", "claude").get("model") or cfg["claude"].get("model") or None
-    account = claude_review.select_account(cfg, "review", prefer_unused=used_accounts, stopped=stopped,
-                                           task_type=st.get("task_type"), model=model)
+    bound = st.get("work_binding")
+    cycle = st.get("cycle") or {}
+    if bound:
+        model = st["work_binding"]["model"]
+        model = None if model == "default" else model
+        account = account_rotation.claude_choice(st, cfg, stopped)
+        if (account is None or account_rotation.restoring_wait(st)) and not stopped():
+            account = account_rotation.wait_for_claude_account(st, cfg, "assigned Claude account at limit", stopped, sleep,
+                                                               prompt=prompt)
+            if account is None:
+                return st["outcome"]
+        seconds = cfg["max_review_minutes"] * config.MINUTE_SECONDS
+        deadline = clock.CLOCK.monotonic() + seconds - cycle.get("waiting_active_seconds", 0)
+    else:
+        account = claude_review.select_account(cfg, "review", prefer_unused=used_accounts, stopped=stopped,
+                                               task_type=st.get("task_type"), model=model)
     while account is not None:
+        if bound:
+            account = turns.bind_claude_account(st, cfg, account)
         name = account["name"]
         retry = False
         attempted.add(name)
@@ -146,14 +166,16 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
             task_state.save(st)
             last = config.TASKS / st["slug"] / "review.md"
             last.unlink(missing_ok=True)
-            response = claude_review.run(st, cfg, prompt, stopped, account, deadline, model=model, effort=effort)
+            weekly = budgets.ClaudeWeeklyUsage(name) if bound else None
+            response = claude_review.run(st, cfg, prompt, stopped, account, deadline, model=model, effort=effort, weekly=weekly)
             deadline = response["deadline"]
             if response["outcome"] == "completed":
                 last.write_text(json.dumps(response["result"], ensure_ascii=False, indent=2), encoding="utf-8")
             st["outcome"] = response["outcome"]
             entry.update(result=response["result"], outcome=response["outcome"],
                          finished=clock.CLOCK.time(), thread=response["telemetry"].get("session_id") or "")
-            phase.add_claude_usage(response["telemetry"], account=name)
+            phase.add_claude_usage(response["telemetry"], account=name, weekly_before=weekly.before if weekly else None,
+                                   weekly_after=weekly.after if weekly else None, weekly_spent=weekly.spent if weekly else 0)
             if response["outcome"] == "unavailable":
                 entry["unavailable"] = response["reason"]
                 entry["retry_account"] = None
@@ -167,9 +189,22 @@ def claude_review_turn(st, cfg, prompt, stopped, used_accounts, effort=None, sle
                     entry["limited_until"] = until
                     if limited_model:
                         entry["limited_model"] = limited_model
-                    account = claude_review.select_account(cfg, "review", exclude=attempted,
-                                                           prefer_unused=used_accounts, stopped=stopped,
-                                                           task_type=st.get("task_type"), model=model)
+                    if bound and response["reason"] == "usage limit":
+                        waiting = clock.CLOCK.monotonic()
+                        cycle.update(waiting_review_thread=entry["thread"] or None,
+                                     waiting_active_seconds=max(0, seconds - (deadline - waiting)))
+                        account = account_rotation.wait_for_claude_account(st, cfg, "assigned Claude review account at limit",
+                                                                           stopped, sleep, prompt=prompt)
+                        if account is None:
+                            return st["outcome"]
+                        deadline += clock.CLOCK.monotonic() - waiting
+                    elif bound:
+                        account = None
+                        st["error"] = f"Assigned Claude review account {name}: {response['reason']}. Retry this review on the same connection."
+                    else:
+                        account = claude_review.select_account(cfg, "review", exclude=attempted,
+                                                               prefer_unused=used_accounts, stopped=stopped,
+                                                               task_type=st.get("task_type"), model=model)
                     retry = account is not None
                     if retry:
                         entry["retry_account"] = account["name"]
@@ -199,15 +234,26 @@ reviewers.CODEX_REVIEWER.bind(sys.modules[__name__], run="codex_review_turn")
 
 
 def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=None):
+    executor = executors.from_state(st, verify_binding=True)
+    if "work_binding" in st:
+        binding = st["work_binding"]
+        if (not binding or st["reviewer"] != executor.name
+                or st.get("review_model") not in (None, binding["model"], binding.get("native_model"))):
+            st.update(outcome="unavailable", error="This review requires a separate linked task with its own work connection.")
+            task_state.save(st)
+            return None
     st["review_account"] = None
-    records = []
-    executor = executors.from_state(st)
+    cycle = st.get("cycle") or {}
+    records = (st.get("review_result") or {}).get("angles", []) if cycle.get("waiting_prompt") else []
+    records = [entry for entry in records if entry["outcome"] in ("completed", "refused")]
     codex_effort = executor.review_effort(effort)
     configured = bool(config.role_routes(cfg, "review"))
     standalone = (st.get("cycle") or {}).get("kind") == "review"
     used_accounts = executor.review_accounts(st)
     result = None
-    st.update(kind="review", outcome="running", reset_wait_seconds=0)
+    st.update(kind="review", outcome="running")
+    if not account_rotation.restoring_wait(st):
+        st["reset_wait_seconds"] = 0
     st.pop("review_result", None)
     task_state.save(st)
     angles = selected_review_angles(st, cfg) if angles is None else angles
@@ -217,7 +263,7 @@ def review_turn(st, cfg, prompt, effort, stopped, sleep, new_turn=False, angles=
     try:
         if angles:
             prompt = prompts.review_prompt(st, cfg, with_angles=True)
-        for angle in angles or [None]:
+        for angle in (angles or [None])[len(records):]:
             st["review_account"] = None
             if stopped():
                 st["outcome"] = task_state.stop_outcome(st, stopped)

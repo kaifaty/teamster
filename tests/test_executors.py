@@ -7,6 +7,7 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -21,12 +22,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rotation_support import RotationTestCase, SCRIPT
 
 
+PROJECT_REVIEW = "Run teamster scout progress-review before acceptance."
+
+
 @contextlib.contextmanager
 def local_opencode_provider(env, binary):
     """Run the installed CLI against a scripted loopback Chat Completions endpoint."""
     home = Path(env["HOME"])
     (home / "opencode").symlink_to(Path(binary).resolve(strict=True))
     requests = []
+    work_prompts = []
     stop_requested = threading.Event()
     release = threading.Event()
 
@@ -38,6 +43,15 @@ def local_opencode_provider(env, binary):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             messages = request["messages"]
             requests.append((self.path, request["model"]))
+            if (home / "quota-exhausted").exists():
+                payload = json.dumps({"error": {"message": "You exceeded your current quota.",
+                                                "type": "insufficient_quota", "code": "insufficient_quota"}}).encode()
+                self.send_response(429)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             if "Wait here for stop" in json.dumps(messages):
                 stop_requested.set()
                 release.wait(30)
@@ -49,6 +63,7 @@ def local_opencode_provider(env, binary):
             assert len(markers) == 1, "expected only this task's brief in its history"
             summary = ("Follow-up edit " if resumed else "Initial edit ") + markers[0]
             if messages[-1]["role"] == "user":
+                work_prompts.append((resumed, messages))
                 args = {"command": "echo '" + summary + "' >> tracked.txt"}
                 delta = {"tool_calls": [{"index": 0, "id": "edit-" + str(len(requests)), "type": "function",
                                          "function": {"name": "shell", "arguments": json.dumps(args)}}]}
@@ -67,7 +82,7 @@ def local_opencode_provider(env, binary):
             self.wfile.write(b"data: [DONE]\n\n")
 
     # Build the CLI's environment only from this test's fixture paths and Git identity.
-    keep = {"HOME", "PATH", "PWD", "TEAMSTER_CLAUDE", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+    keep = {"HOME", "PATH", "PWD", "TEAMSTER_CLAUDE", "OPENCODE_CONFIG_CONTENT", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
             "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}
     for key in list(env):
         if key not in keep and not key.startswith(("CODEX_TASK_", "CODEX_FAKE_")):
@@ -81,11 +96,13 @@ def local_opencode_provider(env, binary):
         root.mkdir(parents=True)
         (root / "opencode.json").write_text(json.dumps({
             "update": "disable", "model": "offline/model",
+            "agents": {"title": {"model": "offline/other"}, "summary": {"model": "offline/other"},
+                       "compaction": {"model": "offline/other"}},
             "policies": [{"action": "provider.use", "resource": "*", "effect": "deny"},
                          {"action": "provider.use", "resource": "offline", "effect": "allow"}],
             "providers": {"offline": {"package": "@opencode/ai/providers/openai-compatible", "env": ["OFFLINE_KEY"],
                                       "settings": {"baseURL": f"http://127.0.0.1:{server.server_port}/v1"},
-                                      "models": {"model": {"name": "Test model"}}}},
+                                      "models": {"model": {"name": "Test model"}, "other": {"name": "Auxiliary model"}}}},
         }))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -95,7 +112,19 @@ def local_opencode_provider(env, binary):
             release.set()
             server.shutdown()
             thread.join()
-    assert requests == [("/v1/chat/completions", "model")] * 9, requests
+    assert requests == [("/v1/chat/completions", "model")] * 10, requests
+    assert [resumed for resumed, _ in work_prompts] == [False, False, True, True]
+    for resumed, messages in work_prompts:
+        instructions = "\n".join(m["content"] for m in messages if m["role"] == "system")
+        project = instructions.find(PROJECT_REVIEW)
+        role = instructions.find("You are a managed Teamster executor.")
+        assert 0 <= project < role, (resumed, project, role)
+        assert "Inline OpenCode guidance." in instructions[:role]
+        assert "status needs_decision" in instructions[role:]
+        example = json.JSONDecoder().raw_decode(instructions.partition("Example work result:")[2].lstrip())[0]
+        assert set(example) == set(json.loads((home / "response.json").read_text()))
+        assert example["status"] == "done" and example["checks"][0]["outcome"] == "passed"
+        assert "You are a managed Teamster executor." not in messages[-1]["content"]
 
 
 def fixture_work_turn(st, cfg, prompt, effort, current_message, stopped, sleep, new_turn=True):
@@ -145,6 +174,26 @@ def install_fake_opencode(root):
                 if gate.exists():
                     sys.exit("Timed out in fake " + method)
 
+        assert os.environ.get("TEAMSTER_MANAGED_EXECUTOR") == "1"
+        assert not {"BOARD_TOKEN", "BOARD_EXTERNAL_DUTY_CONFIG", "BOARD_URL"}.intersection(os.environ)
+        if sys.argv[1:] == ["api", "--standalone", "model.list"]:
+            route = cwd / "fixture-route"
+            settings = {"baseURL": route.read_text() if route.exists() else "http://127.0.0.1:9001/private?v=fixture-private"}
+            if "claude-opencode-stop" in cwd.parts:
+                settings["apiKey"] = (cwd / "fixture-key").read_text() if (cwd / "fixture-key").exists() else "fixture-local-key"
+            model = {"providerID": "offline", "id": "model", "modelID": "model", "enabled": True,
+                     "package": "@opencode/ai/providers/openai-compatible", "settings": settings}
+            print(json.dumps({"data": [model, dict(model, id="other")]}))
+            sys.exit(0)
+        if sys.argv[1:] == ["auth", "list", "--standalone", "--format", "json"]:
+            if {"claude-opencode-parallel", "claude-opencode-stop"} & set(cwd.parts):
+                print("[]")
+                sys.exit(0)
+            source = home / "connection-id"
+            print(json.dumps([{"id": "offline", "connections": [
+                {"type": "credential", "id": source.read_text() if source.exists() else "cred_fixture"}]}]))
+            sys.exit(0)
+
         if sys.argv[1] == "api":
             assert sys.argv[2:5] == ["--standalone", "session.update", "--param"]
             stored = home / sys.argv[5].split("=", 1)[1]
@@ -159,6 +208,18 @@ def install_fake_opencode(root):
 
         assert sys.argv[1:] == ["acp"]
         assert os.environ.get("COPYFILE_DISABLE") == "1"
+        overlay = json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
+        role_file = Path(overlay["instructions"][-1])
+        assert role_file.is_absolute()
+        assert {"action": "tool.use", "resource": "subagent:*", "effect": "deny"} not in overlay["policies"]
+        assert {"action": "skill.use", "resource": "teamster", "effect": "deny"} in overlay["policies"]
+        if not (home / "unbound-direct-call").exists():
+            assert overlay["model"] == "offline/model"
+            assert all(overlay["agents"][agent]["model"] == "offline/model" for agent in ("title", "summary", "compaction"))
+            assert overlay["providers"]["offline"]["models"]["other"]["disabled"]
+            assert [p for p in overlay["policies"] if p["action"] == "provider.use"][-2:] == [
+                {"action": "provider.use", "resource": "*", "effect": "deny"},
+                {"action": "provider.use", "resource": "offline", "effect": "allow"}]
         for line in sys.stdin:
             request = json.loads(line)
             method, params = request["method"], request["params"]
@@ -190,8 +251,17 @@ def install_fake_opencode(root):
                 else:
                     assert method == "session/prompt" and config[0]["currentValue"] == "offline/model"
                     assert state["title"]
+                    if (home / "quota-exhausted").exists():
+                        send(id=request["id"], error={"code": -32603, "message": "You exceeded your current quota"})
+                        continue
                     prompt = params["prompt"][0]["text"]
+                    instructions = role_file.read_text()
+                    assert "managed Teamster executor" in instructions
+                    assert "status needs_decision" in instructions
+                    assert "managed Teamster executor" not in prompt
                     answer = json.loads((home / "response.json").read_text())
+                    example = json.loads(instructions.partition("Example work result:")[2])
+                    assert set(example) == set(answer)
                     wrapup = "The turn's time budget has expired." in prompt
                     if wrapup:
                         state["wrapup_context"] = prompt
@@ -248,8 +318,110 @@ def install_fake_opencode(root):
 
 
 class ExecutorTests(RotationTestCase):
+    def response_items(self, thread):
+        rollout = self.worker().threads.rollout_path(self.home, thread)
+        events = map(json.loads, rollout.read_text().splitlines())
+        return [event["payload"] for event in events if event["type"] == "response_item"]
+
+    def test_codex_returns_required_review_to_operator(self):
+        slug = "operator-review"
+        review_order = "teamster scout nested-review 'Review tracked.txt'"
+        edit = "echo 'Ready for review' > tracked.txt"
+        self.commit_fixture({"AGENTS.md": f"After editing tracked.txt, obtain independent review with `{review_order}`.\n"})
+        self.brief.write_text("Edit tracked.txt and follow the repository's review instructions.")
+        self.configure(language="en")
+        self.env.update(BOARD_TOKEN="fixture-token", BOARD_EXTERNAL_DUTY_CONFIG=str(self.root / "board.json"),
+                        BOARD_URL="http://127.0.0.1:1")
+        self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "shell": [edit], "required_review": review_order,
+             "reply": self.work_result(summary="Edited tracked.txt.", checks=[])},
+            {"mode": "complete", "reply": self.review_result(False)},
+            {"mode": "complete", "reply": self.work_result(checks=[])}])
+
+        self.start(slug, "--no-push")
+        self.wait(slug)
+        work = self.state(slug)
+        self.assertEqual((Path(work["worktree"]) / "tracked.txt").read_text(), "Ready for review\n")
+        self.assertEqual((work["result"]["status"], work["result"]["questions"]),
+                         ("needs_decision", ["Please assign an independent review."]))
+        calls = [item for item in self.response_items(work["thread"]) if item["type"] in ("function_call", "custom_tool_call")]
+        self.assertEqual([json.loads(call["arguments"])["cmd"] for call in calls], [edit, "cat AGENTS.md"])
+
+        subprocess.run([sys.executable, "-I", str(SCRIPT), "review", slug], cwd=work["worktree"],
+                       env=self.env, capture_output=True, check=True, timeout=15)
+        self.wait(slug)
+        self.assertEqual(self.state(slug)["reviews"][-1]["result"], self.review_result(False))
+        self.cli("say", slug, "Finish the reviewed change.")
+        self.wait(slug)
+        first, review, followup = self.invocations()
+        for turn in (first, review, followup):
+            self.assertIn("managed Teamster executor", turn["instructions"])
+            if turn["review"]:
+                self.assertFalse(turn["thread_config"]["agents"]["enabled"])
+            else:
+                self.assertNotIn("enabled", turn["thread_config"].get("agents", {}))
+                for feature in ("multi_agent", "multi_agent_v2"):
+                    self.assertNotIn(feature, turn["thread_config"].get("features", {}))
+            self.assertIn({"name": "teamster", "enabled": False}, turn["thread_config"]["skills"]["config"])
+            self.assertFalse(turn["thread_config"]["plugins"]["teamster@kaifaty"]["enabled"])
+        self.assertTrue(review["review"])
+        self.assertFalse(review["resume"])
+        self.assertNotEqual(review["thread"], first["thread"])
+        self.assertTrue(followup["resume"])
+        self.assertEqual(followup["thread"], first["thread"])
+        self.assertEqual(self.state(slug)["result"]["status"], "done")
+
+    def test_codex_shell_records_denied_task_commands(self):
+        slug = "operator-control"
+        nested = "teamster scout nested-review 'Review tracked.txt'"
+        queued = shlex.join([sys.executable, "-I", str(SCRIPT), "say", slug, "Unexpected order", "--queue"])
+        start = shlex.join(["teamster", "start", "nested-work", "--brief", str(self.brief), "--no-push"])
+        denied = [nested, queued, start, f"teamster review {slug}", "teamster _run missing", "teamster wait missing", "teamster duty clear"]
+        reads = [f"teamster status {slug}", f"teamster stats {slug}", "teamster report --json"]
+        # Stand in for an older installation later on PATH. The executor must reach this checkout's CLI.
+        old = self.root / "teamster"
+        old.write_text("#!/bin/sh\nexit 91\n")
+        old.chmod(0o700)
+        self.configure(language="en")
+        pilot = self.worker()
+        pilot.duty.pin_duty("claude", "fixture-operator", None)
+        duty_record = pilot.duty.duty_path()
+        saved_duty = duty_record.read_bytes()
+        fixture = self.account(self.home, "A", self.reset, runs=[
+            {"mode": "complete", "shell": denied + reads, "reply": self.work_result(checks=[])}])
+        fixture["expected_client_version"] = pilot.config.plugin_version()
+        # The native shell starts with only core variables. Keep any regression inside the fake installation.
+        fixture["duty_config"] = {"shell_environment_policy": {"inherit": "core", "set": {
+            "CODEX_TASK_CODEX": str(self.fake), "CODEX_TASK_HOME": str(self.home), "CODEX_FAKE_TRACE": str(self.trace_path)}}}
+        (self.home / "fixture.json").write_text(json.dumps(fixture))
+        self.start(slug, "--no-push")
+        self.wait(slug)
+        state = self.state(slug)
+        items = self.response_items(state["thread"])
+        calls = [item for item in items if item["type"] in ("function_call", "custom_tool_call")]
+        self.assertEqual([json.loads(call["arguments"])["cmd"] for call in calls], denied + reads)
+        outputs = {item["call_id"]: item["output"] for item in items if item["type"] == "function_call_output"}
+        for call, verb in zip(calls, ("scout", "say", "start", "review", "_run", "wait", "duty")):
+            self.assertIn(f"Exit code: 1\nteamster: '{verb}' is reserved for the operator", outputs[call["call_id"]])
+        replies = [outputs[call["call_id"]] for call in calls[len(denied):]]
+        for reply in replies:
+            self.assertIn("Exit code: 0", reply)
+        self.assertEqual(duty_record.read_bytes(), saved_duty)
+        self.assertIn(slug, replies[0])
+        self.assertIn("total:", replies[1])
+        report = json.loads(replies[2].split("\n", 1)[1])
+        self.assertIn("tasks", report)
+        self.assertIn("accounts", report)
+        self.assertEqual(list(self.home.glob("fixture-thread-*")), [self.home / ("fixture-thread-" + state["thread"])])
+        self.assertFalse((self.home / "claude-tasks" / "nested-review").exists())
+        self.assertFalse((self.home / "claude-tasks" / "nested-work").exists())
+        self.assertFalse(state["reviews"])
+        self.assertEqual(state["turns"], 1)
+        self.assertFalse(self.worker().threads.followup_messages(state))
+
     def test_opencode_start_and_say_resume_the_worker_session(self):
         self.env.update(HOME=str(self.root), PWD=str(self.repo), TEAMSTER_CLAUDE=str(self.root / "missing-claude"))
+        self.env.update(BOARD_TOKEN="fixture-token", BOARD_EXTERNAL_DUTY_CONFIG=str(self.root / "board.json"))
         profiles = {"feature": {"executor": "codex", "model": "codex-only", "effort": "high"}}
         real_binary = os.environ.get("TEAMSTER_TEST_OPENCODE")
         if real_binary:
@@ -257,7 +429,13 @@ class ExecutorTests(RotationTestCase):
         else:
             install_fake_opencode(self.root)
             provider = contextlib.nullcontext()
-        (self.root / "response.json").write_text(json.dumps(self.work_result(checks=[])))
+        guidance = self.root / "opencode-guidance.md"
+        guidance.write_text("Inline OpenCode guidance.\n")
+        self.env["OPENCODE_CONFIG_CONTENT"] = json.dumps({"instructions": [str(guidance)]})
+        self.commit_fixture({"AGENTS.md": PROJECT_REVIEW + "\n"})
+        handoff = self.work_result("needs_decision", checks=[],
+                                   questions=["Can you arrange the required progress-review scout?"])
+        (self.root / "response.json").write_text(json.dumps(handoff))
         flags = ["--executor", "opencode", "--model", "offline/model", "--task-type", "feature", "--no-push"]
         labels = {"opencode-work": "alpha", "opencode-parallel": "beta"}
         with provider as stop_requested:
@@ -296,7 +474,7 @@ class ExecutorTests(RotationTestCase):
                 self.assertIn(summary, self.wait(slug))
                 second = self.state(slug)
                 self.assertEqual((second["session_id"], second["turns"]), (sessions[slug], 2))
-                self.assertEqual(second["result"], self.work_result(summary=summary, checks=[]))
+                self.assertEqual(second["result"], dict(handoff, summary=summary))
                 self.assertEqual([check["outcome"] for check in second["checks"]], ["passed", "passed"])
                 self.assertEqual((Path(second["worktree"]) / "tracked.txt").read_text(),
                                  f"initial\nInitial edit {label}\nFollow-up edit {label}\n")
@@ -308,6 +486,14 @@ class ExecutorTests(RotationTestCase):
             slug = "opencode-work"
             session = sessions[slug]
             worktree = Path(self.state(slug)["worktree"])
+            binding = self.state(slug)["work_binding"]
+            (self.root / "quota-exhausted").touch()
+            self.cli("say", slug, "Continue on the original connection.")
+            self.assertIn("reset time", self.cli("wait", slug))
+            limited = self.state(slug)
+            self.assertEqual((limited["outcome"], limited["work_binding"], limited["session_id"]),
+                             ("exhausted", binding, session))
+            (self.root / "quota-exhausted").unlink()
             if real_binary:
                 info = subprocess.check_output(
                     ["opencode", "api", "--standalone", "session.get", "--param", f"sessionID={session}"],
@@ -325,6 +511,20 @@ class ExecutorTests(RotationTestCase):
                                env=dict(self.env, PWD=str(worktree)), stdin=subprocess.DEVNULL,
                                capture_output=True, check=True, timeout=30)
             else:
+                self.assertEqual((binding["provider"], binding["model"], binding["credential_id"]),
+                                 ("offline", "offline/model", "cred_fixture"))
+                self.assertEqual(self.state("opencode-parallel")["work_binding"]["source"], "local")
+                self.assertNotIn("fixture-private", json.dumps(binding))
+                (worktree / "fixture-route").write_text("http://127.0.0.1:9002/")
+                self.cli("say", slug, "Continue at the assigned endpoint.")
+                self.assertIn("assigned work connection", self.cli("wait", slug))
+                self.assertEqual(self.state(slug)["session_id"], session)
+                (worktree / "fixture-route").unlink()
+                (self.root / "connection-id").write_text("cred_replacement")
+                self.cli("say", slug, "Make a change on the original connection.")
+                self.assertIn("assigned work connection", self.cli("wait", slug))
+                self.assertEqual(self.state(slug)["work_binding"], binding)
+                (self.root / "connection-id").unlink()
                 (self.root / session).unlink()
             self.cli("say", slug, "Make a third change to tracked.txt.")
             output = self.cli("wait", slug, "--timeout", "30", timeout=45)
@@ -340,7 +540,7 @@ class ExecutorTests(RotationTestCase):
                 stderr = self.home / "claude-tasks" / slug / "stderr.log"
                 self.assertNotIn("PRIVATE-SESSION-METADATA", stderr.read_text())
                 calls = (self.root / "opencode-calls").read_text().splitlines()
-                self.assertEqual(calls.count("session/prompt"), 4)
+                self.assertEqual((calls.count("session/new"), calls.count("session/prompt")), (2, 5))
 
                 (self.root / "delete-after-resume").touch()
                 other = "opencode-parallel"
@@ -384,13 +584,22 @@ class ExecutorTests(RotationTestCase):
         failure = self.root / "fail-title"
         failure.touch()
         self.cli("say", slug, "Retry the interrupted request.")
-        self.assertIn("fixture title failure", self.cli("wait", slug, "--timeout", "30"))
+        self.assertIn("OpenCode session title update failed (1)", self.cli("wait", slug, "--timeout", "30"))
         session = self.state(slug)["session_id"]
         self.assertNotIn("session/prompt", (self.root / "opencode-calls").read_text())
         failure.unlink()
         self.cli("say", slug, "Retry the interrupted request.")
         self.assertIn("Initial edit alpha (retried)", self.wait(slug))
         self.assertEqual(self.state(slug)["session_id"], session)
+        binding = self.state(slug)["work_binding"]
+        self.assertEqual(binding["source"], "settings")
+        self.assertNotIn("fixture-local-key", json.dumps(binding))
+        key = Path(self.state(slug)["worktree"]) / "fixture-key"
+        key.write_text("fixture-replacement-key")
+        self.cli("say", slug, "Continue on the assigned local connection.")
+        self.assertIn("assigned work connection", self.cli("wait", slug))
+        self.assertEqual(self.state(slug)["work_binding"], binding)
+        key.unlink()
         stop_at("session/resume", self.cli, "say", slug, "Make the second change to tracked.txt.")
 
         calls = (self.root / "opencode-calls").read_text().splitlines()
@@ -474,12 +683,13 @@ class ExecutorTests(RotationTestCase):
                     self.assertNotIn("== result: done", output)
 
     def test_acp_stdio_conversation(self):
-        self.env["HOME"] = str(self.root)
+        self.env.update(HOME=str(self.root), BOARD_TOKEN="fixture-operator-token")
         repo = self.root / "work tree"
         repo.mkdir()
         agent = self.root / "acp agent.py"
         agent.write_text(textwrap.dedent('''\
             import json
+            import os
             from pathlib import Path
             import sys
 
@@ -508,6 +718,8 @@ class ExecutorTests(RotationTestCase):
                 reply(auth)
             session = receive("session/" + ("new" if mode == "configured" else mode))
             assert session["params"]["cwd"] == str(Path.cwd())
+            assert "systemPrompt" not in session["params"] and "TEAMSTER_MANAGED_EXECUTOR" not in os.environ
+            assert os.environ.get("BOARD_TOKEN") == "fixture-operator-token"
             if mode == "configured":
                 option = {"id": "reasoning_effort", "type": "select", "currentValue": "low",
                           "options": [{"group": "efforts", "name": "Efforts",
@@ -621,6 +833,7 @@ class ExecutorTests(RotationTestCase):
         (self.root / "response.json").write_text(json.dumps(self.work_result()))
         runner = self.worker().turns.opencode_runner
         with mock.patch.dict(os.environ, self.env, clear=True):
+            (self.root / "unbound-direct-call").touch()
             for reply in ("truncated", "provider-error", "wrong-session", "length", "crash-after-answer"):
                 with self.subTest(reply=reply):
                     (self.root / "reply-mode").write_text(reply)
@@ -629,6 +842,7 @@ class ExecutorTests(RotationTestCase):
                         lambda: False, None, title="opencode-failure", created=lambda session: None)
                     self.assertEqual(outcome, "failed")
 
+        (self.root / "unbound-direct-call").unlink()
         (self.root / "reply-mode").write_text("incomplete-json")
         self.brief.write_text("Make the first change [alpha].")
         slug = "opencode-incomplete"
@@ -704,13 +918,10 @@ class ExecutorTests(RotationTestCase):
 
             cli("review", "registered-task")
             reviewed = self.state("registered-task")
-            self.assertEqual(reviewed["outcome"], "completed", reviewed.get("error"))
-            self.assertEqual(reviewed["review_result"]["verdict"], "clean")
-            self.assertEqual(len(self.review_invocations()), 1)
+            self.assertEqual(reviewed["outcome"], "unavailable")
+            self.assertIn("separate linked task", reviewed["error"])
+            self.assertEqual(len(self.review_invocations()), 0)
             turn.assert_called_once()
-            self.assertIn("review by main", cli("wait", "registered-task"))
-            self.assertIn("account main  thread", cli("status", "registered-task"))
-            self.assertEqual(self.notification("registered-task", "review_done")["account"], "main")
 
             cli("scout", "registered-scout", "Read the fixture", "--repo", str(self.repo), "--executor", name)
             scout.assert_called_once()

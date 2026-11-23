@@ -33,7 +33,7 @@ class NotificationTests(RotationTestCase):
         self.configure()
         self.configure_notify()
         self.account(self.home, "A", self.reset, runs=[{"mode": "usage_error"}])
-        self.start("notify-rotation")
+        self.legacy_work("notify-rotation")
         self.wait("notify-rotation")
         rotated = self.notification("notify-rotation", "rotated")
         self.assertEqual((rotated["from"], rotated["to"]), ("main", "second"))
@@ -169,7 +169,7 @@ class NotificationTests(RotationTestCase):
         self.configure()
         self.configure_notify()
         slug = "notify-review-account"
-        self.start(slug)
+        self.legacy_work(slug)
         self.wait(slug)
         self.notification(slug, "turn_finished")
         working = self.state(slug)
@@ -191,7 +191,7 @@ class NotificationTests(RotationTestCase):
         clock = self.enable_fake_clock(auto_advance=False)
         self.configure()
         self.configure_notify()
-        self.start(slug)
+        self.legacy_work(slug)
         self.wait(slug)
         working = self.state(slug)
         reset = clock.time() + 3
@@ -231,7 +231,7 @@ class NotificationTests(RotationTestCase):
         slug = "notify-angle-sleep"
         self.configure()
         self.configure_notify()
-        self.start(slug)
+        self.legacy_work(slug)
         self.wait(slug)
         working = self.state(slug)
         reset = clock.time() + 3

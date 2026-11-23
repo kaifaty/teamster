@@ -1,6 +1,8 @@
 """Active time budgets, wrap-up and stuck-command tests."""
 import fcntl
 import json
+import os
+import signal
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -118,15 +120,9 @@ class TimeBudgetTests(RotationTestCase):
                     return before
 
                 ready = executor.submit(publish_when_ready)
-                starter = subprocess.Popen(
-                    [PYTHON, "-I", str(SCRIPT), "start", "cap-locked-journal", "--brief", str(self.brief),
-                     "--repo", str(self.repo), "--max-minutes", "2"],
-                    cwd=self.repo, env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.extra_pids.add(starter.pid)
+                self.legacy_work("cap-locked-journal", "--max-minutes", "2")
                 try:
                     before = ready.result()
-                    stdout, stderr = starter.communicate(timeout=self.fixture_timeout)
-                    self.assertEqual(starter.returncode, 0, stdout + stderr)
                     self.until(lambda: sum(event.get("command") == "quota-snapshot"
                                            for event in self.trace()[before:]) >= 2)
                     self.until(lambda: any(event.get("command") == "exec-child" for event in self.trace()))
@@ -155,35 +151,74 @@ class TimeBudgetTests(RotationTestCase):
                     self.until(lambda: not self.process_is_live(child))
                     self.assertFalse(self.consume_calls())
                 finally:
-                    if starter.poll() is None:
-                        starter.terminate()
-                    starter.communicate(timeout=self.fixture_timeout)
+                    fcntl.flock(journal, fcntl.LOCK_UN)
 
     def test_time_budget_interrupts_a_slow_account_rpc_after_a_usage_error(self):
-        self.env["CODEX_TASK_MINUTE_SECONDS"] = "2"
+        clock = self.enable_fake_clock(auto_advance=False)
+        self.env["CODEX_TASK_MINUTE_SECONDS"] = "60"
         self.configure(language="en")
         gate = self.root / "release-quota-rpc"
-        result = self.work_result("partial", summary="Wrapped up without waiting for the quota RPC.")
-        fixture = self.account(self.home, "A", self.reset, runs=[
+        result = self.work_result("partial", summary="Wrapped up on the original account.")
+        slug = "cap-slow-quota-rpc"
+        reset = clock.time() + 3600
+        fixture = self.account(self.home, "A", reset, auto_reset=True, runs=[
             {"mode": "usage_error", "limit_after": 0.05}, {"mode": "complete", "reply": result}])
         fixture["rate_limits_gate_after_exec"] = str(gate)
         (self.home / "fixture.json").write_text(json.dumps(fixture))
-        self.start("cap-slow-quota-rpc", "--max-minutes", "2")
+        self.account(self.other, "B", reset + 3600)
+        self.start(slug, "--max-minutes", "2")
         self.until(lambda: any(event.get("command") == "quota-waiting" for event in self.trace()))
         blocked_rpc = next(event["pid"] for event in self.trace() if event.get("command") == "quota-waiting")
         self.assertTrue(self.process_is_live(blocked_rpc))
-        output = self.wait("cap-slow-quota-rpc", timeout=10)
-        state = self.state("cap-slow-quota-rpc")
-        self.assertFalse(gate.exists(), "the deadline must cancel the RPC before its gate opens")
+        self.advance_fake_clock(121)
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        asleep = self.state(slug)
         self.assertFalse(self.process_is_live(blocked_rpc))
+        self.assertFalse(gate.exists())
+        self.assertEqual(len(self.invocations()), 1)
+        self.assertEqual(asleep["turn_stop"]["minutes"], 2)
+        os.kill(asleep["pid"], signal.SIGKILL)
+        self.until(lambda: not self.process_is_live(asleep["pid"]))
+        self.assertIn("from wrapup", self.cli("resume", slug))
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        gate.touch()
+        self.advance_fake_clock(max(reset, self.state(slug)["sleeping"]["until"]) + 1 - clock.time())
+        output = self.wait(slug, timeout=20, through_sleep=True)
+        state = self.state(slug)
         self.assertEqual(state["outcome"], "budget_exhausted")
-        self.assertEqual(state["result"], result)
-        executions = self.invocations()
-        self.assertEqual(len(executions), 2)
-        self.assertTrue(executions[1]["resume"])
-        self.assertEqual(executions[1]["thread"], executions[0]["thread"])
+        self.assertEqual(state["turn_stop"], asleep["turn_stop"])
+        self.assertEqual((len(state["turn_stops"]), state["turns"], state["result"]), (1, 1, result))
+        first, wrapup = self.invocations()
+        self.assert_resumed_same_thread(first, wrapup, self.home)
         self.assertIn("== turn stopped: time budget 2 min exhausted", output)
         self.assertIn(result["summary"], output)
+
+    def test_rejected_wrapup_waits_and_finishes_once_in_the_original_thread(self):
+        clock = self.enable_fake_clock(auto_advance=False)
+        self.env["CODEX_TASK_MINUTE_SECONDS"] = "1"
+        self.configure(language="en")
+        reset = clock.time() + 3600
+        checkpoint = self.work_result("partial", summary="Saved after the reset.")
+        self.account(self.home, "A", reset, auto_reset=True, runs=[
+            {"mode": "hold"}, {"mode": "usage_error"}, {"mode": "complete", "reply": checkpoint}])
+        self.account(self.other, "B", reset + 3600)
+        slug = "rejected-wrapup"
+        self.start(slug, "--max-minutes", "3")
+        self.until(lambda: len(self.invocations()) == 1)
+        self.advance_fake_clock(4)
+        self.until(lambda: self.state(slug)["outcome"] == "sleeping")
+        asleep = self.state(slug)
+        self.assertEqual(len(self.invocations()), 2)
+        self.advance_fake_clock(asleep["sleeping"]["until"] + 1 - clock.time())
+        self.wait(slug, through_sleep=True)
+        state = self.state(slug)
+        first, rejected, finished = self.invocations()
+        self.assert_resumed_same_thread(first, rejected, self.home)
+        self.assert_resumed_same_thread(rejected, finished, self.home)
+        self.assertEqual(rejected["prompt"], finished["prompt"])
+        self.assertEqual((state["outcome"], state["turn_stop"]["minutes"], len(state["turn_stops"])),
+                         ("budget_exhausted", 3, 1))
+        self.assertEqual((state["wrapup"]["outcome"], state["result"]), ("completed", checkpoint))
 
     def test_time_budget_does_not_count_sleep_until_subscription_reset(self):
         clock = self.enable_fake_clock()
@@ -238,7 +273,7 @@ class TimeBudgetTests(RotationTestCase):
             {"mode": "complete", "delay": 2.2, "delay_gate": str(gate),
              "reply": "This would finish if the budget restarted"},
             {"mode": "complete", "reply": self.work_result("partial")}])
-        self.start("cap-rotation", "--max-minutes", "1.7")
+        self.legacy_work("cap-rotation", "--max-minutes", "1.7")
         self.until(lambda: len(self.invocations()) == 2 and
                    self.state("cap-rotation")["thread"] == self.invocations()[1]["thread"])
         gate.touch()
@@ -468,7 +503,7 @@ class TimeBudgetTests(RotationTestCase):
             # Longer than the default 18-minute budget, shorter than the override.
             {"mode": "complete", "delay": 4.8, "reply": "Say override completed"},
             {"mode": "hold"}, {"mode": "complete", "reply": self.work_result("partial")}])
-        self.start("cap-config")
+        self.legacy_work("cap-config")
         self.until(lambda: len(self.invocations()) == 1 and
                    self.state("cap-config")["thread"] == self.invocations()[0]["thread"])
         clock.sleep(3.7)
@@ -493,7 +528,7 @@ class TimeBudgetTests(RotationTestCase):
             {"mode": "hold"}, {"mode": "complete", "reply": self.work_result("partial")},
             # The unbounded follow-up must outlast the initial 12-minute cap.
             {"mode": "complete", "delay": 4.8, "reply": "The later turn has no budget"}])
-        self.start("cap-no-default", "--max-minutes", "12")
+        self.legacy_work("cap-no-default", "--max-minutes", "12")
         self.wait("cap-no-default", timeout=12)
         self.cli("say", "cap-no-default", "Continue without a time limit")
         output = self.wait("cap-no-default", timeout=12)
@@ -534,7 +569,7 @@ class TimeBudgetTests(RotationTestCase):
             {"mode": "complete", "reply": work},
             {"mode": "hold"}, {"mode": "complete", "reply": checkpoint},
             {"mode": "hold"}, {"mode": "complete", "reply": "Scouting checkpoint"}])
-        self.start("cap-review-default", "--review", "--model", "work-model", "--review-model", "checkpoint-review")
+        self.legacy_work("cap-review-default", "--review", "--model", "work-model", "--review-model", "checkpoint-review")
         review_output = self.wait("cap-review-default", timeout=12)
         state = self.state("cap-review-default")
         self.assertEqual(state["outcome"], "budget_exhausted")
@@ -573,7 +608,7 @@ class TimeBudgetTests(RotationTestCase):
         self.account(self.other, "B", self.reset, runs=[
             {"mode": "hold", "session_gate": str(gate)},
             {"mode": "complete", "reply": self.review_result()}])
-        self.start("cap-review-before-thread", "--review")
+        self.legacy_work("cap-review-before-thread", "--review")
         self.until(lambda: any(event.get("command") == "thread/start"
                                and event["home"] == str(self.other) for event in self.trace()))
         output = self.wait("cap-review-before-thread", timeout=12)

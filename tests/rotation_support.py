@@ -1,6 +1,8 @@
 """Shared fixtures and helpers for the rotation CLI tests."""
 import datetime
+import contextlib
 import fcntl
+import io
 import json
 import os
 import shlex
@@ -15,6 +17,7 @@ import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 
 # Isolated Python omits the script directory from its import path.
@@ -212,7 +215,7 @@ def duty_config(layers=None):
             node[names[-1]] = value
     return settings
 
-def duty_command_environment():
+def shell_environment():
     policy = duty_config().get("shell_environment_policy", {})
     inherit = policy.get("inherit", "all")
     if inherit == "all":
@@ -368,7 +371,7 @@ def duty_turn(request, thread, model, models):
                       "threadId": thread["id"], "turnId": turn, "item": dict(item, status="declined")}})
             continue
         trace({"command": "duty-executed", "item_id": item_id, "params": approval})
-        environment = duty_command_environment()
+        environment = shell_environment()
         if step.get("execute"):
             trace({"command": "duty-command-environment", "started_by": environment.get("TEAMSTER_STARTED_BY"),
                    "command_marker": environment.get("TEAMSTER_DUTY_PROCESS"),
@@ -416,7 +419,7 @@ def duty_turn(request, thread, model, models):
                   "item": dict(item, status="failed" if item.get("exitCode") not in (None, 0) else "completed")}})
     if run.get("child"):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
-                                 env=duty_command_environment(), start_new_session=True)
+                                 env=shell_environment(), start_new_session=True)
         trace({"command": "duty-child", "child_pid": child.pid})
     if run.get("mode") == "crash":
         sys.exit(1)
@@ -844,6 +847,28 @@ def execute(invocation, thread, emit):
                 "command": command["command"], "exit_code": command["exit_code"],
                 "aggregated_output": command.get("aggregated_output", "fixture command failed\n")}
         emit({"type": command.get("event_type", "item.completed"), "item": item})
+
+    def shell(command):
+        call_id = str(uuid.uuid4())
+        append(rollout, {"type": "response_item", "payload": {"type": "function_call", "call_id": call_id,
+               "name": "exec_command", "arguments": json.dumps({"cmd": command})}})
+        proc = subprocess.run(["/bin/sh", "-c", command], env=shell_environment(), text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+        append(rollout, {"type": "response_item", "payload": {"type": "function_call_output", "call_id": call_id,
+               "output": f"Exit code: {proc.returncode}\n{proc.stdout}"}})
+        emit({"type": "item.completed", "item": {"id": call_id, "type": "command_execution", "command": command,
+              "exit_code": proc.returncode, "aggregated_output": proc.stdout}})
+        return proc.stdout
+
+    for command in run.get("shell", []):
+        shell(command)
+    if run.get("required_review") and run["required_review"] in shell("cat AGENTS.md"):
+        if ("Only the operator may delegate" in invocation["instructions"] and
+                "If independent review or another Teamster session is needed, return your work and the request "
+                "to the operator" in invocation["instructions"]):
+            run["reply"] = dict(run["reply"], status="needs_decision", questions=["Please assign an independent review."])
+        else:
+            shell(run["required_review"])
     for text in run.get("messages", []):
         message(text)
     if run.get("modify"):
@@ -950,6 +975,7 @@ def native_turn(request, thread, resumed, thread_params):
                   "sqlite_home": os.environ.get("CODEX_SQLITE_HOME"), "cwd": os.getcwd(),
                   "sandboxPolicy": params.get("sandboxPolicy"), "approvalPolicy": params["approvalPolicy"],
                   "output_schema": schema, "model": params["model"], "effort": params["effort"],
+                  "instructions": thread_params.get("developerInstructions", ""),
                   "thread_config": thread_params.get("config", {}), "thread_sandbox": thread_params.get("sandbox"),
                   "supervisor": int(subprocess.check_output(["ps", "-o", "ppid=", "-p", str(os.getpgrp())]))}
     if os.environ.get("CODEX_FAKE_STATE"):
@@ -1042,6 +1068,8 @@ def work_server():
 
 def acp_agent():
     # Script the adapter half of the boundary; the real CODEX_PATH shim still admits the native turn.
+    assert os.environ.get("TEAMSTER_MANAGED_EXECUTOR") == "1"
+    assert not {"BOARD_TOKEN", "BOARD_EXTERNAL_DUTY_CONFIG", "BOARD_URL"}.intersection(os.environ)
     trace({"command": "codex-acp", "prompt_suggestions": os.environ.get("CODEX_ACP_PROMPT_SUGGESTIONS")})
     backend = subprocess.Popen([os.environ["CODEX_PATH"], "app-server"], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, text=True, env=dict(os.environ, CODEX_FAKE_WORK_SERVER="1"))
@@ -1056,7 +1084,7 @@ def acp_agent():
         emit(dict(fields, jsonrpc="2.0"))
     def update(event, **fields):
         send(method="session/update", params={"sessionId": thread, "update": dict(fields, sessionUpdate=event)})
-    catalog = ("fake-model Task.1_a Review.2_b Fast-2 Strong-2 Strong-3 Strong-4 checkpoint-model "
+    catalog = ("fake-model profile-model Task.1_a Review.2_b Fast-2 Strong-2 Strong-3 Strong-4 checkpoint-model "
                "work-model checkpoint-review angle-model codex-review-model fallback-model model-a model-b model-c "
                "configured-review fixture-reflect fixture-codex-work fixture-codex-review fixture-codex-scout gpt-6.2-sol review-model gpt-5 gpt-5.5 gpt-6-sol gpt-6.1-sol fixture-probe-model")
     choices = {"model": catalog.split(), "reasoning_effort": "low medium high xhigh max ultra".split(),
@@ -1072,12 +1100,19 @@ def acp_agent():
             result = {}
             if method == "initialize":
                 assert params["protocolVersion"] == 1
+                assert params["clientInfo"]["name"] == "teamster"
+                expected_version = fixture().get("expected_client_version")
+                if expected_version is not None:
+                    assert params["clientInfo"] == {"name": "teamster", "version": expected_version}
                 rpc("initialize")
                 result = {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}, "close": {}}}}
             elif method in ("session/new", "session/resume"):
                 fields = {"threadId": params["sessionId"]} if method == "session/resume" else {}
+                if "systemPrompt" in params:
+                    assert params["systemPrompt"]["mode"] == "append"
+                    fields["developerInstructions"] = params["systemPrompt"]["content"][0]["text"]
                 try:
-                    opened = rpc("thread/resume" if fields else "thread/start", cwd=params["cwd"], **fields)
+                    opened = rpc("thread/resume" if method == "session/resume" else "thread/start", cwd=params["cwd"], **fields)
                 except ValueError as exc:
                     send(id=request["id"], error={"code": -32603, "message": str(exc)})
                     continue
@@ -1581,6 +1616,33 @@ class RotationTestCase(unittest.TestCase):
     def start(self, slug, *args):
         return self.cli("start", slug, "--brief", str(self.brief), "--repo", str(self.repo), *args)
 
+    def released_work_record(self, worker, settings):
+        fixture = ROOT / "tests/fixtures/state-1.101.1/sleeping/state.json"
+        record = json.loads(fixture.read_text())
+        record.update({k: settings[k] for k in record.keys() & settings.keys() if k != "plugin_version"})
+        worker.task_state.save(record)
+        return worker.task_state.load(settings["slug"])
+
+    def legacy_work(self, slug, *args):
+        """Exercise the supervisor on a released, unassigned work record in this fixture's checkout."""
+        worker = load_worker(self.env, clear=True)
+        spawn = worker.supervisor.spawn
+
+        def launch_record(settings, prompt, *turn, **options):
+            # Reuse CLI setup for the temporary worktree, brief and command options.
+            # Restore the release record before handing it to the normal disk loader and supervisor.
+            proc = spawn(self.released_work_record(worker, settings), prompt, *turn, **options)
+            self.extra_pids.add(proc.pid)
+            self.addCleanup(proc.wait, timeout=10)
+            return proc
+
+        argv = [str(SCRIPT), "start", slug, "--brief", str(self.brief), "--repo", str(self.repo), *args]
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(worker.supervisor, "spawn", side_effect=launch_record), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            worker.cli.main()
+        return output.getvalue()
+
     def state(self, slug):
         tasks = Path(self.env["TEAMSTER_HOME"]) / "tasks" if self.env.get("TEAMSTER_HOME") else self.home / "claude-tasks"
         return json.loads((tasks / slug / "state.json").read_text())
@@ -1737,7 +1799,8 @@ class RotationTestCase(unittest.TestCase):
         self.assertEqual(sleeping["account"], account)
         self.assertTrue(sleeping["reason"])
         expected = datetime.datetime.fromtimestamp(sleeping["until"]).strftime("%Y-%m-%d %H:%M")
-        self.assertIn("== all accounts at limit; auto-continue at " + expected +
+        label = "assigned account at limit" if state.get("work_binding") else "all accounts at limit"
+        self.assertIn("== " + label + "; auto-continue at " + expected +
                       " (" + account + "); run wait again to follow", output)
         self.assertIn("== commits on ", output)
         return state

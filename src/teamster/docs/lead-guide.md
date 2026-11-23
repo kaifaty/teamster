@@ -1,6 +1,12 @@
 # Lead guide
 
-The lead plans, writes the brief, reviews the result and merges; the worker implements in its own git worktree.
+This guide is for the operator. The lead plans, writes the brief, reviews the result and merges.
+Managed executors use permitted native harness tools on their assigned connection for work and review.
+When they need another Teamster session, they return the request to the operator in their result.
+Executors can inspect task state with `status`, `stats` and `report`.
+The operator can then run `teamster review` for an independent review or `teamster say` to continue the worker's session.
+For Codex, the thread's native rollout under the account's `sessions/YYYY/MM/DD/` records tool attempts.
+Match each `response_item` of type `function_call` or `custom_tool_call` to its output by `call_id` to see a rejected command.
 
 Reference detail lives in the package docs. Read any file below with `teamster docs <name>`
 (use its name without `.md`), only when its topic comes up:
@@ -91,11 +97,15 @@ ChatGPT.app bundle if present, then `codex` on `PATH`. Codex supplies its config
 when Teamster has no work overrides. The adapter uses the selected account's `CODEX_HOME`.
 Existing tasks resume their saved native Codex thread. If that thread is unavailable, Teamster
 reports the resume error before sending the order.
-Use `start --model M` for work and `--review-model M` on `start`, `say`, or `review` for Codex reviews; `say` inherits or replaces them, and `default` clears an override. Read `accounts --json` before choosing ([models and JSON fields](settings.md#task-models)).
+Use `start --model M` to choose the work model. New tasks keep their model and connection across
+follow-ups, fixes, quota waits, supervisor restarts and wrap-up. Use a separate linked task to change
+the assignment. [Assigned work connections](accounts.md#assigned-work-connection)
 A task keeps the teamster version it started on after an upgrade: `say` and `review` re-run in it while it is installed; `say --upgrade` moves the task to the current version ([versioned installs](settings.md#versioned-installs)).
 Use `start --task-type LABEL` to select a configured [task profile](settings.md#task-profiles) and label telemetry. `say` and `review` inherit the label, and `say --task-type LABEL` replaces it ([labels and grouped reports](telemetry.md)).
 Use `start --executor codex|claude|opencode` to pin the task worker. Automatic selection starts with a task profile's executor when present, then follows the [work role profile](settings.md#role-profiles) or the configured executor default. The saved executor handles `say`, review fixes, CI repairs and wrap-up. Claude and OpenCode work require `--sandbox off`.
-The [review role profile](settings.md#role-profiles) chooses the reviewer order. Without it, Claude tasks prefer Codex reviews and other workers use the configured reviewer. Use `--reviewer claude` on `start`, `say`, or `review` to select the isolated Claude pool. It prefers another account when Claude also implements. See [account setup](accounts.md#claude-account-pool).
+The review role profile chooses the reviewer. An embedded review of bound work uses the same
+connection and model. For a review on another resource, start a separate task with the original
+slug, base and commit in its brief. [Review roles](settings.md#role-profiles)
 
 Ordinary Codex and Claude tasks, reviews, scouts and reflections use ACP v1 over stdio. Install
 `@agentclientprotocol/codex-acp` or `@agentclientprotocol/claude-agent-acp` for the corresponding
@@ -103,7 +113,7 @@ provider. The supervisor needs its `codex-acp` or `claude-agent-acp` executable 
 Teamster opens an ACP session for a new task and saves its native cursor before the prompt.
 `say`, review fixes and CI repairs continue the worker's session. A review starts its own session.
 The Board's task actions use the same supervisor, saved checks, budgets and publication cycle.
-Its **Открыть чат** action opens a separate interactive conversation in the worktree.
+Use **say** for a conversation on the assigned connection. **Открыть чат** is available for unbound worktrees.
 
 Codex uses the selected account's app-server behind the adapter for sandbox settings and native
 structured output. Claude supplies its role's tools, hooks and output schema through the adapter.
@@ -119,7 +129,7 @@ teamster say update-parser "Handle the empty input case."
 teamster wait update-parser
 ```
 
-Teamster starts a separate `opencode acp` process in the task worktree for each turn using OpenCode 2.3.2 on `PATH`. It creates the session with ACP `session/new`, saves its native ID and resumes that ID on follow-ups. Before the first prompt, Teamster sets the task slug as the session title using the standalone `session.update` metadata operation. OpenCode 2.3.2 has no ACP rename command. Setting the title avoids a model request for automatic naming. In sandbox-off mode the worker grants one-time tool permissions offered by OpenCode. Separate reviews use the selected Teamster reviewer and its account. [OpenCode CLI commands](https://opencode.ai/docs/cli/commands/)
+Teamster starts a separate `opencode acp` process in the task worktree for each turn using OpenCode 2.3.2 on `PATH`. It creates the session with ACP `session/new`, saves its native ID and resumes that ID on follow-ups. Before the first prompt, Teamster sets the task slug as the session title using the standalone `session.update` metadata operation. OpenCode 2.3.2 has no ACP rename command. Setting the title avoids a model request for automatic naming. In sandbox-off mode the worker grants one-time tool permissions offered by OpenCode. A review on another provider requires a separate task. [OpenCode CLI commands](https://opencode.ai/docs/cli/commands/)
 
 | Step | Command |
 |---|---|

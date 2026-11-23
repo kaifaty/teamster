@@ -1,4 +1,5 @@
 """Isolated Claude Code transport shared by reviews and writable work turns."""
+import hashlib
 import json
 import os
 import selectors
@@ -39,9 +40,20 @@ def account_environment(account, timeout):
     except (OSError, subprocess.TimeoutExpired):
         return environment, ""
     token = credential.stdout.strip() if credential.returncode == 0 else ""
+    if account.get("credential_id") and hashlib.sha256(token.encode()).hexdigest() != account["credential_id"]:
+        raise ValueError("The assigned Claude credential changed or was revoked. Restore it or start a separate linked task.")
     if token:
         environment["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return environment, token
+
+
+def keychain_connection(account):
+    """The Keychain slot is reusable. Identify the opaque setup token without saving it."""
+    _, token = account_environment(account, config.ACCOUNT_TIMEOUT)
+    if not token:
+        raise ValueError(f"The credential for Claude account {account['name']} is unavailable. Restore its login.")
+    return {"config_dir": account["config_dir"], "token_keychain": account["token_keychain"],
+            "keychain_user": os.environ.get("USER", ""), "credential_id": hashlib.sha256(token.encode()).hexdigest()}
 
 
 def bash_hook_settings():
@@ -119,7 +131,7 @@ def event_result(event, telemetry, token, account, reviewing=True, scouting=Fals
             if isinstance(value, str) and token not in value:
                 telemetry[key] = value
     if kind != "result":
-        if not reviewing and kind == "rate_limit_event":
+        if kind == "rate_limit_event":
             info = event.get("rate_limit_info")
             windows = info.get("unifiedWindows") if isinstance(info, dict) else None
             window = windows.get("seven_day") if isinstance(windows, dict) else None
@@ -373,7 +385,9 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
     if launch is None:
         return response
     executable, environment, token = launch
-    options = {"strictMcpConfig": True}
+    settings = {"enabledPlugins": {"teamster@kaifaty": False}}
+    options = {"strictMcpConfig": True, "settings": settings}
+    instructions = config.EXECUTOR_INSTRUCTIONS
     meta = {"claudeCode": {"options": options, "emitRawSDKMessages": True}}
     if role != "scout":
         schema = (result_schema.REVIEW_SCHEMA if reviewing else result_schema.REFLECT_SCHEMA if role == "reflect"
@@ -386,8 +400,8 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
         options.update(tools=tools, allowedTools=tools, disallowedTools=["Edit", "Write", "NotebookEdit"],
                        allowDangerouslySkipPermissions=False)
     else:
-        meta["systemPrompt"] = {"append": Path(system_prompt).read_text(encoding="utf-8")}
-        options["settings"] = bash_hook_settings()
+        instructions = Path(system_prompt).read_text(encoding="utf-8") + instructions
+        settings.update(bash_hook_settings())
     for key, value in (("model", model), ("effort", effort), ("maxTurns", max_turns)):
         if value is not None:
             options[key] = value
@@ -437,15 +451,15 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
 
     telemetry = response["telemetry"]
     mode = "default" if read_only else "bypassPermissions"
-    client = acp.AcpClient([config.TASK_ADAPTERS["claude"]], worktree, lambda update: None, lambda params: None,
-                           check_active=check_active, on_notification=notification, env=environment,
-                           stderr=subprocess.DEVNULL)
     try:
-        with processes, client:
+        with config.executor_environment(environment) as worker_env, processes, acp.AcpClient(
+                [config.TASK_ADAPTERS["claude"]], worktree, lambda update: None, lambda params: None,
+                check_active=check_active, on_notification=notification, env=worker_env,
+                stderr=subprocess.DEVNULL) as client:
             processes.leader = client.process
             if started:
                 started(client.process)
-            cursor = client.open_session(session_id, meta=meta, initial_config={"mode": mode})
+            cursor = client.open_session(session_id, meta=meta, initial_config={"mode": mode}, system_prompt=instructions)
             if token in cursor:
                 raise ValueError("Invalid Claude session ID")
             telemetry["session_id"] = cursor
@@ -453,6 +467,9 @@ def run_claude(account, worktree, prompt, stopped, deadline=None, model=None, ef
                 progress(telemetry)
             processes.remember_family()
             check_active()
+            # On resume the adapter applies a new system prompt only after compaction.
+            if session_id:
+                prompt = config.EXECUTOR_INSTRUCTIONS + "\n\n" + prompt
             stop_reason = client.prompt(prompt)
             if stop_reason == "cancelled":
                 processes.interrupt()

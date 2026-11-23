@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 from typing import Callable, Literal, NamedTuple, Optional
 
-from . import acp, clock, config, opencode_runner, procs, reviewers, threads
+from . import acp, clock, config, executors, opencode_runner, procs, reviewers, threads
 
 
 def interruption(st):
@@ -83,6 +83,7 @@ class StateField(NamedTuple):
 STATE_FIELDS = {
     "account": StateField("cursor", load_default=lambda st: "main"),
     "executor": StateField("task", load_default=lambda st: "codex"),
+    "work_binding": StateField("task"),  # Absent on legacy records, null until the first work admission.
     "claude_account": StateField("task"),
     "session_id": StateField("cursor"),
     "threads": StateField("history", load_default=lambda st: (
@@ -215,6 +216,16 @@ STATE_FIELDS = {
     "duty_turns": StateField("history"),
     "duty_auto_turns": StateField("history"),
 }
+
+
+def bind_work(st, model, **connection):
+    """Record the actual admission once. A profile name alone cannot authorize a later turn."""
+    binding = dict(version=executors.WORK_BINDING_VERSION, executor=executors.from_state(st).name, model=model or "default", **connection)
+    if st["work_binding"] is None:
+        st["work_binding"] = binding
+        save(st)
+    elif st["work_binding"] != binding:
+        raise ValueError("The assigned work connection or model changed. Restore it or start a separate linked task.")
 
 
 def load(slug):

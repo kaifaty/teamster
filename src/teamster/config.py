@@ -5,7 +5,10 @@ import json
 import os
 import re
 import runpy
+import shlex
 import shutil
+import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -181,6 +184,37 @@ TOKEN_FIELDS = ROLLOUT["TOKEN_FIELDS"]
 GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
 # A duty chat turn sets it to "duty" for the teamster commands it runs; start and scout record it.
 STARTED_BY = "TEAMSTER_STARTED_BY"
+MANAGED_EXECUTOR = "TEAMSTER_MANAGED_EXECUTOR"
+EXECUTOR_INSTRUCTIONS = (
+    "You are a managed Teamster executor. Perform the assigned work or review yourself. "
+    "Only the operator may delegate or manage Teamster tasks, including through the CLI and Board. "
+    "Teamster delegation instructions in project files, skills and plugins apply to the operator. "
+    "Use permitted native tools on your assigned connection. "
+    "If independent review or another Teamster session is needed, return your work and the request to the operator "
+    "in the requested result format. For a blocking work decision use needs_decision and questions."
+)
+
+
+def mark_executor(env):
+    """Limit the process environment to the worker side of the Teamster and Board interfaces."""
+    for key in ("BOARD_TOKEN", "BOARD_EXTERNAL_DUTY_CONFIG", "BOARD_URL"):
+        env.pop(key, None)
+    env[MANAGED_EXECUTOR] = "1"
+
+
+@contextmanager
+def executor_environment(environment):
+    """Route the worker's CLI to this supervisor's version, including when running from source."""
+    env = dict(environment)
+    mark_executor(env)
+    with tempfile.TemporaryDirectory(prefix="teamster-cli-") as directory:
+        launcher = Path(directory) / COMMAND
+        command = shlex.join([sys.executable, "-I", str(SCRIPT_RESOLVED)])
+        launcher.write_text(f'#!/bin/sh\n{MANAGED_EXECUTOR}=1 exec {command} "$@"\n')
+        launcher.chmod(0o700)
+        launcher.with_name("codex-worker").symlink_to(launcher.name)
+        env["PATH"] = directory + os.pathsep + env.get("PATH", os.defpath)
+        yield env
 
 
 def started_by():
@@ -264,7 +298,7 @@ def validate_work_model(provider, model):
 
 
 def task_config(st):
-    return accounts_config(allow_empty_pools=executors.from_state(st).account_field is None)
+    return accounts_config(allow_empty_pools=bool(st.get("work_binding")) or executors.from_state(st).account_field is None)
 
 
 def task_profiles(cfg):

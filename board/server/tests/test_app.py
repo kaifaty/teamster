@@ -907,6 +907,13 @@ def test_task_chat_streams_turns_and_reaps_disconnected_agents(task_chat_board):
 
     adapter = agent.with_name("codex-acp")
     adapter.symlink_to(agent)
+    path = settings.path("tasks") / "demo" / "state.json"
+    state = json.loads(path.read_text())
+    path.write_text(json.dumps(dict(state, work_binding=None)))
+    with chat("demo") as socket:
+        failure = socket.receive_json()
+        assert failure["type"] == "error" and "separate linked task" in failure["message"]
+    path.write_text(json.dumps(state))
     with chat("demo") as socket:
         assert socket.receive_json() == {"type": "ready", "executor": "codex", "agent": "codex-acp"}
         socket.send_json({"type": "prompt", "text": "hello", "cwd": str(worktree), "command": "other"})
@@ -916,8 +923,6 @@ def test_task_chat_streams_turns_and_reaps_disconnected_agents(task_chat_board):
     with chat("second") as socket:
         failure = socket.receive_json()
         assert failure["type"] == "error" and "install" in failure["message"].lower()
-    path = settings.path("tasks") / "demo" / "state.json"
-    state = json.loads(path.read_text())
     state["worktree"] = str(worktree)  # Another task's checkout may still exist.
     path.write_text(json.dumps(state))
     with chat("demo") as socket:
@@ -5061,7 +5066,12 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         fake.write_text("#!" + sys.executable + """
 import os, sys, time
 from pathlib import Path
-if sys.argv[1] == "api":
+if sys.argv[1:] == ["api", "--standalone", "model.list"]:
+    print('{"data":[{"providerID":"offline","id":"model","enabled":true,'
+          '"settings":{"baseURL":"http://127.0.0.1:1/v1"}}]}')
+elif sys.argv[1:] == ["auth", "list", "--standalone", "--format", "json"]:
+    print("[]")
+elif sys.argv[1] == "api":
     print('{"data":{"id":"ses_board"}}')
 else:
     assert sys.argv[1] == "acp"

@@ -1278,7 +1278,7 @@ else:
             {"mode": "auth_error", "before_thread": True, "used_after": 99},
             {"mode": "complete", "reply": "Original brief completed after quota recovery"}])
         self.account(self.other, "B", self.reset, used=99)
-        reset = self.reset_after_ready(lambda: self.start("auth-before-thread-sleep"), reset, 4, after_exec=True)
+        reset = self.reset_after_ready(lambda: self.legacy_work("auth-before-thread-sleep"), reset, 4, after_exec=True)
         self.assert_sleeping("auth-before-thread-sleep", self.wait("auth-before-thread-sleep"), reset)
         self.assertEqual(len(self.attempts()), 1)
         self.assertFalse(self.state("auth-before-thread-sleep")["threads"])
@@ -1297,7 +1297,7 @@ else:
         self.account(self.home, "A", self.reset, runs=[{
             "mode": "auth_error", "account_after": None, "messages": ["Работа до ошибки входа"],
             "event": "error", "error": "OAuth refresh token was rejected"}])
-        self.start("auth-logout")
+        self.legacy_work("auth-logout")
         output = self.wait("auth-logout")
         prompt = self.assert_rotation("auth-logout", output)
         self.assertIn("Работа до ошибки входа", prompt)
@@ -1310,7 +1310,7 @@ else:
         self.configure()
         self.account(self.home, "A", self.reset, runs=[{
             "mode": "auth_error", "account_after": None, "messages": ["Работа до потери входа"]}])
-        self.start("auth-login-restored")
+        self.legacy_work("auth-login-restored")
         first = self.wait("auth-login-restored")
         self.assert_rotation("auth-login-restored", first)
         self.assertIn("main", self.state("auth-login-restored")["needs_login"])
@@ -1337,7 +1337,7 @@ else:
             {"mode": "auth_error", "error": "Failed to refresh token"},
             {"mode": "auth_error", "error": "401 Unauthorized"},
             {"mode": "complete", "reply": "This account must not get a third attempt"}])
-        self.start("auth-twice")
+        self.legacy_work("auth-twice")
         output = self.wait("auth-twice")
         self.assert_rotation("auth-twice", output)
         executions = self.invocations()
@@ -1358,7 +1358,7 @@ else:
         self.account(self.home, "A", self.reset, runs=[{"mode": "auth_error", "error": "Failed to refresh token"}])
         self.account(self.other, "B", self.reset + 3600,
                      runs=[{"mode": "auth_error", "error": "401 Unauthorized"}])
-        self.start("auth-all-permanent")
+        self.legacy_work("auth-all-permanent")
         output = self.cli("wait", "auth-all-permanent", "--timeout", "15")
         state = self.state("auth-all-permanent")
         self.assertEqual(state["outcome"], "failed")
@@ -1378,7 +1378,7 @@ else:
         self.configure()
         self.account(self.home, "A", self.reset, runs=[{"mode": "auth_error", "error": "Failed to refresh token"}])
         self.account(self.other, "A", self.reset + 3600)
-        self.start("auth-duplicate-identity")
+        self.legacy_work("auth-duplicate-identity")
         output = self.cli("wait", "auth-duplicate-identity", "--timeout", "10")
         state = self.state("auth-duplicate-identity")
         self.assertEqual(state["outcome"], "failed")
@@ -1431,7 +1431,7 @@ else:
             "error": "Your authentication session could not be refreshed automatically. "
                      "Please log out and sign in again."}])
         self.account(self.other, "B", self.reset + 3600, used=99)
-        self.start("auth-then-sleep")
+        self.legacy_work("auth-then-sleep")
         output = self.wait("auth-then-sleep")
         self.assert_sleeping("auth-then-sleep", output, self.reset + 3600, account="second")
         self.assertIn("== account main needs login: run login main", output)
@@ -1443,7 +1443,7 @@ else:
         self.account(self.home, "A", self.reset, runs=[{
             "mode": "auth_error", "account_after": None, "messages": ["Работа до явного выхода"]}])
         self.account(self.other, "B", reset, used=99, auto_reset=True)
-        reset = self.reset_after_ready(lambda: self.start("auth-logout-then-wake"), reset, 4, after_exec=True)
+        reset = self.reset_after_ready(lambda: self.legacy_work("auth-logout-then-wake"), reset, 4, after_exec=True)
         first = self.wait("auth-logout-then-wake")
         self.assert_sleeping("auth-logout-then-wake", first, reset, account="second")
         self.assertEqual(len(self.invocations()), 1)
@@ -1460,7 +1460,7 @@ else:
         self.account(self.home, "A", self.reset, runs=[{
             "mode": "auth_error", "account_after": None, "logout_other_homes": [str(self.other)],
             "error": "Your access token could not be refreshed. Please log out and sign in again."}])
-        self.start("auth-all-gone")
+        self.legacy_work("auth-all-gone")
         output = self.cli("wait", "auth-all-gone", "--timeout", "10")
         state = self.state("auth-all-gone")
         self.assertEqual(state["outcome"], "failed")
@@ -1473,7 +1473,7 @@ else:
         (self.home / "codex-worker.json").write_text('{"language":"en"}')
         self.account(self.home, "A", self.reset, runs=[{
             "mode": "auth_error", "error": "401 unauthorized"}])
-        self.start("auth-single")
+        self.legacy_work("auth-single")
         output = self.cli("wait", "auth-single", "--timeout", "10")
         state = self.state("auth-single")
         self.assertEqual(state["outcome"], "failed")
@@ -1779,8 +1779,7 @@ else:
             "mode": "usage_error", "omit_rollout": True,
             "messages": ["Work completed before the usage error"]}])
         self.account(self.other, "B", self.reset + 3600, used=99)
-        self.cli("start", "limit-error-credit-rotation", "--brief", str(self.brief),
-                 "--repo", str(self.repo), timeout=90)
+        self.legacy_work("limit-error-credit-rotation")
         output = self.wait("limit-error-credit-rotation")
         prompt = self.assert_rotation("limit-error-credit-rotation", output)
         self.assertIn("Work completed before the usage error", prompt)
@@ -1807,8 +1806,7 @@ else:
                 (self.other / "fixture.json").write_text(json.dumps(other))
                 slug = "limit-error-credit-floor-" + balance
                 before = len(self.invocations())
-                self.cli("start", slug, "--brief", str(self.brief),
-                         "--repo", str(self.repo), timeout=90)
+                self.legacy_work(slug)
                 output = self.wait(slug)
                 state = self.state(slug)
                 self.assertEqual(state["outcome"], "exhausted")
@@ -1838,8 +1836,7 @@ else:
                                         (self.other, "B", self.reset + 3600)):
             self.account(home, account_id, reset, used=99,
                          runs=[{"mode": "usage_error", "omit_rollout": True}])
-        self.cli("start", "limit-error-credit-no-loop", "--brief", str(self.brief),
-                 "--repo", str(self.repo), timeout=90)
+        self.legacy_work("limit-error-credit-no-loop")
         self.wait("limit-error-credit-no-loop")
         state = self.state("limit-error-credit-no-loop")
         self.assertEqual(state["outcome"], "exhausted")

@@ -1,13 +1,80 @@
 """Run one OpenCode work turn on its own private server."""
+import hashlib
+import ipaddress
 import json
 import os
 import subprocess
 import tempfile
+from pathlib import Path
+from urllib.parse import urlsplit
 
-from . import acp, clock, procs
+from . import acp, clock, config, procs, result_schema
 
 
 PROCESS_MARKER = "TEAMSTER_OPENCODE_SUPERVISOR"
+
+
+def provider_connection(worktree, model):
+    """Read the native, merged model route in the same project and environment as ACP."""
+    provider, model_name = model.split("/", 1)
+    env = dict(os.environ, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
+    config.mark_executor(env)
+
+    def listing(*args):
+        reply = subprocess.run(["opencode", *args], cwd=worktree, env=env, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=True)
+        return json.loads(reply.stdout)
+
+    try:
+        models = listing("api", "--standalone", "model.list")["data"]
+        selected, = (m for m in models if m["providerID"] == provider and m["id"] == model_name and m["enabled"])
+        route = {k: selected[k] for k in ("modelID", "package", "settings", "headers", "body") if k in selected}
+        settings = route["settings"]
+        url = urlsplit(settings["baseURL"])
+        if url.scheme not in ("http", "https") or not url.hostname:
+            raise ValueError
+        data = Path(env.get("XDG_DATA_HOME") or Path.home() / ".local/share").resolve()
+        resource = {"provider": provider, "data_home": str(data / "opencode"),
+                    "route_id": hashlib.sha256(json.dumps(route, sort_keys=True).encode()).hexdigest()}
+        auth = listing("auth", "list", "--standalone", "--format", "json")
+        connections = [c for item in auth if item["id"] == provider for c in item["connections"]]
+        key = settings.get("apiKey")
+        if key:
+            if connections or key == "***":
+                raise ValueError
+            resource.update(source="settings", credential_id=hashlib.sha256(key.encode()).hexdigest())
+        elif connections:
+            connection, = connections
+            if connection["type"] == "credential" and connection.get("id"):
+                resource.update(source="credential", credential_id=connection["id"])
+            elif connection["type"] == "env" and env.get(connection["name"]):
+                key = env[connection["name"]]
+                resource.update(source="env", variable=connection["name"],
+                                credential_id=hashlib.sha256(key.encode()).hexdigest())
+            else:
+                raise ValueError
+        elif url.hostname == "localhost" or ipaddress.ip_address(url.hostname).is_loopback:
+            resource["source"] = "local"
+        else:
+            raise ValueError
+
+        # Restrict background agents as well as the selected ACP model. Keep the caller's inline settings.
+        overlay = json.loads(env.get("OPENCODE_CONFIG_CONTENT") or "{}")
+        overlay["model"] = model
+        overlay.setdefault("policies", []).extend([{"action": "provider.use", "resource": "*", "effect": "deny"},
+                                                  {"action": "provider.use", "resource": provider, "effect": "allow"}])
+        overrides = overlay.setdefault("providers", {}).setdefault(provider, {}).setdefault("models", {})
+        for entry in models:
+            if entry["providerID"] == provider and entry["id"] != model_name:
+                overrides.setdefault(entry["id"], {})["disabled"] = True
+        overrides.setdefault(model_name, {}).update(route)
+        for agent in ("title", "summary", "compaction"):
+            overlay.setdefault("agents", {}).setdefault(agent, {})["model"] = model
+        env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay)
+        return resource, env
+    except (OSError, ValueError, AttributeError, TypeError, KeyError, subprocess.SubprocessError):
+        raise ValueError(f"Cannot verify a single effective OpenCode route and credential for {model}. "
+                         "Check the provider settings before continuing.") from None
 
 
 def orphan_groups(st):
@@ -33,7 +100,7 @@ def orphan_groups(st):
             yield group
 
 
-def _set_title(worktree, env, acp_pid, session_id, title, check_active):
+def _set_title(worktree, env, acp_pid, session_id, title, check_active, bound):
     # ACP v1 has no rename command. Set the title before OpenCode can generate one.
     argv = ["opencode", "api", "--standalone", "session.update", "--param",
             f"sessionID={session_id}", "--data", json.dumps({"title": title})]
@@ -41,7 +108,8 @@ def _set_title(worktree, env, acp_pid, session_id, title, check_active):
     with tempfile.TemporaryFile() as errors:
         title_env = {**env, PROCESS_MARKER: f"{env[PROCESS_MARKER]}:title:{acp_pid}"}
         proc = subprocess.Popen(argv, cwd=worktree, env=title_env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=errors, start_new_session=True)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL if bound else errors,
+                                start_new_session=True)
         try:
             while proc.poll() is None:
                 check_active()
@@ -50,14 +118,16 @@ def _set_title(worktree, env, acp_pid, session_id, title, check_active):
                 except subprocess.TimeoutExpired:
                     pass
             if proc.returncode:
-                errors.seek(0)
-                detail = errors.read(4096).decode(errors="replace").strip()
-                raise ValueError(f"OpenCode session title update failed ({proc.returncode}): {detail}")
+                message = f"OpenCode session title update failed ({proc.returncode})"
+                if not bound:
+                    errors.seek(0)
+                    message += ": " + errors.read(4096).decode(errors="replace").strip()
+                raise ValueError(message)
         finally:
             procs.terminate(proc)
 
 
-def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, title, created, started=None):
+def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, title, created, started=None, env=None):
     """Create a titled session if needed, then work only in that existing session."""
     def check_active():
         if stopped():
@@ -70,7 +140,8 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
 
     parts = []
     message_id = None
-    env = dict(os.environ, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
+    bound = env is not None
+    env = dict(os.environ if env is None else env, PWD=os.path.realpath(worktree), COPYFILE_DISABLE="1")
     env[PROCESS_MARKER] = str(os.getpid())
 
     def update(event):
@@ -86,20 +157,53 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
 
     try:
         check_active()
-        # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
-        with acp.AcpClient(["opencode", "acp"], worktree, lambda event: None, allow_once,
-                           check_active=check_active, env=env) as client:
-            if started:
-                started(client.process)
-            opened = client.open_session(session_id, model=model)
-            if not session_id:
-                session_id = opened
-                created(session_id)
-            if title is not None:
-                _set_title(worktree, env, client.process.pid, session_id, title, check_active)
-            check_active()
-            client.on_update = update
-            reason = client.prompt(prompt)
+        with tempfile.TemporaryDirectory(prefix="teamster-opencode-") as directory, \
+                config.executor_environment(env) as worker_env:
+            # OpenCode loads configured instructions after project AGENTS.md, including after compaction.
+            instructions = Path(directory).resolve() / "executor.md"
+            example = {
+                name: [] if field["type"] == "array" else ""
+                for name, field in result_schema.RESULT_SCHEMA["properties"].items()
+            }
+            example.update(
+                status="done",
+                summary="Summarize the result.",
+                checks=[{"command": "Command run", "outcome": "passed", "details": "Exit 0, 1 check passed."}],
+            )
+            instructions.write_text(
+                config.EXECUTOR_INSTRUCTIONS + "\n\n"
+                "Follow project guidance for the assigned implementation and its checks. "
+                "When assigned an independent review, inspect the supplied revision and return your verdict. "
+                "Use status done after completing the review. The operator decides acceptance. "
+                "For an implementation with a pending required review, even when a project file tells you to run "
+                "teamster scout or teamster review, leave that command to the operator. "
+                "Return your completed work and checks with status needs_decision and put a question asking "
+                "the operator to arrange the required review in questions.\n\n"
+                "Return one flat JSON object with the exact top-level keys in the example. "
+                "Choose status from done, partial, blocked, needs_decision. "
+                "Use passed, failed or not_run for each check outcome. "
+                "Each finding has id (such as F1), decision (fixed or rejected), and note. "
+                "Use empty arrays for empty lists and leave pr empty. "
+                "Start with { and end with }.\nExample work result:\n"
+                + json.dumps(example) + "\n", encoding="utf-8")
+            overlay = json.loads(worker_env.get("OPENCODE_CONFIG_CONTENT") or "{}")
+            overlay.setdefault("instructions", []).append(str(instructions))
+            overlay.setdefault("policies", []).append({"action": "skill.use", "resource": "teamster", "effect": "deny"})
+            worker_env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay)
+            # The ACP server checks the session again when admitting the prompt. It cannot recreate a deleted ID.
+            with acp.AcpClient(["opencode", "acp"], worktree, lambda event: None, allow_once, check_active=check_active,
+                               env=worker_env, stderr=subprocess.DEVNULL if bound else None) as client:
+                if started:
+                    started(client.process)
+                opened = client.open_session(session_id, model=model)
+                if not session_id:
+                    session_id = opened
+                    created(session_id)
+                if title is not None:
+                    _set_title(worktree, worker_env, client.process.pid, session_id, title, check_active, bound)
+                check_active()
+                client.on_update = update
+                reason = client.prompt(prompt)
         check_active()
         if client.process.returncode:
             return "failed", f"OpenCode exited with {client.process.returncode}"
@@ -113,4 +217,13 @@ def run_opencode(worktree, prompt, model, session_id, stopped, deadline, *, titl
     except (ValueError, OSError) as error:
         if session_id and f"session not found: {session_id}" in str(error):
             return "failed", f"Saved OpenCode session {session_id} was not found"
+        if isinstance(error, acp.AcpRequestError):
+            data = error.data if isinstance(error.data, dict) else {}
+            detail = str(error).lower()
+            if (error.code == 429 or data.get("errorKind") in ("rate_limit", "quota_exceeded")
+                    or any(marker in detail for marker in ("rate limit", "usage limit", "quota exceeded",
+                                                           "exceeded your current quota", "http 429"))):
+                return "exhausted", f"OpenCode quota exhausted for {model}. Check the connection's reset time and retry."
+            if bound:
+                return "failed", f"OpenCode rejected the session request ({error.code}). Check the assigned connection for {model}."
         return "failed", str(error)

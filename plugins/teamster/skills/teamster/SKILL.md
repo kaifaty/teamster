@@ -1,10 +1,11 @@
 ---
 name: teamster
-description: Use teamster to delegate implementation work to Codex (OpenAI's coding agent, using the user's ChatGPT plan) and stay in control of it - Claude plans, writes the brief, reviews the result and merges; Codex writes the code in its own git worktree. Use it to save the Claude subscription on any sizeable, well-specified coding task (a feature step, a fix with a clear "done when", engine/C++ work, benchmarks, mechanical changes) that the user's or the repository's instructions do not keep for Claude, when the user says to give work to Codex, and to steer or check a Codex thread already open in the Codex desktop app - also in Russian (поручи кодексу, отдай codex, пусть кодекс сделает, делегируй, кодекс исполнитель, проверь кодекс, что там у кодекса).
+description: In an operator session, use teamster to delegate implementation work to Codex (OpenAI's coding agent, using the user's ChatGPT plan) and stay in control of it - Claude plans, writes the brief, reviews the result and merges; Codex writes the code in its own git worktree. Use it to save the Claude subscription on any sizeable, well-specified coding task (a feature step, a fix with a clear "done when", engine/C++ work, benchmarks, mechanical changes) that the user's or the repository's instructions do not keep for Claude, when the user says to give work to Codex, and to steer or check a Codex thread already open in the Codex desktop app - also in Russian (поручи кодексу, отдай codex, пусть кодекс сделает, делегируй, кодекс исполнитель, проверь кодекс, что там у кодекса).
 ---
 
 # Teamster
 
+Managed executors return review requests to the operator in their result.
 The lead plans, writes the brief, reviews the result and merges. The worker implements
 in its own git worktree. Codex and Claude can work or review. To delegate work to OpenCode, pass
 `start --executor opencode --model provider/model --sandbox off`.

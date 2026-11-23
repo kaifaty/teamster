@@ -10,7 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import claude_accounts, claude_runner, clock, config, duty, procs, task_state
+from . import budgets, claude_accounts, claude_runner, clock, config, duty, procs, task_state
 
 
 def worktree_snapshot(st):
@@ -262,7 +262,7 @@ def record_timeout(st, minutes):
         st["turn_stop"], turn=st.get("turns", 0), at=clock.CLOCK.time()))
 
 
-def run(st, cfg, prompt, stopped, account, deadline=None, *, model=None, effort=None):
+def run(st, cfg, prompt, stopped, account, deadline=None, *, model=None, effort=None, weekly=None):
     """Run one review angle; the caller owns review history and phase telemetry."""
     response = {"outcome": "unavailable", "result": None, "reason": None, "deadline": deadline,
                 "telemetry": {"usage": {}, "cost_usd": None, "session_id": None,
@@ -293,18 +293,30 @@ def run(st, cfg, prompt, stopped, account, deadline=None, *, model=None, effort=
         task_state.save(st)
 
     def progress(telemetry):
+        if weekly is not None:
+            weekly.observe(telemetry)
         entry = st["reviews"][-1]
-        if entry["thread"] != telemetry["session_id"]:
+        cycle = st.get("cycle") or {}
+        if telemetry["session_id"] and (entry["thread"] != telemetry["session_id"] or "waiting_prompt" in cycle):
             entry["thread"] = telemetry["session_id"]
+            cycle.pop("waiting_prompt", None)
+            cycle.pop("waiting_active_seconds", None)
+            cycle.pop("waiting_review_thread", None)
             task_state.save(st)
 
     try:
         response = claude_runner.run_claude(
-            account, st["worktree"], prompt, stopped, deadline,
-            model or settings.get("model"), effort or settings.get("effort"), settings["max_turns"],
+            account, st["worktree"], prompt, lambda: stopped() or (weekly is not None and weekly.exhausted(st)), deadline,
+            model if st.get("work_binding") else model or settings.get("model"),
+            effort or settings.get("effort"), settings["max_turns"],
+            session_id=(st.get("cycle") or {}).get("waiting_review_thread"),
             reviewing=True, started=started, progress=progress,
             task_dir=config.TASKS / st["slug"] if st.get("slug") else None)
-        if response["outcome"] == "stopped":
+        if weekly is not None:
+            st["weekly_used_percent"] = st.get("weekly_used_percent", 0) + weekly.spent
+        if not stopped() and weekly is not None and budgets.stop_at_weekly_budget(st):
+            response["outcome"] = "budget_exhausted"
+        elif response["outcome"] == "stopped":
             response["outcome"] = task_state.stop_outcome(st, stopped)
         elif response["outcome"] == "budget_exhausted":
             record_timeout(st, minutes)

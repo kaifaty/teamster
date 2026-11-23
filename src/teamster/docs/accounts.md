@@ -6,9 +6,45 @@
 
 ## One login (the default)
 
-Without `accounts` in the settings (`~/.teamster/config.json`, see [settings.md](settings.md#data-home)), tasks use the existing `main` login in `~/.codex`;
-automatic limit monitoring and rotation are disabled. A language-only settings file does not enable
-them.
+Without `accounts` in the settings, new work uses the existing `main` login in `~/.codex`.
+Teamster reads its account ID and quota before sending work. [Settings location](settings.md#data-home)
+
+## Assigned work connection
+
+`start` chooses one available connection before the first model request. A new work record contains
+a versioned `work_binding` once that choice is made. The binding records the executor, work model or
+provider default, and the resource selected from the actual settings.
+
+| Executor | How Teamster identifies the resource |
+|---|---|
+| Codex | Configured account name, resolved Codex home, ChatGPT workspace ID and a fingerprint of its member. The native user ID identifies the member when available, with the normalized account email as a fallback. A token refresh for the same member and workspace keeps the assignment. |
+| Claude | Account name, config directory, Keychain service and user, and a fingerprint of the setup token. Reissuing a token requires a new assignment. Pool selection uses cached limits. |
+| OpenCode | Qualified provider/model, data home and a fingerprint of the effective model route, including its endpoint. Saved credentials use their native connection ID. A key from the environment or provider settings uses a fingerprint. A loopback provider can also be explicitly local and keyless. |
+
+Before each OpenCode turn, Teamster runs `opencode api --standalone model.list` and
+`opencode auth list --standalone --format json` in the task worktree with its launch environment.
+This includes project settings and environment overrides. Changing the endpoint or key behind a
+provider name stops the turn before the saved conversation is sent. An ambiguous credential source
+also requires an operator decision. The task record stores fingerprints for private routing and key
+values. The same provider and model apply to background requests, including titles and compaction.
+
+`say`, automatic fixes, CI repairs and wrap-up continue on the work thread or session recorded before
+the first prompt. Codex and Claude wait for the assigned subscription when it reaches its limit.
+With `wait_for_reset: false` the cycle ends exhausted. OpenCode reports exhaustion to the operator
+because its adapter supplies no reliable reset schedule. Use `say` on the same connection after recovery.
+
+If the account disappears, its owner changes, or the native session cannot be restored, read the error
+in `wait`. Restore the assignment, or start a separate task with its own budget and name the original
+slug and commit in its brief. A compatible embedded review uses the assigned resource and its own review
+session. A review requiring a different provider or model, and an independent chat in this worktree,
+require a separate task.
+
+Earlier work records and archives have no binding. Their saved version pin and pool policy still apply.
+Upgrading the supervisor of an old task does not establish who owned its previous connection.
+An earlier pilot assignment lacking the current identity or route fields remains readable. To move
+that work to this version, start a linked task with a verifiable assignment.
+The pool rotation, credit and automatic reset-credit rules below apply to unbound work and other
+pool-based roles. New work waits for its assigned subscription's quota.
 
 ## Adding a subscription
 
@@ -27,7 +63,7 @@ to the journal, which makes the board (`board/` in the repository) refresh accou
 
 `teamster account-remove <name>` removes a Codex subscription from the settings and preserves its
 home and sign-in. At least one Codex account must remain. When a task resumes with the updated
-settings, it hands off to an available subscription. For a task pinned to an older Teamster release,
+settings, a bound task reports the removed connection. An unbound task can hand off to an available subscription. For a task pinned to an older Teamster release,
 use `say --upgrade` to resume with the updated worker. `stats` and `clean` skip threads whose account home
 is no longer configured and print their thread IDs.
 
@@ -139,7 +175,7 @@ When the user has chosen multiple subscriptions, the settings can contain:
 pool. `--executor codex` uses Codex; the default comes from `executor` in the settings,
 otherwise `codex`. The executor is saved and cannot change during a task. Without an explicit
 `--reviewer`, Claude tasks use Codex reviews and Codex tasks keep the configured reviewer default.
-With `--reviewer claude`, reviews prefer an available account other than the Claude worker account.
+On unbound tasks, Claude reviews prefer an available account other than the Claude worker account.
 Install Claude Code CLI and put `claude-agent-acp` on the supervisor's `PATH` for ordinary task
 turns. To add an Anthropic subscription, run the native sign-in through Teamster.
 
@@ -209,7 +245,7 @@ precedence over `claude.model` and `claude.effort`; supported work efforts are `
 `high`, `xhigh` and `max`. Claude work supports only `--sandbox off`; `workspace` is rejected
 before launch. A task effort of `max` leaves Codex reviews at their configured effort, since
 `max` is specific to Claude. The selected account and session are kept across work turns while
-that account is available. If it is unavailable for work when a turn starts, the turn moves to
+that account is available. Bound work waits for that account. For unbound work, the turn can move to
 another pool account with the handoff below (`wait` prints the reason `unavailable for work`), or
 sleeps when the whole pool is unavailable.
 
@@ -225,7 +261,7 @@ and at most `--max-minutes`, or 2 hours without a time budget. `BASH_DEFAULT_TIM
 minutes, or that maximum when it is lower. Claude reviews, scouts and reflection run without the
 hook and these variables.
 
-When a work attempt ends with `usage limit`, `authentication failed` or `token unavailable`, the
+When an unbound work attempt ends with `usage limit`, `authentication failed` or `token unavailable`, the
 account is marked unavailable and the attempt is repeated on another pool account not yet tried in
 this turn. That account starts a new session with the same handoff Codex gets on rotation: the
 brief, the current message, the branch's `git log` and `git status`, and the summaries and
@@ -254,7 +290,8 @@ defaulting to `1`. For example, weights `5` and `20` represent subscriptions wit
 times the base quota. Utilization percentages are always measured against each account's own limit.
 
 Each saved limit snapshot has an `updated_at` timestamp. Every probe attempt, successful or not, also
-records `probe_attempted_at`. Before choosing an account for work, a review or an angle, the supervisor probes
+records `probe_attempted_at`. Assigned work and its reviews use the cache and live usage events.
+For unbound pool selection, the supervisor probes
 every unblocked account whose snapshot has no timestamp or is older than
 `claude.limits_max_age_minutes` (a finite nonnegative number, default `30`), unless its last probe
 attempt is younger than that interval. This prevents repeated failed probes while the old snapshot
@@ -288,7 +325,7 @@ reflection, `claude.model` for reviews and probes, compared exactly without reso
 the model is known, the account has saved windows and no window that has not reset yet is at 100%,
 the limit excludes the account only for that model, until the same reset the account limit would
 use; every other model, including reviews on a different `claude.model`, still chooses the account,
-and the rejected snapshot does not exclude it. A task on the limited model rotates past the account
+and the rejected snapshot does not exclude it. An unbound task on the limited model rotates past the account
 and, when no account is left, sleeps until that model limit ends. Duty elections ignore model
 limits. In every other case (a window at 100%, unknown windows, no model, `authentication failed`,
 `token unavailable`) the whole account is excluded as before. A model limit ends at its reset, or
@@ -389,7 +426,7 @@ The text output shows `unlimited` for unlimited credits and `0` when `hasCredits
 
 ## Waiting for a reset
 
-If all configured accounts are exhausted, the task waits and continues automatically after a reset (up
+If the assigned account is exhausted (or all eligible accounts for an unbound task), the task waits and continues automatically after a reset (up
 to 8 days); set `wait_for_reset` to false to pause and exit instead. When `wait` returns with
 `auto-continue at`, tell the user that local time; run `wait` again later to follow, or use
 `wait --through-sleep` to keep waiting.

@@ -89,7 +89,7 @@ class WeeklyBudgetTests(RotationTestCase):
         self.account(self.other, "B", self.reset + 3600, used=95, runs=[
             {"mode": "complete", "reply": self.review_result(False),
              "weekly_used_before": 95, "weekly_used_after": 2}])
-        self.start("weekly-accounts", "--max-weekly", "50")
+        self.legacy_work("weekly-accounts", "--max-weekly", "50")
         self.wait("weekly-accounts")
         self.assertEqual(self.state("weekly-accounts")["weekly_used_percent"], 2)
         path = self.home / "fixture.json"
@@ -121,7 +121,7 @@ class WeeklyBudgetTests(RotationTestCase):
              "weekly_update_after": 0.35},
             {"mode": "complete", "reply": self.work_result("partial"),
              "weekly_used_before": 23.5, "weekly_used_after": 24}])
-        self.start("weekly-rotation", "--max-weekly", "5", "--review")
+        self.legacy_work("weekly-rotation", "--max-weekly", "5", "--review")
         output = self.wait("weekly-rotation", timeout=15)
         state = self.state("weekly-rotation")
         self.assertEqual(state["outcome"], "budget_exhausted")
@@ -148,7 +148,7 @@ class WeeklyBudgetTests(RotationTestCase):
             {"mode": "complete", "reply": self.work_result("partial"),
              "weekly_used_before": 16, "weekly_used_after": 16}])
         self.account(self.other, "B", self.reset + 3600, used=99)
-        self.start("weekly-before-sleep", "--max-weekly", "5", "--review")
+        self.legacy_work("weekly-before-sleep", "--max-weekly", "5", "--review")
         output = self.wait("weekly-before-sleep", timeout=12)
         state = self.state("weekly-before-sleep")
         self.assertEqual(state["outcome"], "budget_exhausted")
@@ -172,7 +172,7 @@ class WeeklyBudgetTests(RotationTestCase):
             {"mode": "usage_error", "weekly_used_before": 10, "weekly_used_after": 16},
             {"mode": "complete", "reply": result,
              "weekly_used_before": 16, "weekly_used_after": 16}])
-        self.start("weekly-failed-exec", "--max-weekly", "5", "--review", "--check", "true")
+        self.legacy_work("weekly-failed-exec", "--max-weekly", "5", "--review", "--check", "true")
         output = self.wait("weekly-failed-exec", timeout=12)
         state = self.state("weekly-failed-exec")
         self.assertEqual(state["outcome"], "budget_exhausted")
@@ -356,7 +356,7 @@ class WeeklyBudgetTests(RotationTestCase):
             {"mode": "complete", "reply": self.work_result(),
              "weekly_used_before": 20, "weekly_samples_after_initial": [12],
              "weekly_used_after": 21, "final_usage_after_completion": True}])
-        self.start(slug, "--max-weekly", "5")
+        (self.start if snapshots else self.legacy_work)(slug, "--max-weekly", "5")
         self.wait(slug)
         self.assertEqual(self.state(slug)["weekly_used_percent"], 2)
         path = self.home / "fixture.json"
@@ -378,7 +378,7 @@ class WeeklyBudgetTests(RotationTestCase):
         task = json.loads(self.cli("report", "--slug", slug, "--json"))["tasks"][0]
         self.assertEqual(task["weekly_used_percent"], state["weekly_used_percent"])
         quota_calls = [event for event in self.trace() if event.get("command") == "quota-snapshot"]
-        self.assertEqual(len(quota_calls), 4 if snapshots else 0,
+        self.assertEqual(len(quota_calls), 3 if snapshots else 0,
                          "seeding must reuse account-selection snapshots, without another quota RPC")
         if snapshots:
             self.assertEqual([event["primary"]["usedPercent"] for event in quota_calls
@@ -415,7 +415,7 @@ class WeeklyBudgetTests(RotationTestCase):
         self.assertEqual([entry["weekly_spent"] for entry in
                           self.phase_telemetry_journal()[0]["usage"]], [2, 1])
         quota_calls = [event for event in self.trace() if event.get("command") == "quota-snapshot"]
-        self.assertEqual(len(quota_calls), 4)
+        self.assertEqual(len(quota_calls), 3)
         self.assertEqual([event["primary"]["usedPercent"] for event in quota_calls
                           if event["home"] == str(self.home)], [10, 20])
         task = json.loads(self.cli("report", "--slug", "weekly-auth-reseed", "--json"))["tasks"][0]
@@ -875,7 +875,7 @@ class WeeklyBudgetTests(RotationTestCase):
             {"mode": "hold", "weekly_used_before": 30, "weekly_used_after": 32.5,
              "weekly_update_after": 0.35},
             {"mode": "complete", "reply": self.work_result("partial")}])
-        self.start("weekly-no-rotation", "--max-weekly", "2")
+        self.legacy_work("weekly-no-rotation", "--max-weekly", "2")
         output = self.wait("weekly-no-rotation", timeout=12)
         state = self.state("weekly-no-rotation")
         self.assertEqual(state["outcome"], "budget_exhausted")
@@ -916,20 +916,20 @@ class WeeklyBudgetTests(RotationTestCase):
         self.account(self.other, "B", self.reset + 3600, used=98)
         self.start("weekly-reserve", "--max-weekly", "10")
         output = self.wait("weekly-reserve")
-        warning = "бюджет 10%, запас до switch_at по аккаунтам 6%: задача может уснуть до сброса"
+        warning = "бюджет 10%, запас до switch_at по аккаунтам 5%: задача может уснуть до сброса"
         self.assertEqual(self.state("weekly-reserve")["weekly_budget_warning"], warning)
         self.assertEqual(output.count(warning), 1)
         self.assertEqual(self.cli("status", "weekly-reserve").count(warning), 1)
         reads = [event for event in self.trace() if event.get("command") == "quota-snapshot"]
-        self.assertEqual(len(reads), 2, "the warning reuses the account-selection snapshots")
+        self.assertCountEqual([event["home"] for event in reads], [str(self.home), str(self.other)])
         self.assertEqual(self.state("weekly-reserve")["weekly_used_percent"], 4)
         self.cli("say", "weekly-reserve", "Five percentage points remain", "--max-weekly", "9")
         output = self.wait("weekly-reserve")
         self.assertFalse(self.state("weekly-reserve").get("weekly_budget_warning"))
         self.assertNotIn("запас до switch_at", output)
         self.assertNotIn("запас до switch_at", self.cli("status", "weekly-reserve"))
-        self.assertEqual(len([event for event in self.trace()
-                              if event.get("command") == "quota-snapshot"]), 4)
+        self.assertCountEqual([event["home"] for event in self.trace() if event.get("command") == "quota-snapshot"],
+                              [str(self.home), str(self.home), str(self.other)])
 
     def test_weekly_budget_uses_config_default_and_flag_overrides_persist_for_the_task(self):
         self.configure(language="en", max_task_weekly_percent=5)

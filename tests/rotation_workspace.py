@@ -832,7 +832,7 @@ class WorkspaceTests(RotationTestCase):
         self.account(self.other, "B", self.reset, runs=[
             {"mode": "complete", "reply": self.work_result()},
             {"mode": "complete", "reply": self.review_result(False)}])
-        self.start("sandbox-rotation")
+        self.legacy_work("sandbox-rotation")
         self.wait("sandbox-rotation")
         self.assertEqual(self.state("sandbox-rotation")["account"], "second")
         self.assertEqual(len(self.invocations()), 2)
