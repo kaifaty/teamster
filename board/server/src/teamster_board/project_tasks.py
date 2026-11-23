@@ -15,7 +15,7 @@ from uuid import uuid4
 from .actions import string
 from .duty_tasks import _goal, task_id
 from .store import ready_for_review
-from .task_files import ARCHIVED, Record, alive, directories, number, read_state, safe_slug, task_messages, task_queue
+from .task_files import ARCHIVED, Record, alive, directories, line, number, read_state, safe_slug, task_messages, task_queue
 
 
 TERMINAL = ("done", "cancelled")
@@ -398,11 +398,24 @@ class ProjectTasks:
                     continue
                 messages = task_messages(self.store._file(record.path, "messages.jsonl"))
                 queue = [] if record.archived else task_queue(self.store._file(record.path, "queue.json"))["waiting"]
+                started = number(record.state.get("turn_started"))
+                recent = {}
+                if summary["alive"]:
+                    activities = (item for tail in record.tails.values() for item in tail.activities
+                                  if item["kind"] != "thinking" and item["text"]
+                                  and started is not None and item["at"] >= started)
+                    for item in sorted(activities, key=lambda item: item["at"])[::-1]:
+                        recent.setdefault((item["kind"], item["text"]), item)
+                        if len(recent) == 5:
+                            break
                 work[ref] = {
                     "goal": (_goal(self.store._file(record.path, "brief.md")) or "")[:600] or None,
                     "order": next((item for item in reversed(messages) if item["source"] == "lead"), None),
                     "next_order": queue[0] if queue else None,
                     "queued": len(queue),
+                    "turn_started_at": started,
+                    "check_command": line(record.state.get("check")) if summary["phase"] == "check" else None,
+                    "recent_activity": list(recent.values()),
                 }
         for summary in sessions.values():
             summary.pop("archived", None)

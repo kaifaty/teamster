@@ -1402,8 +1402,10 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
 - `GET /api/project-tasks/{id}/details` → `{sessions: Record<string, TaskSummary>, work: Record<string, ProjectRunWork>, pull_requests: Record<string, ProjectPullState | null>}`.
   The keys are the card's saved session IDs and normalized PR URLs. Unavailable sessions are omitted.
   For each managed session, `ProjectRunWork` has the brief's `goal`, the latest delivered lead `order`, the
-  `next_order` from the queue and a `queued` count. Goal and orders may be null. Add `?work_only=true`
-  to refresh executor data without looking up pull requests.
+  `next_order` from the queue and a `queued` count. It also exposes `turn_started_at` from the run state,
+  `check_command` while checks are running, and up to five distinct `recent_activity` events from
+  the current turn, excluding thinking text. Add `?work_only=true` to refresh executor data without
+  looking up pull requests.
   `ProjectPullState` is `draft`, `open`, `merged` or `closed`. An unavailable PR has a null status.
   The Board reads GitHub through `gh` and Forgejo through a `tea` login for the link's configured URL.
   Only opening a card asks the forge for its PR states.

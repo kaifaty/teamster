@@ -99,7 +99,10 @@ interface JournalEntry {
 }
 const resolution = shallowRef<OperatorResolution | null>(null);
 const workRevision = computed(() => JSON.stringify([
-  sessions.value.map((row) => [row.id, row.record?.turn, row.record?.column]),
+  sessions.value.map((row) => [
+    row.id, row.record?.turn, row.record?.phase, row.record?.column,
+    row.record?.column === "running" ? row.record.activity?.at : null,
+  ]),
   resolution.value?.events.filter((event) => event.kind === "waiting_followup" || event.kind === "followup_finished").at(-1)?.seq,
   resolution.value?.commands?.at(-1)?.id,
 ]));
@@ -355,6 +358,8 @@ onBeforeUnmount(() => {
 
       <ProjectTaskOverview :card="task.id" :overview="resolution?.overview" :has-context="overviewContext"
         :enabled="chatEnabled && !!resolution?.writable" :source="source" :refresh="refreshResolution" />
+      <ProjectTaskExecutors :sessions="sessions" :selected="selected?.id" :work="workUpdate ?? details?.work"
+        :resolution="resolution" :now="now" @select="selectedId = $event" @controls="emit('runControls', $event)" />
 
       <section v-if="showBlocker" class="task-blocker" aria-labelledby="journal-blocker">
         <h2 id="journal-blocker">{{ task.status === "blocked" ? "Что мешает продолжить" : "Какое решение требуется" }}</h2>
@@ -379,9 +384,6 @@ onBeforeUnmount(() => {
       <ProjectTaskDecision :target="chatTarget" :source="source" :in-history="inHistory" :resolution="resolution"
         :enabled="chatEnabled" :resolving="!!resolutionActive && resolution?.assignment?.status !== 'cleanup_blocked'"
         :refresh="refreshResolution" @clarify="chat?.focus()" />
-      <ProjectTaskExecutors :sessions="sessions" :selected="selected?.id" :work="workUpdate ?? details?.work"
-        :resolution="resolution" :now="now" @select="selectedId = $event" @controls="emit('runControls', $event)" />
-
       <div class="journal-layout">
         <main class="journal-main" aria-labelledby="journal-events">
           <div class="section-heading">
@@ -529,7 +531,7 @@ onBeforeUnmount(() => {
   --journal-operator-line: light-dark(#cbded4, #3d574c);
   max-width: 1220px;
   margin: 0 auto;
-  padding: 22px clamp(16px, 4vw, 52px) 40px;
+  padding: 24px clamp(16px, 4vw, 52px) 48px;
   overflow-wrap: anywhere;
 }
 .journal-page h1, .journal-page h2, .journal-page h3, .journal-page p, .journal-page ul, .journal-page ol, .journal-page dl, .journal-page dd { margin: 0; }
@@ -538,7 +540,7 @@ onBeforeUnmount(() => {
 .breadcrumb, .heading-title, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .breadcrumb { margin-bottom: 18px; color: var(--muted); font-size: 13px; }
 .history-mark { border-left: 1px solid var(--border); padding-left: 10px; }
-.journal-heading { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+.journal-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
 .heading-main { min-width: 0; flex: 1 1 390px; }
 .source-name { color: var(--muted); font-size: 12px; margin-bottom: 4px !important; }
 .heading-title h1 { font-size: clamp(24px, 4vw, 36px); font-weight: 675; line-height: 1.15; letter-spacing: -.04em; }

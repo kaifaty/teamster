@@ -1419,11 +1419,31 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
     survey = directory.parent / "survey"
     (survey / "brief.md").write_text("Read the existing measurements.\n\n## Done when\nThe report is ready.")
     (survey / "queue.json").write_text(json.dumps({"waiting": [queued]}))
+    survey_state = json.loads((survey / "state.json").read_text())
+    (survey / "state.json").write_text(json.dumps(dict(survey_state, turn_started=20, check_pid=survey_state["pid"],
+                                                       check="verify-measurements")))
+    events = [
+        (19, "agent_message", {"text": "Previous turn"}),
+        (21, "reasoning", {"text": "Thinking text"}),
+        (22, "command_execution", {"command": "verify-measurements"}),
+        (23, "command_execution", {"command": "verify-measurements"}),
+        (24, "agent_message", {"text": "Checking the saved measurements."}),
+    ]
+    (survey / "events.jsonl").write_text("".join(
+        json.dumps({"type": "item.completed", "timestamp": at, "item": {"type": kind, **fields}}) + "\n"
+        for at, kind, fields in events
+    ))
+    client.portal.call(app.state.board.poll)
     work = client.get(f"{read}/{card['id']}/details?work_only=true").json()
     assert work["pull_requests"] == {}
     assert work["work"] == {
-        refs[0]: {"goal": None, "order": {**delivered, "queued_at": None}, "next_order": None, "queued": 0},
-        refs[1]: {"goal": "Read the existing measurements.", "order": None, "next_order": queued, "queued": 1},
+        refs[0]: {"goal": None, "order": {**delivered, "queued_at": None}, "next_order": None, "queued": 0,
+                  "turn_started_at": state["turn_started"], "check_command": None, "recent_activity": []},
+        refs[1]: {"goal": "Read the existing measurements.", "order": None, "next_order": queued, "queued": 1,
+                  "turn_started_at": 20, "check_command": "verify-measurements", "recent_activity": [
+                      {"at": 24, "kind": "message", "text": "Checking the saved measurements."},
+                      {"at": 23, "kind": "command", "text": "verify-measurements"},
+                  ]},
     }
     # Pin the published link too, then archive the work with a different publication.
     card = client.post(write, json={"id": card["id"], "pull_requests": [github, forgejo],

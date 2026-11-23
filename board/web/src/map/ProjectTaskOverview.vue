@@ -61,10 +61,15 @@ watch(canRequest, (ready) => {
 </template>
 
 <style scoped>
-.task-overview { margin-top: 16px; padding: 14px; display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.task-overview { margin-top: 18px; padding: clamp(14px, 2.4vw, 22px); display: grid; gap: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.task-overview :is(h2, p, dl, dd) { margin: 0; }
 .overview-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 10px; }
-.overview-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 12px 18px; }
+.overview-heading h2 { font-size: 18px; line-height: 1.3; }
+.overview-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; }
 .overview-fields dt { margin-bottom: 4px; font-size: 13px; font-weight: 650; color: var(--journal-accent); }
-.overview-fields dd, .task-overview p { font-size: 14px; line-height: 1.45; }
+.overview-fields dd, .task-overview p { font-size: 14px; line-height: 1.55; }
 .overview-error { color: var(--bad); }
+@media (max-width: 700px) {
+  .overview-fields { grid-template-columns: minmax(0, 1fr); }
+}
 </style>
