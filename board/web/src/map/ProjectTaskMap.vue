@@ -203,7 +203,7 @@ defineExpose({ select, focusProject });
 
     <div class="terrain">
       <ProjectTaskSurface v-if="data" ref="surface" :tasks="tasks" :selected-id="selectedId" :biomes="data.biomes"
-        :operator-site="operatorSite" @select="select" />
+        :operator-site="operatorSite" @select="select" @open="emit('journal', $event)" />
       <p v-if="error" class="map-note" role="alert">
         Не удалось обновить задания. {{ error }} <button type="button" class="btn" @click="emit('retry')">Повторить</button>
       </p>

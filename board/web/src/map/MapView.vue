@@ -20,8 +20,14 @@ import { useArrivalChime } from "./use/useArrivalChime";
 import { useMapSources } from "./use/useMapSources";
 import { useProjectTasks } from "./use/useProjectTasks";
 
-const props = defineProps<{ board: Board; active: boolean; machine?: string | null; operatorTaskId?: string; operatorChat?: boolean }>();
-const emit = defineEmits<{ machine: [id: string, opener: HTMLElement | null]; panel: []; askOperator: [target: OperatorTarget] }>();
+const props = defineProps<{
+  board: Board; active: boolean; taskRoute?: string | null; machine?: string | null;
+  operatorTaskId?: string; operatorChat?: boolean;
+}>();
+const emit = defineEmits<{
+  machine: [id: string, opener: HTMLElement | null]; panel: []; askOperator: [target: OperatorTarget];
+  taskRoute: [id: string | null];
+}>();
 const board = props.board;
 const { data, error, refresh, save } = useProjectTasks(board, () => props.active);
 const sources = useMapSources(props);
@@ -58,19 +64,19 @@ const sessions = computed(() => sessionNames(data.value?.tasks ?? [], board.task
 type RecordTarget = string | { taskId: string; sessionId?: string };
 const recordTarget = ref<RecordTarget | null>(null);
 const runControlsOpen = ref(false);
-const linkedTask = computed(() => {
-  const target = recordTarget.value;
+function taskForTarget(target: RecordTarget | null) {
   if (!target) return;
   return data.value?.tasks.find((task) => typeof target === "string"
     ? Object.values(task.session_slugs).includes(target) : task.id === target.taskId);
-});
+}
+const linkedTask = computed(() => taskForTarget(recordTarget.value));
 const record = computed(() => {
   const target = recordTarget.value;
   if (typeof target === "string") return target;
   return target?.sessionId ? linkedTask.value?.session_slugs[target.sessionId] : undefined;
 });
 const recordTask = computed(() => record.value ? board.state.value.tasks[record.value] ?? null : null);
-const recordOpen = computed(() => !!record.value || !!linkedTask.value);
+const recordOpen = computed(() => !!record.value || !!linkedTask.value || !!props.taskRoute);
 const researchOpen = ref(false);
 const summaryOpen = ref(false);
 const account = ref<string | null>(null);
@@ -85,6 +91,7 @@ function openOperatorTask(id: string) {
   if (!task || !map.value) return false;
   recordTarget.value = account.value = null;
   researchOpen.value = false;
+  if (props.taskRoute) emit("taskRoute", null);
   map.value.select(task.id, true);
   return true;
 }
@@ -94,6 +101,7 @@ function openRecord(target: RecordTarget) {
   recordOpener = document.activeElement as HTMLElement | null;
   runControlsOpen.value = false;
   recordTarget.value = target;
+  emit("taskRoute", typeof target === "string" ? taskForTarget(target)?.id ?? null : target.taskId);
   emit("panel");
 }
 function openRunControls(sessionId: string) {
@@ -113,6 +121,7 @@ function closeRecord() {
     return;
   }
   recordTarget.value = null;
+  if (props.taskRoute) emit("taskRoute", null);
   void nextTick(() => recordOpener?.focus());
 }
 function showLinkedTask() {
@@ -120,6 +129,7 @@ function showLinkedTask() {
   if (!task) return;
   recordTarget.value = account.value = null;
   researchOpen.value = false;
+  if (props.taskRoute) emit("taskRoute", null);
   map.value?.select(task.id, true);
 }
 function openAgent(slug: string, project: string) {
@@ -130,6 +140,7 @@ function openAgent(slug: string, project: string) {
 function openResearch() {
   researchOpener = document.activeElement as HTMLElement | null;
   account.value = recordTarget.value = null;
+  if (props.taskRoute) emit("taskRoute", null);
   researchOpen.value = true;
   emit("panel");
 }
@@ -139,6 +150,7 @@ function closeResearch() {
 }
 function openAccount(key: string, opener: HTMLElement | null, login?: Login) {
   recordTarget.value = null;
+  if (props.taskRoute) emit("taskRoute", null);
   researchOpen.value = false;
   initialLogin.value = login ?? null;
   account.value = key;
@@ -166,6 +178,24 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
   if (active && !machine) return;
   recordTarget.value = account.value = addOpener.value = null;
   researchOpen.value = summaryOpen.value = false;
+  if (props.taskRoute && machine) emit("taskRoute", null);
+});
+watch(() => props.taskRoute, (id, previous) => {
+  const target = recordTarget.value;
+  const localId = typeof target === "string" ? linkedTask.value?.id ?? null : target?.taskId ?? null;
+  if ((id ?? null) === localId) return;
+  recordTarget.value = id ? { taskId: id } : null;
+  runControlsOpen.value = false;
+  if (id) {
+    account.value = addOpener.value = null;
+    researchOpen.value = summaryOpen.value = false;
+    emit("panel");
+  } else if (previous) {
+    void nextTick(() => recordOpener?.focus());
+  }
+}, { immediate: true });
+watch(linkedTask, (task) => {
+  if (task && typeof recordTarget.value === "string" && task.id !== props.taskRoute) emit("taskRoute", task.id);
 });
 </script>
 
@@ -214,6 +244,14 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
       :source="board.source" :now="now" :frame="frameLight" :emblem="emblemOf(recordTask?.repo ?? null)"
       :back-to-journal="runControlsOpen && !!linkedTask" :map-task-title="linkedTask?.title"
       @close="closeRecord" @show="showLinkedTask" @task="board.put" />
+    <div v-else-if="taskRoute && active" class="route-note">
+      <button type="button" class="btn" @click="closeRecord">← К карте</button>
+      <p v-if="error" role="alert">
+        Не удалось загрузить задачу. <button type="button" class="btn" @click="refresh">Повторить</button>
+      </p>
+      <p v-else-if="!data" role="status">Загружаю задачу…</p>
+      <p v-else role="alert">Задача по этой ссылке недоступна.</p>
+    </div>
     <DaySummary v-if="summaryOpen && active" :source="board.source" :events="board.events.value" :frame="frameLight" @close="closeSummary" />
     <AddSubscription v-if="addOpener && active" :source="board.source" :read-only="subscriptionsReadOnly"
       :accounts="board.state.value.accounts" @open="finishAdd" @close="closeAdd" />
@@ -226,4 +264,5 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
 #map-tools { flex: none; background: var(--surface); }
 #map-tools > .console { position: relative; }
 .record-picker { margin: 5px 12px; max-width: calc(100% - 24px); }
+.route-note { position: absolute; inset: 0; z-index: 14; padding: 20px; background: var(--surface-2); }
 </style>
