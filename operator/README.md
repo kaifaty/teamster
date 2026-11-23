@@ -40,8 +40,24 @@ To open the Operator panel on the Map or Board, set `BOARD_OPERATOR_STATE` in th
 Board's environment to the absolute path of the same `OPERATOR_STATE` file and start the Board
 with `BOARD_EXTERNAL_DUTY_CONFIG` and `--read-only`. The panel shows a live review marker and the
 latest 50 recommendations linked to retained cards in the configured repositories.
-The Board opens the state file read-only. Earlier state files show their saved history
+The activity panel reads the state file in read-only mode. Earlier state files show their saved history
 before the updated observer starts reporting active reviews.
+
+## Chat with Mini
+
+Run the operator continuously and set `BOARD_OPERATOR_STATE` to the same SQLite file on an
+actions-enabled Board, with `BOARD_EXTERNAL_DUTY_CONFIG` setting the repository scope. Both
+processes need write access to the file for chat. The operator can keep its `observer_token`.
+
+**Оператор** opens the chat. **Спросить оператора** opens it with a card selected from an allowed
+project. Mini receives the current card, available evidence from one linked run on a map card,
+and up to two recent exchanges in that conversation. This call exposes no tools to the model.
+The operator checks for questions between reviews. Each answer gets one model call, with a
+60-second model deadline and a two-minute deadline from submission. The state file temporarily
+holds pending questions and replies so the Board can retrieve them. The browser tab holds the
+conversation, which clears when the page reloads.
+
+## Review logs and budgets
 
 Stdout contains JSON lines. Each `board_request` identifies the method and route. Each
 `model_call` identifies the event and outbound attempt. A `recommendation` includes the opaque

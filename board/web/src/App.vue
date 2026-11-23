@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { Column, TaskSummary } from "./types";
-import type { OperatorTask } from "./operatorActivity";
+import type { OperatorTarget, OperatorTask } from "./operatorActivity";
 import type { Board } from "./store/board";
 import { useNow } from "./store/board";
 import { COLUMNS, EXECUTOR_OPTIONS, KIND_FILTERS, isKindFilter, matchesKind, type KindFilter } from "./lib/labels";
@@ -105,8 +105,15 @@ const selected = ref<string | null>(null);
 const selectedTask = computed(() => (selected.value ? (board.state.value.tasks[selected.value] ?? null) : null));
 const operator = computed(() => board.state.value.operator);
 const operatorOpen = ref(false);
+const operatorTarget = ref<OperatorTarget | null>(null);
+const operatorChat = computed(() => board.source.askOperator ? operator.value?.chat : undefined);
 const operatorConnected = computed(() => board.connection.value === "open");
 const operatorTask = computed(() => operatorConnected.value ? operator.value?.current ?? null : null);
+
+function askOperator(target: OperatorTarget) {
+  operatorTarget.value = target;
+  operatorOpen.value = true;
+}
 
 function open(slug: string) {
   operatorOpen.value = false;
@@ -205,8 +212,9 @@ onBeforeUnmount(() => {
         <span v-if="retryText" class="faint">{{ retryText }}</span>
       </span>
       <span v-if="board.source.label" class="chip warn">{{ board.source.label }}</span>
-      <OperatorPanel v-if="operator" v-model:open="operatorOpen" :activity="operator" :current="operatorTask"
-        :connected="operatorConnected" @task="openOperatorTask" />
+      <OperatorPanel v-if="operator" v-model:open="operatorOpen" v-model:target="operatorTarget"
+        :activity="operator" :current="operatorTask" :connected="operatorConnected"
+        :ask="operatorChat ? board.source.askOperator : undefined" @task="openOperatorTask" />
       <span v-if="view === 'board' && board.state.value.loaded" class="faint num">{{ live }} в работе и ожидании</span>
 
       <div v-show="view === 'board'" class="filters" role="group" aria-label="Фильтры">
@@ -292,6 +300,8 @@ onBeforeUnmount(() => {
       :opencode="board.state.value.accounts?.opencode"
       :source="board.source"
       :now="now"
+      :operator-projects="operatorChat?.projects"
+      @ask-operator="askOperator"
       @close="close"
     />
 
@@ -305,6 +315,8 @@ onBeforeUnmount(() => {
         :active="view === 'map'"
         :machine="machineId"
         :operator-task-id="operatorTask?.task_id"
+        :operator-projects="operatorChat?.projects"
+        @ask-operator="askOperator"
         @machine="openMachine"
         @panel="machineId = null; operatorOpen = false"
       />

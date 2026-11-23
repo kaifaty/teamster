@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { BoardSource } from "../lib/source";
 import type { Accounts, TaskFile, TaskSummary } from "../types";
+import type { OperatorTarget } from "../operatorActivity";
 import { formatAge, formatClock, formatDuration, formatFullTime } from "../lib/format";
 import { useTaskDetail } from "../lib/taskDetail";
 import { useTaskFile } from "../lib/taskFile";
@@ -17,8 +18,9 @@ const props = defineProps<{
   opencode?: Accounts["opencode"];
   source: BoardSource;
   now: number;
+  operatorProjects?: string[];
 }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; askOperator: [target: OperatorTarget] }>();
 
 const { detail, detailError, detailState, loadDetail, resetDetail } = useTaskDetail(() => props.source.fetchDetail(props.slug));
 const tab = ref<TaskFile | null>(null);
@@ -27,6 +29,11 @@ const closeButton = ref<HTMLButtonElement | null>(null);
 const shown = computed<TaskSummary | null>(() => props.task ?? detail.value);
 const session = computed(() => shown.value?.kind === "session");
 const heading = computed(() => (shown.value ? taskTitle(shown.value) : props.slug));
+const operatorTarget = computed<OperatorTarget | null>(() => {
+  const record = shown.value;
+  return record?.created != null && props.operatorProjects?.includes(record.repo) && ["work", "review"].includes(record.kind)
+    ? { kind: "run", id: props.slug, created: record.created, title: heading.value } : null;
+});
 const link = computed(() => (shown.value ? claudeLink(shown.value) : null));
 // A session has no files: no tabs and no requests.
 const files = computed(() =>
@@ -122,8 +129,9 @@ const columnTitle = (id: string) => COLUMNS.find((c) => c.id === id)?.title ?? i
 
     <div class="p-body">
       <p v-if="!task" class="note">{{ session ? "Сессии" : "Задачи" }} больше нет на доске; показаны последние данные.</p>
-      <p v-if="link" class="actions">
-        <a class="btn app-link" :href="link">Открыть в Claude</a>
+      <p v-if="link || operatorTarget" class="actions">
+        <a v-if="link" class="btn app-link" :href="link">Открыть в Claude</a>
+        <button v-if="operatorTarget" type="button" class="btn" @click="emit('askOperator', operatorTarget)">Спросить оператора</button>
       </p>
       <p v-if="detailError" class="note bad">Не удалось загрузить задачу: {{ detailError }}</p>
       <p v-else-if="detailState === 'missing' && !shown" class="note">Задача не найдена.</p>

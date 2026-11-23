@@ -2,6 +2,7 @@ import { sendBoardAction, type ActionSender } from "./actions";
 import { projectTaskErrors, type ProjectScout, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "./projectTasks";
 import type { ArtIndex, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import type { DutyChatView } from "../dutyChatTypes";
+import type { OperatorExchange, OperatorTarget } from "../operatorActivity";
 import { connectSocket, type ConnectionState } from "./socket";
 
 export interface OpenCodeProviders {
@@ -35,6 +36,7 @@ export interface BoardSource {
   fetchResearch(): Promise<ResearchView | null>;
   /** The conversation with the duty; null when the server has no such route yet (404). Absent from sources without it. */
   fetchDutyChat?(): Promise<DutyChatView | null>;
+  askOperator?(question: string, target: OperatorTarget | null, history: OperatorExchange[]): Promise<string>;
   fetchOpenCodeProviders?(): Promise<OpenCodeProviders>;
   /** Completed phases and verdicts between two Unix times, both inclusive. */
   fetchEvents(since: number, until: number): Promise<Events>;
@@ -49,6 +51,25 @@ async function get(path: string): Promise<Response | null> {
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
   return response;
+}
+
+const operatorErrors: Record<string, string> = {
+  invalid_question: "Сократите вопрос и попробуйте ещё раз.",
+  operator_busy: "Оператор занят. Попробуйте через минуту.",
+  operator_task_unavailable: "У оператора нет доступа к этой задаче.",
+  operator_timeout: "Оператор не ответил вовремя. Попробуйте ещё раз.",
+  operator_no_answer: "Mini не смог ответить. Попробуйте ещё раз.",
+};
+
+async function operatorResponse(request: Promise<Response>, signal: AbortSignal) {
+  const response = await request.catch(() => {
+    throw new Error(signal.aborted ? operatorErrors.operator_timeout : "Не удалось связаться с оператором.");
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) {
+    throw new Error(operatorErrors[data?.error] ?? "Не удалось связаться с оператором.");
+  }
+  return data;
 }
 
 export function serverSource(): BoardSource {
@@ -111,6 +132,21 @@ export function serverSource(): BoardSource {
     async fetchDutyChat() {
       const response = await get("/api/duty-chat");
       return response ? ((await response.json()) as DutyChatView) : null;
+    },
+    async askOperator(question, target, history) {
+      const context = target && (target.kind === "run"
+        ? { kind: target.kind, id: target.id, created: target.created } : { kind: target.kind, id: target.id });
+      const signal = AbortSignal.timeout(125_000);
+      const request = sendBoardAction("operator-chat", { question, target: context, history },
+        (url, init) => fetch(url, { ...init, signal }));
+      const { id } = await operatorResponse(request, signal);
+      const path = `/api/operator-chat/${encodeURIComponent(id)}`;
+      while (!signal.aborted) {
+        const { answer } = await operatorResponse(fetch(path, { signal }), signal);
+        if (typeof answer === "string") return answer;
+        await new Promise(resolve => window.setTimeout(resolve, 1000));
+      }
+      throw new Error(operatorErrors.operator_timeout);
     },
     async fetchOpenCodeProviders() {
       const response = await get("/api/opencode/providers");

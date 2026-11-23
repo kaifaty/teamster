@@ -6,6 +6,7 @@ import ProjectTaskForm from "./ProjectTaskForm.vue";
 import ProjectTaskSurface from "./surface/ProjectTaskSurface.vue";
 import { stateOf } from "./ship/bridge";
 import type { TaskSummary } from "../types";
+import type { OperatorTarget } from "../operatorActivity";
 
 const props = defineProps<{
   data: ProjectTasks | null;
@@ -14,10 +15,11 @@ const props = defineProps<{
   records: Readonly<Record<string, TaskSummary>>;
   fetchDetails?: (id: string) => Promise<ProjectTaskDetails | null>;
   operatorSite?: string;
+  operatorProjects?: string[];
   save: (change: ProjectTaskChange) => Promise<ProjectTask>;
   fetchScoutHistory?: (project: string) => Promise<ProjectScout[]>;
 }>();
-const emit = defineEmits<{ record: [taskId: string, sessionId: string]; scout: [slug: string]; panel: []; retry: [] }>();
+const emit = defineEmits<{ record: [taskId: string, sessionId: string]; scout: [slug: string]; panel: []; retry: []; askOperator: [target: OperatorTarget] }>();
 const surface = ref<InstanceType<typeof ProjectTaskSurface> | null>(null);
 const closeButton = ref<HTMLButtonElement | null>(null);
 const picker = ref<HTMLSelectElement | null>(null);
@@ -254,6 +256,8 @@ defineExpose({ select, focusProject });
           <span class="chip" :class="{ ok: selected.status === 'done', warn: ['needs_input', 'ready'].includes(selected.status), bad: selected.status === 'blocked' }">
             {{ statusLabels[selected.status] }}
           </span>
+          <button v-if="operatorProjects?.includes(selected.project)" type="button" class="btn"
+            @click="emit('askOperator', { kind: 'project', id: selected.id, title: selected.title })">Спросить оператора</button>
           <button v-if="data?.writable" ref="editButton" type="button" class="btn" @click="edit(selected)">Изменить</button>
         </div>
         <dl>

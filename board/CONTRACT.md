@@ -391,6 +391,7 @@ interface OperatorTask {
 
 interface OperatorActivity {
   available: boolean;         // the Mini pilot's SQLite journal could be read
+  chat?: { projects: string[] }; // project names in scope for chat on an actions-enabled Board
   current: OperatorTask | null;
   history: (OperatorTask & {
     event_id: string;
@@ -1491,6 +1492,14 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   otherwise `reset: false` (also on an initial request).
 - `GET /api/research` → `ResearchView`; other methods get 405.
 - `GET /api/duty-chat` → `DutyChatView`; `POST /api/actions/duty-chat` → the duty chat send above.
+- `POST /api/actions/operator-chat` accepts `{question, target, history}` with the standard action headers.
+  `target` is `null` for general chat, `{kind: "project", id}` for a map task, or
+  `{kind: "run", id, created}` for a run's Board address and creation time. The Board reads current
+  evidence in the operator's repository scope for each question. `history` is up to two previous
+  `{question, answer}` pairs. Success returns 202 with `{id}`.
+- `GET /api/operator-chat/{id}` returns `{answer: null}` while waiting and `{answer: string}` when
+  ready. An unanswered request expires after 120 seconds. Both routes require an actions-enabled
+  Board configured with the operator's SQLite state and external duty configuration.
 - `POST /api/actions/lesson`, `/api/actions/implement`, `/api/actions/say`, `/api/actions/reflect`,
   `/api/actions/verdict`, `/api/actions/review`, `/api/actions/stop`, `/api/actions/clean`
   → the task and science station actions above.

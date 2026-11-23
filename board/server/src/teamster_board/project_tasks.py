@@ -358,10 +358,14 @@ class ProjectTasks:
         cards, sources = self._view()
         return [_public(identity, card, sources) for identity, card in cards.items()]
 
-    def details(self, identity):
+    def card(self, identity):
         cards, sources = self._view()
         task = _public(identity, cards[identity], sources)
-        sessions = {ref: sources[ref].copy() for ref in task["session_slugs"]}
+        return task, {ref: sources[ref] for ref in task["session_slugs"]}
+
+    def details(self, identity):
+        task, linked = self.card(identity)
+        sessions = {ref: summary.copy() for ref, summary in linked.items()}
         for summary in sessions.values():
             summary.pop("archived", None)
         return sessions, task["pull_requests"]

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { isCurrent, recordLabel, sessionNames } from "../lib/projectTasks";
 import type { Board } from "../store/board";
+import type { OperatorTarget } from "../operatorActivity";
 import type { Login } from "../types";
 import AccountView from "./account/AccountView.vue";
 import AddSubscription from "./account/AddSubscription.vue";
@@ -18,8 +19,8 @@ import { useArrivalChime } from "./use/useArrivalChime";
 import { useMapSources } from "./use/useMapSources";
 import { useProjectTasks } from "./use/useProjectTasks";
 
-const props = defineProps<{ board: Board; active: boolean; machine?: string | null; operatorTaskId?: string }>();
-const emit = defineEmits<{ machine: [id: string, opener: HTMLElement | null]; panel: [] }>();
+const props = defineProps<{ board: Board; active: boolean; machine?: string | null; operatorTaskId?: string; operatorProjects?: string[] }>();
+const emit = defineEmits<{ machine: [id: string, opener: HTMLElement | null]; panel: []; askOperator: [target: OperatorTarget] }>();
 const board = props.board;
 const { data, error, refresh, save } = useProjectTasks(board, () => props.active);
 const sources = useMapSources(props);
@@ -157,7 +158,8 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
   <section class="map" aria-label="Карта заданий">
     <ProjectTaskMap ref="map" :data="data" :error="error" :sessions="sessions" :save="save" :operator-site="operatorSite"
       :records="board.state.value.tasks" :fetch-details="board.source.fetchProjectTaskDetails"
-      :fetch-scout-history="board.source.fetchScoutHistory"
+      :fetch-scout-history="board.source.fetchScoutHistory" :operator-projects="operatorProjects"
+      @ask-operator="emit('askOperator', $event)"
       @record="(taskId, sessionId) => openRecord({ taskId, sessionId })" @scout="openRecord"
       @retry="refresh" @panel="emit('panel')">
       <button type="button" class="btn tools-toggle" :aria-expanded="toolsOpen" aria-controls="map-tools"

@@ -39,6 +39,11 @@ model before opening the chat. The Board starts OpenCode and waits for it to con
 that session before enabling the first message. Reply to permission requests in the chat.
 Closing the chat ends that session. Opening it again starts a fresh conversation.
 
+Choose **Оператор** for a chat with Mini, or **Спросить оператора** from an eligible task card on
+the Board or Map. From a card, Mini receives the task's current Board evidence and can answer follow-up
+questions. Conversations stay in the open browser tab. The chat requires the running
+[Mini operator](../operator/README.md#chat-with-mini) and an actions-enabled Board.
+
 A local duty client can use the opt-in [external duty API v1](../src/teamster/docs/external-duty.md)
 for allowlisted task reads, no-push starts, follow-ups, stops and a resumable event feed.
 
@@ -405,7 +410,7 @@ The map's code in `board/web/src/map/`:
 | `BOARD_POLL_SECONDS` | `1.0` | Interval between file mtime and size polls, in seconds. |
 | `BOARD_ACCOUNTS_SECONDS` | `300` | Minimum interval between account subprocess calls, in seconds. A new `account_login` journal row from `teamster login` or `claude-login` refreshes accounts at once, at most once per 5 seconds; rows already in the journal at startup do not. |
 | `BOARD_EXTERNAL_DUTY_CONFIG` | Unset | Private JSON configuration for the [external duty API](../src/teamster/docs/external-duty.md). |
-| `BOARD_OPERATOR_STATE` | Unset | Path to the [Mini pilot](../operator/README.md#inspect-a-run) SQLite file for the read-only Operator panel. Requires `BOARD_EXTERNAL_DUTY_CONFIG` for repository scope. |
+| `BOARD_OPERATOR_STATE` | Unset | Path to the [Mini pilot](../operator/README.md#inspect-a-run) SQLite file for the Operator panel and chat. Requires `BOARD_EXTERNAL_DUTY_CONFIG` for repository scope. |
 | `BOARD_DUTY_SECONDS` | `1800` | Interval in seconds after a server duty tick finishes, only in automatic mode with actions enabled and a compatible installed teamster. Entering automatic mode also ticks immediately; `0` disables server ticks. |
 | `BOARD_MACHINES_FILE` | `<data home>/board-machines.json` | Machine configuration; reread when mtime or size changes. Missing means no machines; invalid files preserve the last valid list and expose `config_error`. |
 | `BOARD_MACHINES_SECONDS` | `30` | Interval between parallel machine and optional physical host probe cycles, in seconds. |

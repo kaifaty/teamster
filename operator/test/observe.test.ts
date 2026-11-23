@@ -90,11 +90,20 @@ async function trial(t: TestContext, realMini?: string) {
     assert.ok([token, cloudKey].every(key => !(raw + JSON.stringify(req.headers)).includes(key)));
     const request = JSON.parse(raw);
     assert.equal(request.model, "inkling-2-mini");
+    const last = request.messages.at(-1);
+    if (mock.mode === "chat") {
+      assert.ok(!request.tools?.length);
+      const prompt = JSON.parse(last.content);
+      assert.equal(prompt.task.saved_check.command, "verify-labels");
+      assert.equal(prompt.conversation[0].answer, "The check passed.");
+      assert.equal(prompt.question, "What should I do next?");
+      completion(res, { content: "Review the result for acceptance." }, "stop");
+      return;
+    }
     assert.deepEqual(request.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
       ["get_task", "list_tasks"]);
     mock.onCall?.();
     if (mock.mode === "hang") return;
-    const last = request.messages.at(-1);
     if (mock.mode === "loop" || last.role === "user") {
       const list = mock.mode === "loop";
       const args = list ? {} : { id: JSON.parse(last.content).task_id };
@@ -196,6 +205,21 @@ test("three work outcomes, empty page, restart and cursor recovery", async t => 
     .map(row => [row.event_id, row.recommendation]), rows.map(row => [row.event_id, row.recommendation]));
   assert.equal(db.prepare("SELECT cursor FROM feed").get()!.cursor, 1150);
   if (!live) assert.equal(mock.calls, calls);
+
+  if (!live) {
+    const writable = new DatabaseSync(state);
+    t.after(() => writable.close());
+    const prompt = JSON.stringify({ task: { saved_check: { command: "verify-labels", outcome: "passed" } },
+      conversation: [{ question: "What happened?", answer: "The check passed." }], question: "What should I do next?" });
+    writable.prepare("INSERT INTO chat_requests (id, prompt, deadline) VALUES ('question', ?, ?)")
+      .run(prompt, Date.now() + 30_000);
+    mock.mode = "chat";
+    await run();
+    assert.deepEqual({ ...db.prepare("SELECT prompt, answer, failed FROM chat_requests").get() },
+      { prompt: "", answer: "Review the result for acceptance.", failed: 0 });
+    await run();
+    assert.equal(mock.calls, calls + 1);
+  }
 });
 
 test("the call limit and the original event deadline hand off to a human", async t => {

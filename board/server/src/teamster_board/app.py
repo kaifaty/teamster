@@ -28,7 +28,7 @@ from .duty import Duty
 from .duty_chat import DutyChat
 from .logins import Logins
 from .machines import Machines
-from .operator_activity import read_operator_activity
+from .operator_activity import OperatorChat, read_operator_activity
 from .project_tasks import ProjectTasks
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
@@ -238,7 +238,7 @@ class Board:
             if self.settings.operator_state is not None and self.settings.external_duty is not None:
                 operator = await asyncio.to_thread(
                     read_operator_activity, self.settings.operator_state, self.store,
-                    self.settings.external_duty.repositories,
+                    self.settings.external_duty.repositories, writable=not self.settings.read_only,
                 )
                 if operator != self.operator:
                     self.operator = operator
@@ -512,6 +512,10 @@ def create_app(settings=None):
     app.add_middleware(LocalOnly)
     app.state.board = board
     register_external_duty(app, board)
+    operator_chat = None
+    if board.settings.operator_state is not None and board.settings.external_duty is not None:
+        operator_chat = OperatorChat(board.settings.operator_state, board.store, board.project_tasks,
+                                     board.settings.external_duty.repositories)
 
     @app.get("/api/snapshot")
     async def snapshot():
@@ -637,6 +641,25 @@ def create_app(settings=None):
         if not isinstance(data, dict):
             return data
         return await asyncio.to_thread(board.duty_chat.send, data)
+
+    @app.post("/api/actions/operator-chat")
+    async def operator_chat_action(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        if board.settings.read_only:
+            return error(403, "read_only")
+        if operator_chat is None:
+            return error(503, "operator_unavailable")
+        return await asyncio.to_thread(operator_chat.send, data)
+
+    @app.get("/api/operator-chat/{identity}")
+    def operator_chat_reply(identity: str):
+        if board.settings.read_only:
+            return error(403, "read_only")
+        if operator_chat is None:
+            return error(503, "operator_unavailable")
+        return operator_chat.reply(identity)
 
     @app.post("/api/actions/duty")
     async def duty_action(request: Request):

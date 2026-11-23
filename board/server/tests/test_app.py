@@ -133,6 +133,50 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
                 db.execute("UPDATE reviewing SET expires_at = 0")
             assert receive_until(ws, "operator")["operator"] == activity
 
+        with db:
+            db.execute("""CREATE TABLE chat_requests (id TEXT PRIMARY KEY, prompt TEXT, deadline INTEGER,
+                       claimed INTEGER DEFAULT 0, answer TEXT, failed INTEGER DEFAULT 0)""")
+            db.execute("UPDATE recommendations SET recommendation = 'Waiting for a check.', source = 'mini', turn = 1 "
+                       "WHERE event_id = 'current'")
+        headers = {"Origin": "http://localhost", "X-Teamster-Board": "1"}
+        body = {"question": "Что с задачей?", "target": {"kind": "run", "id": "demo", "created": state["created"]},
+                "history": [{"question": "What are you reviewing?", "answer": "The saved result."}]}
+        action = "/api/actions/operator-chat"
+        with TestClient(read_only, base_url="http://localhost", headers=headers) as client:
+            assert "chat" not in client.get("/api/snapshot").json()["operator"]
+            assert client.post(action, json=body).json()["error"] == "read_only"
+
+        writable = create_app(replace(read_only.state.board.settings, read_only=False, no_land=True))
+        with TestClient(writable, base_url="http://localhost", headers=headers) as client:
+            assert client.get("/api/snapshot").json()["operator"]["chat"] == {"projects": ["repository"]}
+            assert client.post(action, json=body, headers={"Origin": "http://foreign.test"}).status_code == 403
+            outside_target = {**body["target"], "id": "other"}
+            assert client.post(action, json={**body, "target": outside_target}).status_code == 404
+            sent = client.post(action, json=body)
+            assert sent.status_code == 202
+            identity = sent.json()["id"]
+            reply = f"/api/operator-chat/{identity}"
+            assert client.get(reply).json() == {"answer": None}
+            prompt = json.loads(db.execute("SELECT prompt FROM chat_requests WHERE id = ?", (identity,)).fetchone()[0])
+            assert prompt["question"] == body["question"] and prompt["conversation"] == body["history"]
+            assert prompt["task"]["recommendation"] == "Waiting for a check."
+            assert prompt["task"]["slug"] == "demo"
+            with db:
+                db.execute("UPDATE chat_requests SET answer = 'Проверка ещё идёт.' WHERE id = ?", (identity,))
+            assert client.get(reply).json() == {"answer": "Проверка ещё идёт."}
+
+            renamed = client.post("/api/actions/project-task", json={"id": current_id, "title": "Project card"})
+            assert renamed.status_code == 200
+            sent = client.post(action, json={**body, "target": {"kind": "project", "id": current_id}})
+            assert sent.status_code == 202
+            identity = sent.json()["id"]
+            prompt = json.loads(db.execute("SELECT prompt FROM chat_requests WHERE id = ?", (identity,)).fetchone()[0])
+            assert prompt["task"]["title"] == "Project card"
+            assert prompt["task"]["linked_run"]["slug"] == "demo"
+            with db:
+                db.execute("UPDATE chat_requests SET deadline = 0 WHERE id = ?", (identity,))
+            assert client.get(f"/api/operator-chat/{identity}").status_code == 504
+
 
 def test_stale_days_environment_reaches_store(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))
