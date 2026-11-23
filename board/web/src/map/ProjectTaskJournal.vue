@@ -233,10 +233,22 @@ const entries = computed(() => {
 const visibleEntries = computed(() => operatorOnly.value ? entries.value.filter((row) => row.reference) : entries.value);
 const labels = computed(() => new Map(entries.value.flatMap((row) =>
   row.reference ? [[row.reference, row.title + " · " + formatClock(row.at, props.now)] as const] : [])));
-const pulls = computed(() => props.task.pull_requests.map((pr) => {
-  const status = details.value?.pull_requests[pr.url];
-  return { ...pr, status: status ? prStatuses[status] : null };
-}));
+const pulls = computed(() => props.task.pull_requests.map((pr) => ({
+  ...pr, status: details.value?.pull_requests[pr.url] ?? null,
+})));
+const showBlocker = computed(() => props.task.status === "blocked" || props.task.status === "needs_input");
+const remaining = computed(() => run.value?.cargo?.remaining ?? []);
+const questions = computed(() => run.value?.cargo?.questions ?? []);
+const mergedPulls = computed(() => pulls.value.filter((pr) => pr.status === "merged"));
+
+function askForDecision() {
+  const evidence = mergedPulls.value.slice(0, 3).map((pr) => pr.url).join("\n");
+  chat.value?.prepare([
+    "Объясни, почему задача остановилась и сохраняется ли эта причина сейчас.",
+    evidence && `Board подтвердила, что следующие PR влиты. Сверь это с последним отчётом запуска.\n${evidence}`,
+    "Предложи варианты действий и выдели рекомендуемый. Если нужен исполнитель, сформулируй поручение и критерий готовности. Если работу можно закрыть, укажи, что проверить перед архивированием. Если данных мало, задай один конкретный вопрос.",
+  ].filter(Boolean).join("\n\n"));
+}
 
 const back = ref<HTMLButtonElement | null>(null);
 const renameButton = ref<HTMLButtonElement | null>(null);
@@ -314,6 +326,30 @@ onBeforeUnmount(() => {
           <small v-if="statusNote">{{ statusNote }}</small>
         </div>
       </header>
+
+      <section v-if="showBlocker" class="task-blocker" aria-labelledby="journal-blocker">
+        <h2 id="journal-blocker">{{ task.status === "blocked" ? "Что мешает продолжить" : "Какое решение требуется" }}</h2>
+        <p v-if="record" class="muted blocker-source">
+          По отчёту запуска {{ selected?.label }} · {{ formatFullTime(record.updated_at) }}
+        </p>
+        <p v-if="selected?.slug && detailState === 'loading'" role="status">Загружаю отчёт запуска…</p>
+        <ul v-else-if="remaining.length || questions.length">
+          <li v-for="(item, index) in remaining" :key="'remaining-' + index">{{ item }}</li>
+          <li v-for="(item, index) in questions" :key="'question-' + index">{{ item }}</li>
+        </ul>
+        <p v-else-if="record?.summary">{{ record.summary }}</p>
+        <p v-else-if="detailState !== 'loading'">{{ statusNote || "В отчёте пока нет причины остановки." }}</p>
+        <p v-if="mergedPulls.length">
+          Уже влиты
+          <a v-for="pr in mergedPulls" :key="pr.url" :href="pr.url" target="_blank" rel="noopener">
+            {{ pr.provider === "github" ? "GitHub" : "Forgejo" }} · {{ prLabel(pr.url) }} ↗
+          </a>
+          Перед возобновлением стоит сверить результат влитых изменений с отчётом.
+        </p>
+        <div v-if="chatEnabled && source.askOperator" class="actions">
+          <button type="button" class="btn journal-primary" @click="askForDecision">Запросить варианты у оператора</button>
+        </div>
+      </section>
 
       <div class="journal-layout">
         <main class="journal-main" aria-labelledby="journal-events">
@@ -456,7 +492,7 @@ onBeforeUnmount(() => {
             <ul v-if="pulls.length" class="pull-list">
               <li v-for="pr in pulls" :key="pr.url">
                 <a :href="pr.url" target="_blank" rel="noopener">{{ pr.provider === "github" ? "GitHub" : "Forgejo" }} · {{ prLabel(pr.url) }} ↗</a>
-                <small v-if="pr.status">{{ pr.status }}</small>
+                <small v-if="pr.status">{{ prStatuses[pr.status] }}</small>
               </li>
             </ul>
             <p v-else class="muted">PR пока нет.</p>
@@ -506,6 +542,10 @@ onBeforeUnmount(() => {
 .task-status[data-status="needs_input"], .task-status[data-status="blocked"] { background: var(--warn-soft); color: var(--warn); }
 .task-status[data-status="ready"], .task-status[data-status="done"] { background: var(--journal-operator); color: var(--journal-accent); }
 .task-status small { font-size: 12px; }
+.task-blocker { display: grid; gap: 8px; margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-inline-start: 3px solid var(--warn); border-radius: 8px; background: var(--surface); font-size: 14px; line-height: 1.5; }
+.task-blocker ul { padding-inline-start: 20px; }
+.task-blocker a { margin-inline-end: 6px; }
+.blocker-source { font-size: 12px; }
 .journal-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(250px, 1fr); align-items: start; gap: clamp(19px, 3vw, 36px); margin-top: 20px; }
 .section-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
 .journal-filter, .event-links { display: flex; flex-wrap: wrap; gap: 5px; }

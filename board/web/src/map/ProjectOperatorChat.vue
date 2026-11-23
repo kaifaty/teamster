@@ -32,7 +32,14 @@ function discuss(id: string, label: string) {
   reference.value = { id, label };
   focus();
 }
-defineExpose({ discuss, focus });
+function prepare(question: string) {
+  if (!busy.value && !draft.value.trim()) {
+    draft.value = question;
+    reference.value = null;
+  }
+  focus();
+}
+defineExpose({ discuss, focus, prepare });
 
 watch(() => {
   const last = props.messages.at(-1);
