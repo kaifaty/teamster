@@ -1286,6 +1286,25 @@ timeout; a nonzero exit then, a late refusal or a failed turn, sets `last_error`
 same text. The next accepted message clears it. The temporary file is deleted when the command returns.
 `last_error` and the running command are held only until the server restarts.
 
+**Task plans**
+
+A duty message can carry an optional `task_plan` with `id`, `tasks`, `actionable` and, after
+admission, `accepted_turn`. Each task has `repo`, `title`, `goal` and `done_when` (one to three
+criteria). Only the latest unresolved plan of an idle conversation can be actionable. Plans
+require support for `--reply-plan-file` in the installed CLI. Clients can always display the
+text answer from the same message. If the accepted turn is still current and ends without an
+answer, the plan can carry an `error` of up to 2000 characters.
+
+The same POST route accepts `{plan_id, selected: [{index, done_when}]}`, with one to three
+distinct zero-based indices and edited criteria of at most 200 characters. Teamster validates
+the stored plan and constructs the user message. This request uses the existing action
+protections and never queues a reply. It returns `200 {"ok":true,"turn":n}` only after admission,
+`400 invalid_plan_reply` for malformed input, and `409 stale_plan` or `409 plan_already_answered`
+for a consumed or superseded decision. An unsupported or unavailable action returns
+`409 plan_unavailable`. On `503 plan_submission_unknown` or a lost connection, read the
+conversation and check `accepted_turn` before deciding what to do. A receipt confirms the
+start of the duty turn. The normal chat shows the duty's answer when it finishes.
+
 The running turn's live activity is the task feed of slug `duty`: while `busy`, a page reads
 `GET /api/tasks/duty/feed?after=<cursor>` (the Claude turn writes `claude-events.jsonl`), as the station
 reads an agent's feed. `GET /api/tasks/duty` also works and carries `activity_log`.

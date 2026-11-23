@@ -2,10 +2,11 @@
 // their way, and the running turn's live activity, read from the task feed of slug `duty` while the conversation shows.
 
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import type { DutyPlanReply } from "../../lib/actions";
 import { createDutyChat, type DutyChat, type DutyChatHost } from "../../store/dutyChat";
 import type { TaskSummary } from "../../types";
 import { createFeed, type TaskFeedHandle } from "../station/feed";
-import { arrived, chatRows, feedTail, lastErrorText, pendingBefore, unavailableText, type PendingMessage } from "./chat";
+import { activeQuestion, arrived, chatRows, feedTail, lastErrorText, pendingBefore, unavailableText, type PendingMessage } from "./chat";
 
 /** The slug of the duty's conversation, whose feed is the running turn's activity. */
 const DUTY_SLUG = "duty";
@@ -51,7 +52,7 @@ export function useConsoleChat(
     chatRows(view.value, pending.value, (slug) => {
       const task = tasks().find((item) => item.slug === slug);
       return task ? { repo: task.repo } : null;
-    }),
+    }, chat.value?.planSend.value),
   );
   const unavailable = computed(() => unavailableText(view.value, { read: read.value, readError: readError.value }));
   const lastError = computed(() => lastErrorText(view.value));
@@ -86,6 +87,18 @@ export function useConsoleChat(
     if (send(draft.value)) draft.value = "";
   }
 
+  function sendPlan(reply: DutyPlanReply) {
+    const current = view.value;
+    const active = activeQuestion(current, pending.value);
+    if (active && current?.messages.find((message) => message.id === active)?.task_plan?.id === reply.plan_id) {
+      void chat.value?.sendPlan(reply);
+    }
+  }
+
+  function refresh() {
+    void chat.value?.refresh();
+  }
+
   function retry(key: number) {
     const item = pending.value.find((row) => row.key === key);
     if (!item) return;
@@ -114,7 +127,7 @@ export function useConsoleChat(
     feed.value?.close();
   });
 
-  return { view, readError, draft, rows, unavailable, lastError, busy, runSeconds, activity, send, sendDraft, retry, dismiss };
+  return { view, readError, draft, rows, unavailable, lastError, busy, runSeconds, activity, send, sendDraft, sendPlan, refresh, retry, dismiss };
 }
 
 export type ConsoleChat = ReturnType<typeof useConsoleChat>;

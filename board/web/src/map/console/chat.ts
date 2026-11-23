@@ -2,7 +2,8 @@
 // the messages waiting for the running turn, which question's options still answer, and the plain sentences for a chat
 // that cannot work. Pure functions; the console's chat only calls them.
 
-import type { DutyChatMessage, DutyChatView } from "../../dutyChatTypes";
+import type { DutyChatMessage, DutyChatView, DutyComparison, DutyTaskPlan } from "../../dutyChatTypes";
+import type { DutyPlanSend } from "../../store/dutyChat";
 import type { FeedItem } from "../../types";
 
 /**
@@ -34,7 +35,10 @@ export type ChatRow =
       at: number;
       question: string | null;
       options: string[];
-      /** The latest unanswered question: its options answer it. */
+      taskPlan?: DutyTaskPlan;
+      comparison?: DutyComparison;
+      planSend?: DutyPlanSend;
+      /** The latest unanswered question accepts a reply. */
       active: boolean;
       started: StartedTask[];
     }
@@ -61,7 +65,7 @@ export function arrived(view: DutyChatView | null, pending: PendingMessage): boo
 }
 
 /**
- * The id of the duty's latest message whose question has options and that no later message of the user answered,
+ * The id of the duty's latest reply with available choices that no later message of the user answered,
  * delivered, waiting or on its way; null when there is none.
  */
 export function activeQuestion(view: DutyChatView | null, pending: readonly PendingMessage[] = []): string | null {
@@ -70,7 +74,8 @@ export function activeQuestion(view: DutyChatView | null, pending: readonly Pend
   for (let index = view.messages.length - 1; index >= 0; index--) {
     const message = view.messages[index]!;
     if (message.from === "user") return null;
-    if (message.from === "duty" && message.question && message.options?.length) return message.id;
+    if (message.from === "duty" && message.question &&
+        (message.options?.length || message.task_plan?.actionable || message.comparison)) return message.id;
   }
   return null;
 }
@@ -90,6 +95,7 @@ export function chatRows(
   view: DutyChatView | null,
   pending: readonly PendingMessage[],
   findTask: (slug: string) => { repo: string } | null,
+  planSend?: DutyPlanSend | null,
 ): ChatRow[] {
   const active = activeQuestion(view, pending);
   const rows: ChatRow[] = (view?.messages ?? []).map((message: DutyChatMessage): ChatRow => {
@@ -103,6 +109,9 @@ export function chatRows(
       question: message.question ?? null,
       options: message.options ?? [],
       active: message.id === active,
+      ...(message.task_plan && { taskPlan: message.task_plan }),
+      ...(message.comparison && { comparison: message.comparison }),
+      ...(planSend && message.task_plan?.id === planSend.planId && { planSend }),
       started: (message.started ?? []).map((slug) => ({ slug, repo: findTask(slug)?.repo ?? null })),
     };
   });

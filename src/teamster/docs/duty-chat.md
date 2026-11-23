@@ -259,12 +259,27 @@ Each turn ends with JSON by the duty schema:
 | `question` | the one decision the user must make, or empty |
 | `options` | 2-4 short answers to `question`, or empty for a free answer |
 | `started` | slugs of the tasks it started in this turn |
+| `task_plan` | an empty list or up to three proposed tasks with `repo`, `title`, `goal` and `done_when` |
 
 A turn with an answer that breaks these rules fails and records nothing. The task's `state.json`
 keeps the conversation for readers such as the board: each answer appends
 `{"at", "turn", "account", "status", "reply", "question", "options", "started"}` to `duty_turns`;
 `messages.jsonl` holds the user's messages (`source: "user"`) and the task notes (`source: "note"`),
 one row each, in order. `needs_decision` sends the `needs_input` notification with the question.
+
+## Answer a task plan
+
+A duty turn that asks for a decision can propose a plan before starting any tasks. Its
+`reply` includes a plain text summary so the user can answer in any client. Teamster stores the
+validated tasks and a unique plan ID in that turn's `task_plan` record.
+
+`teamster duty chat --reply-plan-file FILE` is the action used by Board. The file contains
+`{"plan_id":"…","selected":[{"index":0,"done_when":["…"]}]}`, where the index starts at zero
+and the criteria are the user's edited values. It requires the plan in the current completed
+turn of an idle conversation. Teamster builds the user message from the saved proposal and the
+selected criteria, records the new turn and returns `{"ok":true,"turn":n}` as soon as that
+turn starts. The new turn continues in the background. A stale or already answered plan is
+refused. This option is used on its own and never queues a message.
 
 ## Task notes
 

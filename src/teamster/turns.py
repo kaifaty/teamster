@@ -194,6 +194,7 @@ def run_duty_chat_turn(st, cfg, prompt, effort, current_message, stopped, sleep,
     reason = response.get("reason")
     if st["outcome"] == "completed":
         st["result"] = response["result"]
+        st["result"]["task_plan"] = duty_chat.answer_plan(st["result"])
         message = json.dumps(response["result"], ensure_ascii=False)
         last.write_text(message, encoding="utf-8")
         if family == "claude":

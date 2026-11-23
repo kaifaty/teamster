@@ -99,6 +99,34 @@ describe("createDutyChat", () => {
     await chat.refresh();
     expect(chat.view.value).toBeNull();
   });
+
+  it("reconciles an uncertain plan submission by its durable receipt without sending again", async () => {
+    const plan = { id: "b".repeat(32), actionable: true, tasks: [{ repo: "teamster", title: "Board", goal: "Fix chat", done_when: ["Check chat"] }] };
+    const message = { id: "d1", at: 1000, from: "duty", turn: 1, text: "Plan", task_plan: plan } as const;
+    const open = { ...fixtureConversation(1000), busy: false, messages: [message], queued: [] };
+    let finish: (result: ActionResult) => void = () => {};
+    const act = vi.fn(() => new Promise<ActionResult>((resolve) => { finish = resolve; }));
+    const fake = host([open], act);
+    const chat = createDutyChat(fake);
+    const reply = { plan_id: plan.id, selected: [{ index: 0, done_when: ["Check chat"] }] };
+    await chat.refresh();
+    const sending = chat.sendPlan(reply);
+    await chat.sendPlan(reply);
+    expect(act).toHaveBeenCalledExactlyOnceWith("duty-chat", reply);
+
+    finish({ ok: false, error: "connection lost", code: "plan_submission_unknown" });
+    await sending;
+    expect(chat.planSend.value).toEqual({ planId: plan.id, state: "unknown" });
+    await chat.sendPlan(reply);
+    expect(act).toHaveBeenCalledTimes(1);
+    fake.fetchDutyChat.mockResolvedValueOnce({
+      ...open, messages: [{ ...message, task_plan: { ...plan, actionable: false, accepted_turn: 2 } }],
+    });
+    fake.send({ type: "duty_chat", at: 1001 });
+    await settle();
+    expect(chat.view.value?.messages[0]?.task_plan?.accepted_turn).toBe(2);
+    expect(act).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("fixture duty chat", () => {

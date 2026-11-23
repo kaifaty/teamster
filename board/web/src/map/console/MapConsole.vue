@@ -237,7 +237,8 @@ function onKey(event: KeyboardEvent) {
     <div v-show="!strip || sheetOpen" id="console-sheet" class="console-sheet">
       <ConsoleDutyPick v-if="narrow" ref="sheetPick" v-bind="pickPanel" inline class="console-pick" @pick="pick.pick" @auto="pick.setAuto" />
       <div v-if="narrow" class="console-chat">
-        <ConsoleChat v-if="!chatOff" v-bind="chatPanel" sheet @choose="chat.send" @task="emit('task', $event)" @retry="chat.retry" @dismiss="chat.dismiss" />
+        <ConsoleChat v-if="!chatOff" v-bind="chatPanel" sheet @choose="chat.send" @send-plan="chat.sendPlan" @refresh="chat.refresh"
+          @task="emit('task', $event)" @retry="chat.retry" @dismiss="chat.dismiss" />
         <ConsoleChatField v-model="draft" sheet open :unavailable="chatOff" :pick-duty="chatNeedsDuty" :busy="chat.busy.value" @send="chat.sendDraft" @pick-duty="openPick" />
       </div>
       <div class="console-wing console-left">
@@ -270,6 +271,8 @@ function onKey(event: KeyboardEvent) {
         v-bind="chatPanel"
         @close="closeChat"
         @choose="chat.send"
+        @send-plan="chat.sendPlan"
+        @refresh="chat.refresh"
         @task="emit('task', $event)"
         @retry="chat.retry"
         @dismiss="chat.dismiss"

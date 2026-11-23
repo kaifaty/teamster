@@ -24,11 +24,40 @@ control = json.loads(control_path.read_text())
 if args == ["--version"]:
     print(control.get("version", "1.86.0"))
     sys.exit(0)
+if args == ["duty", "chat", "--help"]:
+    print("  --reply-plan-file FILE" if control.get("plan_supported") else "  --file FILE")
+    sys.exit(0)
 record = {"argv": args, "cwd": os.getcwd(), "stdin": sys.stdin.read()}
 if "--file" in args:
     record["file"] = Path(args[args.index("--file") + 1]).read_text()
+if "--reply-plan-file" in args:
+    record["form"] = json.loads(Path(args[args.index("--reply-plan-file") + 1]).read_text())
 with Path(os.environ["DUTY_CALLS"]).open("a") as stream:
     stream.write(json.dumps(record) + "\\n")
+if "form" in record:
+    if "plan_output" in control:
+        print(control["plan_output"])
+        sys.exit(0)
+    directory = Path(os.environ["TEAMSTER_HOME"]) / "tasks" / "duty"
+    state_path = directory / "state.json"
+    state = json.loads(state_path.read_text())
+    proposal = state["duty_turns"][-1]
+    plan = proposal["task_plan"]
+    if record["form"]["plan_id"] != plan["id"]:
+        print(json.dumps({"ok": False, "error": "stale_plan"}))
+        sys.exit(1)
+    if "receipt" in plan:
+        print(json.dumps({"ok": False, "error": "plan_already_answered"}))
+        sys.exit(1)
+    turn = state["turns"] + 1
+    plan["receipt"] = {"turn": turn, "attempt_id": "admitted"}
+    state.update(turns=turn, outcome="completed")
+    with (directory / "messages.jsonl").open("a") as stream:
+        stream.write(json.dumps({"at": 180.0, "text": "Accepted plan", "source": "user",
+                                 "plan_attempt_id": "admitted"}) + "\\n")
+    state_path.write_text(json.dumps(state))
+    print(json.dumps({"ok": True, "turn": turn}))
+    sys.exit(0)
 if control.get("refuse"):
     time.sleep(control.get("refuse_after", 0))
     print(control["refuse"], file=sys.stderr)
@@ -333,6 +362,90 @@ def test_send_refusals_reach_the_page(duty, monkeypatch):
         duty["configure"]()
         assert client.post("/api/actions/duty-chat", json={"text": "Once more"}).json() == {"ok": True, "queued": False}
         assert client.get("/api/duty-chat").json()["last_error"] is None
+
+
+def test_duty_plan_only_accepts_one_reply_and_projects_committed_turn(duty):
+    plan_id = "a" * 32
+    tasks = [{"repo": "/repos/parser", "title": "Fix the parser", "goal": "Read short files",
+              "done_when": ["Parser handles short files"]}]
+    proposal = {"at": 170.0, "turn": 4, "status": "needs_decision", "reply": "Plan: fix the parser.",
+                "question": "Accept this plan?", "task_plan": {"id": plan_id, "tasks": tasks}}
+    directory = write_conversation(duty["tasks"], turns=[proposal],
+                                   rows=[{"at": 175.0, "text": "Uncommitted", "source": "user",
+                                          "plan_attempt_id": "abandoned"}])
+    body = {"plan_id": plan_id, "selected": [{"index": 0, "done_when": ["Also read an empty file"]}]}
+    endpoint = "/api/actions/duty-chat"
+    with duty["start"]() as old_board:
+        set_duty(old_board)
+        message, = old_board.get("/api/duty-chat").json()["messages"]
+        assert message["text"] == proposal["reply"] and "task_plan" not in message
+        assert old_board.post(endpoint, json=body).json() == {"ok": False, "error": "plan_unavailable"}
+    assert duty["records"]() == []
+
+    duty["configure"](plan_supported=True)
+    with duty["start"]() as client:
+        set_duty(client)
+        assert client.get("/api/duty-chat").json()["messages"][0]["task_plan"] == {
+            "id": plan_id, "tasks": tasks, "actionable": True}
+        queue = directory / "queue.json"
+        queue.write_text(json.dumps({"waiting": [{"at": 174.0, "source": "user", "text": "Already sent"}]}))
+        assert client.get("/api/duty-chat").json()["messages"][0]["task_plan"]["actionable"] is False
+        queue.unlink()
+
+        with ThreadPoolExecutor(2) as pool:
+            responses = list(pool.map(lambda _: client.post(endpoint, json=body), range(2)))
+        accepted, refused = sorted(responses, key=lambda response: response.status_code)
+        assert (accepted.status_code, accepted.json()) == (200, {"ok": True, "turn": 5})
+        assert (refused.status_code, refused.json()) == (409, {"ok": False, "error": "plan_already_answered"})
+        for record in duty["records"]():
+            assert record["form"] == body and record["stdin"] == ""
+            assert record["argv"][:3] == ["duty", "chat", "--reply-plan-file"]
+            assert len(record["argv"]) == 4 and not Path(record["argv"][3]).exists()
+
+    with duty["start"]() as restarted:
+        set_duty(restarted)
+        plan_row, accepted_row = restarted.get("/api/duty-chat").json()["messages"]
+        assert plan_row["task_plan"] == {"id": plan_id, "tasks": tasks, "actionable": False, "accepted_turn": 5}
+        assert (accepted_row["text"], accepted_row["turn"]) == ("Accepted plan", 5)
+        state_path = directory / "state.json"
+        state = json.loads(state_path.read_text())
+        state_path.write_text(json.dumps(dict(state, outcome="failed", error="The Duty failed.")))
+        assert restarted.get("/api/duty-chat").json()["messages"][0]["task_plan"]["error"] == "The Duty failed."
+
+
+def test_duty_plan_validation_and_unconfirmed_submission(duty, monkeypatch):
+    endpoint = "/api/actions/duty-chat"
+    plan_id = "a" * 32
+    body = {"plan_id": plan_id, "selected": [{"index": 0, "done_when": ["Work"]}]}
+    duty["configure"](plan_supported=True, plan_output='{"ok": true}')
+    with duty["start"]() as client:
+        set_duty(client)
+        for invalid in ({"plan_id": plan_id}, dict(body, text="Both forms"),
+                        dict(body, selected=[{"index": True, "done_when": ["Work"]}]),
+                        dict(body, selected=body["selected"] * 2),
+                        dict(body, selected=[{"index": 0, "done_when": [" "]}])):
+            response = client.post(endpoint, json=invalid)
+            assert (response.status_code, response.json()) == (400, {"ok": False, "error": "invalid_plan_reply"})
+        assert client.post(endpoint, json=body, headers={"Origin": "http://evil.example"}).status_code == 403
+        assert duty["records"]() == []
+        response = client.post(endpoint, json=body)
+        assert (response.status_code, response.json()) == (503, {"ok": False, "error": "plan_submission_unknown"})
+        assert len(duty["records"]()) == 1
+        duty["configure"](plan_supported=True, plan_output='{"ok": false, "error": "stale_plan"}')
+        response = client.post(endpoint, json=body)
+        assert (response.status_code, response.json()) == (409, {"ok": False, "error": "stale_plan"})
+        run = duty_chat_module.subprocess.run
+
+        def timed_out(argv, **options):
+            if "--reply-plan-file" in argv:
+                raise subprocess.TimeoutExpired(argv, options["timeout"])
+            return run(argv, **options)
+
+        monkeypatch.setattr(duty_chat_module.subprocess, "run", timed_out)
+        response = client.post(endpoint, json=body)
+        assert (response.status_code, response.json()) == (503, {"ok": False, "error": "plan_submission_unknown"})
+    with duty["start"](read_only=True) as client:
+        assert client.post(endpoint, json=body).status_code == 403
 
 
 def test_two_posts_at_once_start_one_conversation(duty, monkeypatch):

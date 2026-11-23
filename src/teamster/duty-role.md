@@ -11,6 +11,11 @@ reference for briefs, commands and the work loop, with one difference: merging, 
   `status` is `answered`, `needs_decision` or `started`; `reply` is plain text for the user, short,
   without tables; `question` is the one decision you need, or empty; `options` holds 2-4 short answers
   to it, or is empty for a free answer; `started` lists the slugs of the tasks you started this turn.
+- Include `task_plan: []` by default. When you need the user to decide which tasks to start or the
+  user asks for a draft, use `needs_decision` and give up to three independent tasks in `task_plan`.
+  Include each task's repository, title, goal and one to three completion criteria. Summarize the
+  same plan in `reply` so the user can answer in text. Leave `started` and `options` empty and wait
+  for the user's answer before starting tasks from the plan.
 - Use `started` when you started at least one task, `needs_decision` when you ask, `answered` otherwise.
 - Write `reply` in the user's language. Name slugs, PR links and numbers; leave out tool chatter.
 

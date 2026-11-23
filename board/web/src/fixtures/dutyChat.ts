@@ -3,6 +3,7 @@
 // seconds later, its live activity growing in the duty's feed meanwhile, and the next waiting message starts the next
 // turn. The page's `?duty=` drives the chat's other states: a reason it is unavailable (`no_duty`, `codex_duty`,
 // `old_teamster`, `read_only`, `no_teamster`), `error` for a failed last turn, `refuse` for a send teamster refuses.
+// `a2ui` starts a separate conversation with an approach comparison followed by a task plan.
 
 import type { DutyChatMessage, DutyChatReason, DutyChatView } from "../dutyChatTypes";
 import type { ActionResult, DutyChatBody } from "../lib/actions";
@@ -61,17 +62,66 @@ export function fixtureConversation(now: number): DutyChatView {
   };
 }
 
-type Answer = Pick<DutyChatMessage, "status" | "text" | "question" | "options">;
+type Answer = Pick<DutyChatMessage, "status" | "text" | "question" | "options" | "task_plan">;
+const ACKNOWLEDGED: Answer = { status: "answered", text: "Принял.", question: null, options: [] };
 /** The turns' answers in order; the last one repeats. */
 const ANSWERS: Answer[] = [
   { status: "answered", text: "ci-wait-retry уже повторяет запрос на 502 и 503 с паузой; тесты идут, PR будет в течение часа.", question: null, options: [] },
-  { status: "answered", text: "Принял.", question: null, options: [] },
+  ACKNOWLEDGED,
 ];
 /** The first turn that leaves nothing waiting asks this, so that its options answer. */
 const QUESTION: Answer = {
   status: "needs_decision", text: "Передам ci-wait-retry тест на 502 три раза подряд.",
   question: "Добавить повтор и на 504?", options: ["Да, и на 504", "Нет, только 502 и 503"],
 };
+
+const COMPARISON: NonNullable<DutyChatMessage["comparison"]> = {
+  approaches: [
+    { title: "Повторять 502, 503 и 504", detail: "Покроет известные сбои шлюза. При других ошибках проверка завершится сразу." },
+    { title: "Повторять все 5xx", detail: "Покроет и новые сбои сервера. Постоянная ошибка может замедлить проверку CI." },
+  ],
+};
+
+function a2uiConversation(now: number): DutyChatView {
+  return {
+    ...fixtureConversation(now), busy: false, turn_started_at: null, queued: [],
+    messages: [
+      { id: "m0", at: now - 60, from: "user", text: "Сравни подходы к повторам в CI demo-assistant и предложи план работ.", turn: 1 },
+      {
+        id: "d0", at: now - 30, from: "duty", turn: 1, status: "needs_decision", started: [], comparison: COMPARISON,
+        text: "Можно повторять известные сбои шлюза или весь диапазон 5xx. От этого зависит первый пункт плана.",
+        question: "Какие ошибки повторять?", options: COMPARISON.approaches.map((approach) => approach.title),
+      },
+    ],
+  };
+}
+
+function taskPlan(approach: string): Answer {
+  const tasks = [
+    {
+      repo: "demo-assistant", title: "Добавить повторы запросов к CI",
+      goal: "Повторять запрос к раннеру при выбранных ответах сервера.",
+      done_when: [`Проверки подтверждают политику «${approach}».`, "После трёх попыток запрос завершается с ошибкой."],
+    },
+    {
+      repo: "demo-assistant", title: "Уточнить сообщение об отказе CI",
+      goal: "Показать код ответа раннера и ссылку на запуск в итоговом сообщении.",
+      done_when: ["Итоговое сообщение содержит код ответа и ссылку на запуск."],
+    },
+    {
+      repo: "demo-assistant", title: "Уточнить ключ кэша сборки",
+      goal: "Включить хеш lock-файла в ключ кэша зависимостей.",
+      done_when: ["Изменение lock-файла даёт новый ключ кэша."],
+    },
+  ];
+  return {
+    status: "needs_decision",
+    text: [`Предлагаю три независимые задачи для demo-assistant. Подход к повторам — «${approach}».`,
+      ...tasks.map((task, index) => `${index + 1}. ${task.title}. ${task.goal}`)].join("\n"),
+    question: "Что взять в работу?", options: [],
+    task_plan: { id: "a2a20000000000000000000000000001", actionable: true, tasks },
+  };
+}
 
 /** A turn's steps, one more every FEED_STEP_SECONDS. */
 const WORK: Pick<FeedItem, "kind" | "text">[] = [
@@ -103,7 +153,9 @@ export function fixtureDutyChat(
   currentDuty?: () => DutyChatView["duty"],
   mode: string | null = null,
 ): FixtureDutyChat {
-  const view = withMode(fixtureConversation(clock()), mode, clock());
+  const a2ui = mode === "a2ui";
+  const view = a2ui ? a2uiConversation(clock()) : withMode(fixtureConversation(clock()), mode, clock());
+  const work: Pick<FeedItem, "kind" | "text">[] = a2ui ? [{ kind: "message", text: "Готовлю ответ." }] : WORK;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let answers = 0;
   let asked = false;
@@ -115,12 +167,17 @@ export function fixtureDutyChat(
   function runTurn(account = view.duty?.account ?? null) {
     timer = setTimeout(() => {
       timer = null;
-      const turn = (view.messages.at(-1)?.turn ?? 0) || 1;
-      const ask = !asked && !view.queued.length;
+      const latest = view.messages.at(-1);
+      const turn = latest?.turn || 1;
+      const ask = !a2ui && !asked && !view.queued.length;
       asked ||= ask;
+      const approach = a2ui && turn === 2
+        ? COMPARISON.approaches.find(({ title }) => title === latest?.text)
+        : undefined;
+      const result = a2ui ? (approach ? taskPlan(approach.title) : ACKNOWLEDGED)
+        : ask ? QUESTION : ANSWERS[Math.min(answers++, ANSWERS.length - 1)]!;
       const answer: DutyChatMessage = {
-        id: `d-fixture-${++lastId}`, at: clock(), from: "duty", turn, account, started: [],
-        ...(ask ? QUESTION : ANSWERS[Math.min(answers++, ANSWERS.length - 1)]!),
+        id: `d-fixture-${++lastId}`, at: clock(), from: "duty", turn, account, started: [], ...result,
       };
       view.messages = [...view.messages, answer].slice(-200);
       const [next, ...rest] = view.queued;
@@ -147,32 +204,57 @@ export function fixtureDutyChat(
       // A reason the page asked for stands over the accounts' duty.
       return structuredClone(withMode({ ...view, duty, reason, available: reason === null }, mode && REASONS.has(mode) ? mode : null, clock()));
     },
-    act({ text }) {
-      const message = text.trim();
-      if (!message) return { ok: false, error: "Invalid text" };
+    act(body) {
+      let message = "text" in body ? body.text.trim() : "";
+      if ("text" in body && !message) return { ok: false, error: "Invalid text" };
       if (mode === "refuse") return { ok: false, error: "teamster: no duty account (duty.json is absent or names no account)" };
       const duty = selectedDuty();
+      if (!("text" in body) && duty?.family !== "claude") {
+        return { ok: false, code: "plan_unavailable", error: "Сейчас дежурный не может принять ответ на план" };
+      }
       if (!duty) return { ok: false, error: "No duty account" };
       if (duty.family !== "claude") return { ok: false, error: "The duty chat needs a Claude duty account" };
+      const latest = view.messages.at(-1);
+      const turn = (latest?.turn ?? 0) + 1;
+      if (!("text" in body)) {
+        const proposal = view.messages.find((entry) => entry.task_plan?.id === body.plan_id);
+        const plan = proposal?.task_plan;
+        if (plan?.accepted_turn !== undefined) return { ok: false, code: "plan_already_answered", error: "На этот план уже ответили" };
+        if (!plan || proposal !== latest || view.busy || view.queued.some((row) => row.from === "user")) {
+          return { ok: false, code: "stale_plan", error: "Дежурный перешёл к другому ходу. Этот план уже нельзя отправить" };
+        }
+        const selection = new Map(body.selected.map(({ index, done_when }) => [index, done_when.map((criterion) => criterion.trim())]));
+        if (!selection.size || selection.size !== body.selected.length || [...selection].some(([index, criteria]) =>
+          !Number.isInteger(index) || !plan.tasks[index] || !criteria.length || criteria.length > 3
+          || criteria.some((criterion) => !criterion || [...criterion].length > 200))) {
+          return { ok: false, code: "invalid_plan_reply", error: "Проверь выбранные задачи и критерии готовности" };
+        }
+        const lines = plan.tasks.flatMap((task, index) => {
+          const criteria = selection.get(index);
+          return criteria ? [`${task.title} (${task.repo})\n${task.goal}\n${criteria.map((criterion) => `- ${criterion}`).join("\n")}`] : [];
+        });
+        message = `Возьми в работу только выбранные задачи. Остальные пункты пропусти.\n\n${lines.join("\n\n")}`;
+        plan.accepted_turn = turn;
+      }
       if (view.busy) {
         view.queued = [...view.queued, { at: clock(), from: "user", text: message }];
         changed();
         return { ok: true, output: "", queued: true };
       }
-      const turn = (view.messages.at(-1)?.turn ?? 0) + 1;
+      if (latest?.task_plan) latest.task_plan.actionable = false;
       view.messages = [...view.messages, { id: `m-fixture-${++lastId}`, at: clock(), from: "user", text: message, turn }];
       view.busy = true;
       view.turn_started_at = clock();
       view.last_error = null;
       runTurn(duty.account);
       changed();
-      return { ok: true, output: "", queued: false };
+      return "text" in body ? { ok: true, output: "", queued: false } : { ok: true, output: "", turn };
     },
     feed(after) {
       const turn = view.messages.at(-1)?.turn ?? 0;
       const start = view.busy ? view.turn_started_at : null;
-      const shown = start === null ? 0 : Math.min(WORK.length, 1 + Math.floor((clock() - start) / FEED_STEP_SECONDS));
-      const items = WORK.slice(0, shown).map((item, index) => ({ ...item, at: start! + index * FEED_STEP_SECONDS }));
+      const shown = start === null ? 0 : Math.min(work.length, 1 + Math.floor((clock() - start) / FEED_STEP_SECONDS));
+      const items = work.slice(0, shown).map((item, index) => ({ ...item, at: start! + index * FEED_STEP_SECONDS }));
       const [from, seen] = (after ?? "").split(":").map(Number);
       const more = from === turn && Number.isInteger(seen) && seen! <= items.length;
       return { items: more ? items.slice(seen) : items, cursor: `${turn}:${items.length}`, reset: !more, truncated: false };

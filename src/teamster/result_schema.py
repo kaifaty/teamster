@@ -84,6 +84,17 @@ DUTY_SCHEMA = object_schema({
                 "description": "2-4 short answers to question, or empty for a free answer or no question."},
     "started": {"type": "array", "items": {"type": "string"},
                 "description": "Slugs of the teamster tasks started in this turn."},
+    "task_plan": {
+        "type": "array",
+        "description": "Up to three proposed tasks for a decision, or empty.",
+        "items": object_schema({
+            "repo": {"type": "string", "description": "Repository, up to 400 characters."},
+            "title": {"type": "string", "description": "Task title, up to 120 characters."},
+            "goal": {"type": "string", "description": "Task goal, up to 600 characters."},
+            "done_when": {"type": "array", "items": {"type": "string"},
+                          "description": "One to three criteria, up to 200 characters each."},
+        }),
+    },
 })
 
 

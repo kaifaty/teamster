@@ -8,8 +8,10 @@ note-driven turns is reached and go out with the next user message.
 """
 import json
 import os
+import re
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 from . import claude_accounts, claude_runner, clock, config, duty, executors, procs, reflection
@@ -21,6 +23,8 @@ CHAT_KIND = "duty"
 AUTO_TURN_WINDOW_SECONDS = 3600
 ROLE_FILE = "duty-role.md"
 NO_DUTY = "no duty account (duty.json is absent or names no account); run duty tick, nothing was started"
+PLAN_FIELDS = {"repo": 400, "title": 120, "goal": 600}
+PLAN_REPLY_BYTES = 32 * 1024
 
 
 def chat_dir():
@@ -112,13 +116,101 @@ def write_system_prompt(text, task_dir):
         return Path(stream.name)
 
 
+def plan_text(value, limit):
+    if not isinstance(value, str) or "\0" in value or len(value) > limit:
+        raise ValueError("invalid plan text")
+    value.encode("utf-8")
+    value = value.strip()
+    if not value:
+        raise ValueError("empty plan text")
+    return value
+
+
+def plan_criteria(value):
+    if not isinstance(value, list) or not 1 <= len(value) <= 3:
+        raise ValueError("invalid completion criteria")
+    return [plan_text(item, 200) for item in value]
+
+
+def valid_plan_tasks(tasks):
+    """Normalize a bounded task plan, or return an empty list for an absent or unusable plan."""
+    if not isinstance(tasks, list) or not 1 <= len(tasks) <= 3:
+        return []
+    normalized = []
+    for task in tasks:
+        if not isinstance(task, dict) or task.keys() != PLAN_FIELDS.keys() | {"done_when"}:
+            return []
+        try:
+            normalized.append({**{key: plan_text(task[key], limit) for key, limit in PLAN_FIELDS.items()},
+                               "done_when": plan_criteria(task["done_when"])})
+        except ValueError:
+            return []
+    return normalized
+
+
+def answer_plan(result):
+    if result["status"] != "needs_decision" or not result["question"].strip() or result["started"]:
+        return []
+    return valid_plan_tasks(result["task_plan"])
+
+
 def record_chat_turn(st):
     """Append the valid answer of the turn that just completed to duty_turns."""
     result = st["result"]
-    st.setdefault("duty_turns", []).append({
+    entry = {
         "at": clock.CLOCK.time(), "turn": st.get("turns", 0), "account": executors.from_state(st).account(st),
         "status": result["status"], "reply": result["reply"], "question": result["question"],
-        "options": result["options"], "started": result["started"]})
+        "options": result["options"], "started": result["started"]}
+    if result["task_plan"]:
+        entry["task_plan"] = {"id": uuid.uuid4().hex, "tasks": result["task_plan"]}
+    st.setdefault("duty_turns", []).append(entry)
+
+
+def read_plan_reply(path):
+    with Path(path).open("rb") as stream:
+        raw = stream.read(PLAN_REPLY_BYTES + 1)
+    if len(raw) > PLAN_REPLY_BYTES:
+        raise ValueError("plan reply is too large")
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict) or set(value) != {"plan_id", "selected"}:
+        raise ValueError("invalid plan reply")
+    plan_id, selected = value["plan_id"], value["selected"]
+    if not isinstance(plan_id, str) or not re.fullmatch(r"[a-f0-9]{32}", plan_id):
+        raise ValueError("invalid plan ID")
+    if not isinstance(selected, list) or not 1 <= len(selected) <= 3:
+        raise ValueError("invalid plan selection")
+    choices = {}
+    for item in selected:
+        if not isinstance(item, dict) or set(item) != {"index", "done_when"}:
+            raise ValueError("invalid plan selection")
+        index = item["index"]
+        if type(index) is not int or not 0 <= index < 3 or index in choices:
+            raise ValueError("invalid or duplicate plan index")
+        choices[index] = plan_criteria(item["done_when"])
+    return plan_id, choices
+
+
+def plan_turn(state, plan_id):
+    """Find a proposal in this conversation, including a prior proposal with a receipt."""
+    return next((turn for turn in reversed(state.get("duty_turns", ()))
+                 if (turn.get("task_plan") or {}).get("id") == plan_id), None)
+
+
+def plan_reply_text(tasks, choices, language):
+    """Render only the selected tasks, with their edited criteria, as one user message."""
+    if not tasks or max(choices) >= len(tasks):
+        raise ValueError("selection does not belong to the plan")
+    if language == "ru":
+        lines = ["Запусти только выбранные задачи из плана. Остальные отложи."]
+        repository, goal, done = "Репозиторий", "Цель", "Критерии готовности"
+    else:
+        lines = ["Start only the selected tasks from the plan. Leave the other tasks aside."]
+        repository, goal, done = "Repository", "Goal", "Done when"
+    for index, criteria in sorted(choices.items()):
+        task = tasks[index]
+        lines.extend(("", task["title"], f"{repository}: {task['repo']}", f"{goal}: {task['goal']}", f"{done}:"))
+        lines.extend(f"- {criterion}" for criterion in criteria)
+    return "\n".join(lines)
 
 
 def notes_path():

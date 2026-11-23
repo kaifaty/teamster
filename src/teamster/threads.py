@@ -131,25 +131,38 @@ def codex_last_message(st):
 
 def followup_messages(st):
     messages = config.TASKS / st["slug"] / "messages.jsonl"
-    return [json.loads(line) for line in messages.read_text().splitlines()] if messages.exists() else []
+    if not messages.exists():
+        return []
+    with messages.open(encoding="utf-8") as stream:
+        rows = [json.loads(line) for line in stream]
+    if st.get("kind") != "duty":
+        return rows
+    committed = set()
+    for turn in st.get("duty_turns", ()):
+        receipt = (turn.get("task_plan") or {}).get("receipt")
+        if receipt:
+            committed.add(receipt["attempt_id"])
+    return [row for row in rows if "plan_attempt_id" not in row or row["plan_attempt_id"] in committed]
 
 
-def journal_followups(st, message, source="lead", queued=()):
+def journal_followups(st, message, source="lead", queued=(), *, plan_attempt_id=None):
     """Append the message, or each queued order with its own source (lead by default), to messages.jsonl."""
     at = clock.CLOCK.time()
     rows = ([{"at": at, "text": order["text"], "source": order.get("source", "lead"), "queued_at": order["at"]}
              for order in queued] or [{"at": at, "text": message, "source": source}])
     with (config.TASKS / st["slug"] / "messages.jsonl").open("a", encoding="utf-8") as stream:
         for row in rows:
+            if plan_attempt_id is not None:
+                row["plan_attempt_id"] = plan_attempt_id
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def followup_prompt(st, message, cfg, source="lead", queued=()):
+def followup_prompt(st, message, cfg, source="lead", queued=(), *, plan_attempt_id=None):
     """Journal follow-ups before dispatch so rotation includes the current request.
 
     queued holds the say --queue orders that message joins: each is journaled as its own message.
     """
-    journal_followups(st, message, source, queued)
+    journal_followups(st, message, source, queued, plan_attempt_id=plan_attempt_id)
     if st.get("thread") or executors.from_state(st).cursor(st):
         switch = st.get("base_switch")
         if switch:
