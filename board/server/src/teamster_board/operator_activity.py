@@ -13,10 +13,12 @@ from fastapi.responses import JSONResponse
 from . import duty_tasks
 from .actions import error
 from .external_duty import valid_text
-from .store import ARCHIVED, Store, text
+from .store import ARCHIVED, Store, cargo, mapping, text
 
 CHAT_TIMEOUT_MS = 120_000
 CHAT_QUEUE_LIMIT = 4
+RUN_KINDS = ("work", "review", "scout", "reflect")
+SEARCH_PAGE = 8
 
 
 def _connect(path, mode):
@@ -89,35 +91,60 @@ def read_operator_activity(path: Path, store: Store, repositories, *, writable=F
         for event, identity, turn, started, source, recommendation in rows if identity in targets
     ]
     return {"available": True, "current": targets.get(current), "history": history,
-            **({"chat": {"projects": sorted({Path(repo).name for repo in repositories})}} if chat else {})}
+            **({"chat": True} if chat else {})}
 
 
 class OperatorChat:
-    def __init__(self, path, store, project_tasks, repositories):
+    def __init__(self, path, store, project_tasks):
         self.path = path
-        self.store = duty_tasks.read_store(store)
+        self.store = store
         self.project_tasks = project_tasks
-        self.repositories = repositories
-        self.projects = {Path(repo).name for repo in repositories}
 
-    def _run(self, db, identity):
-        card = duty_tasks.task(self.store, self.repositories, identity)
-        if card is None:
-            return None
+    def _run(self, db, address, *, created=None):
+        with self.store.lock:
+            record = self.store._record(address)
+            if record is None or record.summary["kind"] not in RUN_KINDS:
+                return None
+            summary, state = record.summary, record.state
+            if created is not None and summary["created"] != created:
+                return None
+            evidence = cargo(state)
+            report = text(mapping(state.get("result")).get("summary")) or summary["summary"]
+            brief = self.store.file_path(address, "brief")
+            identity = duty_tasks.task_id(state.get("slug"), summary["created"])
+            status = duty_tasks.task_status(state, summary["alive"] and not record.archived)
         row = db.execute("""
             SELECT recommendation FROM recommendations
             WHERE task_id = ? AND turn = ? AND recommendation IS NOT NULL
             ORDER BY started_at DESC LIMIT 1
-        """, (identity, card["turn"])).fetchone()
-        saved = card["checks"]["saved"]
+        """, (identity, summary["turn"])).fetchone()
+        checks = sorted(evidence["claims"], key=lambda check: check["outcome"] == "passed")
         return {
-            **{key: card[key] for key in ("slug", "turn", "status", "phase", "executor", "summary", "pr")},
-            "project": Path(card["repository"]).name,
-            "goal": (card["goal"] or "")[:650], "blocker": (card["blocker"] or "")[:350],
-            "saved_check": {"command": saved["command"], "outcome": saved["outcome"],
-                            "exit": saved["exit"]} if saved else None,
-            "ci": card["checks"]["ci"]["outcome"] if card["checks"]["ci"] else None,
-            "recommendation": row[0].removeprefix(f"{identity}: ")[:500] if row else None,
+            **{key: summary[key] for key in (
+                "slug", "turn", "column", "phase", "executor", "outcome", "result_status", "pr", "lead_verdict",
+            )},
+            "project": summary["repo"], "status": status, "summary": (report or "")[:650],
+            "goal": (duty_tasks._goal(brief) or "")[:400],
+            "saved_check": evidence["check"],
+            "reported_checks": checks[:4],
+            "ci": {key: evidence["ci"][key] for key in ("outcome", "failing")} if evidence["ci"] else None,
+            "remaining": evidence["remaining"][:4], "questions": evidence["questions"][:3],
+            "review": evidence["review"]["verdict"] if evidence["review"] else None,
+            "recommendation": row[0].removeprefix(f"{identity}: ")[:350] if row else None,
+        }
+
+    def _project_task(self, db, identity):
+        card, linked = self.project_tasks.card(identity)
+        runs = sorted((run for run in linked.values() if run["kind"] in RUN_KINDS),
+                      key=lambda run: run["updated_at"], reverse=True)
+        latest = next((entry for run in runs
+                       if (entry := self._run(db, run["slug"], created=run["created"])) is not None), None)
+        return {
+            **{key: card[key] for key in ("id", "project", "title", "status", "parent_id")},
+            "depends_on": card["depends_on"][:8],
+            "linked_runs": [{"id": run["slug"], "outcome": run["outcome"]} for run in runs[:8]],
+            "pull_requests": [pr["url"][:300] for pr in card["pull_requests"][:3]],
+            "linked_run": latest,
         }
 
     def _context(self, db, target):
@@ -125,24 +152,74 @@ class OperatorChat:
         if not valid_text(identity, 255):
             raise ValueError
         if kind == "run" and target.keys() == {"kind", "id", "created"}:
-            archive = ARCHIVED.fullmatch(identity)
-            run = self._run(db, duty_tasks.task_id(archive[1] if archive else identity, target["created"]))
+            if type(target["created"]) not in (int, float):
+                raise ValueError
+            run = self._run(db, identity, created=target["created"])
             if run is None:
                 raise KeyError(identity)
             return run
         if kind == "project" and target.keys() == {"kind", "id"}:
-            card, linked = self.project_tasks.card(identity)
-            if card["project"] not in self.projects:
-                raise KeyError(identity)
-            # A map card can link desktop sessions or runs from other repositories.
-            candidates = sorted((ref for ref, record in linked.items()
-                                 if record["kind"] in ("work", "review") and record["repo"] in self.projects),
-                                key=lambda ref: linked[ref]["updated_at"], reverse=True)
-            runs = (self._run(db, ref) for ref in candidates)
-            return {**{key: card[key] for key in ("project", "title", "status")},
-                    "pull_requests": [pr["url"][:300] for pr in card["pull_requests"][:3]],
-                    "linked_run": next((run for run in runs if run is not None), None)}
+            return self._project_task(db, identity)
         raise ValueError
+
+    def _catalog(self):
+        for task in self.project_tasks.tasks():
+            yield ({"kind": "project", "id": task["id"], "title": task["title"],
+                    "project": task["project"], "status": task["status"]},
+                   tuple(task["session_slugs"].values()))
+        for run in self.store.summaries():
+            if run["repo"] and run["kind"] in RUN_KINDS:
+                yield ({"kind": "run", "id": run["slug"], "title": run["title"] or run["slug"],
+                        "project": run["repo"], "status": run["outcome"] or run["column"]}, ())
+
+    def _search(self, query, project, status, offset):
+        matches = []
+        for row, aliases in self._catalog():
+            if project and project != row["project"].casefold() or status and status != row["status"]:
+                continue
+            names = tuple(name.casefold() for name in (row["id"], row["title"], *aliases))
+            if query in names:
+                rank = 0
+            elif any(query in name for name in names):
+                rank = 1
+            elif all(any(word in name for name in names) for word in query.split()):
+                rank = 2
+            else:
+                continue
+            matches.append((rank, row["kind"], row["title"].casefold(), row["id"], row))
+        matches.sort(key=lambda match: match[:4])
+        end = offset + SEARCH_PAGE
+        return {"tasks": [row for _, _, _, _, row in matches[offset:end]],
+                "total": len(matches), "next_offset": end if end < len(matches) else None}
+
+    def read(self, identity, view, query, project, status, offset, kind, card_id):
+        if not re.fullmatch(r"[a-f0-9]{32}", identity):
+            return 404, {"error": "chat_inactive"}
+        with _connect(self.path, "ro") as db:
+            active = db.execute("""
+                SELECT 1 FROM chat_requests WHERE id = ? AND claimed = 1 AND deadline > ?
+                AND answer IS NULL AND failed = 0
+            """, (identity, int(time.time() * 1000))).fetchone()
+            if not active:
+                return 404, {"error": "chat_inactive"}
+            if view == "projects":
+                names = sorted({row["project"] for row, _ in self._catalog()})
+                return 200, {"projects": names[offset:offset + 24],
+                             "next_offset": offset + 24 if offset + 24 < len(names) else None}
+            if view == "search":
+                return 200, self._search(query.strip().casefold(), project.strip().casefold(), status, offset)
+            if view == "card" and valid_text(card_id, 255):
+                if kind == "project":
+                    try:
+                        return 200, {"task": self._project_task(db, card_id)}
+                    except KeyError:
+                        pass
+                if kind == "run":
+                    run = self._run(db, card_id)
+                    if run is not None:
+                        return 200, {"task": run}
+                return 404, {"error": "task_not_found"}
+        return 400, {"error": "invalid_read"}
 
     def send(self, data):
         question, history, target = data.get("question"), data.get("history"), data.get("target")
@@ -158,7 +235,7 @@ class OperatorChat:
                 prompt = json.dumps({"task": context, "conversation": history, "question": question.strip()},
                                     ensure_ascii=False)
                 # Cap bytes as well as characters to leave room for the model's answer.
-                if len(prompt.encode("utf-8", errors="replace")) > 14_000:
+                if len(prompt.encode("utf-8", errors="replace")) > 18_000:
                     return error(400, "invalid_question")
                 now = int(time.time() * 1000)
                 identity = uuid4().hex

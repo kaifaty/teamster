@@ -15,7 +15,7 @@ const props = defineProps<{
   records: Readonly<Record<string, TaskSummary>>;
   fetchDetails?: (id: string) => Promise<ProjectTaskDetails | null>;
   operatorSite?: string;
-  operatorProjects?: string[];
+  operatorChat?: boolean;
   save: (change: ProjectTaskChange) => Promise<ProjectTask>;
   fetchScoutHistory?: (project: string) => Promise<ProjectScout[]>;
 }>();
@@ -256,7 +256,7 @@ defineExpose({ select, focusProject });
           <span class="chip" :class="{ ok: selected.status === 'done', warn: ['needs_input', 'ready'].includes(selected.status), bad: selected.status === 'blocked' }">
             {{ statusLabels[selected.status] }}
           </span>
-          <button v-if="operatorProjects?.includes(selected.project)" type="button" class="btn"
+          <button v-if="operatorChat" type="button" class="btn"
             @click="emit('askOperator', { kind: 'project', id: selected.id, title: selected.title })">Спросить оператора</button>
           <button v-if="data?.writable" ref="editButton" type="button" class="btn" @click="edit(selected)">Изменить</button>
         </div>

@@ -511,11 +511,10 @@ def create_app(settings=None):
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(LocalOnly)
     app.state.board = board
-    register_external_duty(app, board)
     operator_chat = None
     if board.settings.operator_state is not None and board.settings.external_duty is not None:
-        operator_chat = OperatorChat(board.settings.operator_state, board.store, board.project_tasks,
-                                     board.settings.external_duty.repositories)
+        operator_chat = OperatorChat(board.settings.operator_state, board.store, board.project_tasks)
+    register_external_duty(app, board, operator_chat)
 
     @app.get("/api/snapshot")
     async def snapshot():

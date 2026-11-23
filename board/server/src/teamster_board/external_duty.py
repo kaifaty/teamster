@@ -16,7 +16,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from . import duty_events, duty_tasks
@@ -319,7 +319,7 @@ class ExternalDuty:
             return False
 
 
-def register(app, board):
+def register(app, board, operator_chat=None):
     if board.settings.external_duty is None:
         return
     api = ExternalDuty(board)
@@ -349,6 +349,14 @@ def register(app, board):
             return (200, {"task": card}) if card is not None else failure(404, "task_not_found")
 
         return await call(request, read)
+
+    @router.get("/chat/{identity}/evidence")
+    async def chat_evidence(request: Request, identity: str, view: str, query: str = Query("", max_length=160),
+                            project: str = Query("", max_length=255), status: str = Query("", max_length=60),
+                            offset: int = Query(0, ge=0), kind: str = "", card_id: str = Query("", max_length=255)):
+        if operator_chat is None or board.settings.read_only:
+            return response(*failure(404, "chat_unavailable"))
+        return await call(request, operator_chat.read, identity, view, query, project, status, offset, kind, card_id)
 
     @router.get("/events")
     async def events(request: Request, after: str = "0", limit: str = "100"):

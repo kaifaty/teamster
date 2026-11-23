@@ -39,10 +39,10 @@ model before opening the chat. The Board starts OpenCode and waits for it to con
 that session before enabling the first message. Reply to permission requests in the chat.
 Closing the chat ends that session. Opening it again starts a fresh conversation.
 
-Choose **Оператор** for a chat with Mini, or **Спросить оператора** from an eligible task card on
-the Board or Map. From a card, Mini receives the task's current Board evidence and can answer follow-up
-questions. Conversations stay in the open browser tab. The chat requires the running
-[Mini operator](../operator/README.md#chat-with-mini) and an actions-enabled Board.
+Choose **Оператор** to ask Mini about tasks and projects by name. Mini can search the Board and Map
+and read task evidence, linked runs, blockers, and checks. **Спросить оператора** opens the chat
+with the current card already attached. Conversations stay in the open browser tab. The chat
+requires the running [Mini operator](../operator/README.md#chat-with-mini) and an actions-enabled Board.
 
 A local duty client can use the opt-in [external duty API v1](../src/teamster/docs/external-duty.md)
 for allowlisted task reads, no-push starts, follow-ups, stops and a resumable event feed.

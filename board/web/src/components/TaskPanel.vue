@@ -18,7 +18,7 @@ const props = defineProps<{
   opencode?: Accounts["opencode"];
   source: BoardSource;
   now: number;
-  operatorProjects?: string[];
+  operatorChat?: boolean;
 }>();
 const emit = defineEmits<{ close: []; askOperator: [target: OperatorTarget] }>();
 
@@ -31,7 +31,7 @@ const session = computed(() => shown.value?.kind === "session");
 const heading = computed(() => (shown.value ? taskTitle(shown.value) : props.slug));
 const operatorTarget = computed<OperatorTarget | null>(() => {
   const record = shown.value;
-  return record?.created != null && props.operatorProjects?.includes(record.repo) && ["work", "review"].includes(record.kind)
+  return record?.created != null && props.operatorChat && ["work", "review", "scout", "reflect"].includes(record.kind)
     ? { kind: "run", id: props.slug, created: record.created, title: heading.value } : null;
 });
 const link = computed(() => (shown.value ? claudeLink(shown.value) : null));

@@ -45,17 +45,17 @@ before the updated observer starts reporting active reviews.
 
 ## Chat with Mini
 
-Run the operator continuously and set `BOARD_OPERATOR_STATE` to the same SQLite file on an
-actions-enabled Board, with `BOARD_EXTERNAL_DUTY_CONFIG` setting the repository scope. Both
-processes need write access to the file for chat. The operator can keep its `observer_token`.
+Run the operator continuously with the same SQLite state file as an actions-enabled Board.
+Both processes need write access to this file, and the operator uses its existing bearer credential.
 
-**Оператор** opens the chat. **Спросить оператора** opens it with a card selected from an allowed
-project. Mini receives the current card, available evidence from one linked run on a map card,
-and up to two recent exchanges in that conversation. This call exposes no tools to the model.
-The operator checks for questions between reviews. Each answer gets one model call, with a
-60-second model deadline and a two-minute deadline from submission. The state file temporarily
-holds pending questions and replies so the Board can retrieve them. The browser tab holds the
-conversation, which clears when the page reloads.
+**Оператор** opens the chat. Mini can list projects, search task titles and slugs across the
+Board and Map, and read task evidence including dependencies, linked runs, checks, and remaining work.
+**Спросить оператора** attaches the selected card. The tool routes are read-only and require an
+active chat request. Background reviews keep the external duty repository scope.
+
+Each question allows up to five model calls and six Board reads, within a 60-second model deadline
+and a two-minute deadline from submission. The state file holds questions and replies temporarily
+so the Board can retrieve them. The browser tab holds conversation history until the page reloads.
 
 ## Review logs and budgets
 

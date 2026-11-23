@@ -6,7 +6,7 @@ export interface OperatorTask {
 
 export interface OperatorActivity {
   available: boolean;
-  chat?: { projects: string[] };
+  chat?: boolean;
   current: OperatorTask | null;
   history: (OperatorTask & {
     event_id: string;

@@ -19,7 +19,7 @@ import { useArrivalChime } from "./use/useArrivalChime";
 import { useMapSources } from "./use/useMapSources";
 import { useProjectTasks } from "./use/useProjectTasks";
 
-const props = defineProps<{ board: Board; active: boolean; machine?: string | null; operatorTaskId?: string; operatorProjects?: string[] }>();
+const props = defineProps<{ board: Board; active: boolean; machine?: string | null; operatorTaskId?: string; operatorChat?: boolean }>();
 const emit = defineEmits<{ machine: [id: string, opener: HTMLElement | null]; panel: []; askOperator: [target: OperatorTarget] }>();
 const board = props.board;
 const { data, error, refresh, save } = useProjectTasks(board, () => props.active);
@@ -158,7 +158,7 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
   <section class="map" aria-label="Карта заданий">
     <ProjectTaskMap ref="map" :data="data" :error="error" :sessions="sessions" :save="save" :operator-site="operatorSite"
       :records="board.state.value.tasks" :fetch-details="board.source.fetchProjectTaskDetails"
-      :fetch-scout-history="board.source.fetchScoutHistory" :operator-projects="operatorProjects"
+      :fetch-scout-history="board.source.fetchScoutHistory" :operator-chat="operatorChat"
       @ask-operator="emit('askOperator', $event)"
       @record="(taskId, sessionId) => openRecord({ taskId, sessionId })" @scout="openRecord"
       @retry="refresh" @panel="emit('panel')">

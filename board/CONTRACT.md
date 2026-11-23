@@ -391,7 +391,7 @@ interface OperatorTask {
 
 interface OperatorActivity {
   available: boolean;         // the Mini pilot's SQLite journal could be read
-  chat?: { projects: string[] }; // project names in scope for chat on an actions-enabled Board
+  chat?: boolean;             // chat is enabled on this Board
   current: OperatorTask | null;
   history: (OperatorTask & {
     event_id: string;
@@ -1495,11 +1495,16 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
 - `POST /api/actions/operator-chat` accepts `{question, target, history}` with the standard action headers.
   `target` is `null` for general chat, `{kind: "project", id}` for a map task, or
   `{kind: "run", id, created}` for a run's Board address and creation time. The Board reads current
-  evidence in the operator's repository scope for each question. `history` is up to two previous
+  evidence for the attached card when a question is submitted. `history` is up to two previous
   `{question, answer}` pairs. Success returns 202 with `{id}`.
 - `GET /api/operator-chat/{id}` returns `{answer: null}` while waiting and `{answer: string}` when
   ready. An unanswered request expires after 120 seconds. Both routes require an actions-enabled
   Board configured with the operator's SQLite state and external duty configuration.
+- `GET /api/external-duty/v1/chat/{id}/evidence` requires a local operator token and a claimed,
+  unexpired, unanswered chat request. It returns Board project names (`view=projects`), compact
+  cards (`view=search` with optional `query`, `project`, `status`, and `offset`), or evidence for a
+  card (`view=card` with `kind=project|run` and `card_id`). Search spans Board and Map projects.
+  External Duty's task and event routes continue to use their configured repository scope.
 - `POST /api/actions/lesson`, `/api/actions/implement`, `/api/actions/say`, `/api/actions/reflect`,
   `/api/actions/verdict`, `/api/actions/review`, `/api/actions/stop`, `/api/actions/clean`
   → the task and science station actions above.

@@ -59,6 +59,7 @@ export function connectBoard(origin: string, token: string) {
     if (body.includes(token)) throw new Error("Board returned its credential in response data");
     if (response.status === 404 && path === "project-titles") return { tasks: [] };
     if (response.status === 409 && change) return { ok: false };
+    if (response.status === 404 && path.startsWith("chat/")) return JSON.parse(body);
     if (!response.ok) {
       if (response.status === 400 && JSON.parse(body).error?.code === "invalid_cursor") {
         throw new InvalidCursor("Board no longer has the saved cursor");
@@ -69,6 +70,9 @@ export function connectBoard(origin: string, token: string) {
   }
 
   return {
+    async chatEvidence(questionId: string, params: URLSearchParams, signal: AbortSignal): Promise<unknown> {
+      return request(`chat/${encodeURIComponent(questionId)}/evidence?${params}`, signal);
+    },
     async events(after: number): Promise<{ events: WorkEvent[]; next_cursor: number }> {
       const page = await request(`events?after=${after}`);
       if (!Array.isArray(page.events) || !Number.isSafeInteger(page.next_cursor) || page.next_cursor < after) {

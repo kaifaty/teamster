@@ -101,7 +101,8 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
     outside = directory.parent / "other"
     outside.mkdir()
     (outside / "state.json").write_text(json.dumps({
-        **state, "slug": "other", "repo": str(settings.task_home / "outside"),
+        **state, "slug": "other", "repo": str(settings.task_home / "outside"), "pid": None,
+        "outcome": "budget_exhausted", "result": {"status": "partial", "remaining": ["Run the GPU comparison."]},
     }))
     path = settings.task_home / "operator.sqlite"
     with closing(sqlite3.connect(path)) as db:
@@ -113,9 +114,9 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
             ("outside", task_id("other", state["created"]), 1, 3_000, "mini", "Outside the configured cards."),
         ])
         db.commit()
-        read_only = create_app(replace(settings, read_only=True, operator_state=path,
-                                       external_duty=ExternalDutyConfig("mini", "test", (state["repo"],), 1, 60)))
-        with (TestClient(read_only, base_url="http://localhost", headers={"Host": "localhost"}) as client,
+        read_only_settings = replace(settings, read_only=True, operator_state=path,
+                                     external_duty=ExternalDutyConfig("mini", "test", (state["repo"],), 1, 60, "observer"))
+        with (TestClient(create_app(read_only_settings), base_url="http://localhost", headers={"Host": "localhost"}) as client,
               client.websocket_connect("/ws") as ws):
             activity = ws.receive_json()["snapshot"]["operator"]
             assert activity == {"available": True, "current": None, "history": [
@@ -142,16 +143,39 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
         body = {"question": "Что с задачей?", "target": {"kind": "run", "id": "demo", "created": state["created"]},
                 "history": [{"question": "What are you reviewing?", "answer": "The saved result."}]}
         action = "/api/actions/operator-chat"
-        with TestClient(read_only, base_url="http://localhost", headers=headers) as client:
+        with TestClient(create_app(read_only_settings), base_url="http://localhost", headers=headers) as client:
             assert "chat" not in client.get("/api/snapshot").json()["operator"]
             assert client.post(action, json=body).json()["error"] == "read_only"
 
-        writable = create_app(replace(read_only.state.board.settings, read_only=False, no_land=True))
-        with TestClient(writable, base_url="http://localhost", headers=headers) as client:
-            assert client.get("/api/snapshot").json()["operator"]["chat"] == {"projects": ["repository"]}
+        writable = create_app(replace(read_only_settings, read_only=False, no_land=True))
+        with TestClient(writable, base_url="http://localhost", headers=headers, client=("127.0.0.1", 54321)) as client:
+            assert client.get("/api/snapshot").json()["operator"]["chat"] is True
             assert client.post(action, json=body, headers={"Origin": "http://foreign.test"}).status_code == 403
-            outside_target = {**body["target"], "id": "other"}
-            assert client.post(action, json={**body, "target": outside_target}).status_code == 404
+            observer = {"Authorization": "Bearer observer"}
+            assert client.get(f"/api/external-duty/v1/tasks/{task_id('other', state['created'])}",
+                              headers=observer).status_code == 404
+            general = client.post(action, json={**body, "target": None})
+            assert general.status_code == 202
+            general_id = general.json()["id"]
+            evidence = f"/api/external-duty/v1/chat/{general_id}/evidence"
+            assert client.get(evidence, params={"view": "projects"}).status_code == 403
+            assert client.get(evidence, params={"view": "projects"}, headers=observer).status_code == 404
+            with db:
+                db.execute("UPDATE chat_requests SET claimed = 1 WHERE id = ?", (general_id,))
+            assert client.get(evidence, params={"view": "projects"}, headers=observer).json()["projects"] == [
+                "outside", "repository",
+            ]
+            search = client.get(evidence, params={"view": "search", "query": "OTHER", "project": "outside"},
+                                headers=observer).json()
+            card = next(row for row in search["tasks"] if row["kind"] == "project")
+            result = client.get(evidence, params={"view": "card", "kind": "project", "card_id": card["id"]},
+                                headers=observer).json()["task"]
+            assert result["status"] == "blocked"
+            assert result["linked_run"]["outcome"] == "budget_exhausted"
+            assert result["linked_run"]["remaining"] == ["Run the GPU comparison."]
+            with db:
+                db.execute("UPDATE chat_requests SET answer = 'Ready' WHERE id = ?", (general_id,))
+            assert client.get(evidence, params={"view": "projects"}, headers=observer).status_code == 404
             sent = client.post(action, json=body)
             assert sent.status_code == 202
             identity = sent.json()["id"]

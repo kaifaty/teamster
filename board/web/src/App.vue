@@ -106,7 +106,7 @@ const selectedTask = computed(() => (selected.value ? (board.state.value.tasks[s
 const operator = computed(() => board.state.value.operator);
 const operatorOpen = ref(false);
 const operatorTarget = ref<OperatorTarget | null>(null);
-const operatorChat = computed(() => board.source.askOperator ? operator.value?.chat : undefined);
+const operatorChat = computed(() => !!board.source.askOperator && !!operator.value?.chat);
 const operatorConnected = computed(() => board.connection.value === "open");
 const operatorTask = computed(() => operatorConnected.value ? operator.value?.current ?? null : null);
 
@@ -300,7 +300,7 @@ onBeforeUnmount(() => {
       :opencode="board.state.value.accounts?.opencode"
       :source="board.source"
       :now="now"
-      :operator-projects="operatorChat?.projects"
+      :operator-chat="operatorChat"
       @ask-operator="askOperator"
       @close="close"
     />
@@ -315,7 +315,7 @@ onBeforeUnmount(() => {
         :active="view === 'map'"
         :machine="machineId"
         :operator-task-id="operatorTask?.task_id"
-        :operator-projects="operatorChat?.projects"
+        :operator-chat="operatorChat"
         @ask-operator="askOperator"
         @machine="openMachine"
         @panel="machineId = null; operatorOpen = false"

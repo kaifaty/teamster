@@ -46,7 +46,7 @@ async function main() {
     const prompt = String(question.prompt);
     let answer = "";
     try {
-      if (!prompt.includes(token)) answer = await answerQuestion(mini, prompt, signal);
+      if (!prompt.includes(token)) answer = await answerQuestion(board, mini, String(question.id), prompt, signal);
     } catch {
       console.warn("Mini chat request failed");
     }
