@@ -1,4 +1,4 @@
-"""Explicitly delegated resolutions and their durable command receipts."""
+"""Operator decisions and their durable command receipts."""
 
 import fcntl
 import hashlib
@@ -22,6 +22,7 @@ from .task_files import task_queue
 
 
 TERMINAL = ("archived", "cleanup_blocked", "revoked", "followup_finished", "clarification_requested")
+AUTO_RECHECK_SECONDS = 120
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS operator_resolutions (
     card TEXT PRIMARY KEY, run TEXT NOT NULL UNIQUE, generation TEXT NOT NULL,
@@ -32,6 +33,9 @@ CREATE TABLE IF NOT EXISTS operator_resolution_events (
     seq INTEGER PRIMARY KEY, card TEXT NOT NULL, generation TEXT NOT NULL, actor TEXT NOT NULL,
     kind TEXT NOT NULL, at REAL NOT NULL, detail TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS operator_auto_checks (
+    card TEXT PRIMARY KEY, version TEXT NOT NULL, checked REAL NOT NULL
+);
 """
 
 
@@ -41,6 +45,12 @@ def _key(*values):
 
 def _normalize(value):
     return " ".join(value.casefold().split())
+
+
+def _git_read(repo, *args):
+    return subprocess.check_output(["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
+                                   text=True, stderr=subprocess.DEVNULL, timeout=5,
+                                   env=dict(os.environ, GIT_OPTIONAL_LOCKS="0")).strip()
 
 
 def _record_anchor(record, state, pulls):
@@ -93,10 +103,10 @@ class OperatorResolution:
 
     @staticmethod
     def _event(db, row, kind, detail, *, actor="operator"):
-        db.execute("""INSERT OR IGNORE INTO operator_resolution_events
+        return db.execute("""INSERT OR IGNORE INTO operator_resolution_events
             (card, generation, actor, kind, at, detail, event_key) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                    (row["card"], row["generation"], actor, kind, time.time(), json.dumps(detail, ensure_ascii=False),
-                    _key(row["generation"], kind, detail)))
+                    _key(row["generation"], kind, detail))).rowcount > 0
 
     def _status(self, db, row, kind, detail, *, payload=None):
         with db:
@@ -421,6 +431,155 @@ class OperatorResolution:
         self._transition(db, row, card["status"], status)
         self._status(db, row, "followup_finished", detail)
 
+    def _automatic_checkout(self, record, state, pull):
+        """Pin the archive to the actual merged head, not whatever branch tip exists later."""
+        branch, head = state.get("branch"), pull.get("head")
+        worktree = state.get("worktree")
+        if (pull.get("cross_repository") is not False or not isinstance(branch, str)
+                or not branch.startswith(("codex/", "claude/")) or pull.get("branch") != branch
+                or not re.fullmatch(r"[a-f0-9]{40}", head or "")
+                or not re.fullmatch(r"[a-f0-9]{40}", pull.get("merge_sha") or "") or not worktree):
+            return None, "merge_identity"
+        repo = Path(state["repo"])
+        root = self.board.settings.path("worktrees")
+        relative = Path(f"claude-{state['slug']}") / repo.name
+        tree = root.resolve() / relative
+        if Path(worktree) != root / relative or Path(worktree).resolve() != tree or tree.is_symlink():
+            return None, "checkout_identity"
+        try:
+            if not tree.exists():
+                anchor = _record_anchor(record, state, [pull])
+                if anchor:
+                    return {"archive_sha": anchor["sha"], "record_only": anchor}, None
+                return None, "checkout_missing"
+            ref = f"refs/heads/{branch}"
+            if (_git_read(tree, "rev-parse", "--show-toplevel") != str(tree)
+                    or Path(_git_read(tree, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+                    != (repo / ".git").resolve() or _git_read(tree, "symbolic-ref", "HEAD") != ref
+                    or _git_read(tree, "rev-parse", "HEAD") != head):
+                return None, "checkout_identity"
+            if _git_read(tree, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=none"):
+                return None, "checkout_dirty"
+        except (OSError, subprocess.SubprocessError):
+            return None, "checkout_unavailable"
+        return {"archive_sha": head}, None
+
+    def _automatic_review(self, card, record, state, pending_dependencies, queued):
+        result = cargo(state)
+        detail = {"turn": state["turns"], "outcome": state.get("outcome")}
+        if record.summary.get("summary"):
+            detail["report"] = record.summary["summary"]
+        if result["check"] and result["check"]["outcome"] == "failed":
+            detail["failed_check"] = result["check"]["command"]
+        if result["remaining"]:
+            detail["note"] = result["remaining"][0]
+        if pending_dependencies:
+            cancelled = [title for title, status in pending_dependencies if status == "cancelled"]
+            if cancelled:
+                return "automatic_question", dict(detail, reason="dependency_cancelled", note=", ".join(cancelled)), None
+            names = ", ".join(title for title, _ in pending_dependencies)
+            return "automatic_waiting", dict(detail, reason="dependency", note=names), None
+        if result["questions"]:
+            return "automatic_question", dict(detail, reason="executor_question", question=result["questions"][0]), None
+        if not state.get("turn_finished") or queued:
+            reason = "unfinished_turn" if not state.get("turn_finished") else "queued_work"
+            kind = "automatic_question" if reason == "unfinished_turn" else "automatic_waiting"
+            return kind, dict(detail, reason=reason), None
+        prs = card["pull_requests"]
+        if not prs:
+            reason = "acceptance" if ready_for_review(record.summary["result_status"], state.get("outcome")) else (
+                "budget" if state.get("outcome") in ("budget_exhausted", "exhausted") else "next_step")
+            return "automatic_question", dict(detail, reason=reason), None
+        if len(prs) != 1 or prs[0]["provider"] != "github" or prs[0]["url"] != record.summary["pr"]:
+            return "automatic_question", dict(detail, reason="ambiguous_pr"), None
+        pr = prs[0]["url"]
+        detail["pull_request"] = pr
+        try:
+            origin = _git_read(state["repo"], "remote", "get-url", "origin").removesuffix(".git")
+        except (OSError, subprocess.SubprocessError):
+            return "automatic_waiting", dict(detail, reason="checkout_unavailable"), None
+        remote = re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", origin)
+        if not remote or urlsplit(pr).path.split("/pull/", 1)[0].lstrip("/").casefold() != remote[1].casefold():
+            return "automatic_question", dict(detail, reason="ambiguous_pr"), None
+        pulls = pull_request_evidence(prs)
+        pull = pulls[0] if pulls else {}
+        status = pull.get("status")
+        if status != "merged":
+            if status == "closed":
+                return "automatic_question", dict(detail, reason="pr_closed"), None
+            reason = "pr_conflict" if pull.get("conflict") else {"open": "pr_open", "draft": "pr_draft"}.get(status, "pr_unavailable")
+            return "automatic_waiting", dict(detail, reason=reason), None
+        detail["sha"] = pull.get("merge_sha")
+        if pull.get("base") != "main":
+            if not re.fullmatch(r"[a-f0-9]{40}", detail["sha"] or ""):
+                return "automatic_waiting", dict(detail, reason="pr_other_base", note=pull.get("base")), None
+            try:
+                _git_read(state["repo"], "merge-base", "--is-ancestor", detail["sha"], "refs/remotes/origin/main")
+            except (OSError, subprocess.SubprocessError):
+                return "automatic_waiting", dict(detail, reason="pr_other_base", note=pull.get("base")), None
+            pull = dict(pull, base="main")
+        scope, reason = self._automatic_checkout(record, state, pull)
+        if scope is None:
+            kind = "automatic_waiting" if reason in ("checkout_missing", "checkout_unavailable") else "automatic_question"
+            return kind, dict(detail, reason=reason), None
+        return "automatic_merge", detail, scope
+
+    def _poll_automatic(self, db, lock_fd):
+        repo = self.board.settings.operator_auto_repo
+        if repo is None or self.board.settings.read_only:
+            return None
+        cards = {card["id"]: card for card in self.board.project_tasks.tasks()}
+        reservations = db.execute("SELECT card, run FROM operator_resolutions WHERE status != 'followup_finished'").fetchall()
+        owned = {row["card"] for row in reservations} | {row["run"] for row in reservations}
+        checks = {row["card"]: row for row in db.execute("SELECT * FROM operator_auto_checks")}
+        now = time.time()
+        for identity in sorted(cards, key=lambda key: checks[key]["checked"] if key in checks else 0):
+            card = cards[identity]
+            if card["project"] != repo.name or card["status"] in ("done", "cancelled") or identity in owned:
+                continue
+            runs = [current for run in card["session_slugs"] if (current := self._run(run))]
+            if len(runs) != 1:
+                continue
+            record, run, state = runs[0]
+            if (run in owned or state.get("repo") != str(repo) or not (state.get("turns") or 0) > 0
+                    or record.summary["alive"] or alive(state.get("pid")) or state.get("pending")
+                    or self._verdict(record, state)):
+                continue
+            dependencies = [(cards.get(ref, {}).get("title", ref), cards.get(ref, {}).get("status")) for ref in card["depends_on"]
+                            if cards.get(ref, {}).get("status") != "done"]
+            queued = bool(task_queue(self.store._file(record.path, "queue.json"))["waiting"])
+            version = _key(run, self._version(state), card["pull_requests"], dependencies, queued)
+            last = checks.get(identity)
+            if last and last["version"] == version and (not card["pull_requests"] or now - last["checked"] < AUTO_RECHECK_SECONDS):
+                continue
+            kind, detail, scope = self._automatic_review(card, record, state, dependencies, queued)
+            detail["run"] = run
+            row = {"card": identity, "run": run, "generation": _key("automatic", identity, run, state["turns"])}
+            if scope:
+                fresh = self._run(run)
+                current, _ = self.board.project_tasks.card(identity)
+                if not fresh or fresh[2] != state or current != card:
+                    return None
+                self.board.project_tasks.save({"id": identity, "status": card["status"]})
+            elif last is None:
+                self.board.project_tasks.save({"id": identity})
+            with db:
+                db.execute("INSERT OR REPLACE INTO operator_auto_checks VALUES (?, ?, ?)", (identity, version, now))
+                recorded = self._event(db, row, kind, detail)
+                if scope:
+                    operation = {**scope, "slug": state["slug"], "created": state["created"], "turn": state["turns"],
+                                 "repo": str(repo), "from": card["status"], "verdict": "accepted",
+                                 "version": self._version(state), "pull_request": detail["pull_request"],
+                                 "id": _key(row["generation"], "accepted", detail["sha"], scope),
+                                 "note": f"Confirmed merge into main: {detail['pull_request']} at {detail['sha']}."}
+                    row = dict(row, rule="automatic", status="verdict_started", payload=json.dumps(operation))
+                    db.execute("""INSERT OR REPLACE INTO operator_resolutions (card, run, generation, rule, status, payload)
+                                VALUES (:card, :run, :generation, :rule, :status, :payload)""", row)
+            if scope:
+                self._step(db, row, lock_fd)
+            return identity if recorded or scope else None
+        return None
+
     @staticmethod
     def _version(state):
         return _key(state)
@@ -493,7 +652,7 @@ class OperatorResolution:
                                                       "run": row["run"], "turn": operation["turn"],
                                                       "evidence": operation.get("evidence")})
         else:
-            if row["rule"] == "choice":
+            if row["rule"] in ("choice", "automatic"):
                 self._transition(db, row, operation["from"],
                                  "done" if operation["verdict"] == "accepted" else "cancelled")
             self._status(db, row, "archived", {"operation": operation["id"], "sha": receipt["sha"],
@@ -502,8 +661,13 @@ class OperatorResolution:
         return
 
     def _step(self, db, row, lock_fd):
+        automatic = row["rule"] == "automatic"
+        selection = json.loads(row["payload"]) if automatic or row["rule"] == "choice" else {}
+        if automatic and selection["repo"] != str(self.board.settings.operator_auto_repo):
+            self._status(db, row, "cleanup_blocked", {"reason": "Automatic operator repository changed"})
+            return True
         if row["rule"] == "choice":
-            operation = json.loads(row["payload"])
+            operation = selection
             if row["status"] == "clarification_started":
                 self._transition(db, row, operation["from"], "needs_input")
                 self._status(db, row, "clarification_requested", {"note": operation["text"]})
@@ -538,6 +702,17 @@ class OperatorResolution:
                           "operation": operation["id"], "evidence": operation["evidence"]})
                 return False
         if row["status"] in ("verdict_started", "archive_started"):
+            if automatic and row["status"] == "verdict_started":
+                current = self._run(row["run"])
+                try:
+                    card, linked = self.board.project_tasks.card(row["card"])
+                except KeyError:
+                    linked = {}
+                if (not current or row["run"] not in linked or card["status"] in ("done", "cancelled")
+                        or self._version(current[2]) != selection["version"]
+                        or [pr["url"] for pr in card["pull_requests"]] != [selection["pull_request"]]):
+                    self._status(db, row, "cleanup_blocked", {"reason": "The original run or pull request changed"})
+                    return True
             self._execute(db, row, lock_fd)
             return True
         current = self._run(row["run"])
@@ -558,6 +733,11 @@ class OperatorResolution:
             return False
         version = self._version(state)
         verdict = self._verdict(record, state)
+        if automatic and (turn != selection["turn"] or card["status"] == "cancelled"
+                          or verdict not in (None, "accepted")
+                          or [pr["url"] for pr in card["pull_requests"]] != [selection["pull_request"]]):
+            self._status(db, row, "cleanup_blocked", {"reason": "The original turn or verdict changed"})
+            return True
         if not verdict and card["status"] in ("done", "cancelled") and row["status"] != "verdict_recorded":
             self._status(db, row, "needs_decision", {"reason": "Project card was closed without a current run verdict"})
             return False
@@ -595,13 +775,14 @@ class OperatorResolution:
             self._execute(db, started, lock_fd)
             return True
         terminal = "done" if verdict in ("accepted", "revised") else "cancelled"
-        if row["rule"] != "choice" and card["status"] != terminal:
+        if row["rule"] not in ("choice", "automatic") and card["status"] != terminal:
             self.board.project_tasks.save({"id": row["card"], "status": terminal})
-        selection = json.loads(row["payload"]) if row["rule"] == "choice" else {}
         anchor = selection.get("record_only")
         if anchor:
             head = anchor["sha"]
             operation["record_only"] = anchor
+        elif automatic:
+            head = selection["archive_sha"]
         else:
             ref = f"refs/heads/{state['branch']}"
             try:
@@ -612,8 +793,10 @@ class OperatorResolution:
                 return True
         operation.update(id=_key(row["generation"], "archive", version, head), sha=head, verdict=verdict,
                          worktree=state.get("worktree"))
-        if row["rule"] == "choice":
+        if row["rule"] in ("choice", "automatic"):
             operation["from"] = selection["from"]
+        if automatic:
+            operation["repo"] = selection["repo"]
         started = self._status(db, row, "archive_started", operation, payload=operation)
         self._execute(db, started, lock_fd)
         return True
@@ -625,4 +808,4 @@ class OperatorResolution:
             for row in rows:
                 if self._step(db, row, lock_fd):
                     return {"card": row["card"]}
-        return {"card": None}
+            return {"card": self._poll_automatic(db, lock_fd)}

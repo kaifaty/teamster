@@ -138,14 +138,17 @@ def pull_request_evidence(prs):
     logins = forgejo_logins() if any(pr["provider"] == "forgejo" for pr in prs) else {}
     rows = []
     for pr in prs:
-        data = _pull_request_data(pr, logins, "state,isDraft,title,body,mergedAt,mergeCommit,baseRefName")
+        data = _pull_request_data(pr, logins, "state,isDraft,title,body,mergedAt,mergeCommit,baseRefName,"
+                                  "headRefName,headRefOid,isCrossRepository,mergeable")
         record = data if isinstance(data, dict) else {}
         rows.append({"url": pr["url"], "status": _status_of_pull_request(data),
                      "title": str(record.get("title") or "")[:200],
                      "description": str(record.get("body") or "")[:2600],
                      "merged_at": record.get("mergedAt") or record.get("merged_at"),
                      "merge_sha": (record.get("mergeCommit") or {}).get("oid") if pr["provider"] == "github" else None,
-                     "base": record.get("baseRefName")})
+                     "base": record.get("baseRefName"), "branch": record.get("headRefName"),
+                     "head": record.get("headRefOid"), "cross_repository": record.get("isCrossRepository"),
+                     "conflict": record.get("mergeable") == "CONFLICTING"})
     return rows
 
 

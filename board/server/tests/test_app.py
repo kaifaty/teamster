@@ -371,6 +371,64 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
                 ("verdict", "accepted"), ("clean", "--archive-safe"),
             ]
             assert commands[-1][1][-2:] == ["--archive-record-from", "main"]
+
+            slug = "automatic-review"
+            branch = f"claude/{slug}"
+            checkout = settings.path("worktrees") / f"claude-{slug}" / repository.name
+            subprocess.run([*git, "worktree", "add", "-q", "-b", branch, str(checkout)], check=True)
+            task_path = directory.parent / slug
+            task_path.mkdir()
+            auto_id = task_id(slug, 50.0)
+            auto_read = f"/api/project-tasks/{auto_id}/resolution"
+            automated = dict(idle, slug=slug, created=50.0, branch=branch, worktree=str(checkout),
+                             turns=1, outcome="stopped", result={"status": "needs_decision", "questions": ["Which target should ship?"]})
+            (task_path / "state.json").write_text(json.dumps(automated))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            local.settings.operator_auto_repo = repository
+            before = len(commands)
+            monkeypatch.setattr(cls, "_verdict", lambda self, record, state: (
+                "accepted" if state.get("slug") == slug and len(commands) > before else None))
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            question, = client.get(auto_read).json()["events"]
+            assert question["kind"] == "automatic_question" and question["detail"]["question"] == "Which target should ship?"
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            assert client.get(auto_read).json()["events"] == [question]
+            assert client.get(f"/api/project-tasks/{task_id('other', state['created'])}/resolution").json()["events"] == []
+
+            proof = {"url": linked_pr, "status": "open", "base": "main", "head": merge_sha,
+                     "branch": branch, "cross_repository": False, "merge_sha": merge_sha}
+            monkeypatch.setattr(operator_resolution_module, "pull_request_evidence", lambda prs: [proof])
+            (task_path / "state.json").write_text(json.dumps(dict(automated, turns=2, outcome="completed",
+                publish={"pr": linked_pr}, result={"status": "done"})))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            assert client.get(auto_read).json()["events"][-1]["kind"] == "automatic_waiting"
+            assert len(commands) == before
+
+            ledger = settings.task_home / "external-duty" / "commands.sqlite3"
+            proof.update(status="merged", head="f" * 40)
+            with closing(sqlite3.connect(ledger)) as journal, journal:
+                journal.execute("UPDATE operator_auto_checks SET checked=0 WHERE card=?", (auto_id,))
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            assert client.get(auto_read).json()["events"][-1]["detail"]["reason"] == "checkout_identity"
+            assert len(commands) == before
+
+            proof["head"] = merge_sha
+            with closing(sqlite3.connect(ledger)) as journal, journal:
+                journal.execute("UPDATE operator_auto_checks SET checked=0 WHERE card=?", (auto_id,))
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            result = client.get(auto_read).json()
+            assert result["assignment"]["status"] == "archived"
+            assert [event["kind"] for event in result["events"][-5:]] == [
+                "automatic_merge", "verdict_recorded", "archive_started", "status_changed", "archived",
+            ]
+            assert commands[before][0] == "verdict"
+            assert commands[before + 1] == ("clean", ["--archive-safe", "--expect-head", merge_sha,
+                                                     "--expect-verdict", "accepted"])
+            assert local.project_tasks.card(auto_id)[0]["status"] == "done"
+            assert client.post(poll, headers=observer).json() == {"card": None}
             events = client.get(read).json()["events"]
             assert [event["kind"] for event in events[-4:]] == ["verdict_recorded", "archive_started", "status_changed", "archived"]
             assert events[-2]["detail"] == {"from": "needs_input", "to": "done"}

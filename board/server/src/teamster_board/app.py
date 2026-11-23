@@ -99,6 +99,7 @@ class Settings:
     duty_seconds: float = 1800
     external_duty: ExternalDutyConfig | None = None
     operator_state: Path | None = None
+    operator_auto_repo: Path | None = None
 
     def path(self, purpose):
         return self.task_home / LAYOUT_FILES[self.layout][purpose]
@@ -108,6 +109,7 @@ class Settings:
         task_home, layout = resolve_data_home()
         external_config = os.environ.get("BOARD_EXTERNAL_DUTY_CONFIG")
         operator_state = os.environ.get("BOARD_OPERATOR_STATE")
+        operator_auto_repo = os.environ.get("BOARD_OPERATOR_AUTO_REPO")
         return cls(
             task_home=task_home, layout=layout,
             teamster=Path(os.environ.get("BOARD_TEAMSTER_COMMAND", os.environ.get(
@@ -130,6 +132,7 @@ class Settings:
             duty_seconds=float(os.environ.get("BOARD_DUTY_SECONDS", "1800")),
             external_duty=ExternalDutyConfig.load(Path(external_config)) if external_config else None,
             operator_state=Path(operator_state).expanduser() if operator_state else None,
+            operator_auto_repo=Path(operator_auto_repo).expanduser().resolve() if operator_auto_repo else None,
         )
 
 

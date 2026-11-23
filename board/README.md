@@ -411,6 +411,7 @@ The map's code in `board/web/src/map/`:
 | `BOARD_ACCOUNTS_SECONDS` | `300` | Minimum interval between account subprocess calls, in seconds. A new `account_login` journal row from `teamster login` or `claude-login` refreshes accounts at once, at most once per 5 seconds; rows already in the journal at startup do not. |
 | `BOARD_EXTERNAL_DUTY_CONFIG` | Unset | Private JSON configuration for the [external duty API](../src/teamster/docs/external-duty.md). |
 | `BOARD_OPERATOR_STATE` | Unset | Path to the [Mini pilot](../operator/README.md#inspect-a-run) SQLite file for the Operator panel and chat. Requires `BOARD_EXTERNAL_DUTY_CONFIG` for repository scope. |
+| `BOARD_OPERATOR_AUTO_REPO` | Unset | Absolute path of the one repository whose idle runs the operator may assess and archive after a confirmed merge into `main`. Requires a writable Board and the running operator. |
 | `BOARD_DUTY_SECONDS` | `1800` | Interval in seconds after a server duty tick finishes, only in automatic mode with actions enabled and a compatible installed teamster. Entering automatic mode also ticks immediately; `0` disables server ticks. |
 | `BOARD_MACHINES_FILE` | `<data home>/board-machines.json` | Machine configuration; reread when mtime or size changes. Missing means no machines; invalid files preserve the last valid list and expose `config_error`. |
 | `BOARD_MACHINES_SECONDS` | `30` | Interval between parallel machine and optional physical host probe cycles, in seconds. |

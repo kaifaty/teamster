@@ -7,7 +7,7 @@ import type { BoardSource } from "../lib/source";
 import { useTaskDetail } from "../lib/taskDetail";
 import type { OperatorActivity, OperatorResolution, OperatorResolutionRule, OperatorTarget } from "../operatorActivity";
 import type { TaskSummary } from "../types";
-import { optionLabels } from "../operatorActivity";
+import { automaticReasons, optionLabels, resolutionLabels } from "../operatorActivity";
 import ProjectTaskDecision from "./ProjectTaskDecision.vue";
 import ProjectTaskExecutors from "./ProjectTaskExecutors.vue";
 import ProjectTaskOverview from "./ProjectTaskOverview.vue";
@@ -123,27 +123,6 @@ const operatorOnly = ref(false);
 const chat = ref<InstanceType<typeof ProjectOperatorChat> | null>(null);
 const chatTarget = computed<OperatorTarget>(() => ({ kind: "project", id: props.task.id, title: props.task.title }));
 const chatEnabled = computed(() => props.operatorChat && resolution.value?.chat !== undefined);
-const resolutionLabels: Record<string, string> = {
-  delegated: "Передал полномочия оператору",
-  pending: "Полномочия переданы",
-  waiting_run: "Ждёт завершения запуска",
-  waiting_verdict: "Ждёт вердикта",
-  waiting_evidence: "Ждёт связанный запуск",
-  needs_decision: "Нужно решение",
-  verdict_started: "Записывает вердикт",
-  verdict_recorded: "Вердикт записан",
-  archive_started: "Сохраняет архив",
-  archived: "Запуск архивирован",
-  cleanup_blocked: "Выполнение приостановлено",
-  revoked: "Полномочия отозваны",
-  choice: "Пользователь выбрал действие",
-  status_changed: "Статус изменился",
-  clarification_requested: "Ждёт ответа пользователя",
-  waiting_followup: "Поручение передано исполнителю",
-  followup_finished: "Исполнитель ответил",
-  repair_conflict: "Оператор вернул исполнителю конфликт PR",
-  conflict_detected: "PR конфликтует с базовой веткой",
-};
 const managed = computed(() => sessions.value.filter((row) => row.slug && row.record
   && ["work", "review"].includes(row.record.kind) && !row.slug.match(/-\d{8}T\d{6}Z$/)));
 const possibleEvidence = computed(() => Object.values(props.records).filter((item) =>
@@ -209,8 +188,9 @@ const entries = computed(() => {
       });
     }
     const verdict = shown.lead_verdict && verdictTitle(shown);
-    const byOperator = shown.lead_verdict === "dropped" && resolution.value?.events.some((event) =>
-      event.kind === "verdict_recorded" && event.detail.run === selected.value?.id && event.detail.turn === shown.turn);
+    const byOperator = resolution.value?.events.some((event) => event.kind === "verdict_recorded"
+      && event.detail.verdict === shown.lead_verdict && event.detail.run === selected.value?.id
+      && event.detail.turn === shown.turn);
     if (shown.lead_verdict_at !== null && verdict && !byOperator) {
       rows.push({ id: "verdict", actor: "Пользователь", title: verdict, at: shown.lead_verdict_at });
     }
@@ -247,7 +227,8 @@ const entries = computed(() => {
     const reason = event.kind === "needs_decision"
       ? "Подтверди итог вручную или передай оператору другое условие."
       : undefined;
-    const text = [reason, data.reason, data.action && optionLabels[data.action],
+    const text = [reason, data.reason && (automaticReasons[data.reason] ?? data.reason), data.question,
+      data.pull_request, data.failed_check && `Проверка не прошла · ${data.failed_check}`, data.action && optionLabels[data.action],
       data.from && data.to && `${statusLabels[data.from]} → ${statusLabels[data.to]}`,
       data.verdict === "accepted" ? "Результат принят" : data.verdict === "dropped" ? "Работа отклонена" : undefined,
       data.report ?? (typeof data.evidence === "object" ? data.evidence?.report : undefined),
@@ -261,7 +242,7 @@ const entries = computed(() => {
     rows.push({ id: reference, reference, title: resolutionLabels[event.kind] ?? event.kind,
       handoff: target?.record ? [harnesses[target.record.executor] ?? target.record.executor, target.record.account,
         target.label].filter(Boolean).join(" · ") : data.run?.split(":")[0],
-      actor: event.actor === "operator" ? "Оператор Mini" : "Пользователь", at: event.at, text, evidence });
+      actor: event.actor === "operator" ? "Оператор" : "Пользователь", at: event.at, text, evidence });
   }
   for (const item of resolution.value?.proposals ?? []) {
     if (item.status !== "answered") continue;
@@ -289,7 +270,15 @@ const sleeping = computed(() => sessions.value.find((row) => row.record?.column 
 const queued = computed(() => sessions.value.find((row) => (work.value?.[row.id]?.queued ?? 0) > 0));
 const awaitingExecutor = computed(() => resolution.value?.assignment?.status === "waiting_followup");
 const underway = computed(() => !!(working.value || sleeping.value || queued.value || awaitingExecutor.value));
+const operatorQuestion = computed(() => {
+  if (inHistory.value || underway.value || resolutionActive.value) return undefined;
+  const latest = resolution.value?.events.filter((event) => event.kind.startsWith("automatic_")
+    && event.detail.run === selected.value?.id && event.detail.turn === record.value?.turn).at(-1);
+  if (latest?.kind !== "automatic_question") return undefined;
+  return latest.detail.question ?? automaticReasons[latest.detail.reason ?? ""];
+});
 const nextStep = computed(() => {
+  if (operatorQuestion.value) return "Оператор ждёт решения";
   switch (props.task.status) {
     case "blocked": return "Что мешает продолжить";
     case "needs_input": return "Какое решение требуется";
@@ -389,8 +378,9 @@ onBeforeUnmount(() => {
           :show-options="!inHistory && (task.status !== 'active' || !underway)" :resolution="resolution"
           :enabled="chatEnabled" :resolving="!!resolutionActive && resolution?.assignment?.status !== 'cleanup_blocked'"
           :refresh="refreshResolution" @focus-chat="chat?.focus()">
-          <template v-if="showBlocker" #blocker>
-            <template v-if="blockerItems.length">
+          <template v-if="showBlocker || operatorQuestion" #blocker>
+            <p v-if="operatorQuestion">{{ operatorQuestion }}</p>
+            <template v-else-if="blockerItems.length">
               <p>{{ blockerItems[0] }}</p>
               <details v-if="blockerItems.length > 1">
                 <summary>Остальное из отчёта</summary>

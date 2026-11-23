@@ -72,6 +72,19 @@ branches. Tracked changes, live sessions, queued work, or an unverifiable archiv
 The operator never launches another run
 through this workflow.
 
+## Resolve stopped work automatically
+
+On an actions-enabled Board, `BOARD_OPERATOR_AUTO_REPO` opts one repository in by its absolute
+path. The operator reviews one stopped or completed linked work or review run per poll, rechecks
+unresolved pull requests and records a changed wait, question, or merge in the project journal.
+An archived or revoked resolution and an explicit assignment take precedence.
+
+The automatic path accepts a single linked GitHub PR from the checkout's origin that merged into
+`main`. It checks the branch and merged source commit against the local worktree, or verifies the
+merge in `origin/main` if the branch and worktree are already gone. The command journal records
+the verdict and the verified archive receipt. A request to make an outstanding decision appears
+in the same journal. The automatic path works while Mini's model is unavailable.
+
 ## Review logs and budgets
 
 Stdout contains JSON lines. Each `board_request` identifies the method and route. Each
