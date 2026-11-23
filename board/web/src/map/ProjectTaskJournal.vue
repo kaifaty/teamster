@@ -379,6 +379,8 @@ onBeforeUnmount(() => {
             <p v-if="renameError" class="journal-error" role="alert">{{ renameError }}</p>
           </form>
         </div>
+        <ProjectTaskOverview :card="task.id" :overview="resolution?.overview" :has-context="overviewContext"
+          :enabled="chatEnabled && !!resolution?.writable" :source="source" :refresh="refreshResolution" />
       </header>
 
       <div class="journal-layout">
@@ -411,8 +413,6 @@ onBeforeUnmount(() => {
         <aside class="journal-context" aria-label="Исполнители и связи задачи">
           <ProjectTaskExecutors :sessions="sessions" :selected="selected?.id" :work="work"
             :resolution="resolution" :now="now" @select="selectedId = $event" @controls="emit('runControls', $event)" />
-          <ProjectTaskOverview :card="task.id" :overview="resolution?.overview" :has-context="overviewContext"
-            :enabled="chatEnabled && !!resolution?.writable" :source="source" :refresh="refreshResolution" />
           <section v-if="pulls.length || linksError" class="links" aria-labelledby="journal-links">
             <h2 id="journal-links">Пул-реквесты</h2>
             <p v-if="linksError" class="journal-error" role="alert">

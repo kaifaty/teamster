@@ -59,8 +59,9 @@ watch(canRequest, (ready) => {
 </template>
 
 <style scoped>
-.task-overview { border-top: 1px solid var(--border); }
-.task-overview summary { cursor: pointer; padding: 10px 0; }
+.task-overview { margin-top: 6px; }
+.task-overview summary { width: fit-content; cursor: pointer; padding: 4px 0; }
+.task-overview[open] summary { margin-bottom: 6px; }
 .task-overview :is(p, dl, dd) { margin: 0; }
 .overview-content, .overview-fields { display: grid; gap: 9px; }
 .overview-content > .btn { justify-self: start; }
