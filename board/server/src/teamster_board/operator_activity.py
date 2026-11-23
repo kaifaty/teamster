@@ -95,10 +95,56 @@ def read_operator_activity(path: Path, store: Store, repositories, *, writable=F
 
 
 class OperatorChat:
-    def __init__(self, path, store, project_tasks):
+    def __init__(self, path, store, project_tasks, resolution):
         self.path = path
         self.store = store
         self.project_tasks = project_tasks
+        self.resolution = resolution
+
+    def _journal(self, db, card, linked):
+        identities = card["sessions"]
+        rows = db.execute("""
+            SELECT event_id, task_id, turn, started_at, source, recommendation FROM recommendations
+            WHERE recommendation IS NOT NULL AND source IN ('mini', 'handoff')
+              AND task_id IN (SELECT value FROM json_each(?))
+            ORDER BY started_at DESC, event_id DESC
+        """, (json.dumps(identities),)).fetchall()
+        recommendations = [
+            {"event_id": event, "task_id": identity, "slug": linked.get(identity, {}).get("slug", identity.partition(":")[0]),
+             "title": identity.partition(":")[0], "turn": turn, "started_at": at / 1000, "source": source,
+             "recommendation": value.removeprefix(f"{identity}: ")}
+            for event, identity, turn, at, source, value in rows
+        ]
+        return {**self.resolution.view(card["id"]), "recommendations": recommendations,
+                "commands": self.resolution.commands(identities)}
+
+    def journal(self, identity):
+        card, linked = self.project_tasks.card(identity)
+        if not self.path.is_file():
+            return {**self.resolution.view(identity), "commands": self.resolution.commands(card["sessions"]),
+                    "recommendations": []}
+        with _connect(self.path, "ro") as db:
+            data = self._journal(db, card, linked)
+            if db.execute("SELECT 1 FROM sqlite_schema WHERE name='project_chat'").fetchone():
+                db.row_factory = sqlite3.Row
+                chat = db.execute("""
+                    SELECT h.id, h.at, h.question, h.reference, r.answer,
+                        CASE WHEN r.answer IS NOT NULL THEN 'answered'
+                             WHEN r.failed OR r.deadline <= ? THEN 'failed' ELSE 'pending' END AS status
+                    FROM project_chat h JOIN chat_requests r USING (id)
+                    WHERE h.card = ? ORDER BY h.at, h.id
+                """, (int(time.time() * 1000), identity)).fetchall()
+                data["chat"] = [dict(row) for row in chat]
+        return data
+
+    def _reference(self, db, identity, reference):
+        journal = self._journal(db, *self.project_tasks.card(identity))
+        for kind, name, key in (("recommendation", "recommendations", "event_id"),
+                                ("resolution", "events", "seq"), ("command", "commands", "id")):
+            for row in journal[name]:
+                if reference == f"{kind}:{row[key]}":
+                    return {"kind": kind, "record": json.dumps(row, ensure_ascii=False)[:900]}
+        raise KeyError(reference)
 
     def _run(self, db, address, *, created=None):
         with self.store.lock:
@@ -223,8 +269,11 @@ class OperatorChat:
 
     def send(self, data):
         question, history, target = data.get("question"), data.get("history"), data.get("target")
-        if (data.keys() != {"question", "history", "target"} or not valid_text(question, 2000)
+        reference = data.get("reference")
+        project = target.get("id") if isinstance(target, dict) and target.get("kind") == "project" else None
+        if (data.keys() - {"reference"} != {"question", "history", "target"} or not valid_text(question, 2000)
                 or (target is not None and not isinstance(target, dict))
+                or ("reference" in data and (project is None or not valid_text(reference, 270)))
                 or not isinstance(history, list) or len(history) > 2
                 or any(not isinstance(pair, dict) or pair.keys() != {"question", "answer"}
                        or not all(valid_text(value, 800) for value in pair.values()) for pair in history)):
@@ -232,13 +281,23 @@ class OperatorChat:
         try:
             with _connect(self.path, "rw") as db, db:
                 context = self._context(db, target) if target is not None else None
-                prompt = json.dumps({"task": context, "conversation": history, "question": question.strip()},
-                                    ensure_ascii=False)
+                payload = {"task": context, "conversation": history, "question": question.strip()}
+                if reference is not None:
+                    payload["event"] = self._reference(db, project, reference)
+                prompt = json.dumps(payload, ensure_ascii=False)
                 # Cap bytes as well as characters to leave room for the model's answer.
                 if len(prompt.encode("utf-8", errors="replace")) > 18_000:
                     return error(400, "invalid_question")
                 now = int(time.time() * 1000)
                 identity = uuid4().hex
+                durable = project is not None and db.execute(
+                    "SELECT 1 FROM sqlite_schema WHERE name='project_chat'").fetchone()
+                if durable:
+                    db.execute("BEGIN IMMEDIATE")
+                    if db.execute("""SELECT 1 FROM project_chat h JOIN chat_requests r USING (id)
+                                     WHERE h.card=? AND r.deadline>? AND r.answer IS NULL AND r.failed=0""",
+                                  (project, now)).fetchone():
+                        return error(429, "operator_busy")
                 inserted = db.execute("""
                     INSERT INTO chat_requests (id, prompt, deadline) SELECT ?, ?, ?
                     WHERE (SELECT count(*) FROM chat_requests WHERE deadline > ? AND answer IS NULL
@@ -246,6 +305,9 @@ class OperatorChat:
                 """, (identity, prompt, now + CHAT_TIMEOUT_MS, now, CHAT_QUEUE_LIMIT))
                 if not inserted.rowcount:
                     return error(429, "operator_busy")
+                if durable:
+                    db.execute("INSERT INTO project_chat VALUES (?, ?, ?, ?, ?)",
+                               (identity, project, now / 1000, question.strip(), reference))
         except ValueError:
             return error(400, "invalid_question")
         except KeyError:

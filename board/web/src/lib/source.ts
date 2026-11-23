@@ -38,7 +38,7 @@ export interface BoardSource {
   fetchDutyChat?(): Promise<DutyChatView | null>;
   fetchOperatorResolution?(card: string): Promise<OperatorResolution | null>;
   setOperatorResolution?(rule: OperatorResolutionRule): Promise<void>;
-  askOperator?(question: string, target: OperatorTarget | null, history: OperatorExchange[]): Promise<string>;
+  askOperator?(question: string, target: OperatorTarget | null, history: OperatorExchange[], reference?: string): Promise<string>;
   fetchOpenCodeProviders?(): Promise<OpenCodeProviders>;
   /** Completed phases and verdicts between two Unix times, both inclusive. */
   fetchEvents(since: number, until: number): Promise<Events>;
@@ -146,11 +146,11 @@ export function serverSource(): BoardSource {
         throw new Error(data?.error ?? "Не удалось обновить полномочия оператора.");
       }
     },
-    async askOperator(question, target, history) {
+    async askOperator(question, target, history, reference) {
       const context = target && (target.kind === "run"
         ? { kind: target.kind, id: target.id, created: target.created } : { kind: target.kind, id: target.id });
       const signal = AbortSignal.timeout(125_000);
-      const request = sendBoardAction("operator-chat", { question, target: context, history },
+      const request = sendBoardAction("operator-chat", { question, target: context, history, ...(reference ? { reference } : {}) },
         (url, init) => fetch(url, { ...init, signal }));
       const { id } = await operatorResponse(request, signal);
       const path = `/api/operator-chat/${encodeURIComponent(id)}`;

@@ -25,6 +25,14 @@ export interface OperatorExchange {
   answer: string;
 }
 
+export interface ProjectOperatorMessage {
+  id: string;
+  at: number;
+  question: string;
+  reference: string | null;
+  answer: string | null;
+  status: "pending" | "answered" | "failed";
+}
 
 export type OperatorResolutionRule =
   | { card: string; run: string; rule: "verdict" }
@@ -34,6 +42,20 @@ export type OperatorResolutionRule =
 export interface OperatorResolution {
   writable: boolean;
   assignment: { run: string; status: string; evidence: string | null } | null;
+  recommendations?: OperatorActivity["history"];
+  commands?: {
+    id: string;
+    actor: string;
+    run: string;
+    slug: string;
+    action: "start" | "say" | "stop";
+    at: number;
+    executor: string;
+    account: string | null;
+    model: string | null;
+    text: string | null;
+  }[];
+  chat?: ProjectOperatorMessage[];
   events: {
     seq: number;
     actor: "user" | "operator";
@@ -42,7 +64,7 @@ export interface OperatorResolution {
     detail: {
       reason?: string; archive?: string; sha?: string; files?: number; report?: string;
       operation?: string; id?: string; worktree?: string; phrase?: string; note?: string; run?: string; turn?: number;
-      evidence?: string | { slug: string; turn: number; report?: string };
+      evidence?: string | { slug: string; turn: number; report?: string } | null;
     };
   }[];
 }

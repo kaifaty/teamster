@@ -137,6 +137,8 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
         with db:
             db.execute("""CREATE TABLE chat_requests (id TEXT PRIMARY KEY, prompt TEXT, deadline INTEGER,
                        claimed INTEGER DEFAULT 0, answer TEXT, failed INTEGER DEFAULT 0)""")
+            db.execute("""CREATE TABLE project_chat (
+                id TEXT PRIMARY KEY, card TEXT, at REAL, question TEXT, reference TEXT)""")
             db.execute("UPDATE recommendations SET recommendation = 'Waiting for a check.', source = 'mini', turn = 1 "
                        "WHERE event_id = 'current'")
         headers = {"Origin": "http://localhost", "X-Teamster-Board": "1"}
@@ -191,19 +193,36 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
 
             renamed = client.post("/api/actions/project-task", json={"id": current_id, "title": "Project card"})
             assert renamed.status_code == 200
-            sent = client.post(action, json={**body, "target": {"kind": "project", "id": current_id}})
+            project_chat = {**body, "target": {"kind": "project", "id": current_id}}
+            assert client.post(action, json={**project_chat, "reference": "recommendation:old"}).status_code == 404
+            sent = client.post(action, json={**project_chat, "reference": "recommendation:current"})
             assert sent.status_code == 202
             identity = sent.json()["id"]
             prompt = json.loads(db.execute("SELECT prompt FROM chat_requests WHERE id = ?", (identity,)).fetchone()[0])
             assert prompt["task"]["title"] == "Project card"
             assert prompt["task"]["linked_run"]["slug"] == "demo"
+            assert prompt["event"]["kind"] == "recommendation" and "Waiting for a check." in prompt["event"]["record"]
+            read = f"/api/project-tasks/{current_id}/resolution"
+            assert client.post(action, json=project_chat).status_code == 429
+            pending, = client.get(read).json()["chat"]
+            assert pending["reference"] == "recommendation:current" and pending["status"] == "pending"
+            with db:
+                db.execute("UPDATE chat_requests SET answer = 'Saved answer.', deadline = 0 WHERE id = ?", (identity,))
+                db.executemany("INSERT INTO recommendations VALUES (?, ?, 1, 0, 'mini', 'Earlier decision.')",
+                               [(f"extra-{n}", current_id) for n in range(51)])
+            journal = client.get(read).json()
+            assert len(journal["recommendations"]) == 52
+            assert all(row["task_id"] == current_id for row in journal["recommendations"])
+            assert journal["chat"] == [{**pending, "status": "answered", "answer": "Saved answer."}]
+            sent = client.post(action, json=project_chat)
+            assert sent.status_code == 202
+            identity = sent.json()["id"]
             with db:
                 db.execute("UPDATE chat_requests SET deadline = 0 WHERE id = ?", (identity,))
             assert client.get(f"/api/operator-chat/{identity}").status_code == 504
 
             resolution = "/api/actions/operator-resolution"
             poll = "/api/external-duty/v1/resolutions/poll"
-            read = f"/api/project-tasks/{current_id}/resolution"
             assert client.get(read).json()["assignment"] is None
             assert client.post(poll).status_code == 403
             assert client.post(poll, headers=observer).json() == {"card": None}

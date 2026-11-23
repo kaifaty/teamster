@@ -7,6 +7,7 @@ import type { BoardSource } from "../lib/source";
 import { useTaskDetail } from "../lib/taskDetail";
 import type { OperatorActivity, OperatorResolution, OperatorResolutionRule, OperatorTarget } from "../operatorActivity";
 import type { TaskSummary } from "../types";
+import ProjectOperatorChat from "./ProjectOperatorChat.vue";
 import { stateOf, verdictTitle } from "./ship/bridge";
 import { changesLine, reportParagraphs } from "./ship/now";
 
@@ -20,7 +21,7 @@ const props = defineProps<{
   operatorChat?: boolean;
   rename?: (change: ProjectTaskChange) => Promise<ProjectTask>;
 }>();
-const emit = defineEmits<{ close: []; runControls: [sessionId: string]; askOperator: [target: OperatorTarget]; evidence: [slug: string] }>();
+const emit = defineEmits<{ close: []; runControls: [sessionId: string]; evidence: [slug: string] }>();
 
 const details = shallowRef<ProjectTaskDetails | null>(null);
 const linksError = ref(false);
@@ -76,12 +77,8 @@ const statusNote = computed(() => {
   return record.value.column === "sleeping" ? "Ждёт сброса квоты" : problemLabel(record.value);
 });
 
-const operatorHistory = computed(() => (props.operator?.history ?? [])
-  .filter((item) => props.task.sessions.includes(item.task_id)));
-const recommendation = computed(() => props.task.sessions.length && !inHistory.value
-  ? operatorHistory.value.find((item) => item.task_id === selected.value?.id && item.turn === record.value?.turn) : undefined);
 const isAnalyzing = computed(() => !inHistory.value && !!props.operator?.current &&
-  props.operator.current.task_id === selected.value?.id);
+  props.task.sessions.includes(props.operator.current.task_id));
 
 interface JournalEntry {
   id: string;
@@ -91,10 +88,18 @@ interface JournalEntry {
   text?: string;
   report?: boolean;
   evidence?: string;
+  reference?: string;
+  handoff?: string;
 }
 const resolution = shallowRef<OperatorResolution | null>(null);
+const operatorHistory = computed(() => resolution.value?.recommendations ?? (props.operator?.history ?? [])
+  .filter((item) => props.task.sessions.includes(item.task_id)));
+const operatorOnly = ref(false);
+const chat = ref<InstanceType<typeof ProjectOperatorChat> | null>(null);
+const chatTarget = computed<OperatorTarget>(() => ({ kind: "project", id: props.task.id, title: props.task.title }));
+const chatEnabled = computed(() => props.operatorChat && resolution.value?.chat !== undefined);
 const resolutionLabels: Record<string, string> = {
-  delegated: "Управление передано Mini",
+  delegated: "Передал полномочия оператору",
   pending: "Полномочия переданы",
   waiting_run: "Ждёт завершения запуска",
   waiting_verdict: "Ждёт вердикта",
@@ -188,11 +193,21 @@ const entries = computed(() => {
     }
   }
   for (const item of operatorHistory.value) {
-    if (item.event_id === recommendation.value?.event_id) continue;
     rows.push({
-      id: item.event_id, actor: item.source === "mini" ? "Оператор Mini" : "Оператор",
-      title: "Разбор хода " + item.turn + " · " + item.title,
+      id: "recommendation:" + item.event_id, reference: "recommendation:" + item.event_id,
+      actor: item.source === "mini" ? "Оператор Mini" : "Оператор",
+      title: "Рекомендация по ходу " + item.turn + " · " + item.title,
       text: item.recommendation, at: item.started_at,
+    });
+  }
+  const commandLabels = { start: "Запустил исполнителя", say: "Передал поручение", stop: "Остановил запуск" };
+  for (const command of resolution.value?.commands ?? []) {
+    const reference = "command:" + command.id;
+    rows.push({
+      id: reference, reference, actor: command.actor, title: commandLabels[command.action], at: command.at,
+      handoff: [harnesses[command.executor as keyof typeof harnesses] ?? command.executor,
+        command.account, command.model, command.slug].filter(Boolean).join(" · "),
+      text: command.text ?? undefined,
     });
   }
   for (const event of resolution.value?.events ?? []) {
@@ -201,16 +216,23 @@ const entries = computed(() => {
     const reason = event.kind === "needs_decision"
       ? "Подтверди итог вручную или передай оператору другое условие."
       : undefined;
-    const text = [reason, data.reason, data.report ?? (typeof data.evidence === "object" ? data.evidence.report : undefined),
+    const text = [reason, data.reason, data.report ?? (typeof data.evidence === "object" ? data.evidence?.report : undefined),
       data.note ?? data.phrase, data.sha && `SHA ${data.sha}`, data.archive && `Архив ${data.archive}`,
       data.files !== undefined ? `Файлов и ссылок вне Git: ${data.files}` : undefined,
       data.worktree && `Рабочая копия ${data.worktree}`,
       (data.operation ?? data.id) && `Операция ${data.operation ?? data.id}`].filter(Boolean).join("\n");
-    rows.push({ id: `resolution-${event.seq}`, title: resolutionLabels[event.kind] ?? event.kind,
+    const reference = `resolution:${event.seq}`;
+    const target = data.run ? sessions.value.find((row) => row.id === data.run) : undefined;
+    rows.push({ id: reference, reference, title: resolutionLabels[event.kind] ?? event.kind,
+      handoff: target?.record ? [harnesses[target.record.executor] ?? target.record.executor, target.record.account,
+        target.label].filter(Boolean).join(" · ") : data.run?.split(":")[0],
       actor: event.actor === "operator" ? "Оператор Mini" : "Пользователь", at: event.at, text, evidence });
   }
   return rows.sort((a, b) => b.at - a.at);
 });
+const visibleEntries = computed(() => operatorOnly.value ? entries.value.filter((row) => row.reference) : entries.value);
+const labels = computed(() => new Map(entries.value.flatMap((row) =>
+  row.reference ? [[row.reference, row.title + " · " + formatClock(row.at, props.now)] as const] : [])));
 const pulls = computed(() => props.task.pull_requests.map((pr) => {
   const status = details.value?.pull_requests[pr.url];
   return { ...pr, status: status ? prStatuses[status] : null };
@@ -297,7 +319,11 @@ onBeforeUnmount(() => {
         <main class="journal-main" aria-labelledby="journal-events">
           <div class="section-heading">
             <h2 id="journal-events">Ход задачи</h2>
-            <span v-if="selected?.record" class="muted">{{ sessionKinds[selected.record.kind] }}<template v-if="selected.record.turn > 0"> · ход {{ selected.record.turn }}</template></span>
+            <div class="journal-filter" role="group" aria-label="События журнала">
+              <button type="button" class="btn" :aria-pressed="!operatorOnly" @click="operatorOnly = false">Все события</button>
+              <button type="button" class="btn" :aria-pressed="operatorOnly" @click="operatorOnly = true">Действия оператора</button>
+            </div>
+            <button v-if="chatEnabled" class="btn jump-chat" type="button" @click="chat?.focus()">К чату</button>
           </div>
           <section v-if="resolution?.writable || resolution?.assignment || resolutionError" class="resolution-controls"
             aria-label="Полномочия оператора">
@@ -341,24 +367,8 @@ onBeforeUnmount(() => {
             <p v-if="resolutionError" class="journal-error" role="alert">{{ resolutionError }}</p>
           </section>
           <ol class="timeline">
-            <li v-if="!inHistory" class="event operator-event">
-              <div class="event-meta">
-                <strong>Оператор Mini</strong>
-                <time v-if="recommendation" :datetime="new Date(recommendation.started_at * 1000).toISOString()" :title="formatFullTime(recommendation.started_at)">
-                  Разбор начат {{ formatClock(recommendation.started_at, now) }}
-                </time>
-              </div>
-              <section class="operator-note">
-                <h3>{{ isAnalyzing ? "Идёт разбор задачи" : recommendation ? "Рекомендация по ходу" : "Следующий шаг" }}</h3>
-                <p v-if="recommendation" class="event-text">{{ recommendation.recommendation }}</p>
-                <p v-else-if="!isAnalyzing" class="event-text">
-                  {{ operator?.available ? "Для выбранного хода пока нет рекомендации." : "Данные оператора сейчас недоступны." }}
-                </p>
-                <button v-if="operatorChat" type="button" class="btn journal-primary"
-                  @click="emit('askOperator', { kind: 'project', id: task.id, title: task.title })">Спросить оператора</button>
-              </section>
-            </li>
-            <li v-for="entry in entries" :key="entry.id" class="event">
+            <li v-if="isAnalyzing" class="event operator-event" role="status">Mini разбирает задачу…</li>
+            <li v-for="entry in visibleEntries" :key="entry.id" class="event" :class="{ 'operator-event': entry.reference }">
               <div class="event-meta">
                 <strong>{{ entry.actor }}</strong>
                 <time :datetime="new Date(entry.at * 1000).toISOString()" :title="formatFullTime(entry.at)">{{ formatClock(entry.at, now) }}</time>
@@ -376,6 +386,15 @@ onBeforeUnmount(() => {
                   </p>
                 </div>
               </details>
+              <details v-else-if="entry.reference" class="event-details operator-details" :open="entry.id === visibleEntries[0]?.id">
+                <summary>{{ entry.title }} <small v-if="entry.handoff" class="handoff">↳ {{ entry.handoff }}</small></summary>
+                <p v-if="entry.text" class="event-text">{{ entry.text }}</p>
+                <div class="event-links">
+                  <button v-if="entry.evidence" type="button" class="btn" @click="emit('evidence', entry.evidence)">Открыть связанный запуск</button>
+                  <button v-if="chatEnabled" type="button" class="btn"
+                    @click="chat?.discuss(entry.reference, labels.get(entry.reference) ?? entry.title)">Обсудить событие</button>
+                </div>
+              </details>
               <details v-else-if="entry.text && entry.text.length > 320" class="event-details">
                 <summary>{{ entry.title }}</summary>
                 <p class="event-text">{{ entry.text }}</p>
@@ -384,17 +403,14 @@ onBeforeUnmount(() => {
                 <h3>{{ entry.title }}</h3>
                 <p v-if="entry.text" class="event-text">{{ entry.text }}</p>
               </template>
-              <button v-if="entry.evidence" type="button" class="btn" @click="emit('evidence', entry.evidence)">
-                Открыть связанный запуск
-              </button>
             </li>
           </ol>
           <p v-if="detailError" role="alert" class="journal-error">
             Не удалось прочитать события запуска. <button type="button" class="btn" @click="loadDetail">Повторить</button>
           </p>
           <p v-else-if="selected?.slug && detailState === 'loading'" role="status" class="muted">Загружаю журнал запуска…</p>
-          <p v-else-if="!entries.length" class="muted">В журнале пока нет событий.</p>
-          <details v-if="run?.timeline.length" class="system-events">
+          <p v-else-if="!visibleEntries.length" class="muted">В журнале пока нет событий.</p>
+          <details v-if="!operatorOnly && run?.timeline.length" class="system-events">
             <summary>Системные события запуска</summary>
             <ul>
               <li v-for="(event, index) in run.timeline" :key="index">
@@ -405,7 +421,9 @@ onBeforeUnmount(() => {
           </details>
         </main>
 
-        <aside class="journal-side" aria-label="Назначение и связи">
+        <aside class="journal-side" aria-label="Чат, назначение и связи">
+          <ProjectOperatorChat ref="chat" :target="chatTarget" :now="now" :enabled="chatEnabled"
+            :ask="source.askOperator" :messages="resolution?.chat ?? []" :labels="labels" :refresh="refreshResolution" />
           <section v-if="record" class="assignment" aria-labelledby="journal-assignment">
             <h2 id="journal-assignment">Назначение</h2>
             <dl>
@@ -488,9 +506,12 @@ onBeforeUnmount(() => {
 .task-status[data-status="needs_input"], .task-status[data-status="blocked"] { background: var(--warn-soft); color: var(--warn); }
 .task-status[data-status="ready"], .task-status[data-status="done"] { background: var(--journal-operator); color: var(--journal-accent); }
 .task-status small { font-size: 12px; }
-.journal-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, .43fr); align-items: start; gap: clamp(19px, 3vw, 36px); margin-top: 20px; }
+.journal-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(250px, 1fr); align-items: start; gap: clamp(19px, 3vw, 36px); margin-top: 20px; }
 .section-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
-.section-heading span { font-size: 12px; }
+.journal-filter, .event-links { display: flex; flex-wrap: wrap; gap: 5px; }
+.journal-filter .btn[aria-pressed="true"] { background: var(--journal-operator); color: var(--journal-accent); border-color: var(--journal-operator-line); }
+.resolution-controls { margin-top: 10px; }
+.jump-chat { display: none; }
 .timeline { list-style: none; padding: 0; margin-top: 12px !important; }
 .event { position: relative; display: grid; gap: 5px; padding: 0 0 16px 16px; margin-left: 4px; border-left: 1px solid var(--border-strong); }
 .event:last-child { padding-bottom: 5px; }
@@ -498,8 +519,9 @@ onBeforeUnmount(() => {
 .operator-event::before { background: var(--journal-accent); }
 .event-meta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 10px; font-size: 12px; }
 .event-meta time, .system-events time { color: var(--muted); font-variant-numeric: tabular-nums; }
-.operator-note { display: grid; gap: 8px; padding: 12px 14px; background: var(--journal-operator); border: 1px solid var(--journal-operator-line); border-radius: 10px; }
-.operator-note .btn { justify-self: start; }
+.operator-details[open] { padding: 9px 11px; background: var(--journal-operator); border: 1px solid var(--journal-operator-line); border-radius: 8px; }
+.handoff { color: var(--muted); font-weight: normal; }
+.event-links:not(:empty) { margin-top: 7px; }
 .journal-primary { background: var(--journal-accent); color: light-dark(#fff, #193329); border-color: var(--journal-accent); }
 .journal-primary:hover:not(:disabled) { filter: brightness(.94); background: var(--journal-accent); }
 .event-text, .report-text { font-size: 14px; line-height: 1.55; white-space: pre-wrap; }
@@ -527,5 +549,7 @@ onBeforeUnmount(() => {
 @media (max-width: 720px) {
   .journal-layout { grid-template-columns: minmax(0, 1fr); }
   .journal-side { grid-template-columns: repeat(auto-fit, minmax(min(100%, 255px), 1fr)); }
+  .journal-side > :first-child { grid-column: 1 / -1; }
+  .jump-chat { display: inline-flex; }
 }
 </style>

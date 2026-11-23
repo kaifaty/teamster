@@ -237,7 +237,11 @@ test("three work outcomes, empty page, restart and cursor recovery", async t => 
     await run();
     assert.deepEqual({ ...db.prepare("SELECT prompt, answer, failed FROM chat_requests").get() },
       { prompt: "", answer: "Review the result for acceptance.", failed: 0 });
+    writable.prepare("INSERT INTO project_chat VALUES ('question', 'card', 0, 'What should I do next?', NULL)").run();
+    writable.prepare("UPDATE chat_requests SET deadline = 0 WHERE id = 'question'").run();
+    writable.prepare("INSERT INTO chat_requests (id, prompt, deadline) VALUES ('expired-general', '', 0)").run();
     await run();
+    assert.deepEqual(db.prepare("SELECT id FROM chat_requests").all().map(row => row.id), ["question"]);
     assert.equal(mock.calls, calls + 3);
   }
 });

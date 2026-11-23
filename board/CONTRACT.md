@@ -1496,8 +1496,13 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   `target` is `null` for general chat, `{kind: "project", id}` for a map task, or
   `{kind: "run", id, created}` for a run's Board address and creation time. The Board reads current
   evidence for the attached card when a question is submitted. `history` is up to two previous
-  `{question, answer}` pairs. Success returns 202 with `{id}`.
-- `GET /api/project-tasks/{id}/resolution` returns `{assignment, events, writable}`.
+  `{question, answer}` pairs. A project question can include a `reference` to a recommendation,
+  resolution event, or confirmed command belonging to that card. Success returns 202 with `{id}`.
+- `GET /api/project-tasks/{id}/resolution` returns `{assignment, events, recommendations, commands, writable}`
+  and `chat` when the operator supports durable project chat. Recommendations and confirmed External Duty
+  commands are scoped to the card's linked run IDs. Resolution events include their actual author and
+  remain readable after closure or revocation. Project questions and replies are stored with the card ID,
+  and two unanswered requests for the same card cannot run concurrently.
   `POST /api/actions/operator-resolution` uses standard action headers and accepts
   `{card, run, rule: "verdict"}`, `{card, run, rule: "negative", evidence, phrase}`, or
   `{card, revoke: true}`. `run` is a linked stable run ID and `evidence` is a Board slug

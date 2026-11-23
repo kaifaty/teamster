@@ -118,13 +118,36 @@ class OperatorResolution:
                     "SELECT card, run, rule, evidence, phrase, status FROM operator_resolutions WHERE card=?", (card,)
                 ).fetchone()
                 rows = db.execute("""SELECT seq, actor, kind, at, detail FROM operator_resolution_events
-                    WHERE card=? ORDER BY seq DESC LIMIT 80""", (card,)).fetchall()
+                    WHERE card=? ORDER BY seq""", (card,)).fetchall()
                 return {"assignment": dict(assignment) if assignment else None,
-                        "events": [dict(row, detail=json.loads(row["detail"])) for row in reversed(rows)]}
+                        "events": [dict(row, detail=json.loads(row["detail"])) for row in rows]}
         except sqlite3.OperationalError:
             if not (self.ledger / "commands.sqlite3").exists():
                 return {"assignment": None, "events": []} if card else {"tasks": []}
             raise
+
+    def commands(self, sessions):
+        """Read confirmed external-duty commands by stable run identity."""
+        if not sessions or not (self.ledger / "commands.sqlite3").is_file():
+            return []
+        with self._db() as db:
+            if not db.execute("SELECT 1 FROM sqlite_schema WHERE name='commands'").fetchone():
+                return []
+            rows = db.execute("""SELECT actor, request_id, target, intent, result, finished_at FROM commands
+                                 WHERE status IN (200, 201) AND finished_at IS NOT NULL
+                                   AND target IN (SELECT value FROM json_each(?))
+                                 ORDER BY finished_at""", (json.dumps(sessions),)).fetchall()
+        commands = []
+        for row in rows:
+            route, _, args = json.loads(row["intent"])
+            run = json.loads(row["result"])["task"]
+            commands.append({
+                "id": row["actor"] + ":" + row["request_id"], "actor": row["actor"],
+                "run": row["target"], "slug": run["slug"], "action": route, "at": row["finished_at"],
+                "executor": run["executor"], "account": run.get("account"), "model": run.get("model"),
+                "text": args.get("goal") if route == "start" else args.get("message"),
+            })
+        return commands
 
     def assign(self, data):
         card = data.get("card")

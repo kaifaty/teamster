@@ -27,6 +27,10 @@ async function main() {
       id TEXT PRIMARY KEY, prompt TEXT NOT NULL, deadline INTEGER NOT NULL,
       claimed INTEGER NOT NULL DEFAULT 0, answer TEXT, failed INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS project_chat (
+      id TEXT PRIMARY KEY, card TEXT NOT NULL, at REAL NOT NULL, question TEXT NOT NULL, reference TEXT
+    );
+    CREATE INDEX IF NOT EXISTS project_chat_by_card ON project_chat(card, at);
   `);
   const signalReview = db.prepare(`INSERT INTO reviewing VALUES (?, ?)
     ON CONFLICT (event_id) DO UPDATE SET expires_at = excluded.expires_at`);
@@ -35,7 +39,8 @@ async function main() {
     SELECT id FROM chat_requests WHERE claimed = 0 AND deadline > ? ORDER BY deadline, id LIMIT 1
   ) RETURNING id, prompt, deadline`);
   const saveAnswer = db.prepare("UPDATE chat_requests SET prompt = '', answer = ?, failed = ? WHERE id = ?");
-  const pruneQuestions = db.prepare("DELETE FROM chat_requests WHERE deadline <= ?");
+  const pruneQuestions = db.prepare(`DELETE FROM chat_requests WHERE deadline <= ?
+    AND id NOT IN (SELECT id FROM project_chat)`);
 
   async function chat() {
     const now = Date.now();

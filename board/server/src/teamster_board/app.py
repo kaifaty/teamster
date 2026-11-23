@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from . import opencode, project_tasks as project_task_module
 from .accounts import Accounts, Reports, probe
@@ -514,8 +514,8 @@ def create_app(settings=None):
     app.state.board = board
     operator_chat = operator_resolution = None
     if board.settings.operator_state is not None and board.settings.external_duty is not None:
-        operator_chat = OperatorChat(board.settings.operator_state, board.store, board.project_tasks)
         operator_resolution = OperatorResolution(board)
+        operator_chat = OperatorChat(board.settings.operator_state, board.store, board.project_tasks, operator_resolution)
     register_external_duty(app, board, operator_chat, operator_resolution)
 
     @app.get("/api/snapshot")
@@ -533,10 +533,13 @@ def create_app(settings=None):
 
     @app.get("/api/project-tasks/{identity}/resolution")
     def task_resolution(identity: str):
-        if operator_resolution is None:
+        if operator_chat is None:
             return error(404, "resolution_unavailable")
         try:
-            return {**operator_resolution.view(identity), "writable": not board.settings.read_only}
+            return JSONResponse({**operator_chat.journal(identity), "writable": not board.settings.read_only},
+                                headers={"Cache-Control": "no-store"})
+        except KeyError:
+            return error(404, "Unknown project task")
         except (OSError, sqlite3.Error):
             return error(503, "resolution_unavailable")
 
