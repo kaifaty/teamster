@@ -123,10 +123,13 @@ export interface LoginCancelBody {
   id: string;
 }
 
-/** A message to the duty: 1–8000 characters once trimmed. */
-export interface DutyChatBody {
-  text: string;
+export interface DutyPlanReply {
+  plan_id: string;
+  selected: { index: number; done_when: string[] }[];
 }
+
+/** A text message (1–8000 characters once trimmed) or a decision bound to a duty plan. */
+export type DutyChatBody = { text: string } | DutyPlanReply;
 
 export interface ActionBodies {
   lesson: LessonBody;
@@ -155,8 +158,8 @@ export interface ActionBodies {
  * carries the task with the verdict recorded. `queued`: a message to the duty waits for the end of the running turn.
  */
 export type ActionResult =
-  | { ok: true; output: string; slug?: string; launch?: Launch; login?: Login; task?: TaskSummary; queued?: boolean; warning?: string | null }
-  | { ok: false; error: string };
+  | { ok: true; output: string; slug?: string; launch?: Launch; login?: Login; task?: TaskSummary; queued?: boolean; warning?: string | null; turn?: number }
+  | { ok: false; error: string; code?: string };
 
 export type ActionSender = <R extends ActionRoute>(route: R, body: ActionBodies[R]) => Promise<ActionResult>;
 
@@ -167,6 +170,11 @@ const CODES: Record<string, string> = {
   forbidden: "Сервер доски отклонил запрос",
   timeout: "teamster не ответил вовремя",
   old_teamster: "Установленный teamster не знает duty chat: обнови его",
+  invalid_plan_reply: "Проверь выбранные задачи и критерии готовности",
+  stale_plan: "Дежурный перешёл к другому ходу. Этот план уже нельзя отправить",
+  plan_already_answered: "На этот план уже ответили",
+  plan_unavailable: "Сейчас дежурный не может принять ответ на план",
+  plan_submission_unknown: "Не удалось подтвердить отправку",
   account_login_in_progress: "Сначала заверши или отмени вход в подписку",
   account_refresh_in_progress: "Дождись обновления данных подписки",
   account_removal_in_progress: "Подписка уже удаляется",
@@ -182,6 +190,7 @@ const CODES: Record<string, string> = {
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+const UNKNOWN_PLAN_REPLY = { ok: false, error: CODES.plan_submission_unknown!, code: "plan_submission_unknown" } as const;
 
 /** A start as the contract has it: a slug, a stage and its steps. */
 export const isLaunch = (value: unknown): value is Launch =>
@@ -217,10 +226,12 @@ export async function requestAction<R extends ActionRoute>(
   body: ActionBodies[R],
   fetcher: typeof fetch = fetch,
 ): Promise<ActionResult> {
+  const planReply = route === "duty-chat" && "plan_id" in body;
   let response: Response;
   try {
     response = await sendBoardAction(route, body, fetcher);
   } catch (error) {
+    if (planReply) return UNKNOWN_PLAN_REPLY;
     return { ok: false, error: `Сервер доски недоступен${error instanceof Error && error.message ? `: ${error.message}` : ""}` };
   }
   let data: unknown = null;
@@ -228,6 +239,16 @@ export async function requestAction<R extends ActionRoute>(
     data = await response.json();
   } catch {
     data = null;
+  }
+  if (planReply) {
+    if (!isRecord(data)) return UNKNOWN_PLAN_REPLY;
+    if (response.ok && data.ok === true && typeof data.turn === "number" && Number.isSafeInteger(data.turn) && data.turn > 0) {
+      return { ok: true, output: "", turn: data.turn };
+    }
+    if (response.status >= 400 && response.status < 500 && typeof data.error === "string" && data.error.trim()) {
+      return { ok: false, error: CODES[data.error] ?? data.error, code: data.error };
+    }
+    return UNKNOWN_PLAN_REPLY;
   }
   if (response.ok && isRecord(data) && data.ok === true) {
     const result: ActionResult = { ok: true, output: typeof data.output === "string" ? data.output : "" };

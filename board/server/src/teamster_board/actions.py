@@ -196,6 +196,7 @@ class Actions:
         self.lock = threading.Lock()
         self.version_lock = threading.Lock()
         self._version = None
+        self._duty_plan_reply = None
         self.publish = publish or (lambda launch: None)
         self.worktrees_path = worktrees_path or research.tasks_path.parent / "worktrees"
         self.launch_lock = threading.RLock()
@@ -219,6 +220,23 @@ class Actions:
     def duty_codex_chat(self):
         """Whether the installed teamster runs the duty chat on a Codex duty account."""
         return self._supports(DUTY_CODEX_CHAT_VERSION)
+
+    def duty_plan_reply(self):
+        """Whether this executable can admit a reply to a saved Duty plan."""
+        if self.reason is not None:
+            return False
+        with self.version_lock:
+            if self._duty_plan_reply is None:
+                try:
+                    result = subprocess.run([self.command, "duty", "chat", "--help"], stdin=subprocess.DEVNULL,
+                                            capture_output=True, encoding="utf-8", errors="replace",
+                                            timeout=VERSION_TIMEOUT, cwd=Path.home())
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    LOGGER.info("teamster duty chat --help failed: %s", exc)
+                    self._duty_plan_reply = False
+                else:
+                    self._duty_plan_reply = result.returncode == 0 and "--reply-plan-file" in result.stdout.split()
+            return self._duty_plan_reply
 
     def duty_choose(self):
         """Whether the installed teamster supports choosing a duty account."""

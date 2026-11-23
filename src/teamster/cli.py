@@ -503,6 +503,7 @@ def main():
     s = duty_commands.add_parser("chat", help="send a message to the duty conversation and print the duty's answer")
     s.add_argument("text", nargs="?", help="the message")
     s.add_argument("--file", help="read the message from FILE")
+    s.add_argument("--reply-plan-file", metavar="FILE", help="submit a reply to the current task plan from JSON")
     s.add_argument("--queue", action="store_true",
                    help="while a duty turn runs, queue the message; it goes out when that turn ends")
     duty_chat_parser = s
@@ -529,8 +530,12 @@ def main():
             config.validate_work_model(a.executor, a.model)
         except ValueError as exc:
             p.error(str(exc))
-    if a.cmd == "duty" and a.duty_command == "chat" and (a.text is None) == (a.file is None):
-        duty_chat_parser.error("give the message as text or with --file, not both")
+    if a.cmd == "duty" and a.duty_command == "chat":
+        if a.reply_plan_file is not None:
+            if a.text is not None or a.file is not None or a.queue:
+                duty_chat_parser.error("--reply-plan-file cannot be used with text, --file or --queue")
+        elif (a.text is None) == (a.file is None):
+            duty_chat_parser.error("give the message as text or with --file, not both")
     if a.cmd == "say" and a.no_check and a.check_loaded is not None:
         p.error("argument --check-loaded: not allowed with argument --no-check")
     if a.cmd in ("start", "say") and a.review_angles is not None:

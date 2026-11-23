@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -1185,6 +1186,16 @@ def cmd_duty_plist(a):
 
 
 def cmd_duty_chat(a):
+    if a.reply_plan_file is not None:
+        try:
+            plan_id, choices = duty_chat.read_plan_reply(a.reply_plan_file)
+        except (OSError, ValueError, RecursionError):
+            result = {"ok": False, "error": "invalid_plan_reply"}
+        else:
+            with config.home_lock():
+                result = reply_to_duty_plan(plan_id, choices)
+        print(json.dumps(result, separators=(",", ":")))
+        return
     text = Path(a.file).read_text(encoding="utf-8") if a.file else a.text
     if not text or not text.strip():
         procs.die("empty message")
@@ -1305,21 +1316,72 @@ def send_duty_chat(cfg, order, queue):
     supervisor.apply_say(st, order["options"], cfg)
     sent = []
 
-    def prompt():
-        # Read under the state lock: the notes held for this message go out with it.
-        sent.extend(duty_chat.held_notes())
-        orders = sent + [order]
-        if len(orders) == 1:
-            return threads.followup_prompt(st, order["text"], cfg, source="user")
-        return threads.followup_prompt(st, "\n\n".join(item["text"] for item in orders), cfg, queued=orders)
-
     # The turn starts from the state read under the lock: a turn that ended after st was loaded keeps its answer.
-    proc = supervisor.spawn(st, prompt, **supervisor.say_turn(st, order["options"]),
+    proc = supervisor.spawn(st, lambda: duty_followup(st, order, cfg, sent),
+                            **supervisor.say_turn(st, order["options"]),
                             refresh=lambda latest: supervisor.apply_say(latest, order["options"], cfg))
     # The held notes leave notes.json only once the turn that carries them is started and saved.
     with task_state.state_lock(duty_chat.CHAT_SLUG):
         duty_chat.release_held_notes(sent)
     return st, proc
+
+
+def duty_followup(st, order, cfg, sent, *, plan_attempt_id=None):
+    """Build a user follow-up with the held notes, under the duty state lock."""
+    sent.extend(duty_chat.held_notes())
+    orders = sent + [order]
+    return threads.followup_prompt(st, "\n\n".join(item["text"] for item in orders), cfg, source="user",
+                                   queued=orders if len(orders) > 1 else (), plan_attempt_id=plan_attempt_id)
+
+
+def reply_to_duty_plan(plan_id, choices):
+    """Admit exactly one reply against an idle duty plan. The caller holds the home lock."""
+    slug = duty_chat.CHAT_SLUG
+    path = task_state.state_path(slug)
+    stale = {"ok": False, "error": "stale_plan"}
+    with installs.spawn_lock():
+        if not path.is_file():
+            return stale
+        with task_state.state_lock(slug):
+            if not path.is_file():
+                return stale
+            st = task_state.load(slug)
+            if st.get("kind") != duty_chat.CHAT_KIND:
+                return stale
+            entry = duty_chat.plan_turn(st, plan_id)
+            if entry is None:
+                return stale
+            plan = entry["task_plan"]
+            if plan.get("receipt"):
+                return {"ok": False, "error": "plan_already_answered"}
+            if (entry is not st["duty_turns"][-1] or entry["turn"] != st.get("turns")
+                    or entry["status"] != "needs_decision" or not entry["question"].strip() or entry["started"]
+                    or task_state.busy_message(st) is not None
+                    or any(item.get("source") != "note" for item in task_state.read_queue(slug)["waiting"])):
+                return stale
+            cfg = config.accounts_config()
+            try:
+                text = duty_chat.plan_reply_text(duty_chat.valid_plan_tasks(plan["tasks"]), choices,
+                                                 cfg.get("language", "en"))
+            except ValueError:
+                return {"ok": False, "error": "invalid_plan_reply"}
+            try:
+                supervisor.require_startable()
+                installs.follow_pin(st, upgrade=True)
+                supervisor.apply_say(st, {}, cfg)
+            except SystemExit:
+                return {"ok": False, "error": "plan_unavailable"}
+            supervisor.drop_dead_queue(slug)
+            task_state.reap_acp_turn(st)
+            # The child waits for its PID to be saved. Publish the receipt in the same state write.
+            attempt = uuid.uuid4().hex
+            plan["receipt"] = {"turn": st["turns"] + 1, "attempt_id": attempt}
+            order = {"at": clock.CLOCK.time(), "text": text, "options": {}, "source": "user"}
+            sent = []
+            supervisor.launch(st, lambda: duty_followup(st, order, cfg, sent, plan_attempt_id=attempt),
+                              **supervisor.say_turn(st, {}))
+            duty_chat.release_held_notes(sent)
+            return {"ok": True, "turn": st["turns"]}
 
 
 def cmd_duty(a):

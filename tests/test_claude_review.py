@@ -990,9 +990,9 @@ class ClaudeReviewTests(RotationTestCase):
         self.claude_fixture(runs=runs, claude={"accounts": accounts}, **settings)
         return accounts
 
-    def duty_answer(self, reply, status="answered", question="", options=(), started=()):
+    def duty_answer(self, reply, status="answered", question="", options=(), started=(), task_plan=()):
         return {"status": status, "reply": reply, "question": question, "options": list(options),
-                "started": list(started)}
+                "started": list(started), "task_plan": list(task_plan)}
 
     def put_duty(self, account, family="claude"):
         now = time.time()
@@ -2104,10 +2104,15 @@ class ClaudeReviewTests(RotationTestCase):
         self.configure(language="en", duty={"chat_auto_turns_per_hour": 1})
         (self.home / "claude-accounts.json").replace(data / "config.json")
         self.account(self.other, "B", self.reset, runs=[{"mode": "complete", "reply": self.work_result()}])
-        self.codex_duty_runs([{"reply": self.duty_answer("Ready.")}])
+        task_plan = [{"repo": "parser-repo", "title": "Fix the parser", "goal": "Accept empty input.",
+                      "done_when": ["Parser tests pass."]}]
+        self.codex_duty_runs([{"reply": self.duty_answer("I propose a parser fix.", "needs_decision", "Proceed?",
+                                                        task_plan=task_plan)}])
         self.put_duty("main", "codex")
         room = data / "tasks" / "duty" / "room"
-        self.cli("duty", "chat", "Start the parser fix.", timeout=60)
+        self.cli("duty", "chat", "Draft a parser fix.", timeout=60)
+        proposal = self.state("duty")["duty_turns"][0]["task_plan"]
+        self.assertEqual(proposal["tasks"], task_plan)
         launcher = self.root / "teamster"
         launcher.write_text("#!/bin/sh\nexec " + shlex.join([PYTHON, "-I", str(SCRIPT)]) + ' "$@"\n')
         launcher.chmod(0o700)
@@ -2121,6 +2126,11 @@ class ClaudeReviewTests(RotationTestCase):
                               {"reply": self.duty_answer("Noted finished.")},
                               {"reply": self.duty_answer("The held note arrived.")}])
         self.cli("duty", "chat", "Proceed.", timeout=60)
+        old_reply = self.root / "old-plan-reply.json"
+        old_reply.write_text(json.dumps({"plan_id": proposal["id"],
+                                         "selected": [{"index": 0, "done_when": ["Parser tests pass."]}]}))
+        self.assertEqual(json.loads(self.cli("duty", "chat", "--reply-plan-file", str(old_reply))),
+                         {"ok": False, "error": "stale_plan"})
         self.assertEqual(self.state("noted")["started_by"], "duty")
         executed = next(entry for entry in self.trace() if entry["command"] == "duty-command-environment")
         completed = next(entry for entry in self.trace() if entry["command"] == "duty-command-output")
@@ -2312,6 +2322,58 @@ class ClaudeReviewTests(RotationTestCase):
         proc.wait(timeout=60)
         self.assertEqual([(turn["turn"], turn["reply"]) for turn in self.state("duty")["duty_turns"]],
                          [(1, "One."), (2, "Two."), (3, "Three.")])
+
+    def test_duty_plan_reply_records_only_the_winning_dispatch(self):
+        tasks = [
+            {"repo": "parser-repo", "title": "Fix the parser", "goal": "Accept empty input.",
+             "done_when": ["Parser tests pass."]},
+            {"repo": "docs-repo", "title": "Update the docs", "goal": "Document input.",
+             "done_when": ["Build the docs."]},
+        ]
+        proposed = self.duty_answer("Fix the parser and update the docs.", "needs_decision",
+                                    "Which tasks should I start?", task_plan=tasks)
+        release = self.root / "finish-plan-reply"
+        self.claude_pool_fixture(runs=[{"reply": proposed},
+                                       {"reply": self.duty_answer("Accepted.", task_plan=tasks),
+                                        "gate": str(release)}])
+        self.put_duty("first")
+        self.cli("duty", "chat", "Draft a plan.", timeout=60)
+        worker = self.worker()
+        plan = self.state("duty")["duty_turns"][0]["task_plan"]
+        self.assertEqual(plan["tasks"], tasks)
+        reply = self.root / "plan-reply.json"
+        reply.write_text(json.dumps({"plan_id": plan["id"],
+                                     "selected": [{"index": 0, "done_when": ["Add an empty-input regression."]}]}))
+
+        # The journal is written before spawning. A failed launch cannot consume the plan or show up in a handoff.
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(worker.supervisor, "start_process", side_effect=OSError("fork failed")), \
+                self.assertRaises(OSError):
+            worker.commands.reply_to_duty_plan(plan["id"], {0: ["Add an empty-input regression."]})
+        state = self.state("duty")
+        self.assertNotIn("receipt", state["duty_turns"][0]["task_plan"])
+        self.assertEqual([item["text"] for item in worker.threads.followup_messages(state)], ["Draft a plan."])
+        self.assertEqual(state["turns"], 1)
+
+        argv = [PYTHON, "-I", str(SCRIPT), "duty", "chat", "--reply-plan-file", str(reply)]
+        try:
+            with subprocess.Popen(argv, cwd=self.repo, env=self.env, text=True, stdout=subprocess.PIPE) as first, \
+                    subprocess.Popen(argv, cwd=self.repo, env=self.env, text=True, stdout=subprocess.PIPE) as second:
+                answers = [json.loads(proc.communicate(timeout=60)[0]) for proc in (first, second)]
+            self.assertCountEqual(answers, [{"ok": True, "turn": 2}, {"ok": False, "error": "plan_already_answered"}])
+            state = self.state("duty")
+            receipt = state["duty_turns"][0]["task_plan"]["receipt"]
+            self.assertEqual(receipt["turn"], 2)
+            sent, = [row for row in worker.threads.followup_messages(state) if "plan_attempt_id" in row]
+            self.assertEqual(sent["plan_attempt_id"], receipt["attempt_id"])
+            self.assertIn("Fix the parser\nRepository: parser-repo\nGoal: Accept empty input.", sent["text"])
+            self.assertIn("- Add an empty-input regression.", sent["text"])
+            self.assertNotIn("Update the docs", sent["text"])
+        finally:
+            release.touch()
+        self.until(lambda: self.chat_settled(2), timeout=60)
+        self.assertEqual(self.claude_invocations()[-1]["argv"][1], sent["text"])
+        self.assertNotIn("task_plan", self.state("duty")["duty_turns"][1])
 
     def started_by_duty(self, slug, *command):
         """Start a task (or the given command) as a duty turn would, wait for it and check its provenance."""

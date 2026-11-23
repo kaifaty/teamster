@@ -3,7 +3,7 @@
 
 import { ref, shallowRef } from "vue";
 import type { DutyChatView } from "../dutyChatTypes";
-import { requestAction, type ActionResult } from "../lib/actions";
+import { requestAction, type ActionResult, type DutyPlanReply } from "../lib/actions";
 import type { BoardSource } from "../lib/source";
 import type { ServerMessage } from "../types";
 
@@ -15,6 +15,12 @@ export interface DutyChatHost {
   source: BoardSource;
   subscribe(listener: (message: ServerMessage) => void): () => void;
 }
+
+export type DutyPlanSend = {
+  planId: string;
+  state: "sending" | "accepted" | "unknown" | "closed" | "refused";
+  error?: string;
+};
 
 /** Why a text cannot go to the duty, or null; the server counts characters as code points. */
 export function dutyChatTextError(text: string): string | null {
@@ -35,6 +41,7 @@ export function createDutyChat(host: DutyChatHost) {
   const readError = ref<string | null>(null);
   /** Whether a message is on its way to the server. */
   const sending = ref(false);
+  const planSend = shallowRef<DutyPlanSend | null>(null);
   let reads = 0;
   let sends = 0;
 
@@ -76,7 +83,33 @@ export function createDutyChat(host: DutyChatHost) {
     }
   }
 
-  return { view, readError, sending, refresh, send, stop };
+  async function sendPlan(reply: DutyPlanReply) {
+    const current = view.value;
+    const plan = current?.messages.find((message) => message.task_plan?.id === reply.plan_id)?.task_plan;
+    if (!current?.available || current.busy || readError.value || sending.value || !plan?.actionable ||
+        plan.accepted_turn !== undefined || current.queued.some((message) => message.from === "user")) return;
+    const previous = planSend.value;
+    if (previous?.planId === plan.id && previous.state !== "refused") return;
+
+    const sendingPlan: DutyPlanSend = { planId: plan.id, state: "sending" };
+    planSend.value = sendingPlan;
+    let settled: DutyPlanSend = { planId: plan.id, state: "unknown" };
+    try {
+      const result = await (host.source.act ?? requestAction)("duty-chat", reply);
+      if (result.ok && result.turn !== undefined) {
+        settled = { planId: plan.id, state: "accepted" };
+      } else if (!result.ok && result.code && result.code !== "plan_submission_unknown") {
+        const state = result.code === "invalid_plan_reply" ? "refused" : "closed";
+        settled = { planId: plan.id, state, error: result.error };
+      }
+    } catch {
+      // A rejected transport does not tell us whether the plan was accepted.
+    }
+    if (planSend.value === sendingPlan) planSend.value = settled;
+    await refresh();
+  }
+
+  return { view, readError, sending, planSend, refresh, send, sendPlan, stop };
 }
 
 export type DutyChat = ReturnType<typeof createDutyChat>;

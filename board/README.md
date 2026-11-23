@@ -183,7 +183,10 @@ language, the words coming into the field as they are heard, and never sends; a 
 without recognition or after the microphone was refused it is switched off with the reason in its title. On a phone
 the conversation and the field open in the sheet under «Ещё». In `dev:fixture` the conversation runs its turns, and
 `?duty=` shows the chat's other states: `no_duty`, `codex_duty`, `old_teamster`, `read_only`, `no_teamster`,
-`error` (a failed last turn) and `refuse` (every send refused). Every subscription has a portrait, the next one of its family in
+`error` (a failed last turn), `refuse` (every send refused) and `a2ui` (a comparison and a task plan).
+When the duty proposes a task plan, choose the tasks, edit their criteria and press «Отправить дежурному».
+The card sends one reply to the duty, and the regular message field keeps any text already there.
+Every subscription has a portrait, the next one of its family in
 order (`duty-claude-1…3.jpg`, `duty-codex-1…2.jpg`, round again past the last; `portraitNames`); an exhausted, limited or
 logged-out subscription's portrait is greyed out. «Дежурный» is the duty account, the one teamster keeps for the
 orchestrator and new tasks skip: its portrait large in an amber-edged window, and over its foot «Дежурный · <name>», its family, the week left and the time to the refill

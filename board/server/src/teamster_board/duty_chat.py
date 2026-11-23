@@ -9,6 +9,7 @@ messages accepted while a turn runs and notes.json the notes held by the hourly 
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -30,7 +31,12 @@ SIDE_BYTES = 1024 * 1024
 # A refusal by teamster within this long reaches the sender's answer; a later one goes to last_error.
 ACCEPT_SECONDS = 2.0
 ACCEPT_POLL_SECONDS = 0.05
+PLAN_ADMISSION_TIMEOUT = 10.0
 STATUSES = ("answered", "needs_decision", "started")
+PLAN_ID = re.compile(r"[0-9a-f]{32}")
+PLAN_FIELDS = {"repo": 400, "title": 120, "goal": 600}
+PLAN_REFUSALS = {"invalid_plan_reply": 400, "stale_plan": 409, "plan_already_answered": 409,
+                 "plan_unavailable": 409}
 FILES = ("state.json", "messages.jsonl", "queue.json", "notes.json")
 # A state.json that cannot be read at the moment: it tells nothing about a new turn.
 UNREADABLE = object()
@@ -52,8 +58,8 @@ def read_object(path, limit):
     return value if isinstance(value, dict) else None
 
 
-def journal_row(position, line):
-    """(position, at, source, text) of a user message or task note on one line of messages.jsonl, or None."""
+def journal_row(position, line, receipts):
+    """A chat line and its admitted turn, if it was submitted through a plan."""
     try:
         row = json.loads(line)
     except (ValueError, UnicodeDecodeError, RecursionError):
@@ -61,11 +67,19 @@ def journal_row(position, line):
     if not isinstance(row, dict) or row.get("source") not in ("user", "note"):
         return None
     at, message = number(row.get("at")), row.get("text")
-    return (position, at, row["source"], message[:TEXT_LIMIT]) if at is not None and isinstance(message, str) else None
+    if at is None or not isinstance(message, str):
+        return None
+    turn = None
+    if "plan_attempt_id" in row:
+        attempt = row["plan_attempt_id"]
+        turn = receipts.get(attempt) if isinstance(attempt, str) else None
+        if turn is None:
+            return None
+    return position, at, row["source"], message[:TEXT_LIMIT], turn
 
 
-def journal(path):
-    """(byte offset, at, source, text) of the newest 200 user messages and task notes in messages.jsonl, in file order.
+def journal(path, receipts):
+    """The newest 200 visible user messages and task notes in messages.jsonl, in file order.
 
     The file is read backwards by chunks until it gave 200 of them or ended: however long they are, the newest 200
     messages of the conversation are among them.
@@ -86,7 +100,7 @@ def journal(path):
                 offset = start + (len(tail) + 1 if start else 0)
                 found = []
                 for line in lines:
-                    row = journal_row(offset, line)
+                    row = journal_row(offset, line, receipts)
                     if row is not None:
                         found.append(row)
                     offset += len(line) + 1
@@ -101,6 +115,52 @@ def strings(value):
     return [item[:200] for item in value if isinstance(item, str) and item] if isinstance(value, list) else []
 
 
+def valid_plan_text(value, limit):
+    if not isinstance(value, str) or "\0" in value or len(value) > limit or not value.strip():
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        return False
+    return True
+
+
+def valid_criteria(value):
+    return isinstance(value, list) and 1 <= len(value) <= 3 and all(valid_plan_text(item, 200) for item in value)
+
+
+def plan_receipt(turn):
+    plan = turn.get("task_plan")
+    receipt = plan.get("receipt") if isinstance(plan, dict) else None
+    if isinstance(receipt, dict):
+        attempt, admitted, proposed = receipt.get("attempt_id"), receipt.get("turn"), turn.get("turn")
+        if (isinstance(attempt, str) and attempt and type(admitted) is int
+                and type(proposed) is int and admitted == proposed + 1):
+            return attempt, admitted
+    return None
+
+
+def duty_plan(turn):
+    raw = turn.get("task_plan")
+    if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not PLAN_ID.fullmatch(raw["id"]):
+        return None
+    tasks = raw.get("tasks")
+    if not isinstance(tasks, list) or not 1 <= len(tasks) <= 3:
+        return None
+    projected = []
+    for task in tasks:
+        if (not isinstance(task, dict) or task.keys() != PLAN_FIELDS.keys() | {"done_when"}
+                or not all(valid_plan_text(task[key], limit) for key, limit in PLAN_FIELDS.items())
+                or not valid_criteria(task["done_when"])):
+            return None
+        projected.append({**{key: task[key].strip() for key in PLAN_FIELDS},
+                          "done_when": [item.strip() for item in task["done_when"]]})
+    plan = {"id": raw["id"], "tasks": projected, "actionable": False}
+    if (receipt := plan_receipt(turn)) is not None:
+        plan["accepted_turn"] = receipt[1]
+    return plan
+
+
 def duty_message(index, turn):
     """The duty's answer at index in duty_turns; its id is that index, as duty_turns only grows."""
     at, turn_number = number(turn.get("at")), turn.get("turn")
@@ -108,10 +168,14 @@ def duty_message(index, turn):
     if at is None or type(turn_number) is not int or not isinstance(reply, str) or status not in STATUSES:
         return None
     question = text(turn.get("question"))
-    return {"id": f"d{index}", "at": at, "from": "duty", "text": reply[:TEXT_LIMIT], "turn": turn_number,
-            "status": status, "question": question[:TEXT_LIMIT] if question else None,
-            "options": strings(turn.get("options")), "started": strings(turn.get("started")),
-            "account": text(turn.get("account"))}
+    message = {"id": f"d{index}", "at": at, "from": "duty", "text": reply[:TEXT_LIMIT], "turn": turn_number,
+               "status": status, "question": question[:TEXT_LIMIT] if question else None,
+               "options": strings(turn.get("options")), "started": strings(turn.get("started")),
+               "account": text(turn.get("account"))}
+    if (status == "needs_decision" and question and question.strip()
+            and not message["started"] and (plan := duty_plan(turn)) is not None):
+        message["task_plan"] = plan
+    return message
 
 
 def carrying_turn(at, state, answers):
@@ -131,10 +195,11 @@ def conversation(directory):
     raw = state.get("duty_turns")
     answers = [message for index, turn in enumerate(raw if isinstance(raw, list) else [])
                if isinstance(turn, dict) and (message := duty_message(index, turn)) is not None]
+    receipts = dict(receipt for turn in objects(raw) if (receipt := plan_receipt(turn)) is not None)
     by_time = sorted(answers, key=lambda message: message["at"])
     incoming = [{"id": f"m{offset}", "at": at, "from": source, "text": message,
-                 "turn": carrying_turn(at, state, by_time)}
-                for offset, at, source, message in journal(Store._file(directory, "messages.jsonl"))]
+                 "turn": turn if turn is not None else carrying_turn(at, state, by_time)}
+                for offset, at, source, message, turn in journal(Store._file(directory, "messages.jsonl"), receipts)]
     # A message goes out before the answer of its turn, also when both carry the same second.
     messages = sorted([*incoming, *answers], key=lambda message: (message["at"], message["from"] == "duty"))
     queued = []
@@ -191,6 +256,20 @@ class DutyChat:
         reason = self._reason()
         with self.state_lock:
             last_error = dict(self._error) if self._error else None
+            sending = self._job is not None
+        plan_messages = [message for message in messages if "task_plan" in message]
+        if plan_messages and self.actions.duty_plan_reply():
+            current_turn = state.get("turns")
+            can_reply = reason is None and not busy and not sending and not any(row["from"] == "user" for row in queued)
+            for message in plan_messages:
+                plan = message["task_plan"]
+                accepted = plan.get("accepted_turn")
+                plan["actionable"] = can_reply and message["turn"] == current_turn and accepted is None
+                if accepted is not None and accepted == current_turn and not busy and state.get("outcome") != "completed":
+                    plan["error"] = (text(state.get("error")) or "Duty turn ended without an answer")[:2000]
+        else:
+            for message in plan_messages:
+                del message["task_plan"]
         return {"actions": self.actions.value, "available": reason is None, "reason": reason,
                 "duty": duty_account(self.accounts()), "busy": busy,
                 "turn_started_at": number(state.get("turn_started")) if busy else None,
@@ -233,6 +312,8 @@ class DutyChat:
     def send(self, data):
         if self.actions.reason is not None:
             return error(403, self.actions.reason)
+        if "plan_id" in data or "selected" in data:
+            return self.send_plan(data)
         try:
             message = string(data, "text", TEXT_LIMIT, required=True)
         except ValueError as exc:
@@ -279,6 +360,43 @@ class DutyChat:
                         self._error = None
                         self._bump()
                         return {"ok": True, "queued": busy and not started}
+
+    def send_plan(self, data):
+        plan_id, selected = data.get("plan_id"), data.get("selected")
+        if (set(data) != {"plan_id", "selected"} or not isinstance(plan_id, str) or not PLAN_ID.fullmatch(plan_id)
+                or not isinstance(selected, list) or not 1 <= len(selected) <= 3):
+            return error(400, "invalid_plan_reply")
+        indices = set()
+        for item in selected:
+            if (not isinstance(item, dict) or set(item) != {"index", "done_when"}
+                    or type(item["index"]) is not int or not 0 <= item["index"] < 3 or item["index"] in indices
+                    or not valid_criteria(item["done_when"])):
+                return error(400, "invalid_plan_reply")
+            indices.add(item["index"])
+        if self._reason() is not None or not self.actions.duty_plan_reply():
+            return error(409, "plan_unavailable")
+        with self.lock, tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as stream:
+            json.dump(data, stream)
+            stream.flush()
+            argv = [self.actions.command, "duty", "chat", "--reply-plan-file", stream.name]
+            try:
+                proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, encoding="utf-8",
+                                      errors="replace", timeout=PLAN_ADMISSION_TIMEOUT, cwd=Path.home())
+                reply = json.loads(proc.stdout)
+            except (OSError, subprocess.TimeoutExpired, ValueError, RecursionError) as exc:
+                LOGGER.info("duty plan admission did not return a receipt: %s", type(exc).__name__)
+                return error(503, "plan_submission_unknown")
+            if isinstance(reply, dict):
+                turn = reply.get("turn")
+                if proc.returncode == 0 and reply.get("ok") is True and type(turn) is int and turn > 0:
+                    with self.state_lock:
+                        self._error = None
+                        self._bump()
+                    return {"ok": True, "turn": turn}
+                code = reply.get("error")
+                if reply.get("ok") is False and isinstance(code, str) and code in PLAN_REFUSALS:
+                    return error(PLAN_REFUSALS[code], code)
+            return error(503, "plan_submission_unknown")
 
     def _wait(self, job, process, argv, path):
         """Wait for the command, which returns when the duty's turn ends; a failure after acceptance goes to last_error."""

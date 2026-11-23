@@ -3,7 +3,8 @@
 // user's messages, the duty's replies with their question's options and the tasks they started, the quieter notes about
 // finished tasks, the messages that wait for the running turn and those still on their way. The newest stands at the
 // bottom, and the list stays there unless the user scrolled up. While the duty works: how long, and its last steps.
-import { onMounted, ref, watch } from "vue";
+import { defineAsyncComponent, onMounted, ref, watch } from "vue";
+import type { DutyPlanReply } from "../../lib/actions";
 import { atBottom } from "../station/feed";
 import type { ChatRow } from "./chat";
 import { runTime } from "./chat";
@@ -24,11 +25,16 @@ const props = defineProps<{
   /** The narrow window's sheet: no close button, the sheet folds it. */
   sheet?: boolean;
 }>();
-const emit = defineEmits<{ close: []; choose: [text: string]; task: [slug: string]; retry: [key: number]; dismiss: [key: number] }>();
+const emit = defineEmits<{
+  close: []; choose: [text: string]; task: [slug: string]; retry: [key: number]; dismiss: [key: number];
+  sendPlan: [reply: DutyPlanReply]; refresh: [];
+}>();
+const DutyDecision = defineAsyncComponent(() => import("./DutyDecision.vue"));
 
 // The list stays at its bottom while the user leaves it there, and goes there with the user's own message; scrolled up,
 // it stays put and offers the news. The jumps are instant, so that the list knows at once where it stands.
 const scroller = ref<HTMLElement | null>(null);
+const renderedComparison = ref<string | null>(null);
 const fresh = ref(false);
 let stuck = true;
 function down() {
@@ -40,6 +46,10 @@ function onScroll() {
   if (!scroller.value) return;
   stuck = atBottom(scroller.value, 8);
   if (stuck) fresh.value = false;
+}
+function decisionReady(row: Extract<ChatRow, { kind: "duty" }>) {
+  if (row.comparison) renderedComparison.value = row.key;
+  if (stuck) down();
 }
 onMounted(down);
 const pendingCount = () => props.rows.filter((row) => row.kind === "pending").length;
@@ -78,7 +88,7 @@ const PENDING_WORD = { sending: "отправляю…", sent: "отправле
         <template v-else-if="row.kind === 'duty'">
           <p class="bubble"><span class="visually-hidden">Дежурный: </span>{{ row.text }}</p>
           <p v-if="row.question" class="question">{{ row.question }}</p>
-          <div v-if="row.options.length" class="chips" role="group" :aria-label="row.question ? `Варианты ответа: ${row.question}` : 'Варианты ответа'">
+          <div v-if="row.options.length && (!row.comparison || renderedComparison !== row.key)" class="chips" role="group" :aria-label="row.question ? `Варианты ответа: ${row.question}` : 'Варианты ответа'">
             <button
               v-for="option in row.options"
               :key="option"
@@ -91,6 +101,25 @@ const PENDING_WORD = { sending: "отправляю…", sent: "отправле
               {{ option }}
             </button>
           </div>
+          <DutyDecision
+            v-if="(row.taskPlan?.actionable && row.taskPlan.accepted_turn === undefined &&
+              row.planSend?.state !== 'accepted' && row.planSend?.state !== 'closed') || (row.comparison && row.active)"
+            :key="row.taskPlan?.id ?? row.key"
+            :plan="row.taskPlan"
+            :comparison="row.comparison"
+            :disabled="!row.active || busy || !!readError || row.planSend?.state === 'sending' || row.planSend?.state === 'unknown'"
+            @send="emit('sendPlan', $event)"
+            @choose="emit('choose', $event)"
+            @ready="decisionReady(row)"
+          />
+          <p v-if="row.taskPlan?.error" class="plan-status bad" role="alert">Дежурный не выполнил ответ: {{ row.taskPlan.error }}</p>
+          <p v-else-if="row.taskPlan?.accepted_turn !== undefined || row.planSend?.state === 'accepted'" class="plan-status" role="status">Ответ принят</p>
+          <p v-else-if="row.planSend?.state === 'sending'" class="plan-status" role="status">Отправляю…</p>
+          <div v-else-if="row.planSend?.state === 'unknown'" class="plan-status" role="status">
+            Не удалось подтвердить отправку.
+            <button type="button" class="link" @click="emit('refresh')">Проверить отправку</button>
+          </div>
+          <p v-else-if="row.planSend?.error" class="plan-status bad" role="alert">{{ row.planSend.error }}</p>
           <p v-if="row.started.length" class="started">
             <span class="c-muted">Запущено:</span>
             <template v-for="task in row.started" :key="task.slug">
@@ -256,6 +285,15 @@ const PENDING_WORD = { sending: "отправляю…", sent: "отправле
 .chat-empty {
   padding: 12px 4px;
   color: #a89c86;
+}
+
+.plan-status {
+  margin: 5px 0 0;
+  color: #c5aa8b;
+}
+
+.plan-status.bad {
+  color: #ffad9a;
 }
 
 .msg {

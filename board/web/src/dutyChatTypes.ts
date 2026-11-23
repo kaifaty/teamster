@@ -5,6 +5,18 @@ import type { ActionsOff } from "./types";
 /** Why a message cannot be sent now; null when it can. */
 export type DutyChatReason = "no_duty" | "codex_duty" | "old_teamster" | "read_only" | "no_teamster";
 
+export interface DutyTaskPlan {
+  id: string;
+  tasks: { repo: string; title: string; goal: string; done_when: string[] }[];
+  actionable: boolean;
+  accepted_turn?: number;
+  error?: string;
+}
+
+export interface DutyComparison {
+  approaches: [{ title: string; detail: string }, { title: string; detail: string }];
+}
+
 /** One message of the conversation. `id` stays the same between reads. */
 export interface DutyChatMessage {
   id: string;
@@ -18,6 +30,8 @@ export interface DutyChatMessage {
   options?: string[]; // 2–4 short answers to `question`, or none for a free answer
   started?: string[]; // slugs of the tasks the turn started
   account?: string | null; // the Claude account that answered
+  task_plan?: DutyTaskPlan;
+  comparison?: DutyComparison; // fixture scenario only
 }
 
 /** A message accepted while a turn runs, or a task note held by the hourly cap, not delivered yet. */

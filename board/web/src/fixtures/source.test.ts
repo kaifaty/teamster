@@ -1,11 +1,51 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fixtureSource } from "./source";
+import { FIXTURE_TURN_MS } from "./dutyChat";
+import type { DutyChatBody } from "../lib/actions";
 import { parseAccounts, parseDuty } from "../lib/accounts";
 import type { Accounts } from "../types";
 
 afterEach(() => vi.useRealTimers());
 
 describe("fixture source", () => {
+  it("turns the A2UI comparison into a plan and records one edited selection", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("location", { search: "?duty=a2ui" });
+    const source = fixtureSource();
+    const stop = source.connect(() => {}, () => {});
+    const view = async () => (await source.fetchDutyChat!())!;
+    const act = async (body: DutyChatBody) => {
+      const result = source.act!("duty-chat", body);
+      await vi.advanceTimersByTimeAsync(300);
+      return result;
+    };
+    try {
+      const choice = (await view()).messages.at(-1)!.comparison!.approaches[0].title;
+      expect(await act({ text: choice })).toMatchObject({ ok: true, queued: false });
+      await vi.advanceTimersByTimeAsync(FIXTURE_TURN_MS);
+      const plan = (await view()).messages.at(-1)!.task_plan!;
+      expect(plan.actionable).toBe(true);
+      expect(plan.tasks).toHaveLength(3);
+      expect(plan.tasks[0]!.done_when[0]).toContain(choice);
+
+      const reply = { plan_id: plan.id, selected: [{ index: 2, done_when: ["  Новый критерий  "] }] };
+      expect(await act({ ...reply, plan_id: "0".repeat(32) })).toMatchObject({ ok: false, code: "stale_plan" });
+      expect(await act({ ...reply, selected: [{ index: 2, done_when: [" "] }] })).toMatchObject({ ok: false, code: "invalid_plan_reply" });
+      expect(await act(reply)).toMatchObject({ ok: true, turn: 3 });
+      expect(await act(reply)).toMatchObject({ ok: false, code: "plan_already_answered" });
+      await vi.advanceTimersByTimeAsync(FIXTURE_TURN_MS);
+      const finished = await view();
+      expect(finished.messages.find((entry) => entry.task_plan)?.task_plan).toMatchObject({ actionable: false, accepted_turn: 3 });
+      const submitted = finished.messages.filter((entry) => entry.from === "user" && entry.turn === 3);
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0]!.text).toContain("- Новый критерий");
+      expect(submitted[0]!.text).not.toContain(plan.tasks[0]!.title);
+    } finally {
+      stop();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("pins a known account, elects automatically and switches off across fixture reconnects", async () => {
     vi.useFakeTimers();
     const source = fixtureSource();

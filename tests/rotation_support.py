@@ -429,7 +429,7 @@ def duty_turn(request, thread, model, models):
         while not Path(run["gate"]).exists():
             time.sleep(0.02)
     answer = dict(run.get("reply", {"status": "answered", "reply": "Codex duty answer.",
-                                    "question": "", "options": [], "started": []}))
+                                    "question": "", "options": [], "started": [], "task_plan": []}))
     if run.get("reply_from_command_output"):
         answer["reply"] = "".join(command_outputs).strip()
     message = {"id": "duty-answer", "type": "agentMessage", "text": json.dumps(answer), "phase": "final_answer"}
