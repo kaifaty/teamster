@@ -30,8 +30,15 @@ applies across follow-ups, executor waits and Board restarts. Every route requir
 connection and `Authorization: Bearer TOKEN`. Omit the configuration to leave the API disabled.
 `--read-only` allows reads and disables mutations.
 To give an observer access on a Board with actions enabled, add `observer_token` with a
-different random token of the same format. It authorizes only the three GET routes and
-uses the same repository allowlist.
+different random token of the same format. It authorizes reads and the project-title action.
+Start, say and stop require the primary token and an exact repository allowlist match.
+
+An operator reads `GET /project-titles` for work context and updates a title with
+`POST /project-titles/{id}` and `{revision, title}`. A null title records that the current
+context was reviewed. A changed context or an ineligible card returns `409 title_conflict`.
+Title context comes from allowlisted checkouts and same-project copies nested inside them.
+The action checks the context again at write time. User titles and cards in project history
+are excluded. Automatic updates preserve the card ID and its links.
 
 ## Requests and responses
 

@@ -16,7 +16,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from . import duty_events, duty_tasks
@@ -115,7 +115,7 @@ class ExternalDuty:
         else:
             self.environment["TEAMSTER_HOME"] = str(self.home)
 
-    def authorized(self, request):
+    def authorized(self, request, *, operator_write=False):
         if request.client is None:
             return False
         try:
@@ -129,7 +129,9 @@ class ExternalDuty:
         presented = values[0].encode("latin-1")
         if hmac.compare_digest(presented, ("Bearer " + self.config.token).encode("ascii")):
             return True
-        return request.method == "GET" and self.config.observer_token is not None and hmac.compare_digest(
+        if request.method != "GET" and not (operator_write and request.method == "POST"):
+            return False
+        return self.config.observer_token is not None and hmac.compare_digest(
             presented, ("Bearer " + self.config.observer_token).encode("ascii"),
         )
 
@@ -317,7 +319,7 @@ class ExternalDuty:
             return False
 
 
-def register(app, board):
+def register(app, board, operator_chat=None, operator_resolution=None):
     if board.settings.external_duty is None:
         return
     api = ExternalDuty(board)
@@ -327,8 +329,8 @@ def register(app, board):
     except OSError:
         LOGGER.exception("External duty could not initialize the event journal")
 
-    async def call(request, handler, *args):
-        if not api.authorized(request):
+    async def call(request, handler, *args, operator_write=False):
+        if not api.authorized(request, operator_write=operator_write):
             return response(*failure(403, "forbidden"))
         try:
             return response(*await asyncio.to_thread(handler, *args))
@@ -348,6 +350,31 @@ def register(app, board):
 
         return await call(request, read)
 
+    @router.get("/chat/{identity}/evidence")
+    async def chat_evidence(request: Request, identity: str, view: str, query: str = Query("", max_length=160),
+                            project: str = Query("", max_length=255), status: str = Query("", max_length=60),
+                            offset: int = Query(0, ge=0), kind: str = "", card_id: str = Query("", max_length=255)):
+        if operator_chat is None or board.settings.read_only:
+            return response(*failure(404, "chat_unavailable"))
+        return await call(request, operator_chat.read, identity, view, query, project, status, offset, kind, card_id)
+
+    @router.get("/resolutions")
+    async def resolutions(request: Request):
+        if operator_resolution is None:
+            return response(*failure(404, "resolution_unavailable"))
+        return await call(request, lambda: (200, operator_resolution.view()))
+
+    @router.post("/resolutions/poll")
+    async def poll_resolutions(request: Request):
+        if not api.authorized(request, operator_write=True):
+            return response(*failure(403, "forbidden"))
+        if operator_resolution is None or board.settings.read_only:
+            return response(*failure(403, "read_only"))
+        result = await call(request, lambda: (200, operator_resolution.poll()), operator_write=True)
+        if result.status_code == 200 and json.loads(result.body)["card"] is not None:
+            board.publish({"type": "project_tasks_changed"})
+        return result
+
     @router.get("/events")
     async def events(request: Request, after: str = "0", limit: str = "100"):
         def read():
@@ -357,6 +384,35 @@ def register(app, board):
                 return failure(400, "invalid_cursor")
 
         return await call(request, read)
+
+    @router.get("/project-titles")
+    async def project_titles(request: Request):
+        return await call(request, lambda: (200, {"tasks": [] if board.settings.read_only
+                                                    else board.project_tasks.title_candidates(api.repos)}))
+
+    @router.post("/project-titles/{task_id}")
+    async def update_project_title(request: Request, task_id: str):
+        if not api.authorized(request, operator_write=True):
+            return response(*failure(403, "forbidden"))
+        if board.settings.read_only:
+            return response(*failure(403, "read_only"))
+        data = await json_body(request)
+        if not isinstance(data, dict) or data.keys() != {"revision", "title"}:
+            return response(*failure(400, "invalid_request"))
+        title, revision = data["title"], data["revision"]
+        if (not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision)
+                or title is not None and (not valid_text(title, 90) or not title.isprintable())):
+            return response(*failure(400, "invalid_request"))
+
+        def write():
+            if board.project_tasks.update_title(task_id, revision, title.strip() if title else None, api.repos):
+                return 200, {"ok": True}
+            return failure(409, "title_conflict")
+
+        result = await call(request, write, operator_write=True)
+        if result.status_code == 200 and title is not None:
+            board.publish({"type": "project_tasks_changed"})
+        return result
 
     async def mutate(request, route, task_id=None):
         if not api.authorized(request):

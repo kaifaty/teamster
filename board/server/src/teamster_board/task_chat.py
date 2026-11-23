@@ -1,6 +1,7 @@
 """One human-driven ACP session per task chat WebSocket."""
 
 import asyncio
+import fcntl
 import json
 import os
 import shutil
@@ -140,6 +141,22 @@ async def _converse(socket, proc, agent, executor, binding):
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _hold_worktree(board, slug):
+    directory = board.store.tasks_path / slug
+    if directory.is_symlink():
+        raise ValueError("Open a local Teamster task with an available worktree.")
+    fd = os.open(directory / "board-acp.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        os.close(fd)
+        raise ValueError("Teamster is archiving this task. Reopen its journal when it finishes.") from exc
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
 async def task_chat(socket, slug, board):
     if (board.settings.read_only or not same_origin(socket)
             or PROTOCOL not in socket.scope["subprotocols"]):
@@ -148,17 +165,21 @@ async def task_chat(socket, slug, board):
 
     await socket.accept(subprotocol=PROTOCOL)
     proc = None
+    hold = None
     try:
         if not board.actions.command:
             raise ValueError("Install teamster with ACP support on the Board server and reopen the chat.")
         cwd, argv, executor, agent, binding = await asyncio.to_thread(
             _resolve_target, board, slug, socket.query_params)
+        hold = _hold_worktree(board, slug)
+        if not cwd.is_dir():
+            raise ValueError("The task's worktree is no longer available.")
         options = ["--model", binding["model"]] if binding else []
         with anyio.CancelScope(shield=True):
             proc = await asyncio.create_subprocess_exec(
                 board.actions.command, "acp", "--events", "--repo", str(cwd), *options, "--", *argv,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, cwd=Path.home(),
-                limit=1024 * 1024, start_new_session=True,
+                limit=1024 * 1024, start_new_session=True, pass_fds=(hold,),
             )
         await _converse(socket, proc, agent, executor, binding)
     except WebSocketDisconnect:
@@ -170,13 +191,21 @@ async def task_chat(socket, slug, board):
         except WebSocketDisconnect:
             pass
     finally:
-        if proc is not None:
-            # The CLI handles SIGTERM even inside an ACP call, settling any
-            # permission request and reaping the agent's entire process group.
-            with anyio.CancelScope(shield=True):
-                if proc.returncode is None:
-                    try:
-                        proc.terminate()
-                    except ProcessLookupError:
-                        pass
-                await proc.communicate()
+        try:
+            if proc is not None:
+                await _reap(proc)
+        finally:
+            if hold is not None:
+                os.close(hold)
+
+
+async def _reap(proc):
+    # The CLI handles SIGTERM even inside an ACP call, settling any
+    # permission request and reaping the agent's entire process group.
+    with anyio.CancelScope(shield=True):
+        if proc.returncode is None:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
+        await proc.communicate()

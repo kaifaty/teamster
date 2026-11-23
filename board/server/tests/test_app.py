@@ -26,6 +26,8 @@ from teamster_board import landing as landing_module
 from teamster_board import app as board_app
 from teamster_board import store as store_module
 from teamster_board import project_tasks as project_tasks_module
+from teamster_board import operator_activity as operator_activity_module
+from teamster_board import operator_resolution as operator_resolution_module
 from teamster_board import accounts as accounts_module, logins as logins_module
 from teamster_board.app import Settings, create_app
 from teamster_board.duty_tasks import task_id
@@ -88,7 +90,7 @@ def receive_until(socket, wanted):
     pytest.fail(f"No {wanted} message received")
 
 
-def test_operator_history_and_live_focus_on_read_only_board(board):
+def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
     client, _, directory, state, settings = board
     assert "operator" not in client.get("/api/snapshot").json()
     archive_name = "demo-20261121T120000Z"
@@ -101,7 +103,8 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
     outside = directory.parent / "other"
     outside.mkdir()
     (outside / "state.json").write_text(json.dumps({
-        **state, "slug": "other", "repo": str(settings.task_home / "outside"),
+        **state, "slug": "other", "repo": str(settings.task_home / "outside"), "pid": None,
+        "outcome": "budget_exhausted", "result": {"status": "partial", "remaining": ["Run the GPU comparison."]},
     }))
     path = settings.task_home / "operator.sqlite"
     with closing(sqlite3.connect(path)) as db:
@@ -113,9 +116,9 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
             ("outside", task_id("other", state["created"]), 1, 3_000, "mini", "Outside the configured cards."),
         ])
         db.commit()
-        read_only = create_app(replace(settings, read_only=True, operator_state=path,
-                                       external_duty=ExternalDutyConfig("mini", "test", (state["repo"],), 1, 60)))
-        with (TestClient(read_only, base_url="http://localhost", headers={"Host": "localhost"}) as client,
+        read_only_settings = replace(settings, read_only=True, operator_state=path,
+                                     external_duty=ExternalDutyConfig("mini", "test", (state["repo"],), 1, 60, "observer"))
+        with (TestClient(create_app(read_only_settings), base_url="http://localhost", headers={"Host": "localhost"}) as client,
               client.websocket_connect("/ws") as ws):
             activity = ws.receive_json()["snapshot"]["operator"]
             assert activity == {"available": True, "current": None, "history": [
@@ -132,6 +135,305 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
             with db:
                 db.execute("UPDATE reviewing SET expires_at = 0")
             assert receive_until(ws, "operator")["operator"] == activity
+
+        with db:
+            db.execute("""CREATE TABLE chat_requests (id TEXT PRIMARY KEY, prompt TEXT, deadline INTEGER,
+                       claimed INTEGER DEFAULT 0, answer TEXT, failed INTEGER DEFAULT 0)""")
+            db.execute("""CREATE TABLE project_chat (
+                id TEXT PRIMARY KEY, card TEXT, at REAL, question TEXT, reference TEXT)""")
+            db.execute("UPDATE recommendations SET recommendation = 'Waiting for a check.', source = 'mini', turn = 1 "
+                       "WHERE event_id = 'current'")
+        headers = {"Origin": "http://localhost", "X-Teamster-Board": "1"}
+        body = {"question": "Что с задачей?", "target": {"kind": "run", "id": "demo", "created": state["created"]},
+                "history": [{"question": "What are you reviewing?", "answer": "The saved result."}]}
+        action = "/api/actions/operator-chat"
+        with TestClient(create_app(read_only_settings), base_url="http://localhost", headers=headers) as client:
+            assert "chat" not in client.get("/api/snapshot").json()["operator"]
+            assert client.post(action, json=body).json()["error"] == "read_only"
+
+        writable = create_app(replace(read_only_settings, read_only=False, no_land=True))
+        with TestClient(writable, base_url="http://localhost", headers=headers, client=("127.0.0.1", 54321)) as client:
+            assert client.get("/api/snapshot").json()["operator"]["chat"] is True
+            assert client.post(action, json=body, headers={"Origin": "http://foreign.test"}).status_code == 403
+            observer = {"Authorization": "Bearer observer"}
+            assert client.get(f"/api/external-duty/v1/tasks/{task_id('other', state['created'])}",
+                              headers=observer).status_code == 404
+            general = client.post(action, json={**body, "target": None})
+            assert general.status_code == 202
+            general_id = general.json()["id"]
+            evidence = f"/api/external-duty/v1/chat/{general_id}/evidence"
+            assert client.get(evidence, params={"view": "projects"}).status_code == 403
+            assert client.get(evidence, params={"view": "projects"}, headers=observer).status_code == 404
+            with db:
+                db.execute("UPDATE chat_requests SET claimed = 1 WHERE id = ?", (general_id,))
+            assert client.get(evidence, params={"view": "projects"}, headers=observer).json()["projects"] == [
+                "outside", "repository",
+            ]
+            search = client.get(evidence, params={"view": "search", "query": "OTHER", "project": "outside"},
+                                headers=observer).json()
+            card = next(row for row in search["tasks"] if row["kind"] == "project")
+            result = client.get(evidence, params={"view": "card", "kind": "project", "card_id": card["id"]},
+                                headers=observer).json()["task"]
+            assert result["status"] == "blocked"
+            assert result["linked_run"]["outcome"] == "budget_exhausted"
+            assert result["linked_run"]["remaining"] == ["Run the GPU comparison."]
+            with db:
+                db.execute("UPDATE chat_requests SET answer = 'Ready' WHERE id = ?", (general_id,))
+            assert client.get(evidence, params={"view": "projects"}, headers=observer).status_code == 404
+            sent = client.post(action, json=body)
+            assert sent.status_code == 202
+            identity = sent.json()["id"]
+            reply = f"/api/operator-chat/{identity}"
+            assert client.get(reply).json() == {"answer": None}
+            prompt = json.loads(db.execute("SELECT prompt FROM chat_requests WHERE id = ?", (identity,)).fetchone()[0])
+            assert prompt["question"] == body["question"] and prompt["conversation"] == body["history"]
+            assert prompt["task"]["recommendation"] == "Waiting for a check."
+            assert prompt["task"]["slug"] == "demo"
+            with db:
+                db.execute("UPDATE chat_requests SET answer = 'Проверка ещё идёт.' WHERE id = ?", (identity,))
+            assert client.get(reply).json() == {"answer": "Проверка ещё идёт."}
+
+            renamed = client.post("/api/actions/project-task", json={"id": current_id, "title": "Project card"})
+            assert renamed.status_code == 200
+            project_chat = {**body, "target": {"kind": "project", "id": current_id}}
+            assert client.post(action, json={**project_chat, "reference": "recommendation:old"}).status_code == 404
+            sent = client.post(action, json={**project_chat, "reference": "recommendation:current"})
+            assert sent.status_code == 202
+            identity = sent.json()["id"]
+            prompt = json.loads(db.execute("SELECT prompt FROM chat_requests WHERE id = ?", (identity,)).fetchone()[0])
+            assert prompt["task"]["title"] == "Project card"
+            assert prompt["task"]["linked_run"]["slug"] == "demo"
+            assert prompt["event"]["kind"] == "recommendation" and "Waiting for a check." in prompt["event"]["record"]
+            read = f"/api/project-tasks/{current_id}/resolution"
+            assert client.post(action, json=project_chat).status_code == 429
+            brief = "Make the report easier to read.\n\n## Done when\nThe summary shows the totals."
+            (directory / "brief.md").write_text(brief)
+            overview = {**project_chat, "history": [], "overview": "missing"}
+            generated = client.post(action, json=overview)
+            assert generated.status_code == 202
+            overview_id = generated.json()["id"]
+            assert client.post(action, json=overview).json() == generated.json()
+            saved_prompt = db.execute("SELECT prompt FROM chat_requests WHERE id=?", (overview_id,)).fetchone()[0]
+            assert json.loads(saved_prompt)["overview"] == {
+                "title": "Project card", "brief": "Make the report easier to read.",
+                "criteria": "The summary shows the totals.",
+            }
+            assert client.get(read).json()["overview"] == {"status": "pending"}
+            description = {"change": "A clearer report.", "why": "Make important figures easy to find.",
+                           "expected": "The summary shows the totals."}
+            with db:
+                db.execute("UPDATE chat_requests SET answer=? WHERE id=?", (json.dumps(description), overview_id))
+            assert client.get(read).json()["overview"] == {"status": "answered", **description}
+            assert client.post(action, json=overview).json()["id"] == overview_id
+            refreshed = client.post(action, json={**overview, "overview": "refresh"}).json()["id"]
+            assert refreshed != overview_id and client.get(read).json()["overview"] == {"status": "pending", **description}
+            with db:
+                db.execute("UPDATE chat_requests SET answer='Invalid description' WHERE id=?", (refreshed,))
+            assert client.get(read).json()["overview"] == {"status": "failed", **description}
+            pending, = client.get(read).json()["chat"]
+            assert pending["reference"] == "recommendation:current" and pending["status"] == "pending"
+            with db:
+                db.execute("UPDATE chat_requests SET answer = 'Saved answer.', deadline = 0 WHERE id = ?", (identity,))
+                db.executemany("INSERT INTO recommendations VALUES (?, ?, 1, 0, 'mini', 'Earlier decision.')",
+                               [(f"extra-{n}", current_id) for n in range(51)])
+            journal = client.get(read).json()
+            assert len(journal["recommendations"]) == 52
+            assert all(row["task_id"] == current_id for row in journal["recommendations"])
+            assert journal["chat"] == [{**pending, "status": "answered", "answer": "Saved answer."}]
+            sent = client.post(action, json=project_chat)
+            assert sent.status_code == 202
+            identity = sent.json()["id"]
+            with db:
+                db.execute("UPDATE chat_requests SET deadline = 0 WHERE id = ?", (identity,))
+            assert client.get(f"/api/operator-chat/{identity}").status_code == 504
+
+            resolution = "/api/actions/operator-resolution"
+            poll = "/api/external-duty/v1/resolutions/poll"
+            assert client.get(read).json()["assignment"] is None
+            assert client.post(poll).status_code == 403
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            rule = {"card": current_id, "run": current_id, "rule": "negative",
+                    "evidence": "other", "phrase": "The matrix was slower than control."}
+            assert client.post(resolution, json={**rule, "run": old_id}).status_code == 409
+            assert client.post(resolution, json=rule).json() == {"ok": True}
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            assert client.get(read).json()["assignment"]["status"] == "waiting_run"
+            assert client.post(resolution, json={"card": current_id, "revoke": True}).json() == {"ok": True}
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            entries = client.get(read).json()["events"]
+            assert [row["kind"] for row in entries] == ["delegated", "waiting_run", "revoked"]
+
+            linked_pr = "https://github.com/owner/repository/pull/39"
+            assert client.post("/api/actions/project-task", json={
+                "id": current_id, "pull_requests": [{"provider": "github", "url": linked_pr}],
+            }).is_success
+            merged = [{"url": linked_pr, "status": "merged", "description": "The missing checks passed."}]
+            monkeypatch.setattr(operator_activity_module, "pull_request_evidence", lambda prs: merged)
+            monkeypatch.setattr(operator_resolution_module, "pull_request_evidence", lambda prs: merged)
+            task_state = directory / "state.json"
+            repository = Path(state["repo"])
+            repository.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main", str(repository)], check=True)
+            git = ["git", "-C", str(repository)]
+            subprocess.run([*git, "-c", "user.name=Test", "-c", "user.email=test@example.test",
+                            "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+            merge_sha = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+            subprocess.run([*git, "remote", "add", "origin", "https://github.com/owner/repository.git"], check=True)
+            subprocess.run([*git, "update-ref", "refs/remotes/origin/main", merge_sha], check=True)
+            checkout = settings.path("worktrees") / "claude-demo" / repository.name
+            subprocess.run([*git, "worktree", "add", "-q", "-b", state["branch"], str(checkout)], check=True)
+            forge = {"state": "OPEN", "isDraft": False, "isCrossRepository": False, "mergeable": "CONFLICTING",
+                     "headRefName": state["branch"], "headRefOid": merge_sha, "baseRefName": "main"}
+            monkeypatch.setattr(project_tasks_module, "_forge_json", lambda *args: forge)
+            idle = {**state, "pid": None, "turn_finished": 20.0, "outcome": "completed", "worktree": str(checkout),
+                    "base": "origin/main",
+                    "result": {"status": "partial", "remaining": ["Verify the result."]}}
+            task_state.write_text(json.dumps(idle))
+            local = writable.state.board
+            local.store.poll()
+            local.actions.reason = None
+            orders = []
+
+            def deliver(self, route, data):
+                orders.append((route, data))
+                return {"ok": True}
+
+            monkeypatch.setattr(actions_module.Actions, "_task", deliver)
+
+            def propose(option, text):
+                sent = client.post(action, json={**project_chat, "proposal": True})
+                assert sent.status_code == 202
+                proposal_id = sent.json()["id"]
+                prompt = json.loads(db.execute("SELECT prompt FROM chat_requests WHERE id=?", (proposal_id,)).fetchone()[0])
+                assert prompt["pull_request_evidence"] == merged and option in prompt["lifecycle"]
+                with db:
+                    db.execute("UPDATE chat_requests SET answer=? WHERE id=?", (json.dumps({
+                        "reason": "The result is partial.", "recommend": option,
+                        "options": [{"action": option, "text": text}, {"action": "clean", "text": "Unexpected action."}],
+                    }), proposal_id))
+                assert client.get(read).json()["proposals"][-1]["options"] == [{"action": option, "text": text}]
+                return {"card": current_id, "proposal": proposal_id, "action": option}
+
+            ask = propose("ask_executor", "Which checks passed?")
+            assert client.post(resolution, json={**ask, "action": "clean"}).status_code == 409
+            assert client.post(resolution, json=ask).is_success
+            assert client.post(resolution, json=ask).is_success
+            assert len(orders) == 1 and orders[0][0] == "say" and orders[0][1]["slug"] == "demo"
+            assert orders[0][1]["text"].endswith("Which checks passed?")
+            assert local.project_tasks.card(current_id)[0]["status"] == "active"
+            done = {**idle, "turns": 2, "publish": {"pr": linked_pr}, "result": {"status": "done", "summary": "MSVC passed."}}
+            task_state.write_text(json.dumps(done))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": current_id}
+            assert len(orders) == 2 and orders[-1][0] == "say" and orders[-1][1]["slug"] == "demo"
+            assert f"existing pull request {linked_pr} against origin/main" in orders[-1][1]["text"]
+            assert local.project_tasks.card(current_id)[0]["status"] == "active"
+            repair, = [event for event in client.get(read).json()["events"] if event["kind"] == "repair_conflict"]
+            assert repair["actor"] == "operator" and repair["detail"]["turn"] == 2
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            task_state.write_text(json.dumps(dict(done, turns=3)))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": current_id}
+            assert len(orders) == 2 and local.project_tasks.card(current_id)[0]["status"] == "blocked"
+
+            continuation = propose("continue", "Review the remaining integration choice.")
+            assert client.post(resolution, json=continuation).is_success
+            task_state.write_text(json.dumps(dict(done, turns=4, result={
+                "status": "needs_decision", "questions": ["Which compatibility mode should we keep?"],
+            })))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": current_id}
+            assert len(orders) == 3 and local.project_tasks.card(current_id)[0]["status"] == "needs_input"
+
+            forge["state"] = "MERGED"
+            merged[0].update(merge_sha=merge_sha, base="main")
+            subprocess.run([*git, "worktree", "remove", str(checkout)], check=True)
+            subprocess.run([*git, "branch", "-D", state["branch"]], check=True, capture_output=True)
+            task_state.write_text(json.dumps(dict(done, turns=4)))
+            local.store.poll()
+            commands = []
+
+            def execute(self, lock, command, operation, args):
+                commands.append((command, args))
+                return True, {"sha": operation.get("sha"), "archive": "verified-archive", "files": 0}
+
+            cls = operator_resolution_module.OperatorResolution
+            monkeypatch.setattr(cls, "_command", execute)
+            monkeypatch.setattr(cls, "_verdict", lambda *args: "accepted" if commands else None)
+            accept = propose("accept", "Accept the merged result.")
+            assert client.get(read).json()["proposals"][-1]["record_only"]
+            assert client.post(resolution, json=accept).is_success
+            assert local.project_tasks.card(current_id)[0]["status"] == "needs_input"
+            assert client.post(poll, headers=observer).json() == {"card": current_id}
+            assert client.post(resolution, json=accept).is_success
+            assert local.project_tasks.card(current_id)[0]["status"] == "done"
+            assert [(command, args[0]) for command, args in commands] == [
+                ("verdict", "accepted"), ("clean", "--archive-safe"),
+            ]
+            assert commands[-1][1][-2:] == ["--archive-record-from", "main"]
+
+            slug = "automatic-review"
+            branch = f"claude/{slug}"
+            checkout = settings.path("worktrees") / f"claude-{slug}" / repository.name
+            subprocess.run([*git, "worktree", "add", "-q", "-b", branch, str(checkout)], check=True)
+            task_path = directory.parent / slug
+            task_path.mkdir()
+            auto_id = task_id(slug, 50.0)
+            auto_read = f"/api/project-tasks/{auto_id}/resolution"
+            automated = dict(idle, slug=slug, created=50.0, branch=branch, worktree=str(checkout),
+                             turns=1, outcome="stopped", result={"status": "needs_decision", "questions": ["Which target should ship?"]})
+            (task_path / "state.json").write_text(json.dumps(automated))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            local.settings.operator_auto_repo = repository
+            before = len(commands)
+            monkeypatch.setattr(cls, "_verdict", lambda self, record, state: (
+                "accepted" if state.get("slug") == slug and len(commands) > before else None))
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            question, = client.get(auto_read).json()["events"]
+            assert question["kind"] == "automatic_question" and question["detail"]["question"] == "Which target should ship?"
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            assert client.get(auto_read).json()["events"] == [question]
+            assert client.get(f"/api/project-tasks/{task_id('other', state['created'])}/resolution").json()["events"] == []
+
+            proof = {"url": linked_pr, "status": "open", "base": "main", "head": merge_sha,
+                     "branch": branch, "cross_repository": False, "merge_sha": merge_sha}
+            monkeypatch.setattr(operator_resolution_module, "pull_request_evidence", lambda prs: [proof])
+            (task_path / "state.json").write_text(json.dumps(dict(automated, turns=2, outcome="completed",
+                publish={"pr": linked_pr}, result={"status": "done"})))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            assert client.get(auto_read).json()["events"][-1]["kind"] == "automatic_waiting"
+            assert len(commands) == before
+
+            ledger = settings.task_home / "external-duty" / "commands.sqlite3"
+            proof.update(status="merged", head="f" * 40)
+            with closing(sqlite3.connect(ledger)) as journal, journal:
+                journal.execute("UPDATE operator_auto_checks SET checked=0 WHERE card=?", (auto_id,))
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            assert client.get(auto_read).json()["events"][-1]["detail"]["reason"] == "checkout_identity"
+            assert len(commands) == before
+
+            proof["head"] = merge_sha
+            with closing(sqlite3.connect(ledger)) as journal, journal:
+                journal.execute("UPDATE operator_auto_checks SET checked=0 WHERE card=?", (auto_id,))
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            assert client.post(poll, headers=observer).json() == {"card": auto_id}
+            result = client.get(auto_read).json()
+            assert result["assignment"]["status"] == "archived"
+            assert [event["kind"] for event in result["events"][-5:]] == [
+                "automatic_merge", "verdict_recorded", "archive_started", "status_changed", "archived",
+            ]
+            assert commands[before][0] == "verdict"
+            assert commands[before + 1] == ("clean", ["--archive-safe", "--expect-head", merge_sha,
+                                                     "--expect-verdict", "accepted"])
+            assert local.project_tasks.card(auto_id)[0]["status"] == "done"
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            events = client.get(read).json()["events"]
+            assert [event["kind"] for event in events[-4:]] == ["verdict_recorded", "archive_started", "status_changed", "archived"]
+            assert events[-2]["detail"] == {"from": "needs_input", "to": "done"}
+            assert events[-1]["detail"]["record_only"]
+
 
 
 def test_stale_days_environment_reaches_store(tmp_path, monkeypatch):
@@ -1157,6 +1459,7 @@ def test_constellations_come_from_the_data_home(board):
 def test_project_tasks_follow_managed_work_and_survive_restart(board):
     client, app, directory, state, settings = board
     read, write = "/api/project-tasks", "/api/actions/project-task"
+    history = read + "/scout-history?project=repository"
     client.headers.update({"Origin": "http://localhost", "X-Teamster-Board": "1"})
     github = {"provider": "github", "url": "https://github.com/team/repo/pull/7"}
     forgejo = {"provider": "forgejo", "url": "http://forge.internal:3000/team/repo/pulls/19"}
@@ -1177,6 +1480,9 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
     assert view["writable"] and view["biomes"] == {"repository": "tundra"}
     sources = {row["source_slug"]: row for row in view["tasks"]}
     assert {slug: row["status"] for slug, row in sources.items()} == {"demo": "ready", "survey": "active"}
+    scout, = client.get(history).json()["scouts"]
+    assert scout["slug"] == "finished-survey"
+    assert client.get(read + "/scout-history?project=other").json() == {"scouts": []}
     demo = sources["demo"]
     assert demo["pull_requests"] == [github]
     assert not (settings.task_home / "board-project-tasks.sqlite3").exists()
@@ -1189,6 +1495,40 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
     assert card["session_slugs"] == {demo["id"]: "demo", sources["survey"]["id"]: "survey"}
     assert card["pull_requests"] == [forgejo, github] and card["status"] == "active"
     assert client.get(read).json()["tasks"] == [card]
+    delivered = {"at": 5, "source": "lead", "text": "Check the implementation."}
+    queued = {"at": 7, "text": "Collect one more measurement."}
+    (directory / "messages.jsonl").write_text("\n".join(map(json.dumps, [
+        delivered, {"at": 6, "source": "review", "text": "The implementation is ready."},
+    ])))
+    survey = directory.parent / "survey"
+    (survey / "brief.md").write_text("Read the existing measurements.\n\n## Done when\nThe report is ready.")
+    (survey / "queue.json").write_text(json.dumps({"waiting": [queued]}))
+    survey_state = json.loads((survey / "state.json").read_text())
+    (survey / "state.json").write_text(json.dumps(dict(survey_state, turn_started=20, check_pid=survey_state["pid"],
+                                                       check="verify-measurements")))
+    events = [
+        (19, "agent_message", {"text": "Previous turn"}),
+        (21, "reasoning", {"text": "Thinking text"}),
+        (22, "command_execution", {"command": "verify-measurements"}),
+        (23, "command_execution", {"command": "verify-measurements"}),
+        (24, "agent_message", {"text": "Checking the saved measurements."}),
+    ]
+    (survey / "events.jsonl").write_text("".join(
+        json.dumps({"type": "item.completed", "timestamp": at, "item": {"type": kind, **fields}}) + "\n"
+        for at, kind, fields in events
+    ))
+    client.portal.call(app.state.board.poll)
+    work = client.get(f"{read}/{card['id']}/details?work_only=true").json()
+    assert work["pull_requests"] == {}
+    assert work["work"] == {
+        refs[0]: {"goal": None, "order": {**delivered, "queued_at": None}, "next_order": None, "queued": 0,
+                  "turn_started_at": state["turn_started"], "check_command": None, "recent_activity": []},
+        refs[1]: {"goal": "Read the existing measurements.", "order": None, "next_order": queued, "queued": 1,
+                  "turn_started_at": 20, "check_command": "verify-measurements", "recent_activity": [
+                      {"at": 24, "kind": "message", "text": "Checking the saved measurements."},
+                      {"at": 23, "kind": "command", "text": "verify-measurements"},
+                  ]},
+    }
     # Pin the published link too, then archive the work with a different publication.
     card = client.post(write, json={"id": card["id"], "pull_requests": [github, forgejo],
                                     "status": "ready"}).json()["task"]
@@ -1197,9 +1537,9 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
     (directory / "state.json").write_text(json.dumps(state))
     archive = directory.parent / ".archive"
     archive.mkdir(exist_ok=True)
-    for slug in ("demo", "survey"):
+    for slug in ("demo", "survey", "finished-survey"):
         (directory.parent / slug).rename(archive / (slug + "-20261120T000000Z"))
-    # Push both linked records beyond the ordinary Board's 50-record archive window.
+    # Push the records beyond the ordinary Board's 50-record archive window.
     for index in range(50):
         newer = archive / f"recent-{index}-20261121T000000Z"
         newer.mkdir()
@@ -1209,6 +1549,9 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
         archives = {ref: slug + "-20261120T000000Z" for ref, slug in card["session_slugs"].items()}
         saved = dict(card, source_slug=None, session_slugs=archives, pull_requests=[github, forgejo, later])
         assert restarted.get(read).json() == {"tasks": [saved], "writable": True, "biomes": view["biomes"]}
+        assert restarted.get(history).json() == {
+            "scouts": [dict(scout, slug="finished-survey-20261120T000000Z")],
+        }
         directory.mkdir()
         (directory / "state.json").write_text(json.dumps(dict(state, created=100)))
         restarted.portal.call(restarted.app.state.board.poll)
@@ -1299,6 +1642,7 @@ def test_project_task_links_and_write_protection(board, monkeypatch):
     details = client.get(f"{read}/{child}/details").json()
     assert details["sessions"][child]["slug"] == "demo"
     assert details["pull_requests"] == {github: "draft", forgejo: "merged", unknown: None}
+    assert client.get(f"{read}/{child}/details?work_only=true").json()["pull_requests"] == {}
     assert len(calls) == 3
     assert client.get(f"{read}/missing/details").status_code == 404
     settings.read_only = True
@@ -4622,6 +4966,21 @@ def test_external_duty_lifecycle(external_duty_worker, monkeypatch):
         for route in ("/tasks", f"/tasks/{task_id}/say", f"/tasks/{task_id}/stop"):
             denied = client.post(base + route, headers=read_headers, json=start)
             assert denied.status_code == 403 and denied.json()["error"]["code"] == "forbidden"
+
+        titles_url = f"{base}/project-titles"
+        candidate, = client.get(titles_url, headers=read_headers).json()["tasks"]
+        assert candidate["id"] == task_id and candidate["goal"] == start["goal"]
+        change = {"revision": candidate["revision"], "title": "Add the label file"}
+        saved_title = client.post(f"{titles_url}/{task_id}", headers=read_headers, json=change)
+        assert saved_title.status_code == 200, saved_title.text
+        project_task, = client.get("/api/project-tasks").json()["tasks"]
+        assert project_task["title"] == change["title"] and project_task["sessions"] == [task_id]
+        manual = client.post("/api/actions/project-task", json={"id": task_id, "title": "Product label"},
+                             headers={"Origin": "http://127.0.0.1:8787", "X-Teamster-Board": "1"})
+        assert manual.status_code == 200, manual.text
+        assert client.post(f"{titles_url}/{task_id}", headers=read_headers, json=change).status_code == 409
+        project_task, = client.get("/api/project-tasks").json()["tasks"]
+        assert project_task["title"] == "Product label"
 
     with server() as client:
         replay = client.post(f"{base}/tasks", json=start)

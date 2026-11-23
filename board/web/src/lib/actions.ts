@@ -202,7 +202,7 @@ export const isLogin = (value: unknown): value is Login =>
   Array.isArray(value.output);
 
 /** All Board actions use same-origin JSON and the Board request header. */
-export function sendBoardAction(route: ActionRoute | "project-task", body: unknown, fetcher: typeof fetch = fetch): Promise<Response> {
+export function sendBoardAction(route: ActionRoute | "project-task" | "operator-chat" | "operator-resolution", body: unknown, fetcher: typeof fetch = fetch): Promise<Response> {
   return fetcher(`/api/actions/${route}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Teamster-Board": "1" },

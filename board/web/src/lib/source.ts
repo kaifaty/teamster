@@ -1,7 +1,8 @@
 import { sendBoardAction, type ActionSender } from "./actions";
-import { projectTaskErrors, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "./projectTasks";
+import { projectTaskErrors, type ProjectScout, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "./projectTasks";
 import type { ArtIndex, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import type { DutyChatView } from "../dutyChatTypes";
+import type { OperatorExchange, OperatorResolution, OperatorResolutionRule, OperatorTarget } from "../operatorActivity";
 import { connectSocket, type ConnectionState } from "./socket";
 
 export interface OpenCodeProviders {
@@ -15,7 +16,8 @@ export interface BoardSource {
   label: string | null;
   connect(onMessage: (message: ServerMessage) => void, onState: (state: ConnectionState, retryInMs: number | null) => void): () => void;
   fetchProjectTasks(): Promise<ProjectTasks>;
-  fetchProjectTaskDetails?(id: string): Promise<ProjectTaskDetails | null>;
+  fetchProjectTaskDetails?(id: string, workOnly?: boolean): Promise<ProjectTaskDetails | null>;
+  fetchScoutHistory?(project: string): Promise<ProjectScout[]>;
   saveProjectTask(change: ProjectTaskChange): Promise<ProjectTask>;
   /** null for an unknown task (404). */
   fetchDetail(slug: string): Promise<TaskDetail | null>;
@@ -34,6 +36,11 @@ export interface BoardSource {
   fetchResearch(): Promise<ResearchView | null>;
   /** The conversation with the duty; null when the server has no such route yet (404). Absent from sources without it. */
   fetchDutyChat?(): Promise<DutyChatView | null>;
+  fetchOperatorResolution?(card: string): Promise<OperatorResolution | null>;
+  requestProjectOverview?(card: string, refresh: boolean): Promise<void>;
+  setOperatorResolution?(rule: OperatorResolutionRule): Promise<void>;
+  askOperator?(question: string, target: OperatorTarget | null, history: OperatorExchange[], reference?: string,
+    proposal?: boolean): Promise<string>;
   fetchOpenCodeProviders?(): Promise<OpenCodeProviders>;
   /** Completed phases and verdicts between two Unix times, both inclusive. */
   fetchEvents(since: number, until: number): Promise<Events>;
@@ -50,6 +57,25 @@ async function get(path: string): Promise<Response | null> {
   return response;
 }
 
+const operatorErrors: Record<string, string> = {
+  invalid_question: "Сократите вопрос и попробуйте ещё раз.",
+  operator_busy: "Оператор занят. Попробуйте через минуту.",
+  operator_task_unavailable: "У оператора нет доступа к этой задаче.",
+  operator_timeout: "Оператор не ответил вовремя. Попробуйте ещё раз.",
+  operator_no_answer: "Mini не смог ответить. Попробуйте ещё раз.",
+};
+
+async function operatorResponse(request: Promise<Response>, signal: AbortSignal) {
+  const response = await request.catch(() => {
+    throw new Error(signal.aborted ? operatorErrors.operator_timeout : "Не удалось связаться с оператором.");
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) {
+    throw new Error(operatorErrors[data?.error] ?? "Не удалось связаться с оператором.");
+  }
+  return data;
+}
+
 export function serverSource(): BoardSource {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   return {
@@ -60,9 +86,14 @@ export function serverSource(): BoardSource {
       if (!response) throw new Error("404");
       return response.json();
     },
-    async fetchProjectTaskDetails(id) {
-      const response = await get(`/api/project-tasks/${encodeURIComponent(id)}/details`);
+    async fetchProjectTaskDetails(id, workOnly = false) {
+      const response = await get(`/api/project-tasks/${encodeURIComponent(id)}/details${workOnly ? "?work_only=true" : ""}`);
       return response ? response.json() : null;
+    },
+    async fetchScoutHistory(project) {
+      const response = await get(`/api/project-tasks/scout-history?project=${encodeURIComponent(project)}`);
+      if (!response) throw new Error("404");
+      return (await response.json()).scouts;
     },
     async saveProjectTask(change) {
       const response = await sendBoardAction("project-task", change);
@@ -105,6 +136,42 @@ export function serverSource(): BoardSource {
     async fetchDutyChat() {
       const response = await get("/api/duty-chat");
       return response ? ((await response.json()) as DutyChatView) : null;
+    },
+    async fetchOperatorResolution(card) {
+      const response = await get(`/api/project-tasks/${encodeURIComponent(card)}/resolution`);
+      return response ? response.json() : null;
+    },
+    async requestProjectOverview(card, refresh) {
+      const signal = AbortSignal.timeout(15_000);
+      await operatorResponse(sendBoardAction("operator-chat", {
+        question: "Кратко опиши задачу, её цель и ожидаемый результат.",
+        target: { kind: "project", id: card },
+        history: [],
+        overview: refresh ? "refresh" : "missing",
+      }, (url, init) => fetch(url, { ...init, signal })), signal);
+    },
+    async setOperatorResolution(rule) {
+      const response = await sendBoardAction("operator-resolution", rule);
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error ?? "Не удалось обновить полномочия оператора.");
+      }
+    },
+    async askOperator(question, target, history, reference, proposal) {
+      const context = target && (target.kind === "run"
+        ? { kind: target.kind, id: target.id, created: target.created } : { kind: target.kind, id: target.id });
+      const signal = AbortSignal.timeout(125_000);
+      const request = sendBoardAction("operator-chat",
+        { question, target: context, history, ...(reference ? { reference } : {}), ...(proposal ? { proposal } : {}) },
+        (url, init) => fetch(url, { ...init, signal }));
+      const { id } = await operatorResponse(request, signal);
+      const path = `/api/operator-chat/${encodeURIComponent(id)}`;
+      while (!signal.aborted) {
+        const { answer } = await operatorResponse(fetch(path, { signal }), signal);
+        if (typeof answer === "string") return answer;
+        await new Promise(resolve => window.setTimeout(resolve, 1000));
+      }
+      throw new Error(operatorErrors.operator_timeout);
     },
     async fetchOpenCodeProviders() {
       const response = await get("/api/opencode/providers");

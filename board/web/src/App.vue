@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { Column, TaskSummary } from "./types";
-import type { OperatorTask } from "./operatorActivity";
+import type { OperatorTarget, OperatorTask } from "./operatorActivity";
 import type { Board } from "./store/board";
 import { useNow } from "./store/board";
 import { COLUMNS, EXECUTOR_OPTIONS, KIND_FILTERS, isKindFilter, matchesKind, type KindFilter } from "./lib/labels";
@@ -53,8 +53,42 @@ watch(kindFilter, (value) => saveJson(KIND_KEY, value));
 
 type View = "board" | "map";
 const VIEW_KEY = "codex-board.view.v1";
-const view = ref<View>(loadJson(VIEW_KEY, "board", (v): v is View => v === "board" || v === "map"));
+function readTaskRoute() {
+  const match = /^\/tasks\/([^/]+)\/?$/.exec(location.pathname);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]!);
+  } catch {
+    return null;
+  }
+}
+const taskRoute = ref(readTaskRoute());
+const view = ref<View>(taskRoute.value ? "map" : loadJson(VIEW_KEY, "board", (v): v is View => v === "board" || v === "map"));
 watch(view, (value) => saveJson(VIEW_KEY, value));
+
+function restoreRoute() {
+  taskRoute.value = readTaskRoute();
+  if (taskRoute.value) view.value = "map";
+}
+function navigateTask(id: string | null) {
+  if (id === taskRoute.value) return;
+  const previous = taskRoute.value;
+  taskRoute.value = id;
+  if (id) {
+    const path = "/tasks/" + encodeURIComponent(id);
+    if (previous) history.replaceState(history.state, "", path);
+    else history.pushState({ fromTeamsterMap: true }, "", path);
+    view.value = "map";
+  } else if (history.state?.fromTeamsterMap === true) {
+    history.back();
+  } else {
+    history.replaceState(null, "", "/");
+  }
+}
+function showBoard() {
+  navigateTask(null);
+  view.value = "board";
+}
 // Load the map on first use and retain its camera when changing tabs.
 const MapView = shallowRef<(typeof import("./map/MapView.vue"))["default"] | null>(null);
 const mapPanel = ref<InstanceType<typeof import("./map/MapView.vue")["default"]> | null>(null);
@@ -105,8 +139,15 @@ const selected = ref<string | null>(null);
 const selectedTask = computed(() => (selected.value ? (board.state.value.tasks[selected.value] ?? null) : null));
 const operator = computed(() => board.state.value.operator);
 const operatorOpen = ref(false);
+const operatorTarget = ref<OperatorTarget | null>(null);
+const operatorChat = computed(() => !!board.source.askOperator && !!operator.value?.chat);
 const operatorConnected = computed(() => board.connection.value === "open");
 const operatorTask = computed(() => operatorConnected.value ? operator.value?.current ?? null : null);
+
+function askOperator(target: OperatorTarget) {
+  operatorTarget.value = target;
+  operatorOpen.value = true;
+}
 
 function open(slug: string) {
   operatorOpen.value = false;
@@ -116,7 +157,7 @@ function open(slug: string) {
 function openOperatorTask(task: OperatorTask) {
   operatorOpen.value = false;
   if (view.value === "map" && mapPanel.value?.openOperatorTask(task.task_id)) return;
-  view.value = "board";
+  showBoard();
   open(task.slug);
 }
 
@@ -185,8 +226,12 @@ const alarms = computed(() => board.tasks.value.filter((t) => t.column === "atte
 const tab = tabAlarm(document);
 watch(alarms, (count) => tab.show(count), { immediate: true });
 
-onMounted(() => board.start());
+onMounted(() => {
+  window.addEventListener("popstate", restoreRoute);
+  board.start();
+});
 onBeforeUnmount(() => {
+  window.removeEventListener("popstate", restoreRoute);
   board.stop();
   tab.show(0);
 });
@@ -197,7 +242,7 @@ onBeforeUnmount(() => {
     <header class="topbar">
       <h1 class="title">{{ view === "map" ? "Карта заданий" : "Доска задач" }} <span class="muted">teamster</span></h1>
       <div class="seg views" role="group" aria-label="Вид">
-        <button type="button" class="btn" :aria-pressed="view === 'board'" @click="view = 'board'">Доска</button>
+        <button type="button" class="btn" :aria-pressed="view === 'board'" @click="showBoard">Доска</button>
         <button type="button" class="btn" :aria-pressed="view === 'map'" @click="view = 'map'">Карта</button>
       </div>
       <span class="conn" :class="board.connection.value" role="status" :title="retryText">
@@ -205,8 +250,9 @@ onBeforeUnmount(() => {
         <span v-if="retryText" class="faint">{{ retryText }}</span>
       </span>
       <span v-if="board.source.label" class="chip warn">{{ board.source.label }}</span>
-      <OperatorPanel v-if="operator" v-model:open="operatorOpen" :activity="operator" :current="operatorTask"
-        :connected="operatorConnected" @task="openOperatorTask" />
+      <OperatorPanel v-if="operator" v-model:open="operatorOpen" v-model:target="operatorTarget"
+        :activity="operator" :current="operatorTask" :connected="operatorConnected"
+        :ask="operatorChat ? board.source.askOperator : undefined" @task="openOperatorTask" />
       <span v-if="view === 'board' && board.state.value.loaded" class="faint num">{{ live }} в работе и ожидании</span>
 
       <div v-show="view === 'board'" class="filters" role="group" aria-label="Фильтры">
@@ -292,6 +338,8 @@ onBeforeUnmount(() => {
       :opencode="board.state.value.accounts?.opencode"
       :source="board.source"
       :now="now"
+      :operator-chat="operatorChat"
+      @ask-operator="askOperator"
       @close="close"
     />
 
@@ -303,14 +351,18 @@ onBeforeUnmount(() => {
         ref="mapPanel"
         :board="board"
         :active="view === 'map'"
+        :task-route="taskRoute"
         :machine="machineId"
         :operator-task-id="operatorTask?.task_id"
+        :operator-chat="operatorChat"
+        @ask-operator="askOperator"
+        @task-route="navigateTask"
         @machine="openMachine"
         @panel="machineId = null; operatorOpen = false"
       />
       <p v-else-if="mapError" class="map-note">
         Не удалось загрузить карту. <a href="#" @click.prevent="loadMap">Повторить</a> ·
-        <a href="#" @click.prevent="view = 'board'">Открыть доску</a>
+        <a href="#" @click.prevent="showBoard">Открыть доску</a>
       </p>
       <p v-else class="map-note">Загружаю карту…</p>
     </template>

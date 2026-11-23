@@ -59,7 +59,7 @@ async function trial(t: TestContext, realMini?: string) {
   const cloudKey = randomBytes(32).toString("hex");
   const feed = { events, next_cursor: 1200 };
   const boardRequests: string[] = [];
-  t.after(() => assert.ok(boardRequests.every(request => /^GET (events\?after=\d+|tasks(\/[^/?]+)?)$/.test(request))));
+  t.after(() => assert.ok(boardRequests.every(request => /^GET (events\?after=\d+|tasks(\/[^/?]+)?|project-titles|chat\/question\/evidence\?view=(search|card)&.*)$/.test(request))));
   const mock: { calls: number; mode: string; onCall?: () => void } = { calls: 0, mode: "recommend" };
   const board = await listen(t, (req, res) => {
     const url = new URL(req.url!, "http://localhost");
@@ -73,6 +73,16 @@ async function trial(t: TestContext, realMini?: string) {
         res.writeHead(400).end(JSON.stringify({ ok: false, error: { code: "invalid_cursor" } }));
       } else {
         res.end(JSON.stringify({ ...feed, events: after === feed.next_cursor ? [] : feed.events }));
+      }
+    } else if (route === "chat/question/evidence") {
+      assert.equal(mock.mode, "chat");
+      if (url.searchParams.get("view") === "search") {
+        assert.equal(url.searchParams.get("query"), "label-export");
+        res.end(JSON.stringify({ tasks: [{ kind: "run", id: "label-export" }] }));
+      } else {
+        assert.equal(url.searchParams.get("view"), "card");
+        assert.equal(url.searchParams.get("card_id"), "label-export");
+        res.end(JSON.stringify({ task: { saved_check: cards[0].checks.saved } }));
       }
     } else if (route === "tasks") {
       res.end(JSON.stringify({ tasks: cards }));
@@ -90,11 +100,30 @@ async function trial(t: TestContext, realMini?: string) {
     assert.ok([token, cloudKey].every(key => !(raw + JSON.stringify(req.headers)).includes(key)));
     const request = JSON.parse(raw);
     assert.equal(request.model, "inkling-2-mini");
+    const last = request.messages.at(-1);
+    if (mock.mode === "chat") {
+      assert.deepEqual(request.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
+        ["list_projects", "read_task", "search_tasks"]);
+      if (last.role === "tool" && JSON.parse(last.content).task) {
+        assert.equal(JSON.parse(last.content).task.saved_check.command, "verify-labels");
+        completion(res, { content: "Review the result for acceptance." }, "stop");
+        return;
+      }
+      if (last.role === "user") {
+        const prompt = JSON.parse(last.content);
+        assert.equal(prompt.task, null);
+        assert.equal(prompt.conversation[0].answer, "The check passed.");
+        assert.equal(prompt.question, "What should I do next with label-export?");
+      }
+      completion(res, { tool_calls: [{ index: 0, id: "chat_" + mock.calls, type: "function",
+        function: last.role === "user" ? { name: "search_tasks", arguments: '{"query":"label-export"}' }
+          : { name: "read_task", arguments: '{"kind":"run","id":"label-export"}' } }] }, "tool_calls");
+      return;
+    }
     assert.deepEqual(request.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
       ["get_task", "list_tasks"]);
     mock.onCall?.();
     if (mock.mode === "hang") return;
-    const last = request.messages.at(-1);
     if (mock.mode === "loop" || last.role === "user") {
       const list = mock.mode === "loop";
       const args = list ? {} : { id: JSON.parse(last.content).task_id };
@@ -173,20 +202,22 @@ test("three work outcomes, empty page, restart and cursor recovery", async t => 
   const calls = output.filter(row => row.type === "model_call").length;
   assert.equal(rows.reduce((total, row) => total + row.model_calls, 0), calls);
   if (!live) assert.equal(mock.calls, calls);
-  assert.equal(output.at(-1).model_calls, calls);
+  assert.equal(output.find(row => row.type === "page").model_calls, calls);
 
   feed.events = [];
   feed.next_cursor = 1600;
-  assert.deepEqual((await run()).at(-1), { type: "page", after: 1200, next_cursor: 1600, events: 0,
+  assert.deepEqual((await run()).find(row => row.type === "page"), { type: "page", after: 1200, next_cursor: 1600, events: 0,
     recommendations: 0, model_calls: 0 });
 
   feed.events = events;
   feed.next_cursor = 1150;
   const beforeReplay = boardRequests.length;
   const replay = await run();
-  assert.deepEqual(boardRequests.slice(beforeReplay), ["GET events?after=1600", "GET tasks", "GET events?after=0"]);
+  assert.deepEqual(boardRequests.slice(beforeReplay),
+    ["GET events?after=1600", "GET tasks", "GET events?after=0", "GET project-titles"]);
   assert.ok(replay.some(row => row.type === "reconcile" && row.cards === 3 && row.unrecorded.length === 0));
-  assert.deepEqual(replay.at(-1), { type: "page", after: 0, next_cursor: 1150, events: 3, recommendations: 0, model_calls: 0 });
+  assert.deepEqual(replay.find(row => row.type === "page"),
+    { type: "page", after: 0, next_cursor: 1150, events: 3, recommendations: 0, model_calls: 0 });
   const db = new DatabaseSync(state, { readOnly: true });
   t.after(() => db.close());
   assert.deepEqual(db.prepare("SELECT * FROM reviewing").all(), []);
@@ -194,6 +225,25 @@ test("three work outcomes, empty page, restart and cursor recovery", async t => 
     .map(row => [row.event_id, row.recommendation]), rows.map(row => [row.event_id, row.recommendation]));
   assert.equal(db.prepare("SELECT cursor FROM feed").get()!.cursor, 1150);
   if (!live) assert.equal(mock.calls, calls);
+
+  if (!live) {
+    const writable = new DatabaseSync(state);
+    t.after(() => writable.close());
+    const prompt = JSON.stringify({ task: null, conversation: [{ question: "What happened?", answer: "The check passed." }],
+      question: "What should I do next with label-export?" });
+    writable.prepare("INSERT INTO chat_requests (id, prompt, deadline) VALUES ('question', ?, ?)")
+      .run(prompt, Date.now() + 30_000);
+    mock.mode = "chat";
+    await run();
+    assert.deepEqual({ ...db.prepare("SELECT prompt, answer, failed FROM chat_requests").get() },
+      { prompt: "", answer: "Review the result for acceptance.", failed: 0 });
+    writable.prepare("INSERT INTO project_chat VALUES ('question', 'card', 0, 'What should I do next?', NULL)").run();
+    writable.prepare("UPDATE chat_requests SET deadline = 0 WHERE id = 'question'").run();
+    writable.prepare("INSERT INTO chat_requests (id, prompt, deadline) VALUES ('expired-general', '', 0)").run();
+    await run();
+    assert.deepEqual(db.prepare("SELECT id FROM chat_requests").all().map(row => row.id), ["question"]);
+    assert.equal(mock.calls, calls + 3);
+  }
 });
 
 test("the call limit and the original event deadline hand off to a human", async t => {
@@ -219,7 +269,7 @@ test("the call limit and the original event deadline hand off to a human", async
   db.prepare("UPDATE recommendations SET started_at = ? WHERE event_id = ?").run(Date.now() - 55_000, events[1].id);
   const resumed = await run(AbortSignal.timeout(15_000));
   const [expired] = resumed.filter(row => row.type === "recommendation");
-  assert.equal(resumed.at(-1).recommendations, 1);
+  assert.equal(resumed.find(row => row.type === "page").recommendations, 1);
   assert.equal(expired.event_id, events[1].id);
   assert.equal(expired.source, "handoff");
   assert.match(expired.recommendation, /60-second event budget/);

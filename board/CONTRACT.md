@@ -391,6 +391,7 @@ interface OperatorTask {
 
 interface OperatorActivity {
   available: boolean;         // the Mini pilot's SQLite journal could be read
+  chat?: boolean;             // chat is enabled on this Board
   current: OperatorTask | null;
   history: (OperatorTask & {
     event_id: string;
@@ -740,6 +741,10 @@ The additional fields are additive; existing clients may ignore `title` and `lin
 The map uses `GET /api/project-tasks`. Each saved task tracks one outcome through acceptance or
 cancellation. The response includes every saved direct child, including `done` and `cancelled`
 children, for progress counts. Draw tasks in the four current states even if they have no live session.
+
+The project history opens saved `done` and `cancelled` cards. It fetches finished, unlinked scouts
+on demand for the selected project. Each scout has a stable run ID, its Board detail slug, title
+and creation time. Archive lookups include runs outside the recent Board snapshot.
 
 The same response includes unclaimed work from the Board's task cache. A managed work, review or
 scout record needs its own slug matching the folder, an explicit repository and a creation time.
@@ -1394,11 +1399,17 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
 
 - `GET /api/snapshot` → `Snapshot`, including `logins` and `accounts.last_logins`.
 - `GET /api/project-tasks` → `{tasks: ProjectTask[], biomes: Record<string, string>, writable: boolean}`.
-- `GET /api/project-tasks/{id}/details` → `{sessions: Record<string, TaskSummary>, pull_requests: Record<string, ProjectPullState | null>}`.
+- `GET /api/project-tasks/{id}/details` → `{sessions: Record<string, TaskSummary>, work: Record<string, ProjectRunWork>, pull_requests: Record<string, ProjectPullState | null>}`.
   The keys are the card's saved session IDs and normalized PR URLs. Unavailable sessions are omitted.
+  For each managed session, `ProjectRunWork` has the brief's `goal`, the latest delivered lead `order`, the
+  `next_order` from the queue and a `queued` count. It also exposes `turn_started_at` from the run state,
+  `check_command` while checks are running, and up to five distinct `recent_activity` events from
+  the current turn, excluding thinking text. Add `?work_only=true` to refresh executor data without
+  looking up pull requests.
   `ProjectPullState` is `draft`, `open`, `merged` or `closed`. An unavailable PR has a null status.
   The Board reads GitHub through `gh` and Forgejo through a `tea` login for the link's configured URL.
   Only opening a card asks the forge for its PR states.
+- `GET /api/project-tasks/scout-history?project=<name>` → `{scouts: {id, slug, title, created}[]}`.
 - `POST /api/actions/project-task` → `{task: ProjectTask}`. See “Project tasks” for creation and partial updates.
 - `POST /api/actions/login`, `/api/actions/login/input`, `/api/actions/login/cancel`,
   `/api/actions/account-refresh` and `/api/actions/account-remove` → the responses described
@@ -1486,6 +1497,43 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   otherwise `reset: false` (also on an initial request).
 - `GET /api/research` → `ResearchView`; other methods get 405.
 - `GET /api/duty-chat` → `DutyChatView`; `POST /api/actions/duty-chat` → the duty chat send above.
+- `POST /api/actions/operator-chat` accepts `{question, target, history}` with the standard action headers.
+  `target` is `null` for general chat, `{kind: "project", id}` for a map task, or
+  `{kind: "run", id, created}` for a run's Board address and creation time. The Board reads current
+  evidence for the attached card when a question is submitted. `history` is up to two previous
+  `{question, answer}` pairs. A project question can include a `reference` to a recommendation,
+  resolution event, or confirmed command belonging to that card. Success returns 202 with `{id}`.
+  For a project card, `overview: "missing"` requests a concise description from the linked brief
+  and reuses any earlier request. `overview: "refresh"` requests a new description or joins a pending
+  one. Both require empty history and run independently of regular chat within the global queue limit.
+- `GET /api/project-tasks/{id}/resolution` returns `{assignment, events, recommendations, commands, writable}`
+  and `chat` when the operator supports durable project chat. Recommendations and confirmed External Duty
+  commands are scoped to the card's linked run IDs. Resolution events include their actual author and
+  remain readable after closure or revocation. Project questions and replies are stored with the card ID,
+  with at most one unanswered chat or proposal and one unanswered description per card.
+  `overview` is null until requested, then contains its `status` and the latest valid `change`,
+  `why`, and `expected` text when available. Description requests are omitted from `chat`.
+  `POST /api/actions/operator-resolution` uses standard action headers and accepts
+  `{card, run, rule: "verdict"}`, `{card, run, rule: "negative", evidence, phrase}`, or
+  `{card, revoke: true}`. `run` is a linked stable run ID and `evidence` is a Board slug
+  resolved to an exact run at delegation. Events remain readable after closure or revocation.
+- `GET /api/external-duty/v1/resolutions` lists operator assignments. The local operator's
+  `POST /api/external-duty/v1/resolutions/poll` processes at most one queued action
+  under the existing command lock. It accepts no target from the caller. Both routes require the
+  Board operator configuration and bearer authorization.
+  When an operator-directed turn finishes without a question, an open non-draft GitHub PR with
+  a verified merge conflict can be sent back once to the linked work session. The Board matches
+  the published head, base, repository and clean managed checkout before delivery. This records
+  a `repair_conflict` event and adds no new session. An unresolved conflict after the attempt is
+  blocked. Actual decision questions still wait for the user.
+- `GET /api/operator-chat/{id}` returns `{answer: null}` while waiting and `{answer: string}` when
+  ready. An unanswered request expires after 120 seconds. Both routes require an actions-enabled
+  Board configured with the operator's SQLite state and external duty configuration.
+- `GET /api/external-duty/v1/chat/{id}/evidence` requires a local operator token and a claimed,
+  unexpired, unanswered chat request. It returns Board project names (`view=projects`), compact
+  cards (`view=search` with optional `query`, `project`, `status`, and `offset`), or evidence for a
+  card (`view=card` with `kind=project|run` and `card_id`). Search spans Board and Map projects.
+  External Duty's task and event routes continue to use their configured repository scope.
 - `POST /api/actions/lesson`, `/api/actions/implement`, `/api/actions/say`, `/api/actions/reflect`,
   `/api/actions/verdict`, `/api/actions/review`, `/api/actions/stop`, `/api/actions/clean`
   → the task and science station actions above.

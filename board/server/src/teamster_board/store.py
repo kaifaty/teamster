@@ -285,11 +285,11 @@ class Store:
     def _paths(self, *, strict=False):
         return task_paths(self.tasks_path, strict=strict, older_archives=self.older_archives)
 
-    def lead_verdict(self, slug, record, repo):
+    def lead_verdict(self, slug, record, repo, *, current=True):
         """Read the current verdict without consuming this store's pending journal events."""
         reader = Journal()
         reader.poll(self.telemetry_path, initial_poll=True)
-        return reader.lead_verdict(slug, record, repo)
+        return reader.lead_verdict(slug, record, repo, current=current)
 
     def _summary(self, slug, record):
         state = record.state

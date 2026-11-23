@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from . import opencode, project_tasks as project_task_module
 from .accounts import Accounts, Reports, probe
@@ -28,11 +28,13 @@ from .duty import Duty
 from .duty_chat import DutyChat
 from .logins import Logins
 from .machines import Machines
-from .operator_activity import read_operator_activity
+from .operator_activity import OperatorChat, read_operator_activity
+from .operator_resolution import OperatorResolution
 from .project_tasks import ProjectTasks
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
 from .task_chat import task_chat
+from .task_files import safe_slug
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 PING_SECONDS = 20
@@ -97,6 +99,7 @@ class Settings:
     duty_seconds: float = 1800
     external_duty: ExternalDutyConfig | None = None
     operator_state: Path | None = None
+    operator_auto_repo: Path | None = None
 
     def path(self, purpose):
         return self.task_home / LAYOUT_FILES[self.layout][purpose]
@@ -106,6 +109,7 @@ class Settings:
         task_home, layout = resolve_data_home()
         external_config = os.environ.get("BOARD_EXTERNAL_DUTY_CONFIG")
         operator_state = os.environ.get("BOARD_OPERATOR_STATE")
+        operator_auto_repo = os.environ.get("BOARD_OPERATOR_AUTO_REPO")
         return cls(
             task_home=task_home, layout=layout,
             teamster=Path(os.environ.get("BOARD_TEAMSTER_COMMAND", os.environ.get(
@@ -128,6 +132,7 @@ class Settings:
             duty_seconds=float(os.environ.get("BOARD_DUTY_SECONDS", "1800")),
             external_duty=ExternalDutyConfig.load(Path(external_config)) if external_config else None,
             operator_state=Path(operator_state).expanduser() if operator_state else None,
+            operator_auto_repo=Path(operator_auto_repo).expanduser().resolve() if operator_auto_repo else None,
         )
 
 
@@ -237,7 +242,7 @@ class Board:
             if self.settings.operator_state is not None and self.settings.external_duty is not None:
                 operator = await asyncio.to_thread(
                     read_operator_activity, self.settings.operator_state, self.store,
-                    self.settings.external_duty.repositories,
+                    self.settings.external_duty.repositories, writable=not self.settings.read_only,
                 )
                 if operator != self.operator:
                     self.operator = operator
@@ -510,7 +515,11 @@ def create_app(settings=None):
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(LocalOnly)
     app.state.board = board
-    register_external_duty(app, board)
+    operator_chat = operator_resolution = None
+    if board.settings.operator_state is not None and board.settings.external_duty is not None:
+        operator_resolution = OperatorResolution(board)
+        operator_chat = OperatorChat(board.settings.operator_state, board.store, board.project_tasks, operator_resolution)
+    register_external_duty(app, board, operator_chat, operator_resolution)
 
     @app.get("/api/snapshot")
     async def snapshot():
@@ -525,14 +534,51 @@ def create_app(settings=None):
         return {"tasks": tasks, "biomes": project_biomes(board.settings.path("board_art")),
                 "writable": not board.settings.read_only}
 
-    @app.get("/api/project-tasks/{identity}/details")
-    async def project_task_details(identity: str):
+    @app.get("/api/project-tasks/{identity}/resolution")
+    def task_resolution(identity: str):
+        if operator_chat is None:
+            return error(404, "resolution_unavailable")
         try:
-            sessions, prs = await asyncio.to_thread(board.project_tasks.details, identity)
+            return JSONResponse({**operator_chat.journal(identity), "writable": not board.settings.read_only},
+                                headers={"Cache-Control": "no-store"})
+        except KeyError:
+            return error(404, "Unknown project task")
+        except (OSError, sqlite3.Error):
+            return error(503, "resolution_unavailable")
+
+    @app.post("/api/actions/operator-resolution")
+    async def set_task_resolution(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        if board.settings.read_only:
+            return error(403, "read_only")
+        if operator_resolution is None:
+            return error(404, "resolution_unavailable")
+        try:
+            if "proposal" in data:
+                await asyncio.to_thread(operator_chat.choose, data)
+            else:
+                await asyncio.to_thread(operator_resolution.assign, data)
+        except KeyError:
+            return error(404, "Unknown project task")
+        except ValueError as exc:
+            return error(409, str(exc))
+        except (OSError, sqlite3.Error):
+            return error(503, "resolution_unavailable")
+        board.publish({"type": "project_tasks_changed"})
+        return {"ok": True}
+
+    @app.get("/api/project-tasks/{identity}/details")
+    async def project_task_details(identity: str, work_only: bool = False):
+        try:
+            sessions, prs, work = await asyncio.to_thread(board.project_tasks.details, identity)
         except KeyError:
             return error(404, "Unknown project task")
         except (OSError, sqlite3.Error):
             return error(503, "project_tasks_unavailable")
+        if work_only:
+            return {"sessions": sessions, "work": work, "pull_requests": {}}
 
         async def lookup(run, *args):
             async with board.pr_lookups:
@@ -540,7 +586,16 @@ def create_app(settings=None):
 
         logins = await lookup(project_task_module.forgejo_logins) if any(pr["provider"] == "forgejo" for pr in prs) else {}
         statuses = await asyncio.gather(*(lookup(project_task_module.pull_request_status, pr, logins) for pr in prs))
-        return {"sessions": sessions, "pull_requests": {pr["url"]: status for pr, status in zip(prs, statuses)}}
+        return {"sessions": sessions, "work": work, "pull_requests": {pr["url"]: status for pr, status in zip(prs, statuses)}}
+
+    @app.get("/api/project-tasks/scout-history")
+    def project_scout_history(project: str):
+        if not safe_slug(project):
+            return error(400, "Invalid project name")
+        try:
+            return {"scouts": board.project_tasks.scout_history(project)}
+        except (OSError, sqlite3.Error):
+            return error(503, "project_tasks_unavailable")
 
     @app.post("/api/actions/project-task")
     async def project_task_action(request: Request):
@@ -549,8 +604,12 @@ def create_app(settings=None):
             return data
         if board.settings.read_only:
             return error(403, "read_only")
+        def save():
+            with board.actions.lock:
+                return board.project_tasks.save(data)
+
         try:
-            task = await asyncio.to_thread(board.project_tasks.save, data)
+            task = await asyncio.to_thread(save)
         except KeyError:
             return error(404, "Unknown project task")
         except ValueError as exc:
@@ -627,6 +686,25 @@ def create_app(settings=None):
         if not isinstance(data, dict):
             return data
         return await asyncio.to_thread(board.duty_chat.send, data)
+
+    @app.post("/api/actions/operator-chat")
+    async def operator_chat_action(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        if board.settings.read_only:
+            return error(403, "read_only")
+        if operator_chat is None:
+            return error(503, "operator_unavailable")
+        return await asyncio.to_thread(operator_chat.send, data)
+
+    @app.get("/api/operator-chat/{identity}")
+    def operator_chat_reply(identity: str):
+        if board.settings.read_only:
+            return error(403, "read_only")
+        if operator_chat is None:
+            return error(503, "operator_unavailable")
+        return operator_chat.reply(identity)
 
     @app.post("/api/actions/duty")
     async def duty_action(request: Request):

@@ -1,18 +1,21 @@
 """Project-owned outcomes and their links to the Board's cached work records."""
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import subprocess
+import time
 from contextlib import closing
+from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .actions import string
-from .duty_tasks import task_id
+from .duty_tasks import _goal, task_id
 from .store import ready_for_review
-from .task_files import ARCHIVED, safe_slug
+from .task_files import ARCHIVED, Record, alive, directories, line, number, read_state, safe_slug, task_messages, task_queue
 
 
 TERMINAL = ("done", "cancelled")
@@ -81,12 +84,12 @@ def forgejo_logins():
     return trusted
 
 
-def pull_request_status(pr, logins):
+def _pull_request_data(pr, logins, github_fields):
     parts = urlsplit(pr["url"])
     prefix, owner, repo, _, index = parts.path.rsplit("/", 4)
     if pr["provider"] == "github":
-        data = _forge_json("gh", "pr", "view", f"https://github.com/{owner}/{repo}/pull/{index}",
-                           "--json", "state,isDraft")
+        return _forge_json("gh", "pr", "view", f"https://github.com/{owner}/{repo}/pull/{index}",
+                           "--json", github_fields)
     else:
         port = parts.port or (443 if parts.scheme == "https" else 80)
         origin = (parts.scheme, parts.hostname, port)
@@ -98,7 +101,10 @@ def pull_request_status(pr, logins):
                 login = matches[0]
         if login is None:
             return None
-        data = _forge_json("tea", "api", f"--login={login}", f"/repos/{owner}/{repo}/pulls/{index}")
+        return _forge_json("tea", "api", f"--login={login}", f"/repos/{owner}/{repo}/pulls/{index}")
+
+
+def _status_of_pull_request(data):
     if not isinstance(data, dict) or not isinstance(data.get("state"), str):
         return None
     state = data["state"].lower()
@@ -107,6 +113,43 @@ def pull_request_status(pr, logins):
     if state == "open" and (data.get("isDraft") is True or data.get("draft") is True):
         return "draft"
     return state if state in ("open", "closed") else None
+
+
+def pull_request_status(pr, logins):
+    return _status_of_pull_request(_pull_request_data(pr, logins, "state,isDraft"))
+
+
+def pull_request_conflict(pr):
+    if pr["provider"] != "github":
+        return None
+    data = _pull_request_data(pr, {}, "state,isDraft,isCrossRepository,mergeable,headRefName,headRefOid,baseRefName")
+    if (_status_of_pull_request(data) != "open" or data.get("isDraft") is not False
+            or data.get("isCrossRepository") is not False or data.get("mergeable") != "CONFLICTING"):
+        return None
+    head, base, branch = (data.get(key) for key in ("headRefOid", "baseRefName", "headRefName"))
+    if (not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head)
+            or not isinstance(base, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", base)
+            or not isinstance(branch, str)):
+        return None
+    return {"url": pr["url"], "head": head, "base": base, "branch": branch}
+
+
+def pull_request_evidence(prs):
+    logins = forgejo_logins() if any(pr["provider"] == "forgejo" for pr in prs) else {}
+    rows = []
+    for pr in prs:
+        data = _pull_request_data(pr, logins, "state,isDraft,title,body,mergedAt,mergeCommit,baseRefName,"
+                                  "headRefName,headRefOid,isCrossRepository,mergeable")
+        record = data if isinstance(data, dict) else {}
+        rows.append({"url": pr["url"], "status": _status_of_pull_request(data),
+                     "title": str(record.get("title") or "")[:200],
+                     "description": str(record.get("body") or "")[:2600],
+                     "merged_at": record.get("mergedAt") or record.get("merged_at"),
+                     "merge_sha": (record.get("mergeCommit") or {}).get("oid") if pr["provider"] == "github" else None,
+                     "base": record.get("baseRefName"), "branch": record.get("headRefName"),
+                     "head": record.get("headRefOid"), "cross_repository": record.get("isCrossRepository"),
+                     "conflict": record.get("mergeable") == "CONFLICTING"})
+    return rows
 
 
 def _pull_requests(rows):
@@ -178,7 +221,8 @@ def _cards(saved, sources):
         elif ref not in attached:
             status = _managed_status(source)
             if status not in TERMINAL:
-                cards[ref] = dict(_fields(source["repo"], source["slug"], status, [ref]), follow_source=True)
+                cards[ref] = dict(_fields(source["repo"], source["slug"], status, [ref]),
+                                  follow_source=True, title_source="generated")
     return cards
 
 
@@ -200,6 +244,10 @@ def _managed_links(refs, sources):
 def _public(identity, card, sources):
     fields = dict(card)
     fields.pop("follow_source", None)
+    fields.pop("title_source", None)
+    fields.pop("title_revision", None)
+    fields.pop("title_frozen", None)
+    fields.pop("title_since", None)
     hidden = set(fields.pop("hidden_prs", ()))
     slug, managed = _managed_links(card["sessions"], sources)
     session_slugs = {ref: sources[ref]["slug"] for ref in card["sessions"] if ref in sources}
@@ -240,6 +288,14 @@ def _edit(data, current, sources):
     card["title"] = string(card, "title", 200, required=True)
     if card["status"] not in STATUSES:
         raise ValueError("Invalid project task status")
+    if "title" in data:
+        card["title_source"] = "manual"
+        card.pop("title_revision", None)
+        card.pop("title_since", None)
+    elif card.get("title_source") in ("generated", "operator"):
+        card.setdefault("title_since", time.time())
+    if current["status"] in TERMINAL or card["status"] in TERMINAL:
+        card["title_frozen"] = True
     if card["parent_id"] is not None and not safe_slug(card["parent_id"]):
         raise ValueError("Invalid parent_id")
     card["depends_on"] = _refs(card["depends_on"], "depends_on")
@@ -326,12 +382,15 @@ class ProjectTasks:
             db.execute("PRAGMA user_version = 2")
         return saved
 
+    def _saved(self):
+        if not self.path.exists():
+            return {}
+        with self._connect("ro") as db:
+            db.execute("BEGIN")
+            return self._load(db)
+
     def _view(self):
-        saved = {}
-        if self.path.exists():
-            with self._connect("ro") as db:
-                db.execute("BEGIN")
-                saved = self._load(db)
+        saved = self._saved()
         sources = self._sources(saved)
         return _cards(saved, sources), sources
 
@@ -339,13 +398,127 @@ class ProjectTasks:
         cards, sources = self._view()
         return [_public(identity, card, sources) for identity, card in cards.items()]
 
-    def details(self, identity):
+    def card(self, identity):
         cards, sources = self._view()
         task = _public(identity, cards[identity], sources)
-        sessions = {ref: sources[ref].copy() for ref in task["session_slugs"]}
+        return task, {ref: sources[ref] for ref in task["session_slugs"]}
+
+    def details(self, identity):
+        task, linked = self.card(identity)
+        sessions = {ref: summary.copy() for ref, summary in linked.items()}
+        work = {}
+        with self.store.lock:
+            for ref, summary in linked.items():
+                if summary["kind"] not in ("work", "review", "scout"):
+                    continue
+                record = self.store._record(summary["slug"])
+                if record is None or record.state.get("created") != summary["created"]:
+                    continue
+                messages = task_messages(self.store._file(record.path, "messages.jsonl"))
+                queue = [] if record.archived else task_queue(self.store._file(record.path, "queue.json"))["waiting"]
+                started = number(record.state.get("turn_started"))
+                recent = {}
+                if summary["alive"]:
+                    activities = (item for tail in record.tails.values() for item in tail.activities
+                                  if item["kind"] != "thinking" and item["text"]
+                                  and started is not None and item["at"] >= started)
+                    for item in sorted(activities, key=lambda item: item["at"])[::-1]:
+                        recent.setdefault((item["kind"], item["text"]), item)
+                        if len(recent) == 5:
+                            break
+                work[ref] = {
+                    "goal": (_goal(self.store._file(record.path, "brief.md")) or "")[:600] or None,
+                    "order": next((item for item in reversed(messages) if item["source"] == "lead"), None),
+                    "next_order": queue[0] if queue else None,
+                    "queued": len(queue),
+                    "turn_started_at": started,
+                    "check_command": line(record.state.get("check")) if summary["phase"] == "check" else None,
+                    "recent_activity": list(recent.values()),
+                }
         for summary in sessions.values():
             summary.pop("archived", None)
-        return sessions, task["pull_requests"]
+        return sessions, task["pull_requests"], work
+
+    def _title_candidate(self, identity, card, source, repositories, *, fresh=False):
+        if (card is None or card.get("title_source") not in ("generated", "operator")
+                or card.get("title_frozen") or card["status"] in TERMINAL or identity not in card["sessions"]
+                or source is None or source["archived"] or source["repo"] != card["project"]):
+            return None
+        slug = source["slug"]
+        record = Record(self.store.tasks_path / slug, False)
+        read_state(record)
+        state = record.state
+        repo = state.get("repo")
+        if (not isinstance(repo, str) or not Path(repo).is_absolute() or state.get("slug") != slug
+                or task_id(slug, state.get("created")) != identity):
+            return None
+        checkout = Path(repo).resolve()
+        if not any(checkout.is_relative_to(root) and checkout.name == root.name for root in repositories):
+            return None
+        verdict_from = self.store.lead_verdict if fresh else self.store._journal.lead_verdict
+        _, verdict_at = verdict_from(slug, record, source["repo"], current=False)
+        turn_at = max(number(state.get(key)) or 0 for key in ("turn_started", "turn_finished"))
+        if verdict_at is not None and (verdict_at > turn_at or verdict_at >= card.get("title_since", float("inf"))):
+            return None
+        goal = (_goal(self.store._file(record.path, "brief.md")) or "")[:1800]
+        report = state.get("result")
+        summary = report.get("summary") if isinstance(report, dict) else None
+        summary = summary.strip()[:600] if isinstance(summary, str) else ""
+        if not (goal or summary):
+            return None
+        revision = hashlib.sha256(json.dumps([goal, summary]).encode("utf-8")).hexdigest()
+        if revision == card.get("title_revision"):
+            return None
+        return dict(id=identity, revision=revision, title=card["title"], goal=goal, summary=summary)
+
+    def title_candidates(self, repositories):
+        cards, sources = self._view()
+        repositories = {Path(repo) for repo in repositories}
+        with self.store.lock:
+            return [candidate for identity, card in sorted(cards.items())
+                    if (candidate := self._title_candidate(identity, card, sources.get(identity), repositories))]
+
+    def update_title(self, identity, revision, title, repositories):
+        with self._connect("rwc") as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            saved = self._load(db)
+            sources = self._sources(saved)
+            card = _cards(saved, sources).get(identity)
+            candidate = self._title_candidate(identity, card, sources.get(identity),
+                                              {Path(repo) for repo in repositories}, fresh=True)
+            if candidate is None or candidate["revision"] != revision:
+                return False
+            card = dict(card, title_revision=revision)
+            card.setdefault("title_since", time.time())
+            if title is not None:
+                card.update(title=title, title_source="operator")
+            self._load(db, create=True)
+            db.execute("INSERT OR REPLACE INTO tasks VALUES (?, ?)", (identity, json.dumps(card, ensure_ascii=False)))
+            return True
+
+    def scout_history(self, project):
+        """Read unlinked finished scouts, including archives outside the Board's polling window."""
+        linked = {ref for card in self._saved().values() for ref in card["sessions"]}
+        history = []
+        for folder, archived in ((self.store.tasks_path, False), (self.store.tasks_path / ".archive", True)):
+            for path in directories(folder):
+                record = Record(path, archived)
+                read_state(record)
+                state = record.state
+                repo = state.get("repo")
+                if state.get("kind") != "scout" or not isinstance(repo, str) or Path(repo).name != project:
+                    continue
+                if not archived and alive(state.get("pid")):
+                    continue
+                match = ARCHIVED.fullmatch(path.name) if archived else None
+                slug = match[1] if match else path.name
+                if slug != state.get("slug") or archived and not match:
+                    continue
+                created = number(state.get("created"))
+                identity = task_id(slug, created)
+                if identity is not None and identity not in linked:
+                    history.append({"id": identity, "slug": path.name, "title": slug, "created": created})
+        return sorted(history, key=lambda row: (row["created"], row["slug"]), reverse=True)
 
     def save(self, data):
         if "sessions" in data:

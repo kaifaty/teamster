@@ -11,9 +11,10 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
-from . import account_commands, account_rotation, accounts, acp, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
+from . import account_commands, account_rotation, accounts, acp, budgets, claude_accounts, claude_review, claude_runner, clock, codex_duty, config, credit_resets, duty, duty_chat, executors, installs, procs, prompts, reflection, result_schema, review_cycle, reviewers, safe_archive, sandboxing, supervisor, task_state, telemetry_log, threads, wait_view
 
 
 def acp_update(update):
@@ -805,6 +806,11 @@ def cmd_stop(a):
 
 
 def cmd_clean(a):
+    if getattr(a, "archive_safe", False):
+        return safe_archive.clean(a)
+    if any(getattr(a, key, None) is not None for key in (
+            "archive_record_from", "expect_created", "expect_turn", "expect_head", "expect_verdict", "operation_id")):
+        procs.die("archive expectations require --archive-safe")
     with task_state.state_lock(a.slug):
         st = task_state.load(a.slug)
         if procs.alive(st.get("pid")):
@@ -874,13 +880,50 @@ reviewers.CLAUDE_REVIEWER.bind(sys.modules[__name__], prepare="prepare_claude_re
 
 
 def cmd_verdict(a):
+    if any(getattr(a, key, None) is not None for key in ("expect_created", "expect_turn", "operation_id")):
+        return operator_verdict(a)
     try:
-        row = telemetry_log.record_lead_verdict(a.slug, a.verdict, a.note)
+        lock = task_state.state_lock(a.slug) if task_state.state_path(a.slug).exists() else nullcontext()
+        with lock:
+            row = telemetry_log.record_lead_verdict(a.slug, a.verdict, a.note)
     except OSError as exc:
         procs.die(f"could not write the telemetry journal: {exc}")
     if row is None:
         procs.die(f"no task {a.slug!r} in task state or the telemetry journal")
     print(f"verdict {a.verdict} recorded for {a.slug} ({row['repo']})")
+
+
+def operator_verdict(a):
+    if (a.verdict not in ("accepted", "dropped") or a.expect_created is None or not (a.expect_turn or 0) > 0
+            or not re.fullmatch(r"[0-9a-f]{32}", a.operation_id or "") or not a.note):
+        procs.die("operator verdict requires an expected run identity, turn, operation ID and note")
+    try:
+        return _record_operator_verdict(a)
+    except (OSError, ValueError) as exc:
+        procs.die(f"operator verdict: {exc}")
+
+
+def _record_operator_verdict(a):
+    with task_state.state_lock(a.slug), safe_archive.idle_chat(task_state.state_path(a.slug).parent):
+        st = task_state.load(a.slug)
+        if (st.get("created") != a.expect_created or st.get("turns") != a.expect_turn
+                or st.get("kind", "work") not in ("work", "review") or not st.get("turn_finished")
+                or st.get("pending") or procs.alive(st.get("pid"))
+                or task_state.session_process(st, terminals=True)[1] is not None
+                or task_state.read_queue(a.slug)["waiting"]):
+            procs.die("run changed or still has work")
+        try:
+            prior = telemetry_log.current_run_verdict(st)
+            if prior is not None:
+                if (prior.get("operation_id") != a.operation_id or prior.get("note") != a.note
+                        or prior.get("verdict") != a.verdict):
+                    procs.die("run already has a recorded verdict")
+                row = prior
+            else:
+                row = telemetry_log.record_lead_verdict(a.slug, a.verdict, a.note, operation_id=a.operation_id)
+        except OSError as exc:
+            procs.die(f"could not write the telemetry journal: {exc}")
+        print(json.dumps(row, ensure_ascii=False))
 
 
 def cmd_accounts(a):

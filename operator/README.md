@@ -1,8 +1,9 @@
-# Read-only Teamster operator
+# Teamster operator
 
-This process observes finished work turns on a training Board. Inkling 2 Mini reads the task
-through Pi and recommends a next step. A person decides what to do. The Board client uses the
-three GET routes in the [external duty API](../src/teamster/docs/external-duty.md).
+Inkling 2 Mini reads finished work turns through Pi and recommends the next step. On a writable
+Board it also maintains generated titles for current project tasks. The
+[external duty API](../src/teamster/docs/external-duty.md) limits title changes to the
+configured repositories.
 
 ## Run one page
 
@@ -29,14 +30,62 @@ On a Board with actions enabled, give the operator the separate `observer_token`
 Omit `-- --once` for continuous polling. Empty pages are polled every five seconds. Stop with
 Ctrl-C or SIGTERM. Reuse the same state file to resume.
 
+The operator checks for one title to assess per poll. The Board supplies the linked brief
+and latest report, then checks the context fingerprint, status and title ownership at save time.
+Each context is recorded once. A user title takes precedence, including on reopened tasks.
+
 ## Inspect a run
 
 To open the Operator panel on the Map or Board, set `BOARD_OPERATOR_STATE` in the training
 Board's environment to the absolute path of the same `OPERATOR_STATE` file and start the Board
 with `BOARD_EXTERNAL_DUTY_CONFIG` and `--read-only`. The panel shows a live review marker and the
 latest 50 recommendations linked to retained cards in the configured repositories.
-The Board opens the state file read-only. Earlier state files show their saved history
+The activity panel reads the state file in read-only mode. Earlier state files show their saved history
 before the updated observer starts reporting active reviews.
+
+## Chat with Mini
+
+Run the operator continuously with the same SQLite state file as an actions-enabled Board.
+Both processes need write access to this file, and the operator uses its existing bearer credential.
+
+**Оператор** opens the chat. Mini can list projects, search task titles and slugs across the
+Board and Map, and read task evidence including dependencies, linked runs, checks, and remaining work.
+**Спросить оператора** attaches the selected card. The tool routes are read-only and require an
+active chat request. Background reviews keep the external duty repository scope.
+
+Each question allows up to five model calls and six Board reads, within a 60-second model deadline
+and a two-minute deadline from submission. The state file holds questions and replies temporarily
+so the Board can retrieve them. The browser tab holds conversation history until the page reloads.
+
+## Resolve explicitly delegated runs
+
+In a Board project journal, choose a linked work or review run and **Передать оператору**.
+The operator either waits for a current verdict or records a rejection when a different
+managed run completes with `done` and its summary contains the agreed phrase. Phrase matching
+ignores case and whitespace. Review the evidence or record a verdict if it needs a decision.
+
+Mini polls the Board's resolution queue using its existing loopback credential. A policy,
+decision, and archive receipts stay in the project journal, including after closure. The Board
+uses the Teamster CLI source in its release for versioned, recoverable archiving. A verified archive
+retains the branch SHA, task logs and local worktree artifacts for managed `codex/` and `claude/`
+branches. Tracked changes, live sessions, queued work, or an unverifiable archive halt cleanup.
+The operator never launches another run
+through this workflow.
+
+## Resolve stopped work automatically
+
+On an actions-enabled Board, `BOARD_OPERATOR_AUTO_REPO` opts one repository in by its absolute
+path. The operator reviews one stopped or completed linked work or review run per poll, rechecks
+unresolved pull requests and records a changed wait, question, or merge in the project journal.
+An archived or revoked resolution and an explicit assignment take precedence.
+
+The automatic path accepts a single linked GitHub PR from the checkout's origin that merged into
+`main`. It checks the branch and merged source commit against the local worktree, or verifies the
+merge in `origin/main` if the branch and worktree are already gone. The command journal records
+the verdict and the verified archive receipt. A request to make an outstanding decision appears
+in the same journal. The automatic path works while Mini's model is unavailable.
+
+## Review logs and budgets
 
 Stdout contains JSON lines. Each `board_request` identifies the method and route. Each
 `model_call` identifies the event and outbound attempt. A `recommendation` includes the opaque

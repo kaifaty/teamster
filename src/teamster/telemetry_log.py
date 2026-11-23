@@ -117,7 +117,20 @@ def _at(row):
     return at if type(at) in (int, float) else 0
 
 
-def record_lead_verdict(slug, verdict, note=None):
+def current_run_verdict(st):
+    repo, slug, created = Path(st["repo"]).name, st["slug"], st.get("created")
+    end = max(st.get("turn_finished") or 0, st.get("turn_started") or 0)
+    latest = None
+    for row in journal_rows():
+        if (row.get("kind") == "verdict" and row["repo"] == repo and row["slug"] == slug
+                and (row.get("created") == created or row.get("created") is None and created is not None
+                     and _at(row) >= created)
+                and _at(row) > end and (latest is None or _at(row) >= _at(latest))):
+            latest = row
+    return latest
+
+
+def record_lead_verdict(slug, verdict, note=None, *, operation_id=None):
     """Append the lead's verdict for a task; return the row, or None for an unknown slug."""
     target = lead_verdict_target(slug)
     if target is None:
@@ -125,6 +138,8 @@ def record_lead_verdict(slug, verdict, note=None):
     repo, created = target
     row = {"v": 1, "kind": "verdict", "at": clock.CLOCK.time(), "slug": slug, "repo": repo,
            "created": created, "verdict": verdict, "note": note}
+    if operation_id is not None:
+        row.update(operation_id=operation_id, actor="operator")
     append_row(row)
     return row
 

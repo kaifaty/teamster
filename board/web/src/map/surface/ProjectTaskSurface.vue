@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { Point, Rect } from "../layout";
 import { ZOOM_NOTCH } from "../navigation";
-import { WHEEL_GAP_MS } from "../scene/input";
+import { CLICK_SLOP, WHEEL_GAP_MS } from "../scene/input";
 import { BUILDING_HEIGHT, layoutSurface, type Site } from "./layout";
 import type { SurfaceScene } from "./scene";
 import type { SurfaceTask } from "./types";
@@ -11,7 +11,8 @@ import { useSurfaceCamera } from "./useSurfaceCamera";
 const props = defineProps<{
   tasks: readonly SurfaceTask[]; selectedId: string | null; biomes?: Record<string, string>; operatorSite?: string;
 }>();
-const emit = defineEmits<{ select: [id: string] }>();
+const emit = defineEmits<{ select: [id: string]; open: [id: string] }>();
+const DOUBLE_CLICK_MS = 450;
 const field = ref<HTMLElement | null>(null);
 const layout = computed(() => layoutSurface(props.tasks, props.biomes));
 const selected = computed(() => props.selectedId);
@@ -28,10 +29,32 @@ function hover(at: Point | null, covered?: Rect) {
   const el = field.value;
   if (el && el.style.cursor !== "grabbing") el.style.cursor = hovered.value ? "pointer" : "";
 }
-const { camera, size, compact, focusTask, focusProject, zoomBy, home } = useSurfaceCamera(field, layout, selected, (at, covered) => {
+let pendingClick: { id: string; at: Point; timer: number } | undefined;
+function clearClick() {
+  window.clearTimeout(pendingClick?.timer);
+  pendingClick = undefined;
+}
+function click(at: Point, covered?: Rect) {
   const id = scene?.hit(at, covered);
-  if (id) select(id);
-}, hover);
+  const previous = pendingClick;
+  clearClick();
+  if (!id) {
+    if (previous) select(previous.id);
+    return;
+  }
+  if (previous?.id === id && Math.hypot(at.x - previous.at.x, at.y - previous.at.y) <= CLICK_SLOP * 2) {
+    emit("open", id);
+    return;
+  }
+  // A quick preview can cover the clicked building or move the camera. Wait for the second click first.
+  pendingClick = { id, at, timer: window.setTimeout(() => {
+    clearClick();
+    select(id);
+  }, DOUBLE_CLICK_MS) };
+}
+const { camera, size, compact, focusTask, focusProject, zoomBy, home } =
+  useSurfaceCamera(field, layout, selected, click, hover);
+watch([() => camera.value.zoom, () => camera.value.tx, () => camera.value.ty], clearClick);
 defineExpose({ focusTask, focusProject });
 
 const operatorMarker = computed(() => {
@@ -130,6 +153,7 @@ watch(size, async () => {
 }, { once: true });
 onBeforeUnmount(() => {
   disposed = true;
+  clearClick();
   cancelAnimationFrame(frame);
   scene?.destroy();
   scene = undefined;
@@ -145,7 +169,7 @@ function chooseProject(event: Event) {
   <section class="surface" aria-label="Карта проектных заданий">
     <div
       ref="field" class="field" role="group" tabindex="0"
-      aria-label="Карта местности. Стрелки перемещают карту, плюс и минус меняют масштаб."
+      aria-label="Карта местности. Двойной клик открывает задачу. Стрелки перемещают карту, плюс и минус меняют масштаб."
       @keydown.home.prevent="home"
       @touchstart.passive="touchChanged" @touchend.passive="touchChanged" @touchcancel.passive="touchChanged"
       @gesturestart="setPinching(true)" @gestureend="setPinching(false)"
