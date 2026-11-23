@@ -158,7 +158,7 @@ async function main() {
     if (resolving) return;
     resolving = true;
     try {
-      await board.pollResolutions(AbortSignal.timeout(135_000));
+      await board.pollResolutions(AbortSignal.timeout(615_000));
     } catch (error) {
       console.warn("Operator resolution delayed:", error instanceof Error ? error.message : String(error));
     } finally {

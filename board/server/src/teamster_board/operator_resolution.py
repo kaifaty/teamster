@@ -358,7 +358,7 @@ class OperatorResolution:
                    "--operation-id", operation["id"], *args]
         try:
             proc = subprocess.run(command, capture_output=True, text=True, errors="replace", env=env,
-                                  cwd=self.home, timeout=120, pass_fds=(lock_fd,))
+                                  cwd=self.home, timeout=600 if subcommand == "clean" else 120, pass_fds=(lock_fd,))
         except subprocess.TimeoutExpired:
             return None, "Teamster command timed out"
         except OSError as exc:

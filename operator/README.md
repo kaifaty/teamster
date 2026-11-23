@@ -67,8 +67,9 @@ ignores case and whitespace. Review the evidence or record a verdict if it needs
 Mini polls the Board's resolution queue using its existing loopback credential. A policy,
 decision, and archive receipts stay in the project journal, including after closure. The Board
 uses the Teamster CLI source in its release for versioned, recoverable archiving. A verified archive
-retains the branch SHA, task logs and local worktree artifacts. Tracked changes, live sessions,
-queued work, or an unverifiable archive halt cleanup. The operator never launches another run
+retains the branch SHA, task logs and local worktree artifacts for managed `codex/` and `claude/`
+branches. Tracked changes, live sessions, queued work, or an unverifiable archive halt cleanup.
+The operator never launches another run
 through this workflow.
 
 ## Review logs and budgets

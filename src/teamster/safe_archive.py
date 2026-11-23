@@ -109,7 +109,7 @@ def _bundle(path, bundle, manifest):
     with tempfile.NamedTemporaryFile(dir=bundle.parent, delete=False) as stream:
         temporary = Path(stream.name)
         try:
-            with tarfile.open(fileobj=stream, mode="w:gz", dereference=False) as archive:
+            with tarfile.open(fileobj=stream, mode="w:gz", compresslevel=1, dereference=False) as archive:
                 for name in manifest:
                     # Store the bytes of each file even if artifacts share an inode.
                     archive.inodes.clear()
@@ -204,7 +204,7 @@ def _archive(args, receipt_file, receipt):
             raise ValueError("Worktree is outside the managed repository")
         worktree = managed
         branch = st["branch"]
-        if not branch.startswith("codex/"):
+        if not branch.startswith(("codex/", "claude/")):
             raise ValueError("Invalid managed branch")
         if base:
             _check_record_only(repo, worktree, branch, head, base)
