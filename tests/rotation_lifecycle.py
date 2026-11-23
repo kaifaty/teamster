@@ -177,6 +177,10 @@ class LifecycleTests(RotationTestCase):
         self.assertFalse(record.exists())
         self.assertNotIn(slug, self.cli("status"))
 
+        worktrees = self.home / "worktrees"
+        worktrees.mkdir(exist_ok=True)
+        separate = worktrees.rename(self.root / "separate-worktrees")
+        worktrees.symlink_to(separate, target_is_directory=True)
         clock.sleep(1)
         self.start(slug)
         self.wait(slug)

@@ -186,10 +186,12 @@ def _archive(args, receipt_file, receipt):
         if not verdict or verdict["verdict"] != args.expect_verdict:
             raise ValueError("Expected verdict is no longer current")
         repo, worktree = Path(st["repo"]), Path(st["worktree"])
-        managed = config.WORKTREES / f"claude-{slug}" / repo.name
-        if (worktree != managed or worktree.resolve() != managed.absolute()
+        relative = Path(f"claude-{slug}") / repo.name
+        managed = config.WORKTREES.resolve() / relative
+        if (worktree != config.WORKTREES / relative or worktree.resolve() != managed
                 or repo.resolve() != repo or repo.is_symlink() or not (repo / ".git").is_dir()):
             raise ValueError("Worktree is outside the managed repository")
+        worktree = managed
         branch = st["branch"]
         if not branch.startswith("codex/") or _git(repo, "rev-parse", "--verify", f"refs/heads/{branch}").decode().strip() != head:
             raise ValueError("Expected commit is not on the retained branch")
