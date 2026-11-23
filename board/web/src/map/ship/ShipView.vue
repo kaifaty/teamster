@@ -34,6 +34,7 @@ const props = defineProps<{
   /** The system's emblem; null draws the repository's first letter. */
   emblem: string | null;
   mapTaskTitle?: string;
+  backToJournal?: boolean;
 }>();
 /**
  * `show`: «Показать на карте» returns to the linked project task. `task`: an order's answer
@@ -122,7 +123,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   <section class="ship-screen" role="dialog" aria-modal="false" aria-labelledby="ship-title" :style="{ '--frame': `url(${frame})`, '--sky': `url(${nebula})` }">
     <div class="bridge">
       <header class="head">
-        <button ref="back" type="button" class="key back" title="Вернуться к карте (Esc)" @click="emit('close')">← К карте</button>
+        <button ref="back" type="button" class="key back" :title="backToJournal ? 'Вернуться к журналу (Esc)' : 'Вернуться к карте (Esc)'"
+          @click="emit('close')">{{ backToJournal ? "← К журналу" : "← К карте" }}</button>
         <div class="who">
           <img v-if="emblem" class="emblem" :src="emblem" alt="" />
           <span v-else class="emblem letter" aria-hidden="true">{{ letter }}</span>

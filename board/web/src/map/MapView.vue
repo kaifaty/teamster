@@ -12,6 +12,7 @@ import MapConsole from "./console/MapConsole.vue";
 import DaySummary from "./DaySummary.vue";
 import { stars, tanks } from "./fleet";
 import ProjectTaskMap from "./ProjectTaskMap.vue";
+import ProjectTaskJournal from "./ProjectTaskJournal.vue";
 import { research } from "./research";
 import ShipView from "./ship/ShipView.vue";
 import StationView from "./station/StationView.vue";
@@ -54,8 +55,9 @@ const consolePanel = ref<InstanceType<typeof MapConsole> | null>(null);
 const toolsOpen = ref(false);
 const projects = computed(() => new Set(data.value?.tasks.filter(isCurrent).map((task) => task.project)));
 const sessions = computed(() => sessionNames(data.value?.tasks ?? [], board.tasks.value));
-type RecordTarget = string | { taskId: string; sessionId: string };
+type RecordTarget = string | { taskId: string; sessionId?: string };
 const recordTarget = ref<RecordTarget | null>(null);
+const runControlsOpen = ref(false);
 const linkedTask = computed(() => {
   const target = recordTarget.value;
   if (!target) return;
@@ -64,9 +66,11 @@ const linkedTask = computed(() => {
 });
 const record = computed(() => {
   const target = recordTarget.value;
-  return target && (typeof target === "string" ? target : linkedTask.value?.session_slugs[target.sessionId]);
+  if (typeof target === "string") return target;
+  return target?.sessionId ? linkedTask.value?.session_slugs[target.sessionId] : undefined;
 });
 const recordTask = computed(() => record.value ? board.state.value.tasks[record.value] ?? null : null);
+const recordOpen = computed(() => !!record.value || !!linkedTask.value);
 const researchOpen = ref(false);
 const summaryOpen = ref(false);
 const account = ref<string | null>(null);
@@ -88,7 +92,14 @@ defineExpose({ openOperatorTask });
 
 function openRecord(target: RecordTarget) {
   recordOpener = document.activeElement as HTMLElement | null;
+  runControlsOpen.value = false;
   recordTarget.value = target;
+  emit("panel");
+}
+function openRunControls(sessionId: string) {
+  if (!linkedTask.value) return;
+  recordTarget.value = { taskId: linkedTask.value.id, sessionId };
+  runControlsOpen.value = true;
   emit("panel");
 }
 function pickRecord(event: Event) {
@@ -97,6 +108,10 @@ function pickRecord(event: Event) {
   picker.value = "";
 }
 function closeRecord() {
+  if (runControlsOpen.value && linkedTask.value) {
+    runControlsOpen.value = false;
+    return;
+  }
   recordTarget.value = null;
   void nextTick(() => recordOpener?.focus());
 }
@@ -156,10 +171,11 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
 
 <template>
   <section class="map" aria-label="Карта заданий">
-    <ProjectTaskMap ref="map" :data="data" :error="error" :sessions="sessions" :save="save" :operator-site="operatorSite"
+    <ProjectTaskMap ref="map" :inert="recordOpen" :data="data" :error="error" :sessions="sessions" :save="save" :operator-site="operatorSite"
       :records="board.state.value.tasks" :fetch-details="board.source.fetchProjectTaskDetails"
       :fetch-scout-history="board.source.fetchScoutHistory" :operator-chat="operatorChat"
       @ask-operator="emit('askOperator', $event)"
+      @journal="(taskId) => openRecord({ taskId })"
       @record="(taskId, sessionId) => openRecord({ taskId, sessionId })" @scout="openRecord"
       @retry="refresh" @panel="emit('panel')">
       <button type="button" class="btn tools-toggle" :aria-expanded="toolsOpen" aria-controls="map-tools"
@@ -181,18 +197,23 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
     </section>
 
     <StationView v-if="researchOpen && active && station" :research="station" :now="now" :frame="frameLight"
-      :covered="!!record || !!machine" :source="board.source" :refresh="loadResearch" :tasks="board.state.value.tasks"
+      :covered="recordOpen || !!machine" :source="board.source" :refresh="loadResearch" :tasks="board.state.value.tasks"
       :launches="board.state.value.launches" @close="closeResearch" @open="openRecord" @ship="openAgent" />
     <OpenCodeAccount v-if="active && account?.startsWith('opencode:')" :provider="account.slice('opencode:'.length)"
       :accounts="board.state.value.accounts" :source="board.source" :read-only="subscriptionsReadOnly" :frame="frameLight"
       @close="closeAccount" />
     <AccountView v-else-if="account && active" :key="account" :account-key="account" :initial-login="initialLogin" :read-only="readOnly"
-      :covered="!!record || !!machine" :accounts="board.state.value.accounts" :logins="board.state.value.logins"
+      :covered="recordOpen || !!machine" :accounts="board.state.value.accounts" :logins="board.state.value.logins"
       :tasks="board.state.value.tasks" :source="board.source" :now="now" :frame="frameLight"
       @close="closeAccount" @open="openRecord" />
-    <ShipView v-if="record && active" :slug="record" :task="recordTask" :opencode="board.state.value.accounts?.opencode"
+    <ProjectTaskJournal v-if="linkedTask && active && !runControlsOpen" :key="linkedTask.id" :task="linkedTask"
+      :initial-slug="record" :records="board.state.value.tasks" :source="board.source" :now="now"
+      :operator="board.state.value.operator" :operator-chat="operatorChat" :rename="data?.writable ? save : undefined"
+      @close="closeRecord" @run-controls="openRunControls" @ask-operator="emit('askOperator', $event)" />
+    <ShipView v-else-if="record && active" :slug="record" :task="recordTask" :opencode="board.state.value.accounts?.opencode"
       :source="board.source" :now="now" :frame="frameLight" :emblem="emblemOf(recordTask?.repo ?? null)"
-      :map-task-title="linkedTask?.title" @close="closeRecord" @show="showLinkedTask" @task="board.put" />
+      :back-to-journal="runControlsOpen && !!linkedTask" :map-task-title="linkedTask?.title"
+      @close="closeRecord" @show="showLinkedTask" @task="board.put" />
     <DaySummary v-if="summaryOpen && active" :source="board.source" :events="board.events.value" :frame="frameLight" @close="closeSummary" />
     <AddSubscription v-if="addOpener && active" :source="board.source" :read-only="subscriptionsReadOnly"
       :accounts="board.state.value.accounts" @open="finishAdd" @close="closeAdd" />

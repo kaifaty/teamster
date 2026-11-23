@@ -19,7 +19,7 @@ const props = defineProps<{
   save: (change: ProjectTaskChange) => Promise<ProjectTask>;
   fetchScoutHistory?: (project: string) => Promise<ProjectScout[]>;
 }>();
-const emit = defineEmits<{ record: [taskId: string, sessionId: string]; scout: [slug: string]; panel: []; retry: []; askOperator: [target: OperatorTarget] }>();
+const emit = defineEmits<{ journal: [taskId: string]; record: [taskId: string, sessionId: string]; scout: [slug: string]; panel: []; retry: []; askOperator: [target: OperatorTarget] }>();
 const surface = ref<InstanceType<typeof ProjectTaskSurface> | null>(null);
 const closeButton = ref<HTMLButtonElement | null>(null);
 const picker = ref<HTMLSelectElement | null>(null);
@@ -260,6 +260,7 @@ defineExpose({ select, focusProject });
             @click="emit('askOperator', { kind: 'project', id: selected.id, title: selected.title })">Спросить оператора</button>
           <button v-if="data?.writable" ref="editButton" type="button" class="btn" @click="edit(selected)">Изменить</button>
         </div>
+        <button type="button" class="btn primary open-journal" @click="emit('journal', selected.id)">Открыть журнал</button>
         <dl>
           <template v-if="selected.parent_id">
             <dt>Родительское задание</dt>
@@ -317,6 +318,7 @@ defineExpose({ select, focusProject });
 header, .status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 h2 { margin: 4px 0 8px; font-size: 18px; }
 h3 { font-size: 14px; margin: 12px 0 5px; }
+.open-journal { margin-top: 10px; }
 .history-filters { display: grid; gap: 6px; }
 .history-filters label { display: grid; gap: 3px; font-size: 12px; }
 .history-filters input, .history-filters select { width: 100%; box-sizing: border-box; }
