@@ -13,12 +13,40 @@ from fastapi.responses import JSONResponse
 from . import duty_tasks
 from .actions import error
 from .external_duty import valid_text
+from .project_tasks import pull_request_evidence
 from .store import ARCHIVED, Store, cargo, mapping, text
 
 CHAT_TIMEOUT_MS = 120_000
 CHAT_QUEUE_LIMIT = 4
 RUN_KINDS = ("work", "review", "scout", "reflect")
 SEARCH_PAGE = 8
+PROPOSAL = "lifecycle:"
+
+
+def _proposal(row):
+    result = {"id": row["id"], "at": row["at"], "status": row["status"]}
+    if row["status"] != "answered":
+        return result
+    answer = row["answer"].strip()
+    if answer.startswith("```") and answer.endswith("```"):
+        answer = answer.partition("\n")[2][:-3].strip()
+    try:
+        value = json.loads(answer)
+    except ValueError:
+        value = None
+    allowed = json.loads(row["reference"][len(PROPOSAL):])["actions"]
+    if (not isinstance(value, dict) or not valid_text(value.get("reason"), 1000)
+            or not isinstance(value.get("options"), list) or len(value["options"]) > 5):
+        return dict(result, status="failed")
+    options = {}
+    for option in value["options"]:
+        if (isinstance(option, dict) and option.get("action") in allowed
+                and valid_text(option.get("text"), 1000)):
+            options.setdefault(option["action"], {"action": option["action"], "text": option["text"].strip()})
+    recommended = value.get("recommend")
+    if not isinstance(recommended, str) or recommended not in options:
+        return dict(result, status="failed")
+    return dict(result, reason=value["reason"].strip(), recommended=recommended, options=list(options.values()))
 
 
 def _connect(path, mode):
@@ -134,8 +162,26 @@ class OperatorChat:
                     FROM project_chat h JOIN chat_requests r USING (id)
                     WHERE h.card = ? ORDER BY h.at, h.id
                 """, (int(time.time() * 1000), identity)).fetchall()
-                data["chat"] = [dict(row) for row in chat]
+                data["chat"] = [dict(row) for row in chat if not (row["reference"] or "").startswith(PROPOSAL)]
+                data["proposals"] = [_proposal(row) for row in chat if (row["reference"] or "").startswith(PROPOSAL)]
         return data
+
+    def choose(self, data):
+        card, identity, action = (data.get(key) for key in ("card", "proposal", "action"))
+        if (data.keys() != {"card", "proposal", "action"} or not Store._safe_slug(card)
+                or not isinstance(identity, str) or not re.fullmatch("[a-f0-9]{32}", identity)
+                or not isinstance(action, str)):
+            raise ValueError("Invalid proposal choice")
+        with _connect(self.path, "ro") as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute("""SELECT h.id, h.at, h.reference, r.answer, 'answered' AS status
+                FROM project_chat h JOIN chat_requests r USING (id)
+                WHERE h.card=? AND h.id=? AND h.reference LIKE ? AND r.answer IS NOT NULL""",
+                (card, identity, PROPOSAL + "%")).fetchone()
+        option = next((item for item in _proposal(row).get("options", []) if item["action"] == action), None) if row else None
+        if option is None:
+            raise ValueError("Choose an option from this task's proposal")
+        self.resolution.choose(card, identity, json.loads(row["reference"][len(PROPOSAL):]), option)
 
     def _reference(self, db, identity, reference):
         journal = self._journal(db, *self.project_tasks.card(identity))
@@ -271,8 +317,10 @@ class OperatorChat:
         question, history, target = data.get("question"), data.get("history"), data.get("target")
         reference = data.get("reference")
         project = target.get("id") if isinstance(target, dict) and target.get("kind") == "project" else None
-        if (data.keys() - {"reference"} != {"question", "history", "target"} or not valid_text(question, 2000)
+        proposing = data.get("proposal") is True
+        if (data.keys() - {"reference", "proposal"} != {"question", "history", "target"} or not valid_text(question, 2000)
                 or (target is not None and not isinstance(target, dict))
+                or ("proposal" in data and (not proposing or project is None or "reference" in data))
                 or ("reference" in data and (project is None or not valid_text(reference, 270)))
                 or not isinstance(history, list) or len(history) > 2
                 or any(not isinstance(pair, dict) or pair.keys() != {"question", "answer"}
@@ -282,7 +330,16 @@ class OperatorChat:
             with _connect(self.path, "rw") as db, db:
                 context = self._context(db, target) if target is not None else None
                 payload = {"task": context, "conversation": history, "question": question.strip()}
-                if reference is not None:
+                if proposing:
+                    card, linked = self.project_tasks.card(project)
+                    evidence = pull_request_evidence(card["pull_requests"][:3])
+                    target = self.resolution.proposal_target(card, linked, evidence)
+                    if target["run"]:
+                        selected = linked[target["run"]]
+                        context["linked_run"] = self._run(db, selected["slug"], created=selected["created"])
+                    payload.update(lifecycle=target["actions"], pull_request_evidence=evidence)
+                    reference = PROPOSAL + json.dumps(target)
+                elif reference is not None:
                     payload["event"] = self._reference(db, project, reference)
                 prompt = json.dumps(payload, ensure_ascii=False)
                 # Cap bytes as well as characters to leave room for the model's answer.
@@ -292,6 +349,8 @@ class OperatorChat:
                 identity = uuid4().hex
                 durable = project is not None and db.execute(
                     "SELECT 1 FROM sqlite_schema WHERE name='project_chat'").fetchone()
+                if proposing and not durable:
+                    return error(503, "operator_unavailable")
                 if durable:
                     db.execute("BEGIN IMMEDIATE")
                     if db.execute("""SELECT 1 FROM project_chat h JOIN chat_requests r USING (id)

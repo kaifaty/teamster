@@ -26,6 +26,8 @@ from teamster_board import landing as landing_module
 from teamster_board import app as board_app
 from teamster_board import store as store_module
 from teamster_board import project_tasks as project_tasks_module
+from teamster_board import operator_activity as operator_activity_module
+from teamster_board import operator_resolution as operator_resolution_module
 from teamster_board import accounts as accounts_module, logins as logins_module
 from teamster_board.app import Settings, create_app
 from teamster_board.duty_tasks import task_id
@@ -88,7 +90,7 @@ def receive_until(socket, wanted):
     pytest.fail(f"No {wanted} message received")
 
 
-def test_operator_history_and_live_focus_on_read_only_board(board):
+def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
     client, _, directory, state, settings = board
     assert "operator" not in client.get("/api/snapshot").json()
     archive_name = "demo-20261121T120000Z"
@@ -236,6 +238,81 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
             assert client.post(poll, headers=observer).json() == {"card": None}
             entries = client.get(read).json()["events"]
             assert [row["kind"] for row in entries] == ["delegated", "waiting_run", "revoked"]
+
+            linked_pr = "https://github.com/owner/repository/pull/39"
+            assert client.post("/api/actions/project-task", json={
+                "id": current_id, "pull_requests": [{"provider": "github", "url": linked_pr}],
+            }).is_success
+            merged = [{"url": linked_pr, "status": "merged", "description": "The missing checks passed."}]
+            monkeypatch.setattr(operator_activity_module, "pull_request_evidence", lambda prs: merged)
+            monkeypatch.setattr(operator_resolution_module, "pull_request_evidence", lambda prs: merged)
+            task_state = directory / "state.json"
+            idle = {**state, "pid": None, "turn_finished": 20.0, "outcome": "completed",
+                    "result": {"status": "partial", "remaining": ["Verify the result."]}}
+            task_state.write_text(json.dumps(idle))
+            local = writable.state.board
+            local.store.poll()
+            local.actions.reason = None
+            orders = []
+
+            def deliver(self, route, data):
+                orders.append((route, data))
+                return {"ok": True}
+
+            monkeypatch.setattr(actions_module.Actions, "_task", deliver)
+
+            def propose(option, text):
+                sent = client.post(action, json={**project_chat, "proposal": True})
+                assert sent.status_code == 202
+                proposal_id = sent.json()["id"]
+                prompt = json.loads(db.execute("SELECT prompt FROM chat_requests WHERE id=?", (proposal_id,)).fetchone()[0])
+                assert prompt["pull_request_evidence"] == merged and option in prompt["lifecycle"]
+                with db:
+                    db.execute("UPDATE chat_requests SET answer=? WHERE id=?", (json.dumps({
+                        "reason": "The result is partial.", "recommend": option,
+                        "options": [{"action": option, "text": text}, {"action": "clean", "text": "Unexpected action."}],
+                    }), proposal_id))
+                assert client.get(read).json()["proposals"][-1]["options"] == [{"action": option, "text": text}]
+                return {"card": current_id, "proposal": proposal_id, "action": option}
+
+            ask = propose("ask_executor", "Which checks passed?")
+            assert client.post(resolution, json={**ask, "action": "clean"}).status_code == 409
+            assert client.post(resolution, json=ask).is_success
+            assert client.post(resolution, json=ask).is_success
+            assert len(orders) == 1 and orders[0][0] == "say" and orders[0][1]["slug"] == "demo"
+            assert orders[0][1]["text"].endswith("Which checks passed?")
+            assert local.project_tasks.card(current_id)[0]["status"] == "active"
+            task_state.write_text(json.dumps({**idle, "turns": 2, "result": {"status": "done", "summary": "MSVC passed."}}))
+            local.store.poll()
+            assert client.post(poll, headers=observer).json() == {"card": current_id}
+            assert local.project_tasks.card(current_id)[0]["status"] == "needs_input"
+
+            repository = Path(state["repo"])
+            repository.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", state["branch"], str(repository)], check=True)
+            subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.test",
+                            "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "fixture"], check=True)
+            commands = []
+
+            def execute(self, lock, command, operation, args):
+                commands.append((command, args))
+                return True, {"sha": operation.get("sha"), "archive": "verified-archive", "files": 0}
+
+            cls = operator_resolution_module.OperatorResolution
+            monkeypatch.setattr(cls, "_command", execute)
+            monkeypatch.setattr(cls, "_verdict", lambda *args: "accepted" if commands else None)
+            accept = propose("accept", "Accept the merged result.")
+            assert client.post(resolution, json=accept).is_success
+            assert local.project_tasks.card(current_id)[0]["status"] == "needs_input"
+            assert client.post(poll, headers=observer).json() == {"card": current_id}
+            assert client.post(resolution, json=accept).is_success
+            assert local.project_tasks.card(current_id)[0]["status"] == "done"
+            assert [(command, args[0]) for command, args in commands] == [
+                ("verdict", "accepted"), ("clean", "--archive-safe"),
+            ]
+            events = client.get(read).json()["events"]
+            assert [event["kind"] for event in events[-4:]] == ["verdict_recorded", "archive_started", "status_changed", "archived"]
+            assert events[-2]["detail"] == {"from": "needs_input", "to": "done"}
 
 
 

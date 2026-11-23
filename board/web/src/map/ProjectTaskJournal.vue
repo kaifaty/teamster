@@ -7,6 +7,8 @@ import type { BoardSource } from "../lib/source";
 import { useTaskDetail } from "../lib/taskDetail";
 import type { OperatorActivity, OperatorResolution, OperatorResolutionRule, OperatorTarget } from "../operatorActivity";
 import type { TaskSummary } from "../types";
+import { optionLabels } from "../operatorActivity";
+import ProjectTaskDecision from "./ProjectTaskDecision.vue";
 import ProjectOperatorChat from "./ProjectOperatorChat.vue";
 import { stateOf, verdictTitle } from "./ship/bridge";
 import { changesLine, reportParagraphs } from "./ship/now";
@@ -106,18 +108,23 @@ const resolutionLabels: Record<string, string> = {
   waiting_evidence: "Ждёт связанный запуск",
   needs_decision: "Нужно решение",
   verdict_started: "Записывает вердикт",
-  verdict_recorded: "Эксперимент отклонён по результатам замеров",
+  verdict_recorded: "Вердикт записан",
   archive_started: "Сохраняет архив",
   archived: "Запуск архивирован",
-  cleanup_blocked: "Очистку приостановили",
+  cleanup_blocked: "Выполнение приостановлено",
   revoked: "Полномочия отозваны",
+  choice: "Пользователь выбрал действие",
+  status_changed: "Статус изменился",
+  clarification_requested: "Ждёт ответа пользователя",
+  waiting_followup: "Поручение передано исполнителю",
+  followup_finished: "Исполнитель ответил",
 };
 const managed = computed(() => sessions.value.filter((row) => row.slug && row.record
   && ["work", "review"].includes(row.record.kind) && !row.slug.match(/-\d{8}T\d{6}Z$/)));
 const possibleEvidence = computed(() => Object.values(props.records).filter((item) =>
   ["work", "review"].includes(item.kind)).map((item) => item.slug).sort());
 const resolutionActive = computed(() => resolution.value?.assignment
-  && !["archived", "revoked"].includes(resolution.value.assignment.status));
+  && !["archived", "revoked", "followup_finished", "clarification_requested"].includes(resolution.value.assignment.status));
 const resolutionForm = ref(false);
 const resolutionRun = ref("");
 const resolutionRule = ref<"verdict" | "negative">("verdict");
@@ -127,7 +134,6 @@ const resolutionBusy = ref(false);
 const resolutionError = ref("");
 let resolutionTimer: ReturnType<typeof setInterval> | undefined;
 let resolutionRequest = 0;
-
 async function refreshResolution() {
   if (!props.source.fetchOperatorResolution) return;
   const request = ++resolutionRequest;
@@ -216,7 +222,10 @@ const entries = computed(() => {
     const reason = event.kind === "needs_decision"
       ? "Подтверди итог вручную или передай оператору другое условие."
       : undefined;
-    const text = [reason, data.reason, data.report ?? (typeof data.evidence === "object" ? data.evidence?.report : undefined),
+    const text = [reason, data.reason, data.action && optionLabels[data.action],
+      data.from && data.to && `${statusLabels[data.from]} → ${statusLabels[data.to]}`,
+      data.verdict === "accepted" ? "Результат принят" : data.verdict === "dropped" ? "Работа отклонена" : undefined,
+      data.report ?? (typeof data.evidence === "object" ? data.evidence?.report : undefined),
       data.note ?? data.phrase, data.sha && `SHA ${data.sha}`, data.archive && `Архив ${data.archive}`,
       data.files !== undefined ? `Файлов и ссылок вне Git: ${data.files}` : undefined,
       data.worktree && `Рабочая копия ${data.worktree}`,
@@ -228,9 +237,14 @@ const entries = computed(() => {
         target.label].filter(Boolean).join(" · ") : data.run?.split(":")[0],
       actor: event.actor === "operator" ? "Оператор Mini" : "Пользователь", at: event.at, text, evidence });
   }
+  for (const item of resolution.value?.proposals ?? []) {
+    if (item.status !== "answered") continue;
+    rows.push({ id: "proposal:" + item.id, actor: "Оператор Mini", at: item.at, title: "Подготовил варианты действий",
+      text: [item.reason, ...item.options!.map(option => optionLabels[option.action] + " · " + option.text)].join("\n") });
+  }
   return rows.sort((a, b) => b.at - a.at);
 });
-const visibleEntries = computed(() => operatorOnly.value ? entries.value.filter((row) => row.reference) : entries.value);
+const visibleEntries = computed(() => operatorOnly.value ? entries.value.filter((row) => row.reference || row.id.startsWith("proposal:")) : entries.value);
 const labels = computed(() => new Map(entries.value.flatMap((row) =>
   row.reference ? [[row.reference, row.title + " · " + formatClock(row.at, props.now)] as const] : [])));
 const pulls = computed(() => props.task.pull_requests.map((pr) => ({
@@ -240,15 +254,6 @@ const showBlocker = computed(() => props.task.status === "blocked" || props.task
 const remaining = computed(() => run.value?.cargo?.remaining ?? []);
 const questions = computed(() => run.value?.cargo?.questions ?? []);
 const mergedPulls = computed(() => pulls.value.filter((pr) => pr.status === "merged"));
-
-function askForDecision() {
-  const evidence = mergedPulls.value.slice(0, 3).map((pr) => pr.url).join("\n");
-  chat.value?.prepare([
-    "Объясни, почему задача остановилась и сохраняется ли эта причина сейчас.",
-    evidence && `Board подтвердила, что следующие PR влиты. Сверь это с последним отчётом запуска.\n${evidence}`,
-    "Предложи варианты действий и выдели рекомендуемый. Если нужен исполнитель, сформулируй поручение и критерий готовности. Если работу можно закрыть, укажи, что проверить перед архивированием. Если данных мало, задай один конкретный вопрос.",
-  ].filter(Boolean).join("\n\n"));
-}
 
 const back = ref<HTMLButtonElement | null>(null);
 const renameButton = ref<HTMLButtonElement | null>(null);
@@ -346,10 +351,10 @@ onBeforeUnmount(() => {
           </a>
           Перед возобновлением стоит сверить результат влитых изменений с отчётом.
         </p>
-        <div v-if="chatEnabled && source.askOperator" class="actions">
-          <button type="button" class="btn journal-primary" @click="askForDecision">Запросить варианты у оператора</button>
-        </div>
       </section>
+      <ProjectTaskDecision :target="chatTarget" :source="source" :in-history="inHistory" :resolution="resolution"
+        :enabled="chatEnabled" :resolving="!!resolutionActive && resolution?.assignment?.status !== 'cleanup_blocked'"
+        :refresh="refreshResolution" @clarify="chat?.focus()" />
 
       <div class="journal-layout">
         <main class="journal-main" aria-labelledby="journal-events">

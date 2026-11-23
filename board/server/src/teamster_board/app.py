@@ -553,7 +553,10 @@ def create_app(settings=None):
         if operator_resolution is None:
             return error(404, "resolution_unavailable")
         try:
-            await asyncio.to_thread(operator_resolution.assign, data)
+            if "proposal" in data:
+                await asyncio.to_thread(operator_chat.choose, data)
+            else:
+                await asyncio.to_thread(operator_resolution.assign, data)
         except KeyError:
             return error(404, "Unknown project task")
         except ValueError as exc:

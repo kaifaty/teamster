@@ -894,7 +894,7 @@ def cmd_verdict(a):
 
 
 def operator_verdict(a):
-    if (a.verdict != "dropped" or a.expect_created is None or not (a.expect_turn or 0) > 0
+    if (a.verdict not in ("accepted", "dropped") or a.expect_created is None or not (a.expect_turn or 0) > 0
             or not re.fullmatch(r"[0-9a-f]{32}", a.operation_id or "") or not a.note):
         procs.die("operator verdict requires an expected run identity, turn, operation ID and note")
     try:
@@ -915,7 +915,8 @@ def _record_operator_verdict(a):
         try:
             prior = telemetry_log.current_run_verdict(st)
             if prior is not None:
-                if prior.get("operation_id") != a.operation_id or prior.get("note") != a.note:
+                if (prior.get("operation_id") != a.operation_id or prior.get("note") != a.note
+                        or prior.get("verdict") != a.verdict):
                     procs.die("run already has a recorded verdict")
                 row = prior
             else:

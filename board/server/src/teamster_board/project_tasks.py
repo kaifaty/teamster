@@ -84,12 +84,12 @@ def forgejo_logins():
     return trusted
 
 
-def pull_request_status(pr, logins):
+def _pull_request_data(pr, logins, github_fields):
     parts = urlsplit(pr["url"])
     prefix, owner, repo, _, index = parts.path.rsplit("/", 4)
     if pr["provider"] == "github":
-        data = _forge_json("gh", "pr", "view", f"https://github.com/{owner}/{repo}/pull/{index}",
-                           "--json", "state,isDraft")
+        return _forge_json("gh", "pr", "view", f"https://github.com/{owner}/{repo}/pull/{index}",
+                           "--json", github_fields)
     else:
         port = parts.port or (443 if parts.scheme == "https" else 80)
         origin = (parts.scheme, parts.hostname, port)
@@ -101,7 +101,10 @@ def pull_request_status(pr, logins):
                 login = matches[0]
         if login is None:
             return None
-        data = _forge_json("tea", "api", f"--login={login}", f"/repos/{owner}/{repo}/pulls/{index}")
+        return _forge_json("tea", "api", f"--login={login}", f"/repos/{owner}/{repo}/pulls/{index}")
+
+
+def _status_of_pull_request(data):
     if not isinstance(data, dict) or not isinstance(data.get("state"), str):
         return None
     state = data["state"].lower()
@@ -110,6 +113,23 @@ def pull_request_status(pr, logins):
     if state == "open" and (data.get("isDraft") is True or data.get("draft") is True):
         return "draft"
     return state if state in ("open", "closed") else None
+
+
+def pull_request_status(pr, logins):
+    return _status_of_pull_request(_pull_request_data(pr, logins, "state,isDraft"))
+
+
+def pull_request_evidence(prs):
+    logins = forgejo_logins() if any(pr["provider"] == "forgejo" for pr in prs) else {}
+    rows = []
+    for pr in prs:
+        data = _pull_request_data(pr, logins, "state,isDraft,title,body,mergedAt")
+        record = data if isinstance(data, dict) else {}
+        rows.append({"url": pr["url"], "status": _status_of_pull_request(data),
+                     "title": str(record.get("title") or "")[:200],
+                     "description": str(record.get("body") or "")[:2600],
+                     "merged_at": record.get("mergedAt") or record.get("merged_at")})
+    return rows
 
 
 def _pull_requests(rows):

@@ -14,10 +14,11 @@ from uuid import uuid4
 
 from . import duty_tasks
 from .external_duty import valid_text
-from .store import ARCHIVED, Store, alive
+from .project_tasks import pull_request_evidence
+from .store import ARCHIVED, Store, alive, ready_for_review
 
 
-TERMINAL = ("archived", "cleanup_blocked", "revoked")
+TERMINAL = ("archived", "cleanup_blocked", "revoked", "followup_finished", "clarification_requested")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS operator_resolutions (
     card TEXT PRIMARY KEY, run TEXT NOT NULL UNIQUE, generation TEXT NOT NULL,
@@ -112,7 +113,8 @@ class OperatorResolution:
                     return {"assignment": None, "events": []} if card else {"tasks": []}
                 if card is None:
                     rows = db.execute("""SELECT card, run, status FROM operator_resolutions
-                                         WHERE status NOT IN ('archived', 'revoked') ORDER BY card""").fetchall()
+                        WHERE status NOT IN ('archived', 'revoked', 'followup_finished', 'clarification_requested')
+                        ORDER BY card""").fetchall()
                     return {"tasks": [dict(row) for row in rows]}
                 assignment = db.execute(
                     "SELECT card, run, rule, evidence, phrase, status FROM operator_resolutions WHERE card=?", (card,)
@@ -194,6 +196,107 @@ class OperatorResolution:
             self._event(db, row, "delegated", {"run": run, "rule": rule, "evidence": evidence,
                                                "phrase": data.get("phrase")}, actor="user")
 
+    def proposal_target(self, card, linked, pulls):
+        if card["status"] in ("done", "cancelled"):
+            raise ValueError("Task is already in history")
+        runs = sorted((item for item in linked if linked[item]["kind"] in ("work", "review")),
+                      key=lambda item: linked[item]["updated_at"], reverse=True)
+        current = next((found for item in runs if (found := self._run(item))), None)
+        run = current[1] if current else None
+        target = {"run": run, "turn": None, "from": card["status"], "actions": ["clarify"]}
+        if run is None:
+            return target
+        record, _, state = current
+        target["turn"] = state.get("turns", 0)
+        target["actions"].extend(("continue", "ask_executor"))
+        if (len(runs) == 1 and target["turn"] > 0 and state.get("turn_finished")
+                and not (alive(state.get("pid")) or state.get("pending") or self._verdict(record, state))):
+            if not any(pr["status"] == "merged" for pr in pulls):
+                target["actions"].append("cancel")
+            if (len(pulls) == len(card["pull_requests"]) and pulls and all(pr["status"] == "merged" for pr in pulls)
+                    or not card["pull_requests"] and card["status"] == "ready"):
+                target["actions"].append("accept")
+        return target
+
+    def _transition(self, db, row, previous, status):
+        card, _ = self.board.project_tasks.card(row["card"])
+        changed = card["status"] != status
+        if changed:
+            self.board.project_tasks.save({"id": row["card"], "status": status})
+        if previous != status:
+            with db:
+                self._event(db, row, "status_changed", {"from": previous, "to": status})
+        return changed
+
+    def choose(self, identity, proposal, target, option):
+        action = option["action"]
+        with self._exclusive() as lock_fd, self._db(write=True) as db:
+            old = db.execute("SELECT * FROM operator_resolutions WHERE card=?", (identity,)).fetchone()
+            if db.execute("""SELECT 1 FROM operator_resolution_events
+                    WHERE card=? AND generation=? AND kind='choice'""", (identity, proposal)).fetchone():
+                if not db.execute("""SELECT 1 FROM operator_resolution_events
+                    WHERE card=? AND generation=? AND kind='choice' AND json_extract(detail, '$.action')=?""",
+                                  (identity, proposal, action)).fetchone():
+                    raise ValueError("A different option was already chosen")
+                return
+            if old and old["status"] not in TERMINAL:
+                raise ValueError("A resolution is already in progress")
+            card, linked = self.board.project_tasks.card(identity)
+            run = target["run"]
+            current = self._run(run) if run in linked else None
+            if (card["status"] != target["from"] or run and
+                    (not current or current[2].get("turns", 0) != target["turn"])):
+                raise ValueError("Task changed. Ask the operator for a new proposal")
+            operation = {"from": card["status"], "action": action, "text": option["text"]}
+            if action == "clarify":
+                status = "clarification_started"
+            else:
+                record, _, state = current
+                operation.update(slug=state["slug"], created=state["created"], turn=target["turn"],
+                                 id=_key(proposal, action), version=self._version(state))
+                status = "dispatch_started"
+                if action in ("continue", "ask_executor") and self.board.actions.reason:
+                    raise ValueError("Board cannot send an order to the executor")
+                if action in ("accept", "cancel"):
+                    other_runs = [ref for ref in linked if ref != run and linked[ref]["kind"] in ("work", "review")]
+                    if (other_runs or self._verdict(record, state) or not state.get("turn_finished")
+                            or alive(state.get("pid")) or state.get("pending")):
+                        raise ValueError("Run changed or still has work")
+                    if action == "accept" and card["pull_requests"]:
+                        pulls = pull_request_evidence(card["pull_requests"][:3])
+                        if len(pulls) != len(card["pull_requests"]) or any(pr["status"] != "merged" for pr in pulls):
+                            raise ValueError("Linked pull requests are not all confirmed merged")
+                    operation.update(verdict="accepted" if action == "accept" else "dropped",
+                                     note=f"User selected the operator's proposal. {option['text']}")
+                    status = "verdict_started"
+            if run and db.execute("SELECT 1 FROM operator_resolutions WHERE run=? AND card<>?",
+                                  (run, identity)).fetchone():
+                raise ValueError("Run is already linked to a different resolution")
+            self.board.project_tasks.save({"id": identity, **({"status": card["status"]}
+                                           if status == "verdict_started" else {})})
+            row = {"card": identity, "run": run or identity, "generation": proposal, "rule": "choice", "status": status,
+                   "payload": json.dumps(operation, ensure_ascii=False)}
+            with db:
+                db.execute("""INSERT OR REPLACE INTO operator_resolutions
+                    (card, run, generation, rule, status, payload) VALUES (:card, :run, :generation, :rule, :status, :payload)""",
+                           row)
+                self._event(db, row, "choice", {"action": action, "note": option["text"], "run": run,
+                                                "proposal": proposal}, actor="user")
+            if status == "dispatch_started":
+                request = ("Answer this question using existing evidence. Do not change files.\n\n"
+                           if action == "ask_executor" else "Continue this task with the following assignment.\n\n")
+                reply = self.board.actions._task("say", {"slug": operation["slug"], "text": request + option["text"]})
+                if not isinstance(reply, dict) or not reply.get("ok"):
+                    reason = "Teamster could not confirm delivery"
+                    if hasattr(reply, "body"):
+                        reason = json.loads(reply.body).get("error", reason)
+                    self._status(db, row, "cleanup_blocked", {"reason": reason})
+                    return
+                self._status(db, row, "waiting_followup", {"action": action, "run": run, "note": option["text"]})
+                self._transition(db, row, operation["from"], "active")
+            else:
+                self._step(db, row, lock_fd)
+
     @staticmethod
     def _version(state):
         return _key(state)
@@ -244,7 +347,7 @@ class OperatorResolution:
     def _execute(self, db, row, lock_fd):
         operation = json.loads(row["payload"])
         is_verdict = row["status"] == "verdict_started"
-        args = ["dropped", f"--note={operation['note']}"] if is_verdict else [
+        args = [operation.get("verdict", "dropped"), f"--note={operation['note']}"] if is_verdict else [
             "--archive-safe", "--expect-head", operation["sha"], "--expect-verdict", operation["verdict"],
         ]
         ok, receipt = self._command(lock_fd, "verdict" if is_verdict else "clean", operation, args)
@@ -258,16 +361,49 @@ class OperatorResolution:
             self._status(db, row, "cleanup_blocked", {"reason": receipt, "operation": operation["id"]})
             return
         if is_verdict:
-            self._status(db, row, "verdict_recorded", {"operation": operation["id"], "verdict": "dropped",
+            self._status(db, row, "verdict_recorded", {"operation": operation["id"],
+                                                      "verdict": operation.get("verdict", "dropped"),
                                                       "run": row["run"], "turn": operation["turn"],
-                                                      "evidence": operation["evidence"]})
+                                                      "evidence": operation.get("evidence")})
         else:
+            if row["rule"] == "choice":
+                self._transition(db, row, operation["from"],
+                                 "done" if operation["verdict"] == "accepted" else "cancelled")
             self._status(db, row, "archived", {"operation": operation["id"], "sha": receipt["sha"],
                                               "archive": receipt["archive"], "files": receipt["files"]})
         return
 
     def _step(self, db, row, lock_fd):
-        if row["status"] == "verdict_started":
+        if row["rule"] == "choice":
+            operation = json.loads(row["payload"])
+            if row["status"] == "clarification_started":
+                self._transition(db, row, operation["from"], "needs_input")
+                self._status(db, row, "clarification_requested", {"note": operation["text"]})
+                return True
+            if row["status"] == "dispatch_started":
+                self._status(db, row, "cleanup_blocked", {"reason": "Delivery is unconfirmed. Inspect the executor before retrying."})
+                return True
+            if row["status"] == "waiting_followup":
+                card, _ = self.board.project_tasks.card(row["card"])
+                if card["status"] in ("done", "cancelled"):
+                    self._status(db, row, "cleanup_blocked", {"reason": "The card was closed while the executor was working"})
+                    return True
+                current = self._run(row["run"])
+                if not current:
+                    self._status(db, row, "cleanup_blocked", {"reason": "Executor is no longer available"})
+                    return True
+                state = current[2]
+                if (state.get("turns", 0) <= operation["turn"] or not state.get("turn_finished")
+                        or alive(state.get("pid")) or state.get("pending")):
+                    return self._transition(db, row, operation["from"], "active")
+                result = state.get("result") or {}
+                status = ("needs_input" if operation["action"] == "ask_executor" or result.get("status") == "needs_decision"
+                          else "ready" if ready_for_review(result.get("status"), state.get("outcome")) else "blocked")
+                self._transition(db, row, "active", status)
+                self._status(db, row, "followup_finished", {"run": row["run"], "turn": state["turns"],
+                                                            "report": str(result.get("summary") or "")[:1000]})
+                return True
+        if row["status"] == "verdict_started" and row["rule"] == "negative":
             operation = json.loads(row["payload"])
             source = self._run(row["evidence"], archives=True)
             if not source or self._version(source[2]) != operation["evidence"]["version"]:
@@ -332,7 +468,7 @@ class OperatorResolution:
             self._execute(db, started, lock_fd)
             return True
         terminal = "done" if verdict in ("accepted", "revised") else "cancelled"
-        if card["status"] != terminal:
+        if row["rule"] != "choice" and card["status"] != terminal:
             self.board.project_tasks.save({"id": row["card"], "status": terminal})
         ref = f"refs/heads/{state['branch']}"
         try:
@@ -343,14 +479,16 @@ class OperatorResolution:
             return True
         operation.update(id=_key(row["generation"], "archive", version, head), sha=head, verdict=verdict,
                          worktree=state.get("worktree"))
+        if row["rule"] == "choice":
+            operation["from"] = json.loads(row["payload"])["from"]
         started = self._status(db, row, "archive_started", operation, payload=operation)
         self._execute(db, started, lock_fd)
         return True
 
     def poll(self):
         with self._exclusive() as lock_fd, self._db(write=True) as db:
-            rows = db.execute("""SELECT * FROM operator_resolutions
-                WHERE status NOT IN ('archived', 'cleanup_blocked', 'revoked') ORDER BY card""").fetchall()
+            rows = db.execute("""SELECT * FROM operator_resolutions WHERE status NOT IN
+                (SELECT value FROM json_each(?)) ORDER BY card""", (json.dumps(TERMINAL),)).fetchall()
             for row in rows:
                 if self._step(db, row, lock_fd):
                     return {"card": row["card"]}

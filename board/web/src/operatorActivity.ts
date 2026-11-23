@@ -37,7 +37,19 @@ export interface ProjectOperatorMessage {
 export type OperatorResolutionRule =
   | { card: string; run: string; rule: "verdict" }
   | { card: string; run: string; rule: "negative"; evidence: string; phrase: string }
-  | { card: string; revoke: true };
+  | { card: string; revoke: true }
+  | { card: string; proposal: string; action: OperatorOption };
+
+export type OperatorOption = "accept" | "cancel" | "continue" | "ask_executor" | "clarify";
+
+export interface OperatorProposal {
+  id: string;
+  at: number;
+  status: "pending" | "answered" | "failed";
+  reason?: string;
+  recommended?: OperatorOption;
+  options?: { action: OperatorOption; text: string }[];
+}
 
 export interface OperatorResolution {
   writable: boolean;
@@ -56,6 +68,7 @@ export interface OperatorResolution {
     text: string | null;
   }[];
   chat?: ProjectOperatorMessage[];
+  proposals?: OperatorProposal[];
   events: {
     seq: number;
     actor: "user" | "operator";
@@ -64,7 +77,18 @@ export interface OperatorResolution {
     detail: {
       reason?: string; archive?: string; sha?: string; files?: number; report?: string;
       operation?: string; id?: string; worktree?: string; phrase?: string; note?: string; run?: string; turn?: number;
+      from?: import("./map/surface/types").SurfaceTask["status"];
+      to?: import("./map/surface/types").SurfaceTask["status"];
+      action?: OperatorOption; proposal?: string; verdict?: string;
       evidence?: string | { slug: string; turn: number; report?: string } | null;
     };
   }[];
 }
+
+export const optionLabels: Record<OperatorOption, string> = {
+  accept: "Принять и архивировать",
+  cancel: "Отменить и архивировать",
+  continue: "Продолжить работу",
+  ask_executor: "Запросить данные у исполнителя",
+  clarify: "Ответить на вопрос оператора",
+};
