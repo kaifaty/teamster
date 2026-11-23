@@ -11,6 +11,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 from contextlib import contextmanager, redirect_stdout
@@ -175,6 +176,63 @@ class LifecycleTests(RotationTestCase):
                           if path.is_file()}, contents)
         self.assertFalse(record.exists())
         self.assertNotIn(slug, self.cli("status"))
+
+        clock.sleep(1)
+        self.start(slug)
+        self.wait(slug)
+        state = self.state(slug)
+        tree = Path(state["worktree"])
+        head = self.git("rev-parse", state["branch"]).strip()
+        created = str(state["created"])
+        clock.sleep(1)
+        self.cli("verdict", slug, "dropped", "--note", "Recorded matrix rejected the candidate",
+                 "--expect-created", created, "--expect-turn", "1", "--operation-id", "a" * 32)
+        (self.repo / ".git" / "info" / "exclude").write_text(".bench-out/\n")
+        ignored = tree / ".bench-out"
+        ignored.mkdir()
+        (ignored / "frames.csv").write_text("frame,gpu\n1,12.9\n")
+        (tree / "untracked.txt").write_text("additional local evidence")
+        os.symlink("frames.csv", ignored / "frames-link")
+        raw_events = (record / "events.jsonl").read_bytes()
+        args = ("clean", slug, "--archive-safe", "--expect-created", created, "--expect-turn", "1",
+                "--expect-head", head, "--expect-verdict", "dropped", "--operation-id", "b" * 32)
+        def refused(reason):
+            result = subprocess.run([PYTHON, "-I", str(SCRIPT), *args], cwd=self.repo,
+                                    env=self.env, text=True, capture_output=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(reason, result.stderr)
+            self.assertTrue(tree.is_dir())
+            self.assertEqual((ignored / "frames.csv").read_text(), "frame,gpu\n1,12.9\n")
+
+        with (record / "board-acp.lock").open("a") as chat:
+            fcntl.flock(chat, fcntl.LOCK_SH)
+            refused("Board task chat is still open")
+
+        tracked = tree / "tracked.txt"
+        original = tracked.read_bytes()
+        tracked.write_text("Open work")
+        refused("changes to tracked files")
+        tracked.write_bytes(original)
+        blocked = ignored / "open-pipe"
+        os.mkfifo(blocked)
+        refused("Unsupported worktree artifact")
+        blocked.unlink()
+
+        archived = json.loads(self.cli(*args))
+        self.assertEqual(json.loads(self.cli(*args)), archived)
+        self.assertFalse(tree.exists())
+        self.assertEqual(self.git("rev-parse", state["branch"]).strip(), head)
+        stored = Path(archived["archive"])
+        self.assertEqual((stored / "events.jsonl").read_bytes(), raw_events)
+        with tarfile.open(stored / "operator-artifacts.tar.gz") as bundle:
+            self.assertEqual(bundle.extractfile(".bench-out/frames.csv").read(), b"frame,gpu\n1,12.9\n")
+            self.assertEqual(bundle.extractfile("untracked.txt").read(), b"additional local evidence")
+            self.assertEqual(bundle.getmember(".bench-out/frames-link").linkname, "frames.csv")
+        record.mkdir()
+        (record / "state.json").write_text(json.dumps({**state, "created": state["created"] + 1}))
+        self.assertEqual(json.loads(self.cli(*args)), archived)
+        self.assertEqual(self.state(slug)["created"], state["created"] + 1)
+
 
     def test_clean_archive_failures_keep_record_without_overwriting_destination(self):
         self.configure()

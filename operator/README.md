@@ -57,6 +57,20 @@ Each question allows up to five model calls and six Board reads, within a 60-sec
 and a two-minute deadline from submission. The state file holds questions and replies temporarily
 so the Board can retrieve them. The browser tab holds conversation history until the page reloads.
 
+## Resolve explicitly delegated runs
+
+In a Board project journal, choose a linked work or review run and **Передать оператору**.
+The operator either waits for a current verdict or records a rejection when a different
+managed run completes with `done` and its summary contains the agreed phrase. Phrase matching
+ignores case and whitespace. Review the evidence or record a verdict if it needs a decision.
+
+Mini polls the Board's resolution queue using its existing loopback credential. A policy,
+decision, and archive receipts stay in the project journal, including after closure. The Board
+uses the Teamster CLI source in its release for versioned, recoverable archiving. A verified archive
+retains the branch SHA, task logs and local worktree artifacts. Tracked changes, live sessions,
+queued work, or an unverifiable archive halt cleanup. The operator never launches another run
+through this workflow.
+
 ## Review logs and budgets
 
 Stdout contains JSON lines. Each `board_request` identifies the method and route. Each

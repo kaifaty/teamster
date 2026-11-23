@@ -201,6 +201,24 @@ def test_operator_history_and_live_focus_on_read_only_board(board):
                 db.execute("UPDATE chat_requests SET deadline = 0 WHERE id = ?", (identity,))
             assert client.get(f"/api/operator-chat/{identity}").status_code == 504
 
+            resolution = "/api/actions/operator-resolution"
+            poll = "/api/external-duty/v1/resolutions/poll"
+            read = f"/api/project-tasks/{current_id}/resolution"
+            assert client.get(read).json()["assignment"] is None
+            assert client.post(poll).status_code == 403
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            rule = {"card": current_id, "run": current_id, "rule": "negative",
+                    "evidence": "other", "phrase": "The matrix was slower than control."}
+            assert client.post(resolution, json={**rule, "run": old_id}).status_code == 409
+            assert client.post(resolution, json=rule).json() == {"ok": True}
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            assert client.get(read).json()["assignment"]["status"] == "waiting_run"
+            assert client.post(resolution, json={"card": current_id, "revoke": True}).json() == {"ok": True}
+            assert client.post(poll, headers=observer).json() == {"card": None}
+            entries = client.get(read).json()["events"]
+            assert [row["kind"] for row in entries] == ["delegated", "waiting_run", "revoked"]
+
+
 
 def test_stale_days_environment_reaches_store(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_TASK_HOME", str(tmp_path))

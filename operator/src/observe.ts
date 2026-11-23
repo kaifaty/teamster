@@ -148,6 +148,20 @@ async function main() {
     }
   }
 
+  let resolving = false;
+  async function resolveTasks() {
+    if (resolving) return;
+    resolving = true;
+    try {
+      await board.pollResolutions(AbortSignal.timeout(135_000));
+    } catch (error) {
+      console.warn("Operator resolution delayed:", error instanceof Error ? error.message : String(error));
+    } finally {
+      resolving = false;
+    }
+  }
+
+  const resolutionTimer = once ? undefined : setInterval(resolveTasks, 5000);
   try {
     do {
       await chat();
@@ -161,6 +175,7 @@ async function main() {
       }
     } while (!once);
   } finally {
+    if (resolutionTimer) clearInterval(resolutionTimer);
     db.close();
   }
 }

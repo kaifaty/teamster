@@ -29,6 +29,7 @@ from .duty_chat import DutyChat
 from .logins import Logins
 from .machines import Machines
 from .operator_activity import OperatorChat, read_operator_activity
+from .operator_resolution import OperatorResolution
 from .project_tasks import ProjectTasks
 from .research import Research
 from .store import LOG_RETENTION_SECONDS, Store, number
@@ -511,10 +512,11 @@ def create_app(settings=None):
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(LocalOnly)
     app.state.board = board
-    operator_chat = None
+    operator_chat = operator_resolution = None
     if board.settings.operator_state is not None and board.settings.external_duty is not None:
         operator_chat = OperatorChat(board.settings.operator_state, board.store, board.project_tasks)
-    register_external_duty(app, board, operator_chat)
+        operator_resolution = OperatorResolution(board)
+    register_external_duty(app, board, operator_chat, operator_resolution)
 
     @app.get("/api/snapshot")
     async def snapshot():
@@ -528,6 +530,35 @@ def create_app(settings=None):
             return error(503, "project_tasks_unavailable")
         return {"tasks": tasks, "biomes": project_biomes(board.settings.path("board_art")),
                 "writable": not board.settings.read_only}
+
+    @app.get("/api/project-tasks/{identity}/resolution")
+    def task_resolution(identity: str):
+        if operator_resolution is None:
+            return error(404, "resolution_unavailable")
+        try:
+            return {**operator_resolution.view(identity), "writable": not board.settings.read_only}
+        except (OSError, sqlite3.Error):
+            return error(503, "resolution_unavailable")
+
+    @app.post("/api/actions/operator-resolution")
+    async def set_task_resolution(request: Request):
+        data = await action_body(request)
+        if not isinstance(data, dict):
+            return data
+        if board.settings.read_only:
+            return error(403, "read_only")
+        if operator_resolution is None:
+            return error(404, "resolution_unavailable")
+        try:
+            await asyncio.to_thread(operator_resolution.assign, data)
+        except KeyError:
+            return error(404, "Unknown project task")
+        except ValueError as exc:
+            return error(409, str(exc))
+        except (OSError, sqlite3.Error):
+            return error(503, "resolution_unavailable")
+        board.publish({"type": "project_tasks_changed"})
+        return {"ok": True}
 
     @app.get("/api/project-tasks/{identity}/details")
     async def project_task_details(identity: str):
@@ -562,8 +593,12 @@ def create_app(settings=None):
             return data
         if board.settings.read_only:
             return error(403, "read_only")
+        def save():
+            with board.actions.lock:
+                return board.project_tasks.save(data)
+
         try:
-            task = await asyncio.to_thread(board.project_tasks.save, data)
+            task = await asyncio.to_thread(save)
         except KeyError:
             return error(404, "Unknown project task")
         except ValueError as exc:

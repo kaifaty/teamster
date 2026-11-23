@@ -47,7 +47,7 @@ export function localUrl(value: string, path: "/" | "/v1"): string {
 export function connectBoard(origin: string, token: string) {
   async function request(path: string, signal = AbortSignal.timeout(60_000), change?: {
     revision: string; title: string | null;
-  }) {
+  } | Record<string, never>) {
     const route = "/api/external-duty/v1/" + path;
     const method = change ? "POST" : "GET";
     console.log(JSON.stringify({ type: "board_request", method, route }));
@@ -57,6 +57,7 @@ export function connectBoard(origin: string, token: string) {
     });
     const body = await response.text();
     if (body.includes(token)) throw new Error("Board returned its credential in response data");
+    if (response.status === 404 && path === "resolutions/poll") return { card: null };
     if (response.status === 404 && path === "project-titles") return { tasks: [] };
     if (response.status === 409 && change) return { ok: false };
     if (response.status === 404 && path.startsWith("chat/")) return JSON.parse(body);
@@ -70,6 +71,9 @@ export function connectBoard(origin: string, token: string) {
   }
 
   return {
+    async pollResolutions(signal: AbortSignal) {
+      await request("resolutions/poll", signal, {});
+    },
     async chatEvidence(questionId: string, params: URLSearchParams, signal: AbortSignal): Promise<unknown> {
       return request(`chat/${encodeURIComponent(questionId)}/evidence?${params}`, signal);
     },

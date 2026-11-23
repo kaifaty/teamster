@@ -1497,6 +1497,15 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   `{kind: "run", id, created}` for a run's Board address and creation time. The Board reads current
   evidence for the attached card when a question is submitted. `history` is up to two previous
   `{question, answer}` pairs. Success returns 202 with `{id}`.
+- `GET /api/project-tasks/{id}/resolution` returns `{assignment, events, writable}`.
+  `POST /api/actions/operator-resolution` uses standard action headers and accepts
+  `{card, run, rule: "verdict"}`, `{card, run, rule: "negative", evidence, phrase}`, or
+  `{card, revoke: true}`. `run` is a linked stable run ID and `evidence` is a Board slug
+  resolved to an exact run at delegation. Events remain readable after closure or revocation.
+- `GET /api/external-duty/v1/resolutions` lists operator assignments. The local operator's
+  `POST /api/external-duty/v1/resolutions/poll` processes at most one queued action
+  under the existing command lock. It accepts no target from the caller. Both routes require the
+  Board operator configuration and bearer authorization.
 - `GET /api/operator-chat/{id}` returns `{answer: null}` while waiting and `{answer: string}` when
   ready. An unanswered request expires after 120 seconds. Both routes require an actions-enabled
   Board configured with the operator's SQLite state and external duty configuration.

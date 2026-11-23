@@ -2,7 +2,7 @@ import { sendBoardAction, type ActionSender } from "./actions";
 import { projectTaskErrors, type ProjectScout, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails, type ProjectTasks } from "./projectTasks";
 import type { ArtIndex, Events, Report, ResearchView, ServerMessage, TaskDetail, TaskFeed, TaskFile } from "../types";
 import type { DutyChatView } from "../dutyChatTypes";
-import type { OperatorExchange, OperatorTarget } from "../operatorActivity";
+import type { OperatorExchange, OperatorResolution, OperatorResolutionRule, OperatorTarget } from "../operatorActivity";
 import { connectSocket, type ConnectionState } from "./socket";
 
 export interface OpenCodeProviders {
@@ -36,6 +36,8 @@ export interface BoardSource {
   fetchResearch(): Promise<ResearchView | null>;
   /** The conversation with the duty; null when the server has no such route yet (404). Absent from sources without it. */
   fetchDutyChat?(): Promise<DutyChatView | null>;
+  fetchOperatorResolution?(card: string): Promise<OperatorResolution | null>;
+  setOperatorResolution?(rule: OperatorResolutionRule): Promise<void>;
   askOperator?(question: string, target: OperatorTarget | null, history: OperatorExchange[]): Promise<string>;
   fetchOpenCodeProviders?(): Promise<OpenCodeProviders>;
   /** Completed phases and verdicts between two Unix times, both inclusive. */
@@ -132,6 +134,17 @@ export function serverSource(): BoardSource {
     async fetchDutyChat() {
       const response = await get("/api/duty-chat");
       return response ? ((await response.json()) as DutyChatView) : null;
+    },
+    async fetchOperatorResolution(card) {
+      const response = await get(`/api/project-tasks/${encodeURIComponent(card)}/resolution`);
+      return response ? response.json() : null;
+    },
+    async setOperatorResolution(rule) {
+      const response = await sendBoardAction("operator-resolution", rule);
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error ?? "Не удалось обновить полномочия оператора.");
+      }
     },
     async askOperator(question, target, history) {
       const context = target && (target.kind === "run"

@@ -24,3 +24,25 @@ export interface OperatorExchange {
   question: string;
   answer: string;
 }
+
+
+export type OperatorResolutionRule =
+  | { card: string; run: string; rule: "verdict" }
+  | { card: string; run: string; rule: "negative"; evidence: string; phrase: string }
+  | { card: string; revoke: true };
+
+export interface OperatorResolution {
+  writable: boolean;
+  assignment: { run: string; status: string; evidence: string | null } | null;
+  events: {
+    seq: number;
+    actor: "user" | "operator";
+    kind: string;
+    at: number;
+    detail: {
+      reason?: string; archive?: string; sha?: string; files?: number; report?: string;
+      operation?: string; id?: string; worktree?: string; phrase?: string; note?: string; run?: string; turn?: number;
+      evidence?: string | { slug: string; turn: number; report?: string };
+    };
+  }[];
+}

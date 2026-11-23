@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { formatClock, formatFullTime } from "../lib/format";
 import { prLabel, problemLabel, taskTitle } from "../lib/labels";
 import { detachedName, isCurrent, statusLabels, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails } from "../lib/projectTasks";
 import type { BoardSource } from "../lib/source";
 import { useTaskDetail } from "../lib/taskDetail";
-import type { OperatorActivity, OperatorTarget } from "../operatorActivity";
+import type { OperatorActivity, OperatorResolution, OperatorResolutionRule, OperatorTarget } from "../operatorActivity";
 import type { TaskSummary } from "../types";
 import { stateOf, verdictTitle } from "./ship/bridge";
 import { changesLine, reportParagraphs } from "./ship/now";
@@ -20,7 +20,7 @@ const props = defineProps<{
   operatorChat?: boolean;
   rename?: (change: ProjectTaskChange) => Promise<ProjectTask>;
 }>();
-const emit = defineEmits<{ close: []; runControls: [sessionId: string]; askOperator: [target: OperatorTarget] }>();
+const emit = defineEmits<{ close: []; runControls: [sessionId: string]; askOperator: [target: OperatorTarget]; evidence: [slug: string] }>();
 
 const details = shallowRef<ProjectTaskDetails | null>(null);
 const linksError = ref(false);
@@ -90,7 +90,75 @@ interface JournalEntry {
   at: number;
   text?: string;
   report?: boolean;
+  evidence?: string;
 }
+const resolution = shallowRef<OperatorResolution | null>(null);
+const resolutionLabels: Record<string, string> = {
+  delegated: "Управление передано Mini",
+  pending: "Полномочия переданы",
+  waiting_run: "Ждёт завершения запуска",
+  waiting_verdict: "Ждёт вердикта",
+  waiting_evidence: "Ждёт связанный запуск",
+  needs_decision: "Нужно решение",
+  verdict_started: "Записывает вердикт",
+  verdict_recorded: "Эксперимент отклонён по результатам замеров",
+  archive_started: "Сохраняет архив",
+  archived: "Запуск архивирован",
+  cleanup_blocked: "Очистку приостановили",
+  revoked: "Полномочия отозваны",
+};
+const managed = computed(() => sessions.value.filter((row) => row.slug && row.record
+  && ["work", "review"].includes(row.record.kind) && !row.slug.match(/-\d{8}T\d{6}Z$/)));
+const possibleEvidence = computed(() => Object.values(props.records).filter((item) =>
+  ["work", "review"].includes(item.kind)).map((item) => item.slug).sort());
+const resolutionActive = computed(() => resolution.value?.assignment
+  && !["archived", "revoked"].includes(resolution.value.assignment.status));
+const resolutionForm = ref(false);
+const resolutionRun = ref("");
+const resolutionRule = ref<"verdict" | "negative">("verdict");
+const evidenceSlug = ref("");
+const evidencePhrase = ref("");
+const resolutionBusy = ref(false);
+const resolutionError = ref("");
+let resolutionTimer: ReturnType<typeof setInterval> | undefined;
+let resolutionRequest = 0;
+
+async function refreshResolution() {
+  if (!props.source.fetchOperatorResolution) return;
+  const request = ++resolutionRequest;
+  try {
+    const result = await props.source.fetchOperatorResolution(props.task.id);
+    if (request === resolutionRequest) resolution.value = result;
+  } catch (error) {
+    if (request === resolutionRequest) {
+      resolutionError.value = error instanceof Error ? error.message : String(error);
+    }
+  }
+}
+function editResolution() {
+  resolutionRun.value = managed.value.find((row) => row.id === selected.value?.id)?.id ?? managed.value[0]?.id ?? "";
+  resolutionForm.value = true;
+  resolutionError.value = "";
+}
+async function submitResolution(revoke = false) {
+  if (!props.source.setOperatorResolution || resolutionBusy.value) return;
+  const card = props.task.id;
+  const input: OperatorResolutionRule = revoke ? { card, revoke: true }
+    : resolutionRule.value === "verdict" ? { card, run: resolutionRun.value, rule: "verdict" }
+    : { card, run: resolutionRun.value, rule: "negative", evidence: evidenceSlug.value.trim(), phrase: evidencePhrase.value.trim() };
+  resolutionBusy.value = true;
+  resolutionError.value = "";
+  try {
+    await props.source.setOperatorResolution(input);
+    resolutionForm.value = false;
+    await refreshResolution();
+  } catch (error) {
+    resolutionError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    resolutionBusy.value = false;
+  }
+}
+
 const reportBody = computed(() => reportParagraphs(run.value?.report ?? record.value?.summary ?? ""));
 const entries = computed(() => {
   const rows: JournalEntry[] = [];
@@ -105,7 +173,9 @@ const entries = computed(() => {
       });
     }
     const verdict = shown.lead_verdict && verdictTitle(shown);
-    if (shown.lead_verdict_at !== null && verdict) {
+    const byOperator = shown.lead_verdict === "dropped" && resolution.value?.events.some((event) =>
+      event.kind === "verdict_recorded" && event.detail.run === selected.value?.id && event.detail.turn === shown.turn);
+    if (shown.lead_verdict_at !== null && verdict && !byOperator) {
       rows.push({ id: "verdict", actor: "Пользователь", title: verdict, at: shown.lead_verdict_at });
     }
     for (const [index, message] of (run.value?.messages ?? []).entries()) {
@@ -124,6 +194,20 @@ const entries = computed(() => {
       title: "Разбор хода " + item.turn + " · " + item.title,
       text: item.recommendation, at: item.started_at,
     });
+  }
+  for (const event of resolution.value?.events ?? []) {
+    const data = event.detail;
+    const evidence = typeof data.evidence === "string" ? data.evidence.split(":")[0] : data.evidence?.slug;
+    const reason = event.kind === "needs_decision"
+      ? "Подтверди итог вручную или передай оператору другое условие."
+      : undefined;
+    const text = [reason, data.reason, data.report ?? (typeof data.evidence === "object" ? data.evidence.report : undefined),
+      data.note ?? data.phrase, data.sha && `SHA ${data.sha}`, data.archive && `Архив ${data.archive}`,
+      data.files !== undefined ? `Файлов и ссылок вне Git: ${data.files}` : undefined,
+      data.worktree && `Рабочая копия ${data.worktree}`,
+      (data.operation ?? data.id) && `Операция ${data.operation ?? data.id}`].filter(Boolean).join("\n");
+    rows.push({ id: `resolution-${event.seq}`, title: resolutionLabels[event.kind] ?? event.kind,
+      actor: event.actor === "operator" ? "Оператор Mini" : "Пользователь", at: event.at, text, evidence });
   }
   return rows.sort((a, b) => b.at - a.at);
 });
@@ -165,7 +249,17 @@ function closeOrCancel() {
   if (draft.value === null) emit("close");
   else if (!saving.value) cancelRename();
 }
-onMounted(() => back.value?.focus({ preventScroll: true }));
+onMounted(() => {
+  back.value?.focus({ preventScroll: true });
+  if (props.source.fetchOperatorResolution) {
+    void refreshResolution();
+    resolutionTimer = setInterval(refreshResolution, 5000);
+  }
+});
+onBeforeUnmount(() => {
+  if (resolutionTimer) clearInterval(resolutionTimer);
+  resolutionRequest++;
+});
 </script>
 
 <template>
@@ -205,6 +299,47 @@ onMounted(() => back.value?.focus({ preventScroll: true }));
             <h2 id="journal-events">Ход задачи</h2>
             <span v-if="selected?.record" class="muted">{{ sessionKinds[selected.record.kind] }}<template v-if="selected.record.turn > 0"> · ход {{ selected.record.turn }}</template></span>
           </div>
+          <section v-if="resolution?.writable || resolution?.assignment || resolutionError" class="resolution-controls"
+            aria-label="Полномочия оператора">
+            <div class="actions">
+              <span v-if="resolution?.assignment" role="status">
+                {{ resolutionLabels[resolution.assignment.status] ?? resolution.assignment.status }}
+              </span>
+              <button v-if="resolution?.writable && resolutionActive" class="btn" type="button" :disabled="resolutionBusy"
+                @click="submitResolution(true)">Отозвать полномочия</button>
+              <button v-else-if="resolution?.writable && managed.length && !resolutionForm" class="btn" type="button"
+                @click="editResolution">Передать оператору</button>
+            </div>
+            <form v-if="resolutionForm" class="rename-form" @submit.prevent="submitResolution()">
+              <label>Запуск
+                <select v-model="resolutionRun" required>
+                  <option v-for="row in managed" :key="row.id" :value="row.id">{{ row.label }}</option>
+                </select>
+              </label>
+              <label>Правило закрытия
+                <select v-model="resolutionRule">
+                  <option value="verdict">Архивировать после записанного вердикта</option>
+                  <option value="negative">Отклонить по результату связанного запуска</option>
+                </select>
+              </label>
+              <template v-if="resolutionRule === 'negative'">
+                <label>Slug связанного запуска
+                  <input v-model="evidenceSlug" :list="'resolution-evidence-' + task.id" required />
+                  <datalist :id="'resolution-evidence-' + task.id">
+                    <option v-for="slug in possibleEvidence" :key="slug" :value="slug" />
+                  </datalist>
+                </label>
+                <label>Точная фраза из итогового отчёта
+                  <input v-model="evidencePhrase" minlength="12" maxlength="400" required />
+                </label>
+              </template>
+              <div class="actions">
+                <button class="btn journal-primary" :disabled="resolutionBusy || !resolutionRun">Передать</button>
+                <button class="btn" type="button" :disabled="resolutionBusy" @click="resolutionForm = false">Отмена</button>
+              </div>
+            </form>
+            <p v-if="resolutionError" class="journal-error" role="alert">{{ resolutionError }}</p>
+          </section>
           <ol class="timeline">
             <li v-if="!inHistory" class="event operator-event">
               <div class="event-meta">
@@ -249,6 +384,9 @@ onMounted(() => back.value?.focus({ preventScroll: true }));
                 <h3>{{ entry.title }}</h3>
                 <p v-if="entry.text" class="event-text">{{ entry.text }}</p>
               </template>
+              <button v-if="entry.evidence" type="button" class="btn" @click="emit('evidence', entry.evidence)">
+                Открыть связанный запуск
+              </button>
             </li>
           </ol>
           <p v-if="detailError" role="alert" class="journal-error">
@@ -312,6 +450,8 @@ onMounted(() => back.value?.focus({ preventScroll: true }));
 </template>
 
 <style scoped>
+.resolution-controls { margin-bottom: 12px; }
+.resolution-controls select { font: inherit; }
 .task-journal {
   position: absolute;
   inset: 0;

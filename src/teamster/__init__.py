@@ -36,6 +36,7 @@ Layer 5:
     home_migration (implemented): migrate-home moves from the Codex home into the data home.
     installs (implemented): side-by-side version installs, launchers, the current link and task pins.
 Layer 6:
+    safe_archive (implemented): verified archives of completed managed worktrees.
     account_commands (implemented): account login, terminal events, and Claude account management.
     checking (implemented): guarded paths and check or base-check execution.
     account_rotation (implemented): account errors, waits, and login refresh.

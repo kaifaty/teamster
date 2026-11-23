@@ -115,7 +115,7 @@ class ExternalDuty:
         else:
             self.environment["TEAMSTER_HOME"] = str(self.home)
 
-    def authorized(self, request, *, title_write=False):
+    def authorized(self, request, *, operator_write=False):
         if request.client is None:
             return False
         try:
@@ -129,7 +129,7 @@ class ExternalDuty:
         presented = values[0].encode("latin-1")
         if hmac.compare_digest(presented, ("Bearer " + self.config.token).encode("ascii")):
             return True
-        if request.method != "GET" and not (title_write and request.method == "POST"):
+        if request.method != "GET" and not (operator_write and request.method == "POST"):
             return False
         return self.config.observer_token is not None and hmac.compare_digest(
             presented, ("Bearer " + self.config.observer_token).encode("ascii"),
@@ -319,7 +319,7 @@ class ExternalDuty:
             return False
 
 
-def register(app, board, operator_chat=None):
+def register(app, board, operator_chat=None, operator_resolution=None):
     if board.settings.external_duty is None:
         return
     api = ExternalDuty(board)
@@ -329,8 +329,8 @@ def register(app, board, operator_chat=None):
     except OSError:
         LOGGER.exception("External duty could not initialize the event journal")
 
-    async def call(request, handler, *args, title_write=False):
-        if not api.authorized(request, title_write=title_write):
+    async def call(request, handler, *args, operator_write=False):
+        if not api.authorized(request, operator_write=operator_write):
             return response(*failure(403, "forbidden"))
         try:
             return response(*await asyncio.to_thread(handler, *args))
@@ -358,6 +358,23 @@ def register(app, board, operator_chat=None):
             return response(*failure(404, "chat_unavailable"))
         return await call(request, operator_chat.read, identity, view, query, project, status, offset, kind, card_id)
 
+    @router.get("/resolutions")
+    async def resolutions(request: Request):
+        if operator_resolution is None:
+            return response(*failure(404, "resolution_unavailable"))
+        return await call(request, lambda: (200, operator_resolution.view()))
+
+    @router.post("/resolutions/poll")
+    async def poll_resolutions(request: Request):
+        if not api.authorized(request, operator_write=True):
+            return response(*failure(403, "forbidden"))
+        if operator_resolution is None or board.settings.read_only:
+            return response(*failure(403, "read_only"))
+        result = await call(request, lambda: (200, operator_resolution.poll()), operator_write=True)
+        if result.status_code == 200 and json.loads(result.body)["card"] is not None:
+            board.publish({"type": "project_tasks_changed"})
+        return result
+
     @router.get("/events")
     async def events(request: Request, after: str = "0", limit: str = "100"):
         def read():
@@ -375,7 +392,7 @@ def register(app, board, operator_chat=None):
 
     @router.post("/project-titles/{task_id}")
     async def update_project_title(request: Request, task_id: str):
-        if not api.authorized(request, title_write=True):
+        if not api.authorized(request, operator_write=True):
             return response(*failure(403, "forbidden"))
         if board.settings.read_only:
             return response(*failure(403, "read_only"))
@@ -392,7 +409,7 @@ def register(app, board, operator_chat=None):
                 return 200, {"ok": True}
             return failure(409, "title_conflict")
 
-        result = await call(request, write, title_write=True)
+        result = await call(request, write, operator_write=True)
         if result.status_code == 200 and title is not None:
             board.publish({"type": "project_tasks_changed"})
         return result

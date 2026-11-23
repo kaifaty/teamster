@@ -209,7 +209,7 @@ watch([() => props.active, () => props.machine], ([active, machine]) => {
     <ProjectTaskJournal v-if="linkedTask && active && !runControlsOpen" :key="linkedTask.id" :task="linkedTask"
       :initial-slug="record" :records="board.state.value.tasks" :source="board.source" :now="now"
       :operator="board.state.value.operator" :operator-chat="operatorChat" :rename="data?.writable ? save : undefined"
-      @close="closeRecord" @run-controls="openRunControls" @ask-operator="emit('askOperator', $event)" />
+      @close="closeRecord" @run-controls="openRunControls" @evidence="openRecord" @ask-operator="emit('askOperator', $event)" />
     <ShipView v-else-if="record && active" :slug="record" :task="recordTask" :opencode="board.state.value.accounts?.opencode"
       :source="board.source" :now="now" :frame="frameLight" :emblem="emblemOf(recordTask?.repo ?? null)"
       :back-to-journal="runControlsOpen && !!linkedTask" :map-task-title="linkedTask?.title"
