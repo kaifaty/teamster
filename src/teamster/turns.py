@@ -390,7 +390,22 @@ def opencode_work_turn(st, prompt, stopped, minutes, wrapup=False):
         task_state.save(st)
 
     deadline = None if minutes is None else clock.CLOCK.monotonic() + minutes * config.MINUTE_SECONDS
-    prompt += "\n\nReturn only a JSON object matching this schema:\n" + json.dumps(result_schema.RESULT_SCHEMA)
+    example = {name: [] if field["type"] == "array" else ""
+               for name, field in result_schema.RESULT_SCHEMA["properties"].items()}
+    example.update(
+        status="done", summary="Summarize the work completed.",
+        checks=[{"command": "Command run", "outcome": "passed", "details": "Exit 0."}],
+    )
+    prompt += (
+        "\n\nReturn exactly one JSON object with the keys in the example below. "
+        "Replace the example values with your actual result. "
+        "Use status done, partial, blocked, or needs_decision. "
+        "Use check outcomes passed, failed, or not_run. "
+        "Use id, decision (fixed or rejected), and note for each finding. "
+        "Use empty arrays for empty lists and leave pr empty. "
+        "Start with { and end with }. Do not include Markdown or a schema.\n"
+        "Example work result:\n" + json.dumps(example)
+    )
     try:
         outcome, message = opencode_runner.run_opencode(
             st["worktree"], prompt, st["model"], st.get("session_id"), stopped, deadline,

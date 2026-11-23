@@ -225,6 +225,10 @@ def install_fake_opencode(root):
                     reply = (home / "reply-mode").read_text() if (home / "reply-mode").exists() else "complete"
                     target = "ses_other" if reply == "wrong-session" else session_id
                     text = json.dumps(answer)
+                    # A local model can echo a schema before emitting its result.
+                    last_line = prompt.rstrip().rsplit("\\n", 1)[-1]
+                    if last_line.startswith('{"type": "object", "properties":'):
+                        text = last_line + text
                     middle = len(text) // 2
                     for chunk in (text[:middle], text[middle:]):
                         update = {"sessionUpdate": "agent_message_chunk", "messageId": "answer",
