@@ -2,15 +2,16 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { formatClock, formatFullTime } from "../lib/format";
 import { prLabel, problemLabel, taskTitle } from "../lib/labels";
-import { detachedName, isCurrent, statusLabels, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails } from "../lib/projectTasks";
+import { detachedName, isCurrent, statusLabels, type ProjectRunWork, type ProjectTask, type ProjectTaskChange, type ProjectTaskDetails } from "../lib/projectTasks";
 import type { BoardSource } from "../lib/source";
 import { useTaskDetail } from "../lib/taskDetail";
 import type { OperatorActivity, OperatorResolution, OperatorResolutionRule, OperatorTarget } from "../operatorActivity";
 import type { TaskSummary } from "../types";
 import { optionLabels } from "../operatorActivity";
 import ProjectTaskDecision from "./ProjectTaskDecision.vue";
+import ProjectTaskExecutors from "./ProjectTaskExecutors.vue";
 import ProjectOperatorChat from "./ProjectOperatorChat.vue";
-import { stateOf, verdictTitle } from "./ship/bridge";
+import { verdictTitle } from "./ship/bridge";
 import { changesLine, reportParagraphs } from "./ship/now";
 
 const props = defineProps<{
@@ -26,9 +27,11 @@ const props = defineProps<{
 const emit = defineEmits<{ close: []; runControls: [sessionId: string]; evidence: [slug: string] }>();
 
 const details = shallowRef<ProjectTaskDetails | null>(null);
+const workUpdate = shallowRef<Record<string, ProjectRunWork>>();
 const linksError = ref(false);
 const retryLinks = ref(0);
-watch(() => [JSON.stringify(props.task.session_slugs), props.task.pull_requests.map((pr) => pr.url).join(), retryLinks.value], (_, __, onCleanup) => {
+watch(() => [props.task.id, JSON.stringify(props.task.session_slugs), props.task.pull_requests.map((pr) => pr.url).join(), retryLinks.value], (_, __, onCleanup) => {
+  workUpdate.value = undefined;
   if (!props.source.fetchProjectTaskDetails || (!props.task.sessions.length && !props.task.pull_requests.length)) return;
   let active = true;
   linksError.value = false;
@@ -40,7 +43,6 @@ watch(() => [JSON.stringify(props.task.session_slugs), props.task.pull_requests.
   });
 }, { immediate: true });
 
-const sessionKinds = { work: "Исполнение", review: "Ревью", scout: "Разведка", session: "Сессия", duty: "Дежурный", reflect: "Рефлексия" };
 const harnesses = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
 const prStatuses = { draft: "Черновик", open: "Открыт", merged: "Влит", closed: "Закрыт" };
 const sessions = computed(() => props.task.sessions.map((id) => {
@@ -71,7 +73,6 @@ const run = computed(() => {
   return result && row?.slug === result.slug && (!row.record || row.record.created === result.created) ? result : null;
 });
 const record = computed(() => selected.value?.record ?? run.value);
-const state = computed(() => record.value ? stateOf(record.value) : null);
 const changeText = computed(() => changesLine(run.value?.changes));
 const inHistory = computed(() => !isCurrent(props.task));
 const statusNote = computed(() => {
@@ -94,6 +95,22 @@ interface JournalEntry {
   handoff?: string;
 }
 const resolution = shallowRef<OperatorResolution | null>(null);
+const workRevision = computed(() => JSON.stringify([
+  sessions.value.map((row) => [row.id, row.record?.turn, row.record?.column]),
+  resolution.value?.events.filter((event) => event.kind === "waiting_followup" || event.kind === "followup_finished").at(-1)?.seq,
+  resolution.value?.commands?.at(-1)?.id,
+]));
+watch(workRevision, (_, __, onCleanup) => {
+  if (!props.source.fetchProjectTaskDetails || !props.task.sessions.length) return;
+  let active = true;
+  onCleanup(() => { active = false; });
+  const id = props.task.id;
+  void props.source.fetchProjectTaskDetails(id, true).then((result) => {
+    if (active && props.task.id === id && result?.work) workUpdate.value = result.work;
+  }).catch(() => {
+    if (active && props.task.id === id) linksError.value = true;
+  });
+});
 const operatorHistory = computed(() => resolution.value?.recommendations ?? (props.operator?.history ?? [])
   .filter((item) => props.task.sessions.includes(item.task_id)));
 const operatorOnly = ref(false);
@@ -356,11 +373,14 @@ onBeforeUnmount(() => {
       <ProjectTaskDecision :target="chatTarget" :source="source" :in-history="inHistory" :resolution="resolution"
         :enabled="chatEnabled" :resolving="!!resolutionActive && resolution?.assignment?.status !== 'cleanup_blocked'"
         :refresh="refreshResolution" @clarify="chat?.focus()" />
+      <ProjectTaskExecutors :sessions="sessions" :selected="selected?.id" :work="workUpdate ?? details?.work"
+        :resolution="resolution" :now="now" @select="selectedId = $event" @controls="emit('runControls', $event)" />
 
       <div class="journal-layout">
         <main class="journal-main" aria-labelledby="journal-events">
           <div class="section-heading">
             <h2 id="journal-events">Ход задачи</h2>
+            <span v-if="sessions.length > 1 && selected" class="muted">{{ selected.label }}</span>
             <div class="journal-filter" role="group" aria-label="События журнала">
               <button type="button" class="btn" :aria-pressed="!operatorOnly" @click="operatorOnly = false">Все события</button>
               <button type="button" class="btn" :aria-pressed="operatorOnly" @click="operatorOnly = true">Действия оператора</button>
@@ -463,38 +483,14 @@ onBeforeUnmount(() => {
           </details>
         </main>
 
-        <aside class="journal-side" aria-label="Чат, назначение и связи">
+        <aside class="journal-side" aria-label="Чат и пул-реквесты">
           <ProjectOperatorChat ref="chat" :target="chatTarget" :now="now" :enabled="chatEnabled"
             :ask="source.askOperator" :messages="resolution?.chat ?? []" :labels="labels" :refresh="refreshResolution" />
-          <section v-if="record" class="assignment" aria-labelledby="journal-assignment">
-            <h2 id="journal-assignment">Назначение</h2>
-            <dl>
-              <div><dt>Harness</dt><dd>{{ harnesses[record.executor] ?? record.executor }}</dd></div>
-              <div v-if="record.account"><dt>Подключение</dt><dd><code>{{ record.account }}</code></dd></div>
-              <div v-if="record.model"><dt>Модель</dt><dd><code>{{ record.model }}</code></dd></div>
-              <div v-if="record.branch"><dt>Ветка</dt><dd><code>{{ record.branch }}</code></dd></div>
-              <div v-if="state"><dt>Запуск</dt><dd>{{ state.text }}</dd></div>
-              <div v-if="record.sleeping_until !== null && record.column === 'sleeping'">
-                <dt>Возобновление</dt><dd>{{ formatClock(record.sleeping_until, now) }}</dd>
-              </div>
-            </dl>
-            <button v-if="selected?.slug" type="button" class="btn" @click="emit('runControls', selected.id)">Действия запуска</button>
-          </section>
           <section class="links" aria-labelledby="journal-links">
-            <h2 id="journal-links">Сессии и PR</h2>
+            <h2 id="journal-links">Пул-реквесты</h2>
             <p v-if="linksError" class="journal-error" role="alert">
               Не удалось обновить сведения о связях. <button class="btn" type="button" @click="retryLinks++">Повторить</button>
             </p>
-            <ul v-if="sessions.length" class="session-list">
-              <li v-for="row in sessions" :key="row.id">
-                <button v-if="row.slug" type="button" class="session-link" :aria-pressed="row.id === selected?.id" @click="selectedId = row.id">
-                  <span>{{ row.label }}</span>
-                  <small v-if="row.record">{{ sessionKinds[row.record.kind] }} · {{ stateOf(row.record).text }}</small>
-                </button>
-                <p v-else class="muted unavailable">{{ row.label }}</p>
-              </li>
-            </ul>
-            <p v-else class="muted">Связанных сессий пока нет.</p>
             <ul v-if="pulls.length" class="pull-list">
               <li v-for="pr in pulls" :key="pr.url">
                 <a :href="pr.url" target="_blank" rel="noopener">{{ pr.provider === "github" ? "GitHub" : "Forgejo" }} · {{ prLabel(pr.url) }} ↗</a>
@@ -577,20 +573,14 @@ onBeforeUnmount(() => {
 .report-facts { display: flex; gap: 4px 12px; flex-wrap: wrap; list-style: none; padding: 4px 0 0; color: var(--muted); font-size: 12px; }
 .passed { color: var(--journal-accent); }
 .system-events { border-top: 1px solid var(--border); padding: 9px 0 0; margin-top: 8px; }
-.system-events ul, .session-list, .pull-list { list-style: none; padding: 0; }
+.system-events ul, .pull-list { list-style: none; padding: 0; }
 .system-events li { display: grid; grid-template-columns: minmax(80px, auto) 1fr; gap: 10px; padding: 5px 0; font-size: 12px; }
 .journal-side { display: grid; align-content: start; gap: 12px; }
-.assignment, .links { display: grid; gap: 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px; }
-.assignment dl div { display: grid; grid-template-columns: minmax(90px, .8fr) minmax(0, 1fr); gap: 8px; padding: 4px 0; font-size: 13px; }
-.assignment dt, .links small { color: var(--muted); }
-.assignment .btn { justify-self: start; }
-.session-link { width: 100%; border: 1px solid transparent; border-radius: 6px; padding: 6px; background: transparent; cursor: pointer; text-align: start; color: var(--text); overflow-wrap: anywhere; }
-.session-link:hover, .session-link[aria-pressed="true"] { background: var(--journal-operator); border-color: var(--journal-operator-line); }
-.session-link span, .session-link small { display: block; }
-.session-link[aria-pressed="true"] span { color: var(--journal-accent); font-weight: 600; }
-.session-list li + li, .pull-list li + li { margin-top: 3px; }
+.links { display: grid; gap: 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px; }
+.links small { color: var(--muted); }
+.pull-list li + li { margin-top: 3px; }
 .pull-list li { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; }
-.pull-list a, .links p, .unavailable { font-size: 13px; }
+.pull-list a, .links p { font-size: 13px; }
 .journal-error { color: var(--bad); }
 @media (max-width: 720px) {
   .journal-layout { grid-template-columns: minmax(0, 1fr); }

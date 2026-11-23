@@ -16,7 +16,7 @@ export interface BoardSource {
   label: string | null;
   connect(onMessage: (message: ServerMessage) => void, onState: (state: ConnectionState, retryInMs: number | null) => void): () => void;
   fetchProjectTasks(): Promise<ProjectTasks>;
-  fetchProjectTaskDetails?(id: string): Promise<ProjectTaskDetails | null>;
+  fetchProjectTaskDetails?(id: string, workOnly?: boolean): Promise<ProjectTaskDetails | null>;
   fetchScoutHistory?(project: string): Promise<ProjectScout[]>;
   saveProjectTask(change: ProjectTaskChange): Promise<ProjectTask>;
   /** null for an unknown task (404). */
@@ -85,8 +85,8 @@ export function serverSource(): BoardSource {
       if (!response) throw new Error("404");
       return response.json();
     },
-    async fetchProjectTaskDetails(id) {
-      const response = await get(`/api/project-tasks/${encodeURIComponent(id)}/details`);
+    async fetchProjectTaskDetails(id, workOnly = false) {
+      const response = await get(`/api/project-tasks/${encodeURIComponent(id)}/details${workOnly ? "?work_only=true" : ""}`);
       return response ? response.json() : null;
     },
     async fetchScoutHistory(project) {

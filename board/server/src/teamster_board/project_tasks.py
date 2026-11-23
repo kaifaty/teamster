@@ -15,7 +15,7 @@ from uuid import uuid4
 from .actions import string
 from .duty_tasks import _goal, task_id
 from .store import ready_for_review
-from .task_files import ARCHIVED, Record, alive, directories, number, read_state, safe_slug
+from .task_files import ARCHIVED, Record, alive, directories, number, read_state, safe_slug, task_messages, task_queue
 
 
 TERMINAL = ("done", "cancelled")
@@ -388,9 +388,25 @@ class ProjectTasks:
     def details(self, identity):
         task, linked = self.card(identity)
         sessions = {ref: summary.copy() for ref, summary in linked.items()}
+        work = {}
+        with self.store.lock:
+            for ref, summary in linked.items():
+                if summary["kind"] not in ("work", "review", "scout"):
+                    continue
+                record = self.store._record(summary["slug"])
+                if record is None or record.state.get("created") != summary["created"]:
+                    continue
+                messages = task_messages(self.store._file(record.path, "messages.jsonl"))
+                queue = [] if record.archived else task_queue(self.store._file(record.path, "queue.json"))["waiting"]
+                work[ref] = {
+                    "goal": (_goal(self.store._file(record.path, "brief.md")) or "")[:600] or None,
+                    "order": next((item for item in reversed(messages) if item["source"] == "lead"), None),
+                    "next_order": queue[0] if queue else None,
+                    "queued": len(queue),
+                }
         for summary in sessions.values():
             summary.pop("archived", None)
-        return sessions, task["pull_requests"]
+        return sessions, task["pull_requests"], work
 
     def _title_candidate(self, identity, card, source, repositories, *, fresh=False):
         if (card is None or card.get("title_source") not in ("generated", "operator")

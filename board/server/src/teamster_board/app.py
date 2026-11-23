@@ -567,13 +567,15 @@ def create_app(settings=None):
         return {"ok": True}
 
     @app.get("/api/project-tasks/{identity}/details")
-    async def project_task_details(identity: str):
+    async def project_task_details(identity: str, work_only: bool = False):
         try:
-            sessions, prs = await asyncio.to_thread(board.project_tasks.details, identity)
+            sessions, prs, work = await asyncio.to_thread(board.project_tasks.details, identity)
         except KeyError:
             return error(404, "Unknown project task")
         except (OSError, sqlite3.Error):
             return error(503, "project_tasks_unavailable")
+        if work_only:
+            return {"sessions": sessions, "work": work, "pull_requests": {}}
 
         async def lookup(run, *args):
             async with board.pr_lookups:
@@ -581,7 +583,7 @@ def create_app(settings=None):
 
         logins = await lookup(project_task_module.forgejo_logins) if any(pr["provider"] == "forgejo" for pr in prs) else {}
         statuses = await asyncio.gather(*(lookup(project_task_module.pull_request_status, pr, logins) for pr in prs))
-        return {"sessions": sessions, "pull_requests": {pr["url"]: status for pr, status in zip(prs, statuses)}}
+        return {"sessions": sessions, "work": work, "pull_requests": {pr["url"]: status for pr, status in zip(prs, statuses)}}
 
     @app.get("/api/project-tasks/scout-history")
     def project_scout_history(project: str):

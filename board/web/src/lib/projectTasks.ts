@@ -1,6 +1,6 @@
 import type { SurfaceTask } from "../map/surface/types";
 import { taskTitle } from "./labels";
-import type { TaskSummary } from "../types";
+import type { TaskMessage, TaskQueue, TaskSummary } from "../types";
 
 export interface ProjectTask extends SurfaceTask {
   sessions: string[];
@@ -11,6 +11,14 @@ export interface ProjectTask extends SurfaceTask {
 export interface ProjectTaskDetails {
   sessions: Record<string, TaskSummary>;
   pull_requests: Record<string, "draft" | "open" | "merged" | "closed" | null>;
+  work?: Record<string, ProjectRunWork>;
+}
+
+export interface ProjectRunWork {
+  goal: string | null;
+  order: TaskMessage | null;
+  next_order: TaskQueue["waiting"][number] | null;
+  queued: number;
 }
 
 export interface ProjectTasks {

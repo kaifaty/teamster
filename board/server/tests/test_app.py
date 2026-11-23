@@ -1387,6 +1387,20 @@ def test_project_tasks_follow_managed_work_and_survive_restart(board):
     assert card["session_slugs"] == {demo["id"]: "demo", sources["survey"]["id"]: "survey"}
     assert card["pull_requests"] == [forgejo, github] and card["status"] == "active"
     assert client.get(read).json()["tasks"] == [card]
+    delivered = {"at": 5, "source": "lead", "text": "Check the implementation."}
+    queued = {"at": 7, "text": "Collect one more measurement."}
+    (directory / "messages.jsonl").write_text("\n".join(map(json.dumps, [
+        delivered, {"at": 6, "source": "review", "text": "The implementation is ready."},
+    ])))
+    survey = directory.parent / "survey"
+    (survey / "brief.md").write_text("Read the existing measurements.\n\n## Done when\nThe report is ready.")
+    (survey / "queue.json").write_text(json.dumps({"waiting": [queued]}))
+    work = client.get(f"{read}/{card['id']}/details?work_only=true").json()
+    assert work["pull_requests"] == {}
+    assert work["work"] == {
+        refs[0]: {"goal": None, "order": {**delivered, "queued_at": None}, "next_order": None, "queued": 0},
+        refs[1]: {"goal": "Read the existing measurements.", "order": None, "next_order": queued, "queued": 1},
+    }
     # Pin the published link too, then archive the work with a different publication.
     card = client.post(write, json={"id": card["id"], "pull_requests": [github, forgejo],
                                     "status": "ready"}).json()["task"]
@@ -1500,6 +1514,7 @@ def test_project_task_links_and_write_protection(board, monkeypatch):
     details = client.get(f"{read}/{child}/details").json()
     assert details["sessions"][child]["slug"] == "demo"
     assert details["pull_requests"] == {github: "draft", forgejo: "merged", unknown: None}
+    assert client.get(f"{read}/{child}/details?work_only=true").json()["pull_requests"] == {}
     assert len(calls) == 3
     assert client.get(f"{read}/missing/details").status_code == 404
     settings.read_only = True
