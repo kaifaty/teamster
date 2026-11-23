@@ -214,7 +214,10 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
             overview_id = generated.json()["id"]
             assert client.post(action, json=overview).json() == generated.json()
             saved_prompt = db.execute("SELECT prompt FROM chat_requests WHERE id=?", (overview_id,)).fetchone()[0]
-            assert json.loads(saved_prompt)["overview"]["brief"] == brief
+            assert json.loads(saved_prompt)["overview"] == {
+                "title": "Project card", "brief": "Make the report easier to read.",
+                "criteria": "The summary shows the totals.",
+            }
             assert client.get(read).json()["overview"] == {"status": "pending"}
             description = {"change": "A clearer report.", "why": "Make important figures easy to find.",
                            "expected": "The summary shows the totals."}

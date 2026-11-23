@@ -203,7 +203,9 @@ class OperatorChat:
                 if record and record.summary["created"] == row["created"]:
                     goal = duty_tasks._goal(self.store._file(record.path, "brief.md"), include_criteria=True)
                     if goal:
-                        return {"title": card["title"], "brief": goal[:4800], "report": row["summary"]}
+                        brief, *criteria = re.split(r"(?im)^ *(?:## Done when|Готово, когда:) *$", goal, maxsplit=1)
+                        return {"title": card["title"], "brief": brief.strip()[:1200],
+                                "criteria": criteria[0].strip().split("\n\n", 1)[0][:1200] if criteria else None}
         latest = max((row for row in runs if row["summary"]), key=lambda row: row["updated_at"], default=None)
         if latest:
             return {"title": card["title"], "report": latest["summary"]}
