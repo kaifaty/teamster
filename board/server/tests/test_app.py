@@ -206,6 +206,27 @@ def test_operator_history_and_live_focus_on_read_only_board(board, monkeypatch):
             assert prompt["event"]["kind"] == "recommendation" and "Waiting for a check." in prompt["event"]["record"]
             read = f"/api/project-tasks/{current_id}/resolution"
             assert client.post(action, json=project_chat).status_code == 429
+            brief = "Make the report easier to read.\n\n## Done when\nThe summary shows the totals."
+            (directory / "brief.md").write_text(brief)
+            overview = {**project_chat, "history": [], "overview": "missing"}
+            generated = client.post(action, json=overview)
+            assert generated.status_code == 202
+            overview_id = generated.json()["id"]
+            assert client.post(action, json=overview).json() == generated.json()
+            saved_prompt = db.execute("SELECT prompt FROM chat_requests WHERE id=?", (overview_id,)).fetchone()[0]
+            assert json.loads(saved_prompt)["overview"]["brief"] == brief
+            assert client.get(read).json()["overview"] == {"status": "pending"}
+            description = {"change": "A clearer report.", "why": "Make important figures easy to find.",
+                           "expected": "The summary shows the totals."}
+            with db:
+                db.execute("UPDATE chat_requests SET answer=? WHERE id=?", (json.dumps(description), overview_id))
+            assert client.get(read).json()["overview"] == {"status": "answered", **description}
+            assert client.post(action, json=overview).json()["id"] == overview_id
+            refreshed = client.post(action, json={**overview, "overview": "refresh"}).json()["id"]
+            assert refreshed != overview_id and client.get(read).json()["overview"] == {"status": "pending", **description}
+            with db:
+                db.execute("UPDATE chat_requests SET answer='Invalid description' WHERE id=?", (refreshed,))
+            assert client.get(read).json()["overview"] == {"status": "failed", **description}
             pending, = client.get(read).json()["chat"]
             assert pending["reference"] == "recommendation:current" and pending["status"] == "pending"
             with db:

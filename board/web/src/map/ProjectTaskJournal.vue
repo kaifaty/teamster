@@ -10,6 +10,7 @@ import type { TaskSummary } from "../types";
 import { optionLabels } from "../operatorActivity";
 import ProjectTaskDecision from "./ProjectTaskDecision.vue";
 import ProjectTaskExecutors from "./ProjectTaskExecutors.vue";
+import ProjectTaskOverview from "./ProjectTaskOverview.vue";
 import ProjectOperatorChat from "./ProjectOperatorChat.vue";
 import { verdictTitle } from "./ship/bridge";
 import { changesLine, reportParagraphs } from "./ship/now";
@@ -53,6 +54,8 @@ const sessions = computed(() => props.task.sessions.map((id) => {
   return { id, slug, record, label: record ? taskTitle(record) : slug ?? detachedName(id) };
 }));
 const selectedId = ref(sessions.value.find((row) => row.slug && row.slug === props.initialSlug)?.id);
+const overviewContext = computed(() => Object.values(workUpdate.value ?? details.value?.work ?? {}).some((item) => item.goal)
+  || sessions.value.some((row) => row.record?.kind !== "session" && row.record?.summary));
 const selected = computed(() => sessions.value.find((row) => row.id === selectedId.value)
   ?? sessions.value.find((row) => row.slug && row.slug === props.task.source_slug)
   ?? sessions.value.find((row) => row.slug) ?? sessions.value[0]);
@@ -349,6 +352,9 @@ onBeforeUnmount(() => {
           <small v-if="statusNote">{{ statusNote }}</small>
         </div>
       </header>
+
+      <ProjectTaskOverview :card="task.id" :overview="resolution?.overview" :has-context="overviewContext"
+        :enabled="chatEnabled && !!resolution?.writable" :source="source" :refresh="refreshResolution" />
 
       <section v-if="showBlocker" class="task-blocker" aria-labelledby="journal-blocker">
         <h2 id="journal-blocker">{{ task.status === "blocked" ? "Что мешает продолжить" : "Какое решение требуется" }}</h2>

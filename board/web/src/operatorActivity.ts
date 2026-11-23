@@ -52,6 +52,13 @@ export interface OperatorProposal {
   options?: { action: OperatorOption; text: string }[];
 }
 
+export interface ProjectTaskOverview {
+  status: "pending" | "answered" | "failed";
+  change?: string;
+  why?: string;
+  expected?: string;
+}
+
 export interface OperatorResolution {
   writable: boolean;
   assignment: { run: string; status: string; evidence: string | null } | null;
@@ -70,6 +77,7 @@ export interface OperatorResolution {
   }[];
   chat?: ProjectOperatorMessage[];
   proposals?: OperatorProposal[];
+  overview?: ProjectTaskOverview | null;
   events: {
     seq: number;
     actor: "user" | "operator";

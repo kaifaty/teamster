@@ -37,6 +37,7 @@ export interface BoardSource {
   /** The conversation with the duty; null when the server has no such route yet (404). Absent from sources without it. */
   fetchDutyChat?(): Promise<DutyChatView | null>;
   fetchOperatorResolution?(card: string): Promise<OperatorResolution | null>;
+  requestProjectOverview?(card: string, refresh: boolean): Promise<void>;
   setOperatorResolution?(rule: OperatorResolutionRule): Promise<void>;
   askOperator?(question: string, target: OperatorTarget | null, history: OperatorExchange[], reference?: string,
     proposal?: boolean): Promise<string>;
@@ -139,6 +140,15 @@ export function serverSource(): BoardSource {
     async fetchOperatorResolution(card) {
       const response = await get(`/api/project-tasks/${encodeURIComponent(card)}/resolution`);
       return response ? response.json() : null;
+    },
+    async requestProjectOverview(card, refresh) {
+      const signal = AbortSignal.timeout(15_000);
+      await operatorResponse(sendBoardAction("operator-chat", {
+        question: "Кратко опиши задачу, её цель и ожидаемый результат.",
+        target: { kind: "project", id: card },
+        history: [],
+        overview: refresh ? "refresh" : "missing",
+      }, (url, init) => fetch(url, { ...init, signal })), signal);
     },
     async setOperatorResolution(rule) {
       const response = await sendBoardAction("operator-resolution", rule);

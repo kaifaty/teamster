@@ -68,7 +68,7 @@ def task_status(state, is_alive):
     return "failed" if outcome else "idle"
 
 
-def _goal(path):
+def _goal(path, *, include_criteria=False):
     if path is None:
         return None
     try:
@@ -79,7 +79,8 @@ def _goal(path):
     rules = max(brief.rfind(f"\n\n{heading}\n") for heading in ("## How to work", "## Как работать"))
     if rules >= 0:
         brief = brief[:rules]
-    brief = brief.rsplit("\n\n## Done when\n", 1)[0]
+    if not include_criteria:
+        brief = brief.rsplit("\n\n## Done when\n", 1)[0]
     return text(brief.strip())
 
 

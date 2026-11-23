@@ -1501,11 +1501,16 @@ are shown as `landing.stage: "failed"` and do not terminate the server.
   evidence for the attached card when a question is submitted. `history` is up to two previous
   `{question, answer}` pairs. A project question can include a `reference` to a recommendation,
   resolution event, or confirmed command belonging to that card. Success returns 202 with `{id}`.
+  For a project card, `overview: "missing"` requests a concise description from the linked brief
+  and reuses any earlier request. `overview: "refresh"` requests a new description or joins a pending
+  one. Both require empty history and run independently of regular chat within the global queue limit.
 - `GET /api/project-tasks/{id}/resolution` returns `{assignment, events, recommendations, commands, writable}`
   and `chat` when the operator supports durable project chat. Recommendations and confirmed External Duty
   commands are scoped to the card's linked run IDs. Resolution events include their actual author and
   remain readable after closure or revocation. Project questions and replies are stored with the card ID,
-  and two unanswered requests for the same card cannot run concurrently.
+  with at most one unanswered chat or proposal and one unanswered description per card.
+  `overview` is null until requested, then contains its `status` and the latest valid `change`,
+  `why`, and `expected` text when available. Description requests are omitted from `chat`.
   `POST /api/actions/operator-resolution` uses standard action headers and accepts
   `{card, run, rule: "verdict"}`, `{card, run, rule: "negative", evidence, phrase}`, or
   `{card, revoke: true}`. `run` is a linked stable run ID and `evidence` is a Board slug

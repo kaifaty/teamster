@@ -21,22 +21,29 @@ CHAT_QUEUE_LIMIT = 4
 RUN_KINDS = ("work", "review", "scout", "reflect")
 SEARCH_PAGE = 8
 PROPOSAL = "lifecycle:"
+OVERVIEW = "overview"
+OVERVIEW_FIELDS = ("change", "why", "expected")
+
+
+def _answer_payload(answer):
+    answer = answer.strip()
+    if answer.startswith("```") and answer.endswith("```"):
+        answer = answer.partition("\n")[2][:-3].strip()
+    try:
+        value = json.loads(answer)
+    except (ValueError, RecursionError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _proposal(row):
     result = {"id": row["id"], "at": row["at"], "status": row["status"]}
     if row["status"] != "answered":
         return result
-    answer = row["answer"].strip()
-    if answer.startswith("```") and answer.endswith("```"):
-        answer = answer.partition("\n")[2][:-3].strip()
-    try:
-        value = json.loads(answer)
-    except ValueError:
-        value = None
+    value = _answer_payload(row["answer"])
     target = json.loads(row["reference"][len(PROPOSAL):])
     allowed = target["actions"]
-    if (not isinstance(value, dict) or not valid_text(value.get("reason"), 1000)
+    if (not valid_text(value.get("reason"), 1000)
             or not isinstance(value.get("options"), list) or len(value["options"]) > 5):
         return dict(result, status="failed")
     options = {}
@@ -49,6 +56,22 @@ def _proposal(row):
         return dict(result, status="failed")
     return dict(result, reason=value["reason"].strip(), recommended=recommended, options=list(options.values()),
                 record_only=bool(target.get("record_only")))
+
+
+def _overview(rows):
+    if not rows:
+        return None
+    latest = rows[-1]
+    view = {"status": "failed" if latest["status"] == "answered" else latest["status"]}
+    for row in reversed(rows):
+        if row["status"] != "answered":
+            continue
+        value = _answer_payload(row["answer"])
+        if all(valid_text(value.get(key), 800) for key in OVERVIEW_FIELDS):
+            if row["id"] == latest["id"]:
+                view["status"] = "answered"
+            return dict(view, **{key: value[key].strip() for key in OVERVIEW_FIELDS})
+    return view
 
 
 def _connect(path, mode):
@@ -164,9 +187,27 @@ class OperatorChat:
                     FROM project_chat h JOIN chat_requests r USING (id)
                     WHERE h.card = ? ORDER BY h.at, h.id
                 """, (int(time.time() * 1000), identity)).fetchall()
-                data["chat"] = [dict(row) for row in chat if not (row["reference"] or "").startswith(PROPOSAL)]
+                data["chat"] = [dict(row) for row in chat if row["reference"] != OVERVIEW
+                                and not (row["reference"] or "").startswith(PROPOSAL)]
                 data["proposals"] = [_proposal(row) for row in chat if (row["reference"] or "").startswith(PROPOSAL)]
+                data["overview"] = _overview([row for row in chat if row["reference"] == OVERVIEW])
         return data
+
+    def _overview_input(self, identity):
+        card, linked = self.project_tasks.card(identity)
+        runs = [row for row in linked.values() if row["kind"] in ("work", "review", "scout")]
+        runs.sort(key=lambda row: (row["kind"] != "work", row["created"] or 0))
+        with self.store.lock:
+            for row in runs:
+                record = self.store._record(row["slug"])
+                if record and record.summary["created"] == row["created"]:
+                    goal = duty_tasks._goal(self.store._file(record.path, "brief.md"), include_criteria=True)
+                    if goal:
+                        return {"title": card["title"], "brief": goal[:4800], "report": row["summary"]}
+        latest = max((row for row in runs if row["summary"]), key=lambda row: row["updated_at"], default=None)
+        if latest:
+            return {"title": card["title"], "report": latest["summary"]}
+        raise KeyError(identity)
 
     def choose(self, data):
         card, identity, action = (data.get(key) for key in ("card", "proposal", "action"))
@@ -320,9 +361,14 @@ class OperatorChat:
         reference = data.get("reference")
         project = target.get("id") if isinstance(target, dict) and target.get("kind") == "project" else None
         proposing = data.get("proposal") is True
-        if (data.keys() - {"reference", "proposal"} != {"question", "history", "target"} or not valid_text(question, 2000)
+        describing = data.get("overview")
+        if (data.keys() - {"reference", "proposal", "overview"} != {"question", "history", "target"}
+                or not valid_text(question, 2000)
                 or (target is not None and not isinstance(target, dict))
                 or ("proposal" in data and (not proposing or project is None or "reference" in data))
+                or ("overview" in data and (describing not in ("missing", "refresh") or project is None
+                                           or set(target) != {"kind", "id"} or not valid_text(project, 255)
+                                           or "reference" in data or "proposal" in data or history))
                 or ("reference" in data and (project is None or not valid_text(reference, 270)))
                 or not isinstance(history, list) or len(history) > 2
                 or any(not isinstance(pair, dict) or pair.keys() != {"question", "answer"}
@@ -330,9 +376,13 @@ class OperatorChat:
             return error(400, "invalid_question")
         try:
             with _connect(self.path, "rw") as db, db:
-                context = self._context(db, target) if target is not None else None
+                context = (self._overview_input(project) if describing else
+                           self._context(db, target) if target is not None else None)
                 payload = {"task": context, "conversation": history, "question": question.strip()}
-                if proposing:
+                if describing:
+                    payload = {"overview": context}
+                    reference = OVERVIEW
+                elif proposing:
                     card, linked = self.project_tasks.card(project)
                     evidence = pull_request_evidence(card["pull_requests"][:3])
                     target = self.resolution.proposal_target(card, linked, evidence)
@@ -353,13 +403,19 @@ class OperatorChat:
                 identity = uuid4().hex
                 durable = project is not None and db.execute(
                     "SELECT 1 FROM sqlite_schema WHERE name='project_chat'").fetchone()
-                if proposing and not durable:
+                if (proposing or describing) and not durable:
                     return error(503, "operator_unavailable")
                 if durable:
                     db.execute("BEGIN IMMEDIATE")
-                    if db.execute("""SELECT 1 FROM project_chat h JOIN chat_requests r USING (id)
-                                     WHERE h.card=? AND r.deadline>? AND r.answer IS NULL AND r.failed=0""",
-                                  (project, now)).fetchone():
+                    if describing:
+                        prior = db.execute("""SELECT h.id, r.deadline, r.answer, r.failed
+                            FROM project_chat h JOIN chat_requests r USING (id) WHERE h.card=? AND h.reference=?
+                            ORDER BY h.at DESC, h.id DESC LIMIT 1""", (project, OVERVIEW)).fetchone()
+                        if prior and (describing == "missing" or (prior[1] > now and prior[2] is None and not prior[3])):
+                            return JSONResponse({"id": prior[0]}, status_code=202)
+                    elif db.execute("""SELECT 1 FROM project_chat h JOIN chat_requests r USING (id)
+                                       WHERE h.card=? AND h.reference IS NOT ? AND r.deadline>?
+                                         AND r.answer IS NULL AND r.failed=0""", (project, OVERVIEW, now)).fetchone():
                         return error(429, "operator_busy")
                 inserted = db.execute("""
                     INSERT INTO chat_requests (id, prompt, deadline) SELECT ?, ?, ?
