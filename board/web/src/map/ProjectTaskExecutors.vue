@@ -77,7 +77,9 @@ const rows = computed(() => props.sessions.map((session) => {
   if (handoff && !sentHandoff && !queuedHandoff && handoff.at >= (sent?.at ?? 0)) {
     notes.push({ label: handoff.question ? "Последний вопрос оператора" : "Последнее поручение оператора", text: handoff.text });
   }
-  return { ...session, record, active, status, tone: phase?.tone ?? "dim", notes, started, recent,
+  const latest = recent[0];
+  const preview = latest?.text ? { label: activityLabels[latest.kind].label, text: latest.text } : notes[0];
+  return { ...session, record, active, status, tone: phase?.tone ?? "dim", notes, started, recent, preview,
     name: record ? EXECUTORS[record.executor] ?? record.executor : session.label,
     check: record?.phase === "check" ? work?.check_command : null,
     priority: active ? 0 : queued || record?.column === "sleeping" ? 1 : 2 };
@@ -86,97 +88,114 @@ const rows = computed(() => props.sessions.map((session) => {
 
 <template>
   <section class="executors" aria-labelledby="journal-executors">
-    <h2 id="journal-executors">Исполнители</h2>
+    <div class="executor-heading">
+      <h2 id="journal-executors">Исполнители</h2>
+      <small v-if="rows.length > 1" class="muted">{{ rows.length }}</small>
+    </div>
     <p v-if="!rows.length" class="muted">К задаче пока не привязано ни одной сессии.</p>
     <ul v-else class="executor-list">
       <li v-for="row in rows" :key="row.id" class="executor" :class="{ selected: selected === row.id, live: row.active }">
-        <header class="executor-heading">
-          <div>
-            <h3>{{ row.name }}<template v-if="row.record?.account"> · <code>{{ row.record.account }}</code></template></h3>
+        <details>
+          <summary class="executor-summary">
+            <span class="executor-name">
+              <strong>{{ row.name }}<template v-if="row.record?.account"> · <code>{{ row.record.account }}</code></template></strong>
+              <span class="executor-status" :data-tone="row.tone">{{ row.status }}</span>
+            </span>
+            <span v-if="row.started !== null" class="executor-time muted">
+              {{ row.record?.alive ? "Ход начат" : "Последний ход" }} ·
+              <time :datetime="new Date(row.started * 1000).toISOString()" :title="formatFullTime(row.started)">
+                {{ formatClock(row.started, now) }}
+              </time>
+            </span>
+          </summary>
+          <div class="executor-details">
             <p v-if="row.record" class="executor-meta muted">
               {{ KINDS[row.record.kind] }}<template v-if="row.record.model"> · {{ row.record.model }}</template>
             </p>
+            <div class="executor-body">
+              <div class="executor-orders">
+                <div v-for="note in row.notes" :key="note.label" class="executor-order">
+                  <h4>{{ note.label }}</h4>
+                  <details v-if="note.text.length > 300">
+                    <summary>{{ note.text.slice(0, 175).trimEnd() }}…</summary>
+                    <p class="note-text">{{ note.text }}</p>
+                  </details>
+                  <p v-else class="note-text">{{ note.text }}</p>
+                </div>
+                <p v-if="row.record?.column === 'sleeping' && row.record.sleeping_until !== null" class="executor-meta muted">
+                  Возобновление {{ formatClock(row.record.sleeping_until, now) }}
+                </p>
+                <div v-else-if="!row.active && row.record?.summary" class="executor-order">
+                  <h4>Последний результат</h4>
+                  <p>{{ row.record.summary }}</p>
+                </div>
+              </div>
+              <div v-if="row.active && row.record" class="executor-progress">
+                <h4>Что происходит сейчас</h4>
+                <p>{{ stageText[row.record.phase] }}
+                  <template v-if="row.record.phase === 'review' && row.record.reviewer">
+                    · {{ EXECUTORS[row.record.reviewer] ?? row.record.reviewer }}
+                  </template>
+                </p>
+                <details v-if="row.check">
+                  <summary>Команда проверки</summary>
+                  <p><code>{{ row.check }}</code></p>
+                </details>
+                <details v-if="row.recent.length" class="executor-activity" open>
+                  <summary>{{ row.started === null ? "Последние действия" : "Действия этого хода" }}</summary>
+                  <ol>
+                    <li v-for="event in row.recent" :key="event.kind + ':' + event.text">
+                      <div class="activity-meta muted">
+                        <span>{{ activityLabels[event.kind].label }}</span>
+                        <time v-if="event.at !== null" :datetime="new Date(event.at * 1000).toISOString()" :title="formatFullTime(event.at)">
+                          {{ formatClock(event.at, now) }}
+                        </time>
+                      </div>
+                      <code v-if="event.kind === 'command' || event.kind === 'edit'">{{ event.text }}</code>
+                      <p v-else>{{ event.text }}</p>
+                    </li>
+                  </ol>
+                </details>
+              </div>
+            </div>
+            <footer v-if="row.slug" class="executor-actions">
+              <button type="button" class="executor-link" :aria-pressed="selected === row.id" @click="emit('select', row.id)">
+                {{ row.label }}
+              </button>
+              <code v-if="selected === row.id && row.record?.branch" class="executor-meta muted">{{ row.record.branch }}</code>
+              <button v-if="selected === row.id" type="button" class="btn" @click="emit('controls', row.id)">Действия запуска</button>
+            </footer>
           </div>
-          <span class="executor-status" :data-tone="row.tone">{{ row.status }}</span>
-        </header>
-        <p v-if="row.started !== null" class="executor-time muted">
-          {{ row.record?.alive ? "Текущий ход начат" : "Последний ход начат" }}
-          <time :datetime="new Date(row.started * 1000).toISOString()" :title="formatFullTime(row.started)">
-            {{ formatClock(row.started, now) }}
-          </time>
+        </details>
+        <p v-if="row.active && row.preview" class="executor-preview muted">
+          {{ row.preview.label }} · {{ row.preview.text }}
         </p>
-        <div class="executor-body">
-          <div class="executor-orders">
-            <div v-for="note in row.notes" :key="note.label" class="executor-order">
-              <h4>{{ note.label }}</h4>
-              <details v-if="note.text.length > 300">
-                <summary>{{ note.text.slice(0, 175).trimEnd() }}…</summary>
-                <p class="note-text">{{ note.text }}</p>
-              </details>
-              <p v-else class="note-text">{{ note.text }}</p>
-            </div>
-            <p v-if="row.record?.column === 'sleeping' && row.record.sleeping_until !== null" class="executor-meta muted">
-              Возобновление {{ formatClock(row.record.sleeping_until, now) }}
-            </p>
-            <div v-else-if="!row.active && row.record?.summary" class="executor-order">
-              <h4>Последний результат</h4>
-              <p>{{ row.record.summary }}</p>
-            </div>
-          </div>
-          <div v-if="row.active && row.record" class="executor-progress">
-            <h4>Что происходит сейчас</h4>
-            <p>{{ stageText[row.record.phase] }}
-              <template v-if="row.record.phase === 'review' && row.record.reviewer">
-                · {{ EXECUTORS[row.record.reviewer] ?? row.record.reviewer }}
-              </template>
-            </p>
-            <details v-if="row.check">
-              <summary>Команда проверки</summary>
-              <p><code>{{ row.check }}</code></p>
-            </details>
-            <details v-if="row.recent.length" class="executor-activity" open>
-              <summary>{{ row.started === null ? "Последние действия" : "Действия этого хода" }}</summary>
-              <ol>
-                <li v-for="event in row.recent" :key="event.kind + ':' + event.text">
-                  <div class="activity-meta muted">
-                    <span>{{ activityLabels[event.kind].label }}</span>
-                    <time v-if="event.at !== null" :datetime="new Date(event.at * 1000).toISOString()" :title="formatFullTime(event.at)">
-                      {{ formatClock(event.at, now) }}
-                    </time>
-                  </div>
-                  <code v-if="event.kind === 'command' || event.kind === 'edit'">{{ event.text }}</code>
-                  <p v-else>{{ event.text }}</p>
-                </li>
-              </ol>
-            </details>
-          </div>
-        </div>
-        <footer v-if="row.slug" class="executor-actions">
-          <button type="button" class="executor-link" :aria-pressed="selected === row.id" @click="emit('select', row.id)">
-            {{ row.label }}
-          </button>
-          <code v-if="selected === row.id && row.record?.branch" class="executor-meta muted">{{ row.record.branch }}</code>
-          <button v-if="selected === row.id" type="button" class="btn" @click="emit('controls', row.id)">Действия запуска</button>
-        </footer>
       </li>
     </ul>
   </section>
 </template>
 
 <style scoped>
-.executors { margin-top: 22px; display: grid; gap: 10px; }
-.executors :is(h2, h3, h4, p, ul, ol) { margin: 0; }
+.executors { display: grid; gap: 8px; }
+.executors :is(h2, h4, p, ul, ol) { margin: 0; }
 .executors h2 { font-size: 18px; line-height: 1.3; }
-.executors h3 { font-size: 17px; line-height: 1.35; }
 .executors h4 { font-size: 13px; line-height: 1.4; color: var(--journal-accent); }
-.executor-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 10px; }
-.executor { display: grid; align-content: start; gap: 10px; min-width: 0; padding: clamp(12px, 2.4vw, 20px); border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 14px; line-height: 1.5; }
-.executor.live { grid-column: 1 / -1; }
+.executor-list { list-style: none; padding: 0; display: grid; gap: 7px; }
+.executor { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 14px; line-height: 1.5; }
 .executor.selected { border-color: var(--journal-operator-line); }
+.executor-summary, .executor-details { padding: 9px 11px; }
+.executor-details { display: grid; gap: 8px; border-top: 1px solid var(--border); }
+.executor-name { display: inline-flex; max-width: calc(100% - 18px); align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+.executor-time { display: block; margin-top: 2px; }
+.executor .executor-preview {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  margin: 0 11px 9px; font-size: 12px;
+}
+.executor:has(> details[open]) .executor-preview { display: none; }
 .executor-heading, .executor-actions, .activity-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
 .executor-heading { justify-content: space-between; }
 .executor-body { display: grid; grid-template-columns: minmax(0, 1fr); }
-.live .executor-body { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.live .executor-body { gap: 10px; }
 .executor-orders, .executor-progress { display: grid; align-content: start; gap: 8px; min-width: 0; }
 .executor-order h4 { margin-bottom: 4px; }
 .executor-progress { padding: 10px 12px; border-radius: 8px; background: var(--surface-2); }
@@ -198,7 +217,4 @@ const rows = computed(() => props.sessions.map((session) => {
 .note-text { white-space: pre-wrap; }
 details summary { cursor: pointer; }
 details[open] .note-text { margin-top: 5px; }
-@media (max-width: 760px) {
-  .live .executor-body { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-}
 </style>

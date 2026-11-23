@@ -41,7 +41,7 @@ watch(() => {
   void nextTick(() => {
     if (log.value) log.value.scrollTop = log.value.scrollHeight;
   });
-}, { flush: "post" });
+}, { flush: "post", immediate: true });
 
 async function send() {
   if (!canSend.value || !props.ask) return;
@@ -75,10 +75,7 @@ function onKey(event: KeyboardEvent) {
   <section class="task-chat" aria-labelledby="task-operator-chat-title">
     <header>
       <span class="chat-avatar" aria-hidden="true">M</span>
-      <div>
-        <h2 id="task-operator-chat-title">Чат с оператором</h2>
-        <p>Mini · {{ target.title }}</p>
-      </div>
+      <h2 id="task-operator-chat-title">Оператор Mini</h2>
     </header>
     <ol v-if="messages.length" ref="log" class="chat-log" role="log" aria-label="Переписка по задаче">
       <li v-for="row in messages" :key="row.id">
@@ -119,7 +116,7 @@ header { display: flex; align-items: center; gap: 9px; padding: 12px; border-bot
   background: var(--journal-operator); color: var(--journal-accent); font-weight: 650; }
 h2 { margin: 0; font-size: 15px; }
 p { margin: 0; }
-header p, .chat-feedback, time, small { color: var(--muted); font-size: 12px; }
+.chat-feedback, time, small { color: var(--muted); font-size: 12px; }
 .chat-log { list-style: none; margin: 0; padding: 10px 12px; max-height: 44dvh; overflow: auto; }
 .chat-log li + li { margin-top: 8px; }
 .question, .answer { padding: 7px 9px; border-radius: 7px; background: var(--surface-2); white-space: pre-wrap; font-size: 13px; }

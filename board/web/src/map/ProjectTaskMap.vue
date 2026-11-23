@@ -260,7 +260,7 @@ defineExpose({ select, focusProject });
             @click="emit('askOperator', { kind: 'project', id: selected.id, title: selected.title })">Спросить оператора</button>
           <button v-if="data?.writable" ref="editButton" type="button" class="btn" @click="edit(selected)">Изменить</button>
         </div>
-        <button type="button" class="btn primary open-journal" @click="emit('journal', selected.id)">Открыть журнал</button>
+        <button type="button" class="btn primary open-journal" @click="emit('journal', selected.id)">Открыть задачу</button>
         <dl>
           <template v-if="selected.parent_id">
             <dt>Родительское задание</dt>

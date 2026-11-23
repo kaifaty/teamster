@@ -271,6 +271,8 @@ const entries = computed(() => {
   return rows.sort((a, b) => b.at - a.at);
 });
 const visibleEntries = computed(() => operatorOnly.value ? entries.value.filter((row) => row.reference || row.id.startsWith("proposal:")) : entries.value);
+const latestEvent = computed(() => entries.value.find((row) => row.reference && row.title !== resolutionLabels.status_changed)
+  ?? entries.value[0]);
 const labels = computed(() => new Map(entries.value.flatMap((row) =>
   row.reference ? [[row.reference, row.title + " · " + formatClock(row.at, props.now)] as const] : [])));
 const pulls = computed(() => props.task.pull_requests.map((pr) => ({
@@ -279,7 +281,30 @@ const pulls = computed(() => props.task.pull_requests.map((pr) => ({
 const showBlocker = computed(() => props.task.status === "blocked" || props.task.status === "needs_input");
 const remaining = computed(() => run.value?.cargo?.remaining ?? []);
 const questions = computed(() => run.value?.cargo?.questions ?? []);
+const blockerItems = computed(() => [...questions.value, ...remaining.value]);
 const mergedPulls = computed(() => pulls.value.filter((pr) => pr.status === "merged"));
+const work = computed(() => workUpdate.value ?? details.value?.work);
+const working = computed(() => sessions.value.find((row) => row.record?.alive && row.record.column === "running"));
+const sleeping = computed(() => sessions.value.find((row) => row.record?.column === "sleeping"));
+const queued = computed(() => sessions.value.find((row) => (work.value?.[row.id]?.queued ?? 0) > 0));
+const awaitingExecutor = computed(() => resolution.value?.assignment?.status === "waiting_followup");
+const underway = computed(() => !!(working.value || sleeping.value || queued.value || awaitingExecutor.value));
+const nextStep = computed(() => {
+  switch (props.task.status) {
+    case "blocked": return "Что мешает продолжить";
+    case "needs_input": return "Какое решение требуется";
+    case "ready": return "Результат готов к приёмке";
+    case "done": return "Результат принят";
+    case "cancelled": return "Работа отменена";
+  }
+  if (working.value) return "Исполнитель ведёт работу";
+  if (sleeping.value) return "Исполнитель ждёт сброса квоты";
+  if (queued.value) return "Поручение в очереди";
+  if (awaitingExecutor.value) return "Поручение передано исполнителю";
+  return "Нет активного хода";
+});
+const nextExecutor = computed(() => (working.value ?? sleeping.value ?? queued.value
+  ?? sessions.value.find((row) => row.id === resolution.value?.assignment?.run))?.record);
 
 const back = ref<HTMLButtonElement | null>(null);
 const renameButton = ref<HTMLButtonElement | null>(null);
@@ -341,8 +366,10 @@ onBeforeUnmount(() => {
           <p v-if="task.source_slug && task.source_slug !== task.title" class="source-name"><code>{{ task.source_slug }}</code></p>
           <div class="heading-title">
             <h1 id="journal-title">{{ task.title }}</h1>
+            <span class="task-status" :data-status="task.status" role="status">{{ statusLabels[task.status] }}</span>
             <button v-if="rename && draft === null" ref="renameButton" type="button" class="btn rename-button" @click="editTitle">Переименовать</button>
           </div>
+          <p v-if="resolution?.overview?.change" class="task-description">{{ resolution.overview.change }}</p>
           <form v-if="draft !== null" class="rename-form" @submit.prevent="saveTitle">
             <label>Заголовок задачи <input ref="titleField" v-model="draft" maxlength="200" required :disabled="saving" /></label>
             <div class="actions">
@@ -352,50 +379,69 @@ onBeforeUnmount(() => {
             <p v-if="renameError" class="journal-error" role="alert">{{ renameError }}</p>
           </form>
         </div>
-        <div class="task-status" :data-status="task.status" role="status">
-          <strong>{{ statusLabels[task.status] }}</strong>
-          <small v-if="statusNote">{{ statusNote }}</small>
-        </div>
       </header>
 
-      <ProjectTaskOverview :card="task.id" :overview="resolution?.overview" :has-context="overviewContext"
-        :enabled="chatEnabled && !!resolution?.writable" :source="source" :refresh="refreshResolution" />
-      <ProjectTaskExecutors :sessions="sessions" :selected="selected?.id" :work="workUpdate ?? details?.work"
-        :resolution="resolution" :now="now" @select="selectedId = $event" @controls="emit('runControls', $event)" />
-
-      <section v-if="showBlocker" class="task-blocker" aria-labelledby="journal-blocker">
-        <h2 id="journal-blocker">{{ task.status === "blocked" ? "Что мешает продолжить" : "Какое решение требуется" }}</h2>
-        <p v-if="record" class="muted blocker-source">
-          По отчёту запуска {{ selected?.label }} · {{ formatFullTime(record.updated_at) }}
-        </p>
-        <p v-if="selected?.slug && detailState === 'loading'" role="status">Загружаю отчёт запуска…</p>
-        <ul v-else-if="remaining.length || questions.length">
-          <li v-for="(item, index) in remaining" :key="'remaining-' + index">{{ item }}</li>
-          <li v-for="(item, index) in questions" :key="'question-' + index">{{ item }}</li>
-        </ul>
-        <p v-else-if="record?.summary">{{ record.summary }}</p>
-        <p v-else-if="detailState !== 'loading'">{{ statusNote || "В отчёте пока нет причины остановки." }}</p>
-        <p v-if="mergedPulls.length">
-          Уже влиты
-          <a v-for="pr in mergedPulls" :key="pr.url" :href="pr.url" target="_blank" rel="noopener">
-            {{ pr.provider === "github" ? "GitHub" : "Forgejo" }} · {{ prLabel(pr.url) }} ↗
-          </a>
-          Перед возобновлением стоит сверить результат влитых изменений с отчётом.
-        </p>
-      </section>
-      <ProjectTaskDecision :target="chatTarget" :source="source" :in-history="inHistory" :resolution="resolution"
-        :enabled="chatEnabled" :resolving="!!resolutionActive && resolution?.assignment?.status !== 'cleanup_blocked'"
-        :refresh="refreshResolution" @clarify="chat?.focus()" />
       <div class="journal-layout">
-        <main class="journal-main" aria-labelledby="journal-events">
+        <ProjectTaskDecision class="journal-summary" :heading="nextStep" :blocked="showBlocker" :now="now"
+          :executor="task.status === 'active' ? nextExecutor : undefined" :target="chatTarget" :source="source"
+          :show-options="!inHistory && (task.status !== 'active' || !underway)" :resolution="resolution"
+          :enabled="chatEnabled" :resolving="!!resolutionActive && resolution?.assignment?.status !== 'cleanup_blocked'"
+          :refresh="refreshResolution" @focus-chat="chat?.focus()">
+          <template v-if="showBlocker" #blocker>
+            <template v-if="blockerItems.length">
+              <p>{{ blockerItems[0] }}</p>
+              <details v-if="blockerItems.length > 1">
+                <summary>Остальное из отчёта</summary>
+                <ul><li v-for="(item, index) in blockerItems.slice(1)" :key="index">{{ item }}</li></ul>
+              </details>
+            </template>
+            <p v-else-if="selected?.slug && detailState === 'loading'" role="status">Загружаю отчёт запуска…</p>
+            <p v-else>{{ record?.summary || statusNote || "В отчёте пока нет причины остановки." }}</p>
+            <p v-if="mergedPulls.length">
+              Уже влиты <a v-for="pr in mergedPulls" :key="pr.url" :href="pr.url" target="_blank" rel="noopener">
+                {{ prLabel(pr.url) }} ↗
+              </a>
+            </p>
+            <p v-if="record" class="muted blocker-source">
+              Отчёт · {{ selected?.label }} · {{ formatFullTime(record.updated_at) }}
+            </p>
+          </template>
+        </ProjectTaskDecision>
+
+        <aside class="journal-context" aria-label="Исполнители и связи задачи">
+          <ProjectTaskExecutors :sessions="sessions" :selected="selected?.id" :work="work"
+            :resolution="resolution" :now="now" @select="selectedId = $event" @controls="emit('runControls', $event)" />
+          <ProjectTaskOverview :card="task.id" :overview="resolution?.overview" :has-context="overviewContext"
+            :enabled="chatEnabled && !!resolution?.writable" :source="source" :refresh="refreshResolution" />
+          <section v-if="pulls.length || linksError" class="links" aria-labelledby="journal-links">
+            <h2 id="journal-links">Пул-реквесты</h2>
+            <p v-if="linksError" class="journal-error" role="alert">
+              Не удалось обновить сведения о связях. <button class="btn" type="button" @click="retryLinks++">Повторить</button>
+            </p>
+            <ul v-if="pulls.length" class="pull-list">
+              <li v-for="pr in pulls" :key="pr.url">
+                <a :href="pr.url" target="_blank" rel="noopener">{{ pr.provider === "github" ? "GitHub" : "Forgejo" }} · {{ prLabel(pr.url) }} ↗</a>
+                <small v-if="pr.status">{{ prStatuses[pr.status] }}</small>
+              </li>
+            </ul>
+          </section>
+        </aside>
+
+        <aside v-if="chatEnabled || resolution?.chat?.length" class="journal-side" aria-label="Оператор">
+          <ProjectOperatorChat ref="chat" :target="chatTarget" :now="now" :enabled="chatEnabled"
+            :ask="source.askOperator" :messages="resolution?.chat ?? []" :labels="labels" :refresh="refreshResolution" />
+        </aside>
+
+        <details class="journal-main">
+          <summary class="history-summary"><strong>Ход задачи</strong>
+            <span v-if="latestEvent" class="muted">{{ latestEvent.title }} · {{ formatClock(latestEvent.at, now) }}</span>
+          </summary>
           <div class="section-heading">
-            <h2 id="journal-events">Ход задачи</h2>
             <span v-if="sessions.length > 1 && selected" class="muted">{{ selected.label }}</span>
             <div class="journal-filter" role="group" aria-label="События журнала">
               <button type="button" class="btn" :aria-pressed="!operatorOnly" @click="operatorOnly = false">Все события</button>
               <button type="button" class="btn" :aria-pressed="operatorOnly" @click="operatorOnly = true">Действия оператора</button>
             </div>
-            <button v-if="chatEnabled" class="btn jump-chat" type="button" @click="chat?.focus()">К чату</button>
           </div>
           <section v-if="resolution?.writable || resolution?.assignment || resolutionError" class="resolution-controls"
             aria-label="Полномочия оператора">
@@ -491,25 +537,7 @@ onBeforeUnmount(() => {
               </li>
             </ul>
           </details>
-        </main>
-
-        <aside class="journal-side" aria-label="Чат и пул-реквесты">
-          <ProjectOperatorChat ref="chat" :target="chatTarget" :now="now" :enabled="chatEnabled"
-            :ask="source.askOperator" :messages="resolution?.chat ?? []" :labels="labels" :refresh="refreshResolution" />
-          <section class="links" aria-labelledby="journal-links">
-            <h2 id="journal-links">Пул-реквесты</h2>
-            <p v-if="linksError" class="journal-error" role="alert">
-              Не удалось обновить сведения о связях. <button class="btn" type="button" @click="retryLinks++">Повторить</button>
-            </p>
-            <ul v-if="pulls.length" class="pull-list">
-              <li v-for="pr in pulls" :key="pr.url">
-                <a :href="pr.url" target="_blank" rel="noopener">{{ pr.provider === "github" ? "GitHub" : "Forgejo" }} · {{ prLabel(pr.url) }} ↗</a>
-                <small v-if="pr.status">{{ prStatuses[pr.status] }}</small>
-              </li>
-            </ul>
-            <p v-else class="muted">PR пока нет.</p>
-          </section>
-        </aside>
+        </details>
       </div>
     </div>
   </section>
@@ -531,39 +559,41 @@ onBeforeUnmount(() => {
   --journal-accent: light-dark(#2d5b4e, #a0d4c1);
   --journal-operator: light-dark(#e9f1ed, #23352f);
   --journal-operator-line: light-dark(#cbded4, #3d574c);
-  max-width: 1220px;
-  margin: 0 auto;
-  padding: 24px clamp(16px, 4vw, 52px) 48px;
+  container: project-summary / inline-size;
+  padding: 20px clamp(12px, 2.4vw, 42px) 40px;
   overflow-wrap: anywhere;
 }
 .journal-page h1, .journal-page h2, .journal-page h3, .journal-page p, .journal-page ul, .journal-page ol, .journal-page dl, .journal-page dd { margin: 0; }
 .journal-page h2 { font-size: 17px; line-height: 1.3; }
 .journal-page h3 { font-size: 14px; line-height: 1.35; }
 .breadcrumb, .heading-title, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-.breadcrumb { margin-bottom: 18px; color: var(--muted); font-size: 13px; }
+.breadcrumb { margin-bottom: 15px; color: var(--muted); font-size: 13px; }
 .history-mark { border-left: 1px solid var(--border); padding-left: 10px; }
-.journal-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
-.heading-main { min-width: 0; flex: 1 1 390px; }
+.journal-heading { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
 .source-name { color: var(--muted); font-size: 12px; margin-bottom: 4px !important; }
 .heading-title h1 { font-size: clamp(24px, 4vw, 36px); font-weight: 675; line-height: 1.15; letter-spacing: -.04em; }
+.journal-page .task-description { color: var(--muted); max-width: 75ch; margin-top: 7px; font-size: 14px; line-height: 1.5; }
 .rename-button { align-self: center; }
 .rename-form { display: grid; gap: 8px; max-width: 440px; margin-top: 12px; }
 .rename-form label { display: grid; gap: 4px; font-size: 13px; }
 .rename-form input { width: 100%; }
-.task-status { display: grid; gap: 2px; padding: 7px 11px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); font-size: 13px; }
+.task-status { padding: 4px 10px; border-radius: 100px; background: var(--surface); border: 1px solid var(--border); font-size: 12px; font-weight: 600; }
 .task-status[data-status="needs_input"], .task-status[data-status="blocked"] { background: var(--warn-soft); color: var(--warn); }
-.task-status[data-status="ready"], .task-status[data-status="done"] { background: var(--journal-operator); color: var(--journal-accent); }
-.task-status small { font-size: 12px; }
-.task-blocker { display: grid; gap: 8px; margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-inline-start: 3px solid var(--warn); border-radius: 8px; background: var(--surface); font-size: 14px; line-height: 1.5; }
-.task-blocker ul { padding-inline-start: 20px; }
-.task-blocker a { margin-inline-end: 6px; }
+.task-status:is([data-status="active"], [data-status="ready"], [data-status="done"]) { background: var(--journal-operator); color: var(--journal-accent); }
 .blocker-source { font-size: 12px; }
-.journal-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(250px, 1fr); align-items: start; gap: clamp(19px, 3vw, 36px); margin-top: 20px; }
+.journal-summary > details > summary { cursor: pointer; }
+.journal-summary > details > ul { padding-inline-start: 20px; }
+.journal-layout { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "summary" "context" "operator" "history"; align-items: start; gap: 14px; margin-top: 16px; }
+.journal-summary { grid-area: summary; min-width: 0; }
+.journal-context { grid-area: context; display: grid; gap: 12px; min-width: 0; }
+.journal-side { grid-area: operator; min-width: 0; }
+.journal-main { grid-area: history; min-width: 0; border-top: 1px solid var(--border); }
+.history-summary { padding: 10px 0; cursor: pointer; }
+.history-summary span { margin-inline-start: 8px; font-size: 12px; }
 .section-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
 .journal-filter, .event-links { display: flex; flex-wrap: wrap; gap: 5px; }
 .journal-filter .btn[aria-pressed="true"] { background: var(--journal-operator); color: var(--journal-accent); border-color: var(--journal-operator-line); }
 .resolution-controls { margin-top: 10px; }
-.jump-chat { display: none; }
 .timeline { list-style: none; padding: 0; margin-top: 12px !important; }
 .event { position: relative; display: grid; gap: 5px; padding: 0 0 16px 16px; margin-left: 4px; border-left: 1px solid var(--border-strong); }
 .event:last-child { padding-bottom: 5px; }
@@ -585,17 +615,35 @@ onBeforeUnmount(() => {
 .system-events { border-top: 1px solid var(--border); padding: 9px 0 0; margin-top: 8px; }
 .system-events ul, .pull-list { list-style: none; padding: 0; }
 .system-events li { display: grid; grid-template-columns: minmax(80px, auto) 1fr; gap: 10px; padding: 5px 0; font-size: 12px; }
-.journal-side { display: grid; align-content: start; gap: 12px; }
-.links { display: grid; gap: 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px; }
+.links { display: grid; gap: 7px; border-top: 1px solid var(--border); padding-block: 10px; }
 .links small { color: var(--muted); }
 .pull-list li + li { margin-top: 3px; }
 .pull-list li { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 8px; }
 .pull-list a, .links p { font-size: 13px; }
 .journal-error { color: var(--bad); }
-@media (max-width: 720px) {
-  .journal-layout { grid-template-columns: minmax(0, 1fr); }
-  .journal-side { grid-template-columns: repeat(auto-fit, minmax(min(100%, 255px), 1fr)); }
-  .journal-side > :first-child { grid-column: 1 / -1; }
-  .jump-chat { display: inline-flex; }
+@container project-summary (min-width: 680px) {
+  .journal-layout {
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    grid-template-areas: "summary context" "history context";
+    grid-template-rows: auto 1fr;
+    gap: 16px clamp(16px, 2cqi, 34px);
+  }
+  .journal-layout:has(> .journal-side) {
+    grid-template-areas: "summary operator" "context operator" "history operator";
+    grid-template-rows: auto auto 1fr;
+  }
+}
+@container project-summary (min-width: 960px) {
+  .journal-layout:has(> .journal-side) {
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "summary context operator" "history context operator";
+    grid-template-rows: auto 1fr;
+  }
+  .journal-context { border-inline-start: 1px solid var(--border); padding-inline-start: clamp(13px, 1.4cqi, 23px); }
+}
+@media (min-height: 750px) {
+  @container project-summary (min-width: 960px) {
+    .journal-side { position: sticky; top: 12px; }
+  }
 }
 </style>
