@@ -5,6 +5,19 @@ Board it also maintains generated titles for current project tasks. The
 [external duty API](../src/teamster/docs/external-duty.md) limits title changes to the
 configured repositories.
 
+## Run Mini as a work executor
+
+Keep the llama.cpp tunnel open and check that `opencode models` lists
+`dev-inkling/inkling-2-mini`.
+
+```sh
+teamster start mini-task --brief brief.md --repo . --executor opencode \
+  --model dev-inkling/inkling-2-mini --sandbox off --no-push --max-minutes 20
+```
+
+`teamster wait mini-task` shows the result. Send follow-up work with `teamster say mini-task "…"`.
+Teamster reuses the selected model and OpenCode session.
+
 ## Run one page
 
 Use Node.js 22.19 or newer. Start a training Board with `--read-only`, allow only its training
